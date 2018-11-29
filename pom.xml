@@ -40,4 +40,21 @@
          <url>https://opensource.org/licenses/MIT</url>
       </license>
    </licenses>
+
+   <build>
+      <pluginManagement>
+         <plugins>
+            <plugin>
+               <groupId>org.codehaus.mojo</groupId>
+               <artifactId>license-maven-plugin</artifactId>
+               <version>1.16</version>
+               <configuration>
+                  <extraExtensions>
+                     <rs>java</rs>
+                  </extraExtensions>
+               </configuration>
+            </plugin>
+         </plugins>
+      </pluginManagement>
+   </build>
 </project>
