@@ -1,0 +1,43 @@
+<project>
+   <modelVersion>4.0.0</modelVersion>
+   <name>PREvant</name>
+
+   <groupId>com.aixigo.preview.servant</groupId>
+   <artifactId>parent</artifactId>
+   <version>0.9-SNAPSHOT</version>
+   <packaging>pom</packaging>
+
+   <modules>
+      <module>api</module>
+   </modules>
+
+   <properties>
+      <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+      <license.licenseName>mit</license.licenseName>
+      <license.processStartTag>========================LICENSE_START=================================</license.processStartTag>
+      <license.processEndTag>=========================LICENSE_END==================================</license.processEndTag>
+   </properties>
+
+   <developers>
+      <developer>
+         <id>schrieveslaach</id>
+         <name>Marc Schreiber</name>
+         <email>marc.schreiber@aixigo.de</email>
+      </developer>
+   </developers>
+
+   <inceptionYear>2018</inceptionYear>
+
+   <organization>
+      <name>aixigo AG</name>
+      <url>https://www.aixigo.de/</url>
+   </organization>
+
+   <licenses>
+      <license>
+         <name>MIT License</name>
+         <url>https://opensource.org/licenses/MIT</url>
+      </license>
+   </licenses>
+</project>

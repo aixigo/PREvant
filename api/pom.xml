@@ -1,0 +1,15 @@
+<project>
+   <modelVersion>4.0.0</modelVersion>
+   <name>PREvant</name>
+
+   <parent>
+      <groupId>com.aixigo.preview.servant</groupId>
+      <artifactId>parent</artifactId>
+      <version>0.9-SNAPSHOT</version>
+      <relativePath>../pom.xml</relativePath>
+   </parent>
+
+   <artifactId>api</artifactId>
+
+
+</project>
