@@ -10,10 +10,10 @@
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 use std::collections::HashMap;
-use std::convert::From;
+use std::convert::{From, TryFrom};
 use std::sync::mpsc;
 
 use models::service::{ContainerType, Service, ServiceConfig, ServiceError};
@@ -34,6 +34,10 @@ use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
 use shiplift::rep::Container;
 use shiplift::{ContainerFilter, ContainerListOptions, Docker, ExecContainerOptions, PullOptions};
+
+static APP_NAME_LABEL: &str = "preview.servant.app-name";
+static SERVICE_NAME_LABEL: &str = "preview.servant.service-name";
+static CONTAINER_TYPE_LABEL: &str = "preview.servant.container-type";
 
 pub struct AppsService {}
 
@@ -68,15 +72,15 @@ impl AppsService {
         let docker = Docker::new();
         let containers = docker.containers();
 
-        let f = ContainerFilter::LabelName(String::from("review-app-name"));
+        let f = ContainerFilter::LabelName(String::from(APP_NAME_LABEL));
         for c in containers.list(&ContainerListOptions::builder().filter(vec![f]).build())? {
-            let app_name = c.labels.get("review-app-name").unwrap().to_string();
+            let app_name = c.labels.get(APP_NAME_LABEL).unwrap().to_string();
 
             if !app_name_filter(&app_name) {
                 continue;
             }
 
-            match Service::from(&c) {
+            match Service::try_from(c) {
                 Ok(service) => apps.insert(app_name, service),
                 Err(e) => debug!("Container does not provide required data: {:?}", e),
             }
@@ -85,7 +89,7 @@ impl AppsService {
         let master_containers = self.get_app_containers(&"master".to_owned())?;
         let master_services = master_containers
             .iter()
-            .map(|c| (c.labels.get("service-name").unwrap().to_string(), c))
+            .map(|c| (c.labels.get(SERVICE_NAME_LABEL).unwrap().to_string(), c))
             .collect::<HashMap<String, &Container>>();
 
         let app_service_names = apps
@@ -109,7 +113,7 @@ impl AppsService {
                 .filter(|s| !service_names.contains(s.0))
                 .map(|lc| lc.1)
             {
-                let mut linked_service = Service::from(linked_container)?;
+                let mut linked_service = Service::try_from(linked_container.to_owned().to_owned())?;
                 linked_service.set_app_name(&app_name);
                 linked_service.set_container_type(ContainerType::Linked);
                 apps.insert(app_name.to_owned(), linked_service);
@@ -235,11 +239,8 @@ impl AppsService {
         let images = docker.images();
 
         if let None = config.image_id {
-            let image = config.get_image(app_name)?;
-            let tag = match config.get_image_tag() {
-                None => app_name.clone(),
-                Some(tag) => tag.to_string(),
-            };
+            let image = config.get_image()?;
+            let tag = config.get_image_tag();
 
             info!(
                 "Pulling {:?} for {:?} of app {:?}",
@@ -276,7 +277,7 @@ impl AppsService {
         }
 
         let container_type_name = config.container_type.to_string();
-        let image = config.get_image(app_name)?;
+        let image = config.get_image()?;
 
         info!(
             "Creating new review app container for {:?}: service={:?} with image={:?} ({:?})",
@@ -295,10 +296,17 @@ impl AppsService {
             options.volumes(volumes.iter().map(|v| v.as_str()).collect());
         }
 
+        let traefik_frontend = format!(
+            "ReplacePathRegex: ^/{p1}/{p2}(.*) /$1;PathPrefix:/{p1}/{p2};",
+            p1 = app_name,
+            p2 = config.get_service_name()
+        );
         let mut labels: HashMap<&str, &str> = HashMap::new();
-        labels.insert("review-app-name", app_name);
-        labels.insert("service-name", &config.get_service_name());
-        labels.insert("container-type", &container_type_name);
+        labels.insert(APP_NAME_LABEL, app_name);
+        labels.insert(SERVICE_NAME_LABEL, &config.get_service_name());
+        labels.insert(CONTAINER_TYPE_LABEL, &container_type_name);
+        labels.insert("traefik.frontend.rule", &traefik_frontend);
+
         options.labels(&labels);
         options.restart_policy("always", 5);
 
@@ -318,7 +326,7 @@ impl AppsService {
         debug!("Started container: {:?}", container_info);
 
         let mut service =
-            Service::from(&self.get_app_container_by_id(&container_info.id).unwrap())?;
+            Service::try_from(self.get_app_container_by_id(&container_info.id).unwrap())?;
         service.set_container_type(config.container_type.clone());
 
         if let Some(image) = image_to_delete {
@@ -352,13 +360,13 @@ impl AppsService {
             .get_app_containers(&"master".to_owned())?
             .iter()
             .filter(|c| {
-                let service_name = &c.labels.get("service-name").unwrap();
+                let service_name = &c.labels.get(SERVICE_NAME_LABEL).unwrap();
                 service_configs
                     .iter()
                     .map(|c| c.get_service_name())
                     .find(|s| s == service_name)
                     .map_or_else(|| true, |_| false)
-            }).filter(|c| !running_services.contains(&c.labels.get("service-name").unwrap()))
+            }).filter(|c| !running_services.contains(&c.labels.get(SERVICE_NAME_LABEL).unwrap()))
             .map(|c| c.clone())
             .collect();
 
@@ -382,10 +390,14 @@ impl AppsService {
                 ),
             };
 
-            let service_name = container_info.labels.get("service-name").unwrap().clone();
+            let service_name = container_info
+                .labels
+                .get(SERVICE_NAME_LABEL)
+                .unwrap()
+                .clone();
 
             configs.push(ContainerConfiguration {
-                config: ServiceConfig::new(&service_name, &"".to_owned(), env),
+                config: ServiceConfig::new(&service_name, None, env),
                 container_type: ContainerType::Replica,
                 image_id: Some(details.image.clone()),
             });
@@ -409,7 +421,7 @@ impl AppsService {
             {
                 let details = containers.get(&remote_container_info.id).inspect()?;
 
-                match remote_container_info.labels.get("service-name") {
+                match remote_container_info.labels.get(SERVICE_NAME_LABEL) {
                     None => error!(
                         "Cannot get service-name label of container {:?}",
                         remote_container_info.id
@@ -445,10 +457,10 @@ impl AppsService {
             .list(&list_options)
             .unwrap()
             .iter()
-            .filter(|c| match c.labels.get("review-app-name") {
+            .filter(|c| match c.labels.get(APP_NAME_LABEL) {
                 None => false,
                 Some(app) => app == app_name,
-            }).filter(|c| match c.labels.get("service-name") {
+            }).filter(|c| match c.labels.get(SERVICE_NAME_LABEL) {
                 None => false,
                 Some(service) => service == service_name,
             }).map(|c| c.to_owned())
@@ -471,7 +483,7 @@ impl AppsService {
     }
 
     fn get_app_containers(&self, app_name: &String) -> Result<Vec<Container>, AppsServiceError> {
-        let f1 = ContainerFilter::Label("review-app-name".to_owned(), app_name.clone());
+        let f1 = ContainerFilter::Label(APP_NAME_LABEL.to_owned(), app_name.clone());
 
         let docker = Docker::new();
         let containers = docker.containers();
@@ -503,14 +515,14 @@ struct ContainerConfiguration {
 }
 
 impl ContainerConfiguration {
-    fn get_image(&self, app_name: &String) -> Result<String, AppsServiceError> {
+    fn get_image(&self) -> Result<String, AppsServiceError> {
         match &self.image_id {
-            None => Ok(self.config.get_docker_image(app_name)?),
+            None => Ok(self.config.get_docker_image()?),
             Some(id) => Ok(id.clone()),
         }
     }
 
-    fn get_image_tag(&self) -> Option<String> {
+    fn get_image_tag(&self) -> String {
         self.config.get_image_tag()
     }
 
@@ -561,5 +573,33 @@ impl From<ShipLiftError> for AppsServiceError {
 impl From<std::sync::mpsc::RecvError> for AppsServiceError {
     fn from(err: std::sync::mpsc::RecvError) -> Self {
         AppsServiceError::ThreadingError(err)
+    }
+}
+
+impl TryFrom<Container> for Service {
+    type Error = ServiceError;
+
+    fn try_from(c: Container) -> Result<Service, ServiceError> {
+        let service_name = match c.labels.get(SERVICE_NAME_LABEL) {
+            Some(name) => name,
+            None => return Err(ServiceError::MissingServiceNameLabel),
+        };
+
+        let app_name = match c.labels.get(APP_NAME_LABEL) {
+            Some(name) => name,
+            None => return Err(ServiceError::MissingReviewAppNameLabel),
+        };
+
+        let container_type = match c.labels.get(CONTAINER_TYPE_LABEL) {
+            None => ContainerType::Instance,
+            Some(lb) => lb.parse::<ContainerType>()?,
+        };
+
+        Ok(Service::new(
+            app_name.clone(),
+            service_name.clone(),
+            c.id.clone(),
+            container_type,
+        ))
     }
 }

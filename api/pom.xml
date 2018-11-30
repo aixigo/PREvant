@@ -1,6 +1,5 @@
 <project>
    <modelVersion>4.0.0</modelVersion>
-   <name>PREvant</name>
 
    <parent>
       <groupId>com.aixigo.preview.servant</groupId>
@@ -10,6 +9,15 @@
    </parent>
 
    <artifactId>api</artifactId>
+   <name>PREvant REST API</name>
 
+   <build>
+      <plugins>
+         <plugin>
+            <groupId>io.fabric8</groupId>
+            <artifactId>docker-maven-plugin</artifactId>
+         </plugin>
+      </plugins>
+   </build>
 
 </project>

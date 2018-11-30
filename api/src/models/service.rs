@@ -10,10 +10,10 @@
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -28,7 +28,6 @@ use std::str::FromStr;
 
 use regex::Regex;
 use serde::ser::{Serialize, Serializer};
-use shiplift::rep::Container;
 use url::Url;
 
 #[derive(Clone)]
@@ -44,7 +43,7 @@ pub struct Service {
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
     service_name: String,
-    registry: String,
+    registry: Option<String>,
     image_user: Option<String>,
     image_repository: Option<String>,
     image_tag: Option<String>,
@@ -55,12 +54,15 @@ pub struct ServiceConfig {
 impl ServiceConfig {
     pub fn new(
         service_name: &String,
-        registry: &String,
+        registry: Option<&String>,
         env: Option<Vec<String>>,
     ) -> ServiceConfig {
         ServiceConfig {
             service_name: service_name.clone(),
-            registry: registry.clone(),
+            registry: match registry {
+                Some(registry) => Some(registry.clone()),
+                None => None,
+            },
             image_user: None,
             image_repository: None,
             image_tag: None,
@@ -90,25 +92,28 @@ impl ServiceConfig {
         Ok(String::from(caps.get(2).unwrap().as_str()) + "/" + caps.get(0).unwrap().as_str())
     }
 
-    pub fn get_docker_image(&self, app_name: &String) -> Result<String, ServiceError> {
-        let image_name = self.registry.to_owned() + "/" + &self.get_docker_image_base()?;
-
-        let image_with_tag = match &self.image_tag {
-            None => image_name + ":" + app_name,
-            Some(tag) => image_name + ":" + &tag,
+    pub fn get_docker_image(&self) -> Result<String, ServiceError> {
+        let registry = match &self.registry {
+            None => "docker.io".to_owned(),
+            Some(registry) => registry.clone(),
         };
 
-        Ok(image_with_tag)
+        Ok(format!(
+            "{}/{}:{}",
+            registry,
+            self.get_docker_image_base()?,
+            self.get_image_tag()
+        ))
     }
 
     pub fn get_service_name(&self) -> &String {
         &self.service_name
     }
 
-    pub fn get_image_tag(&self) -> Option<String> {
+    pub fn get_image_tag(&self) -> String {
         match &self.image_tag {
-            None => None,
-            Some(tag) => Some(tag.clone()),
+            None => "latest".to_owned(),
+            Some(tag) => tag.clone(),
         }
     }
 
@@ -128,29 +133,19 @@ impl ServiceConfig {
 }
 
 impl Service {
-    pub fn from(c: &Container) -> Result<Service, ServiceError> {
-        let service_name = match c.labels.get("service-name") {
-            Some(name) => name,
-            None => return Err(ServiceError::MissingServiceNameLabel),
-        };
-
-        let app_name = match c.labels.get("review-app-name") {
-            Some(name) => name,
-            None => return Err(ServiceError::MissingReviewAppNameLabel),
-        };
-
-        let container_type = match c.labels.get("container-type") {
-            None => ContainerType::Instance,
-            Some(lb) => lb.parse::<ContainerType>()?,
-        };
-
-        Ok(Service {
-            app_name: app_name.clone(),
-            service_name: service_name.clone(),
-            container_id: c.id.clone(),
+    pub fn new(
+        app_name: String,
+        service_name: String,
+        container_id: String,
+        container_type: ContainerType,
+    ) -> Service {
+        Service {
+            app_name,
+            service_name,
+            container_id,
             container_type,
             base_url: None,
-        })
+        }
     }
 
     pub fn set_app_name(&mut self, app_name: &String) {

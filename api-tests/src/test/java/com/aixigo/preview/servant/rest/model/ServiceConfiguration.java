@@ -1,6 +1,8 @@
+package com.aixigo.preview.servant.rest.model;
+
 /*-
  * ========================LICENSE_START=================================
- * PREvant
+ * PREvant REST API Integration Tests
  * %%
  * Copyright (C) 2018 aixigo AG
  * %%
@@ -23,35 +25,21 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use rocket::http::Status;
-use rocket::request::{self, FromRequest, Request};
-use rocket::Outcome;
-use url::Url;
 
-pub struct RequestInfo {
-    base_url: Url,
-}
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NonNull;
 
-impl RequestInfo {
-    pub fn get_base_url(&self) -> &Url {
-        &self.base_url
-    }
-}
+@AllArgsConstructor
+@Data
+public class ServiceConfiguration {
 
-impl<'a, 'r> FromRequest<'a, 'r> for RequestInfo {
-    type Error = ();
+    @NonNull
+    private final String serviceName;
 
-    fn from_request(request: &'a Request<'r>) -> request::Outcome<RequestInfo, ()> {
-        let hosts: Vec<_> = request.headers().get("host").collect();
+    @NonNull
+    private final String imageUser;
 
-        if hosts.len() != 1 {
-            return Outcome::Failure((Status::BadRequest, ()));
-        }
-
-        let url_string = "http://".to_owned() + &hosts[0];
-        match Url::parse(&url_string) {
-            Ok(url) => return Outcome::Success(RequestInfo { base_url: url }),
-            Err(_) => return Outcome::Failure((Status::BadRequest, ())),
-        }
-    }
+    @NonNull
+    private final String imageRepository;
 }
