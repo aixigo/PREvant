@@ -1,0 +1,55 @@
+.card {
+   h4 {
+      margin-bottom: 0;
+   }
+
+   h5 {
+      font-size: 1rem;
+
+      margin-bottom: .5rem;
+   }
+
+   .badge {
+      width: auto;
+
+      text-transform: uppercase;
+
+      flex-grow: 0;
+      flex-shrink: 0;
+   }
+
+   .badge-info {
+      background-color: $pale-sky;
+   }
+
+   .card-header {
+      padding: 1rem;
+
+      color: white;
+      background-color: $pale-sky;
+
+      a {
+         color: currentColor;
+      }
+
+      .badge {
+         font-size: .75rem;
+
+         min-width: 5em;
+         height: 1.5rem;
+         margin-left: .5rem;
+      }
+   }
+
+   .card-body {
+      padding: .5rem 1rem;
+
+      color: $pale-sky;
+   }
+
+   .material-icons {
+      font-size: 1.5rem;
+
+      opacity: .5;
+   }
+}

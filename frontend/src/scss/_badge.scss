@@ -1,0 +1,35 @@
+.badge {
+   font-size: .65rem;
+   font-weight: 400;
+
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+
+   height: 1rem;
+   padding: 0 .5em;
+}
+
+.jira--new {
+   background-color: $jira-new;
+}
+
+.jira--concept {
+   background-color: $jira-concept;
+}
+
+.jira--ready {
+   background-color: $jira-ready;
+}
+
+.jira--process {
+   background-color: $jira-process;
+}
+
+.jira--review {
+   background-color: $jira-review;
+}
+
+.jira--done {
+   background-color: $jira-done;
+}

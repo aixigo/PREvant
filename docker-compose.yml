@@ -1,0 +1,29 @@
+version: "3"
+
+services:
+  api:
+    image: aixigo/prevant-api
+    network_mode: "bridge"
+    userns_mode: "host"
+    labels:
+      traefik.frontend.rule: 'ReplacePathRegex: ^/api(.*) /$$1;PathPrefix:/api;'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  frontend:
+    image: aixigo/prevant-frontend
+    network_mode: "bridge"
+    labels:
+      traefik.frontend.rule: 'PathPrefix:/;'
+      traefik.frontend.priority: -100
+
+  traefik:
+    image: traefik
+    command: --api --docker
+    network_mode: "bridge"
+    userns_mode: "host"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

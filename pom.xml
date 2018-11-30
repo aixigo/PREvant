@@ -11,6 +11,7 @@
    <modules>
       <module>api</module>
       <module>api-tests</module>
+      <module>frontend</module>
    </modules>
 
    <properties>
