@@ -19,8 +19,8 @@ shiplift = { git = "https://github.com/softprops/shiplift", rev = "29bd95b42cd2b
 tokio = "0.1"
 toml = "0.4"
 regex = "1.0"
-rocket = "0.4.0-rc.1"
-rocket_codegen = "0.4.0-rc.1"
-rocket_contrib = "0.4.0-rc.1"
+rocket = "0.4.0-rc.2"
+rocket_codegen = "0.4.0-rc.2"
+rocket_contrib = "0.4.0-rc.2"
 url = "1.7"
 

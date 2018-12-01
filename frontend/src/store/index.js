@@ -45,10 +45,17 @@ export default new Vuex.Store( {
                .sort( byAppNameDesc )
          ];
 
-         return apps.filter( app => !state.appNameFilter || app.name.toLocaleLowerCase().indexOf( state.appNameFilter ) >= 0 );
+         return apps
+             .filter( app => app.name != null )
+             .filter( app => !state.appNameFilter || app.name.toLocaleLowerCase().indexOf( state.appNameFilter ) >= 0 );
 
          function appDetails( name ) {
             const appContainers = state.apps[ name ];
+
+            if (appContainers == null) {
+               return {};
+            }
+
             const ticket = state.tickets[ name ];
 
             const containers = [

@@ -11,7 +11,7 @@
          </ul>
          <form class="form-inline my-2 my-lg-0">
 
-            <input class="form-control mr-sm-2" type="search" placeholder="Search Review Apps" aria-label="Search"
+            <input class="form-control mr-sm-2" type="search" placeholder="Search Apps" aria-label="Search"
                    ref="searchApps"
                    @keyup="fireSearchEvent">
 
