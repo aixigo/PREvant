@@ -33,7 +33,7 @@ use services::config_service::Config;
 use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
 use shiplift::rep::Container;
-use shiplift::{ContainerFilter, ContainerListOptions, Docker, ExecContainerOptions, PullOptions};
+use shiplift::{ContainerConnectionOptions, ContainerFilter, ContainerListOptions, Docker, NetworkCreateOptions, PullOptions};
 
 static APP_NAME_LABEL: &str = "preview.servant.app-name";
 static SERVICE_NAME_LABEL: &str = "preview.servant.service-name";
@@ -139,10 +139,46 @@ impl AppsService {
         }
 
         let services = self.start_containers(app_name, configs.iter())?;
-
-        self.update_host_entries(app_name)?;
+        self.connect_containers_to_network(app_name)?;
 
         Ok(services)
+    }
+
+    fn create_or_get_network_id(&self, app_name: &String) -> Result<String, AppsServiceError> {
+        let network_name = format!("{}-net", app_name);
+
+        let docker = Docker::new();
+        if let Some(n) = docker.networks()
+            .list(&Default::default())?
+            .iter()
+            .find(|n| &n.name == &network_name) {
+            return Ok(n.id.clone());
+        }
+
+        debug!("Creating network for app {}.", app_name);
+
+        let network_create_info = docker.networks()
+            .create(&NetworkCreateOptions::builder(network_name.as_ref()).build())?;
+
+        debug!("Created network for app {} with id {}", app_name, network_create_info.id);
+
+        Ok(network_create_info.id)
+    }
+
+    fn connect_containers_to_network(&self, app_name: &String) -> Result<(), AppsServiceError> {
+        let network_id = self.create_or_get_network_id(app_name)?;
+
+        let docker = Docker::new();
+        for service in self.get_services_vec(app_name)? {
+            docker.networks()
+                .get(&network_id)
+                .connect(&ContainerConnectionOptions::builder(service.get_container_id())
+                    .aliases(vec![&service.get_service_name()])
+                    .build()
+                )?;
+        }
+
+        Ok(())
     }
 
     /// Deletes all services for the given `app_name` (review app name)
@@ -170,7 +206,23 @@ impl AppsService {
             }
         }
 
+        self.delete_network(app_name)?;
+
         Ok(services.to_vec())
+    }
+
+    fn delete_network(&self, app_name: &String) -> Result<(), AppsServiceError> {
+        let network_name = format!("{}-net", app_name);
+
+        let docker = Docker::new();
+        for n in docker.networks()
+            .list(&Default::default())?
+            .iter()
+            .filter(|n| &n.name == &network_name) {
+            docker.networks().get(&n.id).delete()?;
+        }
+
+        Ok(())
     }
 
     fn delete_container(
@@ -239,24 +291,7 @@ impl AppsService {
         let images = docker.images();
 
         if let None = config.image_id {
-            let image = config.get_image()?;
-            let tag = config.get_image_tag();
-
-            info!(
-                "Pulling {:?} for {:?} of app {:?}",
-                image,
-                config.config.get_service_name(),
-                app_name
-            );
-
-            let pull_options = PullOptions::builder()
-                .image(image.clone())
-                .tag(tag.clone())
-                .build();
-
-            for o in images.pull(&pull_options) {
-                debug!("{:?}", o);
-            }
+            self.pull_image(app_name, config)?;
         }
 
         let mut image_to_delete = None;
@@ -342,6 +377,31 @@ impl AppsService {
         Ok(service)
     }
 
+    fn pull_image(&self, app_name: &String, config: &ContainerConfiguration) -> Result<(), AppsServiceError> {
+        let image = config.get_image()?;
+        let tag = config.get_image_tag();
+
+        info!(
+            "Pulling {:?} for {:?} of app {:?}",
+            image,
+            config.config.get_service_name(),
+            app_name
+        );
+
+        let pull_options = PullOptions::builder()
+            .image(image.clone())
+            .tag(tag.clone())
+            .build();
+
+        let docker = Docker::new();
+        let images = docker.images();
+        for o in images.pull(&pull_options) {
+            debug!("{:?}", o);
+        }
+
+        Ok(())
+    }
+
     fn get_replicated_configs_of_master_app(
         &self,
         app_name: &String,
@@ -404,47 +464,6 @@ impl AppsService {
         }
 
         Ok(configs)
-    }
-
-    /// Iterates over all created containers and creates entries in `/etc/hosts` to refer to the
-    /// other containers of the `app_name`.
-    fn update_host_entries(&self, app_name: &String) -> Result<(), AppsServiceError> {
-        info!("Linking containers to each other for {:?}", app_name);
-
-        let docker = Docker::new();
-        let containers = docker.containers();
-
-        let app_containers = self.get_app_containers(app_name)?;
-
-        for container_info in &app_containers {
-            for remote_container_info in app_containers.iter().filter(|c| c.id != container_info.id)
-            {
-                let details = containers.get(&remote_container_info.id).inspect()?;
-
-                match remote_container_info.labels.get(SERVICE_NAME_LABEL) {
-                    None => error!(
-                        "Cannot get service-name label of container {:?}",
-                        remote_container_info.id
-                    ),
-                    Some(service_name) => {
-                        let cmd = "echo \"".to_owned()
-                            + &details.network_settings.ip_address
-                            + "\t"
-                            + service_name
-                            + "\" >> /etc/hosts";
-                        let options = ExecContainerOptions::builder()
-                            .cmd(vec!["sh", "-c", &cmd])
-                            .attach_stdout(true)
-                            .attach_stderr(true)
-                            .build();
-
-                        containers.get(&container_info.id).exec(&options)?;
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 
     fn get_app_container(&self, app_name: &String, service_name: &String) -> Option<Container> {

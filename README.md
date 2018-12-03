@@ -12,5 +12,22 @@ Through PREvant's web interface domain experts, managers, developers, and sales 
 
 # Disclaimer :warning:
 
-This project is currently being made available as open source. Not all features are already available yet.
+This project is currently being made available as open source. Not all features are available yet.
+
+# Usage
+
+In order to use the project you have to build the docker images (they will be released in the docker hub in the future).
+
+```bash
+mvn package -f api
+mvn package -f frontend
+```
+
+When you have build the images, you can start the docker containers with the provided docker-compose file.
+
+```
+docker-compose up -d
+```
+
+Now, PREvant is running at [`http://localhost`](http://localhost).
 

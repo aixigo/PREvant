@@ -177,6 +177,10 @@ impl Service {
         &self.service_name
     }
 
+    pub fn get_container_id(&self) -> &String {
+        &self.container_id
+    }
+
     pub fn get_container_type(&self) -> &ContainerType {
         &self.container_type
     }

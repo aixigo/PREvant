@@ -34,7 +34,7 @@ dependencies = [
  "serde_derive 1.0.80 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 1.0.33 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_yaml 0.7.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "shiplift 0.3.2 (git+https://github.com/softprops/shiplift?rev=29bd95b42cd2b3c364f0be1f3e07e4b654e0ccf3)",
+ "shiplift 0.3.2 (git+https://github.com/schrieveslaach/shiplift?rev=4669fb03575c1c511411f055cd8823c1ffb26da0)",
  "tokio 0.1.13 (registry+https://github.com/rust-lang/crates.io-index)",
  "toml 0.4.9 (registry+https://github.com/rust-lang/crates.io-index)",
  "url 1.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1323,7 +1323,7 @@ dependencies = [
 [[package]]
 name = "shiplift"
 version = "0.3.2"
-source = "git+https://github.com/softprops/shiplift?rev=29bd95b42cd2b3c364f0be1f3e07e4b654e0ccf3#29bd95b42cd2b3c364f0be1f3e07e4b654e0ccf3"
+source = "git+https://github.com/schrieveslaach/shiplift?rev=4669fb03575c1c511411f055cd8823c1ffb26da0#4669fb03575c1c511411f055cd8823c1ffb26da0"
 dependencies = [
  "byteorder 1.2.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "flate2 1.0.5 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -2006,7 +2006,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum serde_json 1.0.33 (registry+https://github.com/rust-lang/crates.io-index)" = "c37ccd6be3ed1fdf419ee848f7c758eb31b054d7cd3ae3600e3bae0adf569811"
 "checksum serde_urlencoded 0.5.4 (registry+https://github.com/rust-lang/crates.io-index)" = "d48f9f99cd749a2de71d29da5f948de7f2764cc5a9d7f3c97e3514d4ee6eabf2"
 "checksum serde_yaml 0.7.5 (registry+https://github.com/rust-lang/crates.io-index)" = "ef8099d3df28273c99a1728190c7a9f19d444c941044f64adf986bee7ec53051"
-"checksum shiplift 0.3.2 (git+https://github.com/softprops/shiplift?rev=29bd95b42cd2b3c364f0be1f3e07e4b654e0ccf3)" = "<none>"
+"checksum shiplift 0.3.2 (git+https://github.com/schrieveslaach/shiplift?rev=4669fb03575c1c511411f055cd8823c1ffb26da0)" = "<none>"
 "checksum slab 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)" = "17b4fcaed89ab08ef143da37bc52adbcc04d4a69014f4c1208d6b51f0c47bc23"
 "checksum slab 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)" = "5f9776d6b986f77b35c6cf846c11ad986ff128fe0b2b63a3628e3755e8d3102d"
 "checksum smallvec 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "4c8cbcd6df1e117c2210e13ab5109635ad68a929fcbb8964dc965b76cb5ee013"

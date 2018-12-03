@@ -15,7 +15,7 @@ serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
 serde_yaml = "0.7"
-shiplift = { git = "https://github.com/softprops/shiplift", rev = "29bd95b42cd2b3c364f0be1f3e07e4b654e0ccf3" }
+shiplift = { git = "https://github.com/schrieveslaach/shiplift", rev = "4669fb03575c1c511411f055cd8823c1ffb26da0" }
 tokio = "0.1"
 toml = "0.4"
 regex = "1.0"
