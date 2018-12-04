@@ -26,11 +26,14 @@ package com.aixigo.preview.servant.rest.model;
  * =========================LICENSE_END==================================
  */
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
 
-@AllArgsConstructor
+import java.util.ArrayList;
+import java.util.List;
+
+@RequiredArgsConstructor
 @Data
 public class ServiceConfiguration {
 
@@ -42,4 +45,11 @@ public class ServiceConfiguration {
 
     @NonNull
     private final String imageRepository;
+
+    private List<String> volumes = new ArrayList<>();
+
+    public ServiceConfiguration addVolume(String volume) {
+        volumes.add(volume);
+        return this;
+    }
 }
