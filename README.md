@@ -31,3 +31,6 @@ docker-compose up -d
 
 Now, PREvant is running at [`http://localhost`](http://localhost).
 
+# Further Readings
+
+- [All about API image](api/README.md)

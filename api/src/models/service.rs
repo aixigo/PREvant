@@ -26,7 +26,6 @@
 use std::fmt::{self, Debug, Formatter};
 use std::str::FromStr;
 
-use regex::Regex;
 use serde::ser::{Serialize, Serializer};
 use url::Url;
 
@@ -43,9 +42,9 @@ pub struct Service {
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
     service_name: String,
+    image_repository: String,
     registry: Option<String>,
     image_user: Option<String>,
-    image_repository: Option<String>,
     image_tag: Option<String>,
     env: Option<Vec<String>>,
     volumes: Option<Vec<String>>,
@@ -54,56 +53,53 @@ pub struct ServiceConfig {
 impl ServiceConfig {
     pub fn new(
         service_name: &String,
-        registry: Option<&String>,
+        image_repository: &String,
         env: Option<Vec<String>>,
     ) -> ServiceConfig {
         ServiceConfig {
             service_name: service_name.clone(),
-            registry: match registry {
-                Some(registry) => Some(registry.clone()),
-                None => None,
-            },
+            image_repository: image_repository.clone(),
+            registry: None,
             image_user: None,
-            image_repository: None,
             image_tag: None,
             env,
             volumes: None,
         }
     }
 
-    fn get_docker_image_base(&self) -> Result<String, ServiceError> {
-        let mut service_name = &self.service_name;
-
-        if let Some(ref image_repository) = self.image_repository {
-            if let Some(ref image_user) = self.image_user {
-                return Ok(image_user.to_owned() + "/" + image_repository);
-            }
-
-            service_name = image_repository;
-        }
-
-        let re: Regex = Regex::new(r"^((\w+)-.+)$").unwrap();
-
-        let caps = match re.captures(service_name) {
-            Some(c) => c,
-            None => return Err(ServiceError::InvalidServiceName(self.service_name.clone())),
-        };
-
-        Ok(String::from(caps.get(2).unwrap().as_str()) + "/" + caps.get(0).unwrap().as_str())
+    pub fn set_registry(&mut self, registry: &Option<String>) {
+        self.registry = registry.clone()
     }
 
-    pub fn get_docker_image(&self) -> Result<String, ServiceError> {
+    pub fn set_image_user(&mut self, image_user: &Option<String>) {
+        self.image_user = image_user.clone()
+    }
+
+    pub fn set_image_tag(&mut self, image_tag: &Option<String>) {
+        self.image_tag = image_tag.clone()
+    }
+
+    fn get_docker_image_base(&self) -> String {
+        let image_user = match &self.image_user {
+            Some(user) => user.clone(),
+            None => String::from("library"),
+        };
+
+        format!("{}/{}", image_user, self.image_repository)
+    }
+
+    pub fn get_docker_image(&self) -> String {
         let registry = match &self.registry {
-            None => "docker.io".to_owned(),
+            None => String::from("docker.io"),
             Some(registry) => registry.clone(),
         };
 
-        Ok(format!(
+        format!(
             "{}/{}:{}",
             registry,
-            self.get_docker_image_base()?,
+            self.get_docker_image_base(),
             self.get_image_tag()
-        ))
+        )
     }
 
     pub fn get_service_name(&self) -> &String {

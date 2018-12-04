@@ -29,11 +29,7 @@ use commands::delete_app_command::{DeleteAppCommand, DeleteAppError};
 use models::service::Service;
 use models::web_hook_info::WebHookInfo;
 
-#[post(
-    "/webhooks",
-    format = "application/json",
-    data = "<web_hook_info>"
-)]
+#[post("/webhooks", format = "application/json", data = "<web_hook_info>")]
 pub fn webhooks(
     web_hook_info: WebHookInfo,
     delete_app_command: DeleteAppCommand,

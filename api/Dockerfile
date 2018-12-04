@@ -16,7 +16,7 @@ RUN set -eux ; \
 
 WORKDIR /app
 COPY --from=builder /usr/local/cargo/bin/api .
-COPY res/Rocket.toml /app/Rocket.toml
+COPY res/Rocket.toml res/config.toml /app/
 EXPOSE 80
 ENV ROCKET_ENV=staging
 CMD ["./api"]

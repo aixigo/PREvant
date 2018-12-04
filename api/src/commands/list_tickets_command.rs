@@ -83,9 +83,11 @@ impl ListTicketsCommand {
                     .search()
                     .iter(format!("issuekey in ({})", issue_keys), &options)
                 {
-                    Ok(issues) => for issue in issues {
-                        tickets.insert(issue.key.clone(), TicketInfo::from(issue));
-                    },
+                    Ok(issues) => {
+                        for issue in issues {
+                            tickets.insert(issue.key.clone(), TicketInfo::from(issue));
+                        }
+                    }
                     Err(err) => match err {
                         GojiError::Fault { code, errors } => {
                             debug!("No issue for {}: {:?} {:?}", issue_keys, code, errors)

@@ -33,7 +33,10 @@ use services::config_service::Config;
 use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
 use shiplift::rep::Container;
-use shiplift::{ContainerConnectionOptions, ContainerFilter, ContainerListOptions, Docker, NetworkCreateOptions, PullOptions};
+use shiplift::{
+    ContainerConnectionOptions, ContainerFilter, ContainerListOptions, Docker,
+    NetworkCreateOptions, PullOptions,
+};
 
 static APP_NAME_LABEL: &str = "preview.servant.app-name";
 static SERVICE_NAME_LABEL: &str = "preview.servant.service-name";
@@ -103,7 +106,8 @@ impl AppsService {
                         .map(|s: &Service| s.get_service_name().clone())
                         .collect::<Vec<String>>(),
                 )
-            }).collect::<Vec<(String, Vec<String>)>>();
+            })
+            .collect::<Vec<(String, Vec<String>)>>();
 
         for app_service in app_service_names {
             let (app_name, service_names) = app_service;
@@ -148,19 +152,25 @@ impl AppsService {
         let network_name = format!("{}-net", app_name);
 
         let docker = Docker::new();
-        if let Some(n) = docker.networks()
+        if let Some(n) = docker
+            .networks()
             .list(&Default::default())?
             .iter()
-            .find(|n| &n.name == &network_name) {
+            .find(|n| &n.name == &network_name)
+        {
             return Ok(n.id.clone());
         }
 
         debug!("Creating network for app {}.", app_name);
 
-        let network_create_info = docker.networks()
+        let network_create_info = docker
+            .networks()
             .create(&NetworkCreateOptions::builder(network_name.as_ref()).build())?;
 
-        debug!("Created network for app {} with id {}", app_name, network_create_info.id);
+        debug!(
+            "Created network for app {} with id {}",
+            app_name, network_create_info.id
+        );
 
         Ok(network_create_info.id)
     }
@@ -170,12 +180,11 @@ impl AppsService {
 
         let docker = Docker::new();
         for service in self.get_services_vec(app_name)? {
-            docker.networks()
-                .get(&network_id)
-                .connect(&ContainerConnectionOptions::builder(service.get_container_id())
+            docker.networks().get(&network_id).connect(
+                &ContainerConnectionOptions::builder(service.get_container_id())
                     .aliases(vec![&service.get_service_name()])
-                    .build()
-                )?;
+                    .build(),
+            )?;
         }
 
         Ok(())
@@ -215,10 +224,12 @@ impl AppsService {
         let network_name = format!("{}-net", app_name);
 
         let docker = Docker::new();
-        for n in docker.networks()
+        for n in docker
+            .networks()
             .list(&Default::default())?
             .iter()
-            .filter(|n| &n.name == &network_name) {
+            .filter(|n| &n.name == &network_name)
+        {
             docker.networks().get(&n.id).delete()?;
         }
 
@@ -312,7 +323,7 @@ impl AppsService {
         }
 
         let container_type_name = config.container_type.to_string();
-        let image = config.get_image()?;
+        let image = config.get_image();
 
         info!(
             "Creating new review app container for {:?}: service={:?} with image={:?} ({:?})",
@@ -367,9 +378,11 @@ impl AppsService {
         if let Some(image) = image_to_delete {
             info!("Clean up image {:?} of app {:?}", image, app_name);
             match images.get(&image).delete() {
-                Ok(output) => for o in output {
-                    debug!("{:?}", o);
-                },
+                Ok(output) => {
+                    for o in output {
+                        debug!("{:?}", o);
+                    }
+                }
                 Err(err) => debug!("Could not clean up image: {:?}", err),
             }
         }
@@ -377,8 +390,12 @@ impl AppsService {
         Ok(service)
     }
 
-    fn pull_image(&self, app_name: &String, config: &ContainerConfiguration) -> Result<(), AppsServiceError> {
-        let image = config.get_image()?;
+    fn pull_image(
+        &self,
+        app_name: &String,
+        config: &ContainerConfiguration,
+    ) -> Result<(), AppsServiceError> {
+        let image = config.get_image();
         let tag = config.get_image_tag();
 
         info!(
@@ -413,7 +430,8 @@ impl AppsService {
             .filter(|s| {
                 s.get_container_type() == &ContainerType::Linked
                     || s.get_container_type() == &ContainerType::Instance
-            }).map(|s| s.get_service_name().clone())
+            })
+            .map(|s| s.get_service_name().clone())
             .collect();
 
         let master_containers: Vec<Container> = self
@@ -426,7 +444,8 @@ impl AppsService {
                     .map(|c| c.get_service_name())
                     .find(|s| s == service_name)
                     .map_or_else(|| true, |_| false)
-            }).filter(|c| !running_services.contains(&c.labels.get(SERVICE_NAME_LABEL).unwrap()))
+            })
+            .filter(|c| !running_services.contains(&c.labels.get(SERVICE_NAME_LABEL).unwrap()))
             .map(|c| c.clone())
             .collect();
 
@@ -457,7 +476,7 @@ impl AppsService {
                 .clone();
 
             configs.push(ContainerConfiguration {
-                config: ServiceConfig::new(&service_name, None, env),
+                config: ServiceConfig::new(&service_name, &"".to_string(), env),
                 container_type: ContainerType::Replica,
                 image_id: Some(details.image.clone()),
             });
@@ -479,10 +498,12 @@ impl AppsService {
             .filter(|c| match c.labels.get(APP_NAME_LABEL) {
                 None => false,
                 Some(app) => app == app_name,
-            }).filter(|c| match c.labels.get(SERVICE_NAME_LABEL) {
+            })
+            .filter(|c| match c.labels.get(SERVICE_NAME_LABEL) {
                 None => false,
                 Some(service) => service == service_name,
-            }).map(|c| c.to_owned())
+            })
+            .map(|c| c.to_owned())
             .next()
     }
 
@@ -534,10 +555,10 @@ struct ContainerConfiguration {
 }
 
 impl ContainerConfiguration {
-    fn get_image(&self) -> Result<String, AppsServiceError> {
+    fn get_image(&self) -> String {
         match &self.image_id {
-            None => Ok(self.config.get_docker_image()?),
-            Some(id) => Ok(id.clone()),
+            None => self.config.get_docker_image(),
+            Some(id) => id.clone(),
         }
     }
 

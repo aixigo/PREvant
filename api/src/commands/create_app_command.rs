@@ -148,19 +148,22 @@ impl<'r> Responder<'r> for CreateOrUpdateError {
             CreateOrUpdateError::Internal(err) => Response::build()
                 .sized_body(Cursor::new(
                     json!({ "error": format!("Internal error: {:?}", err) }).to_string(),
-                )).header(ContentType::JSON)
+                ))
+                .header(ContentType::JSON)
                 .status(Status::InternalServerError)
                 .ok(),
             CreateOrUpdateError::ImagePullErr(err) => Response::build()
                 .sized_body(Cursor::new(
                     json!({ "error": format!("Cannot pull image: {:?}", err) }).to_string(),
-                )).header(ContentType::JSON)
+                ))
+                .header(ContentType::JSON)
                 .status(Status::BadRequest)
                 .ok(),
             CreateOrUpdateError::BadServiceConfiguration(err) => Response::build()
                 .sized_body(Cursor::new(
                     json!({ "error": format!("{:?}", err) }).to_string(),
-                )).header(ContentType::JSON)
+                ))
+                .header(ContentType::JSON)
                 .status(Status::BadRequest)
                 .ok(),
         }
