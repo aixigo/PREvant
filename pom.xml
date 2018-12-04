@@ -113,6 +113,8 @@
                <configuration>
                   <extraExtensions>
                      <rs>java</rs>
+                     <scss>java</scss>
+                     <vue>java</vue>
                   </extraExtensions>
                </configuration>
             </plugin>
