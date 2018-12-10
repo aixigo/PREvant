@@ -1,3 +1,4 @@
-# Default configuration
 [containers]
 memory_limit = '1g'
+
+[[companions]]

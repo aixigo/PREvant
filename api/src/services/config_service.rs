@@ -23,17 +23,18 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use std::convert::From;
+use std::convert::{From, TryFrom};
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::Error as IOError;
 
-use models::service::ServiceConfig;
 use multimap::MultiMap;
 use regex::Regex;
 use serde::{de, Deserialize, Deserializer};
 use toml::de::Error as TomlError;
 use toml::from_str;
+
+use models::service::ServiceConfig;
 
 #[derive(Clone, Deserialize)]
 pub struct ContainerConfig {
@@ -77,8 +78,10 @@ impl Config {
         for companions_table in companions_table_array.as_array().unwrap_or(&vec![]) {
             if let Some(companions_table) = companions_table.as_table() {
                 for (k, v) in companions_table {
-                    let companion = from_str::<Companion>(&toml::to_string(v).unwrap()).unwrap();
-                    companions.insert(k.clone(), companion);
+                    match from_str::<Companion>(&toml::to_string(v).unwrap()) {
+                        Ok(companion) => companions.insert(k.clone(), companion),
+                        Err(e) => warn!("Cannot parse companion config for {}. {}", k, e),
+                    };
                 }
             }
         }
@@ -87,7 +90,17 @@ impl Config {
     }
 
     pub fn load() -> Result<Config, ConfigError> {
-        let mut f = File::open("config.toml")?;
+        let mut f = match File::open("config.toml") {
+            Err(e) => {
+                warn!("Cannot find config file ({}) Loading default.", e);
+                return Ok(Config {
+                    containers: None,
+                    companions: MultiMap::new(),
+                    jira: None,
+                });
+            }
+            Ok(f) => f,
+        };
 
         let mut contents = String::new();
         f.read_to_string(&mut contents)?;
@@ -110,13 +123,19 @@ impl Config {
         }
     }
 
-    pub fn get_application_companion_configs(&self) -> Vec<ServiceConfig> {
-        self.companions
+    pub fn get_application_companion_configs(&self) -> Result<Vec<ServiceConfig>, ConfigError> {
+        let mut companions = Vec::new();
+
+        for companion in self
+            .companions
             .iter()
             .filter(|(k, _)| k.as_str() == "application")
             .map(|(_, v)| v)
-            .map(|companion| ServiceConfig::from(companion))
-            .collect()
+        {
+            companions.push(ServiceConfig::try_from(companion)?);
+        }
+
+        Ok(companions)
     }
 }
 
@@ -164,6 +183,7 @@ impl ContainerConfig {
 pub enum ConfigError {
     CannotOpenConfigFile(IOError),
     ConfigFormatError(TomlError),
+    UnableToParseImage,
 }
 
 impl From<IOError> for ConfigError {
@@ -178,12 +198,17 @@ impl From<TomlError> for ConfigError {
     }
 }
 
-impl From<&Companion> for ServiceConfig {
-    fn from(companion: &Companion) -> Self {
+impl TryFrom<&Companion> for ServiceConfig {
+    type Error = ConfigError;
+
+    fn try_from(companion: &Companion) -> Result<ServiceConfig, ConfigError> {
         let regex =
             Regex::new(r"^(((?P<registry>.+)/)?(?P<user>\w+)/)?(?P<repo>\w+)(:(?P<tag>\w+))?$")
                 .unwrap();
-        let captures = regex.captures(&companion.image).unwrap();
+        let captures = match regex.captures(&companion.image) {
+            Some(captures) => captures,
+            None => return Err(ConfigError::UnableToParseImage),
+        };
 
         let repo = captures
             .name("repo")
@@ -193,12 +218,13 @@ impl From<&Companion> for ServiceConfig {
         let user = captures.name("user").map(|m| String::from(m.as_str()));
         let tag = captures.name("tag").map(|m| String::from(m.as_str()));
 
-        let mut config = ServiceConfig::new(&companion.service_name, &repo, None);
+        let mut config =
+            ServiceConfig::new(&companion.service_name, &repo, Some(companion.env.clone()));
         config.set_registry(&registry);
         config.set_image_user(&user);
         config.set_image_tag(&tag);
 
-        config
+        Ok(config)
     }
 }
 
@@ -217,7 +243,7 @@ mod tests {
         "#;
 
         let config = from_str::<Config>(config_str).unwrap();
-        let companion_configs = config.get_application_companion_configs();
+        let companion_configs = config.get_application_companion_configs().unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -228,5 +254,25 @@ mod tests {
             );
             assert_eq!(config.get_image_tag(), "latest");
         });
+    }
+
+    #[test]
+    fn should_return_application_companions_as_error_when_invalid_image_is_provided() {
+        let config_str = r#"
+            [[companions]]
+            [companions.application]
+            serviceName = 'openid'
+            image = ''
+            env = [ 'KEY=VALUE' ]
+        "#;
+
+        let config = from_str::<Config>(config_str).unwrap();
+        let result = config.get_application_companion_configs();
+
+        assert_eq!(result.is_err(), true);
+        match result.err().unwrap() {
+            ConfigError::UnableToParseImage => assert!(true),
+            _ => assert!(false, "unexpected error"),
+        }
     }
 }

@@ -28,6 +28,9 @@ package com.aixigo.preview.servant.rest;
 
 import com.aixigo.preview.servant.rest.junit.extension.PREvantRestApiExtension;
 import com.aixigo.preview.servant.rest.model.ServiceConfiguration;
+import io.restassured.response.ExtractableResponse;
+import io.restassured.response.Response;
+import io.restassured.response.ResponseBodyExtractionOptions;
 import io.restassured.response.ValidatableResponse;
 import org.junit.Rule;
 import org.junit.jupiter.api.Test;
@@ -41,13 +44,17 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.net.URI;
+import java.util.List;
 
 import static io.restassured.RestAssured.given;
+import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
 
 @EnableRuleMigrationSupport
 @ExtendWith(PREvantRestApiExtension.class)
 class PREvantRestApiDockerTest {
+
+    private static final int WAIT_FOR_SERVICES = 5_000;
 
     /**
      * TODO: Replace {@code TempDirectory} extension when junit 5.4.0 has been released
@@ -62,6 +69,7 @@ class PREvantRestApiDockerTest {
                 .body()
                 .path("[0].url");
 
+        Thread.sleep(WAIT_FOR_SERVICES);
         given().baseUri(uri)
                 .get()
                 .then()
@@ -80,12 +88,39 @@ class PREvantRestApiDockerTest {
 
         postServiceConfiguration(restApiURI, "master", "httpd", "library", "httpd");
 
+        Thread.sleep(WAIT_FOR_SERVICES);
         given().baseUri(restApiURI.toString())
-                .get("/master/nginx")
+                .get("/master/nginx/")
                 .then()
                 .statusCode(200);
 
+        deleteApp(restApiURI, "master")
+                .statusCode(200);
+    }
 
+    @Test
+    void shouldReplicateRemainingServicesFromMasterWhenDeployingToFeatureBranch(URI restApiURI) throws Exception {
+        postServiceConfiguration(restApiURI, "master", asList(
+                new ServiceConfiguration("httpd", "library", "httpd"),
+                new ServiceConfiguration("nginx", "library", "nginx")
+        ));
+
+        postServiceConfiguration(restApiURI, "master-1x", "httpd", "library", "httpd")
+                .statusCode(200);
+
+        Thread.sleep(WAIT_FOR_SERVICES);
+        given().baseUri(restApiURI.toString())
+                .get("/master-1x/nginx/")
+                .then()
+                .statusCode(200);
+
+        given().baseUri(restApiURI.toString())
+                .get("/master-1x/httpd/")
+                .then()
+                .statusCode(200);
+
+        deleteApp(restApiURI, "master-1x")
+                .statusCode(200);
         deleteApp(restApiURI, "master")
                 .statusCode(200);
     }
@@ -123,15 +158,18 @@ class PREvantRestApiDockerTest {
     }
 
     private ValidatableResponse postServiceConfiguration(URI restApiURI, String appName, ServiceConfiguration serviceConfiguration) {
+        return postServiceConfiguration(restApiURI, appName, singletonList(serviceConfiguration));
+    }
+
+    private ValidatableResponse postServiceConfiguration(URI restApiURI, String appName, List<ServiceConfiguration> serviceConfigurations) {
         return given()
                 .contentType("application/json")
                 .baseUri(restApiURI.toString())
-                .body(singletonList(serviceConfiguration))
+                .body(serviceConfigurations)
                 .when()
                 .post("api/apps/" + appName)
                 .then();
     }
-
 
     private ValidatableResponse deleteApp(URI restApiURI, String appName) {
         return given()

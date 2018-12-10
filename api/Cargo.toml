@@ -7,6 +7,7 @@ repository = "https://github.com/aixigo/PREvant/"
 [dependencies]
 crossbeam = "0.4"
 crossbeam-utils = "0.5"
+failure = "0.1"
 goji = "0.2"
 hyper = "0.10"
 log = "0.4"
@@ -23,4 +24,3 @@ rocket = "0.4.0-rc.2"
 rocket_codegen = "0.4.0-rc.2"
 rocket_contrib = "0.4.0-rc.2"
 url = "1.7"
-

@@ -59,7 +59,7 @@ impl ListAppsCommand {
     /// Analyzes running containers and returns a map of `review-app-name` with the
     /// corresponding list of `Service`s.
     pub fn list_apps(&self) -> Result<MultiMap<String, Service>, ListAppsError> {
-        let apps_service = AppsService::new();
+        let apps_service = AppsService::new()?;
         let mut apps = apps_service.get_apps()?;
 
         for (_, services) in apps.iter_all_mut() {

@@ -26,6 +26,8 @@
 #![feature(proc_macro_hygiene, decl_macro, try_from)]
 
 extern crate crossbeam_utils;
+#[macro_use]
+extern crate failure;
 extern crate goji;
 extern crate hyper;
 #[macro_use]

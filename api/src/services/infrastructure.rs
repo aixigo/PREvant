@@ -1,6 +1,6 @@
 /*-
  * ========================LICENSE_START=================================
- * PREvant
+ * PREvant REST API
  * %%
  * Copyright (C) 2018 aixigo AG
  * %%
@@ -23,7 +23,25 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-pub mod apps_service;
-pub mod config_service;
-pub mod docker;
-pub mod infrastructure;
+use multimap::MultiMap;
+
+use super::config_service::ContainerConfig;
+use failure::Error;
+use models::service::{Service, ServiceConfig};
+
+pub trait Infrastructure {
+    fn get_services(&self) -> Result<MultiMap<String, Service>, Error>;
+
+    fn start_services(
+        &self,
+        app_name: &String,
+        configs: &Vec<ServiceConfig>,
+        container_config: &ContainerConfig,
+    ) -> Result<Vec<Service>, Error>;
+
+    fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, Error>;
+
+    /// Returns the configuration of all services running for the given application name.
+    /// It is required that the configurations of the companions are excluded.
+    fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error>;
+}

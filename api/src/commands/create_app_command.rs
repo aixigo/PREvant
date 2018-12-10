@@ -88,7 +88,7 @@ impl CreateOrUpdateAppCommand {
         &self,
         app_name: &String,
     ) -> Result<Vec<Service>, CreateOrUpdateError> {
-        let apps_service = AppsService::new();
+        let apps_service = AppsService::new()?;
         let mut services = apps_service.create_or_update(app_name, &self.data)?;
 
         for service in services.iter_mut() {
@@ -102,17 +102,15 @@ impl CreateOrUpdateAppCommand {
 #[derive(Debug)]
 pub enum CreateOrUpdateError {
     BadServiceConfiguration(ServiceError),
-    ImagePullErr(String),
     Internal(String),
 }
 
 impl From<AppsServiceError> for CreateOrUpdateError {
     fn from(err: AppsServiceError) -> Self {
         match err {
-            AppsServiceError::DockerInteraction(shiplift_err) => {
-                CreateOrUpdateError::Internal(format!("{:?}", shiplift_err))
+            AppsServiceError::InfrastructureError(err) => {
+                CreateOrUpdateError::Internal(format!("{:?}", err))
             }
-            AppsServiceError::ImageNotFound(msg) => CreateOrUpdateError::ImagePullErr(msg),
             AppsServiceError::InvalidServiceModel(service_error) => {
                 CreateOrUpdateError::BadServiceConfiguration(service_error)
             }
@@ -134,9 +132,6 @@ impl Display for CreateOrUpdateError {
                 "Invalid configuration for service {:?}",
                 service_error
             )),
-            CreateOrUpdateError::ImagePullErr(shiplift_err) => {
-                f.write_str(&format!("Cannot pull image {:?}", shiplift_err))
-            }
             CreateOrUpdateError::Internal(err) => f.write_str(&format!("{:?}", err)),
         }
     }
@@ -151,13 +146,6 @@ impl<'r> Responder<'r> for CreateOrUpdateError {
                 ))
                 .header(ContentType::JSON)
                 .status(Status::InternalServerError)
-                .ok(),
-            CreateOrUpdateError::ImagePullErr(err) => Response::build()
-                .sized_body(Cursor::new(
-                    json!({ "error": format!("Cannot pull image: {:?}", err) }).to_string(),
-                ))
-                .header(ContentType::JSON)
-                .status(Status::BadRequest)
                 .ok(),
             CreateOrUpdateError::BadServiceConfiguration(err) => Response::build()
                 .sized_body(Cursor::new(

@@ -63,7 +63,7 @@ impl ListTicketsCommand {
                 )))
             }
             Some(jira_config) => {
-                let apps_service = AppsService::new();
+                let apps_service = AppsService::new()?;
                 let services = apps_service.get_apps()?;
 
                 let jira = Jira::new(

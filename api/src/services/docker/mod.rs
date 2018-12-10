@@ -1,6 +1,6 @@
 /*-
  * ========================LICENSE_START=================================
- * PREvant
+ * PREvant REST API
  * %%
  * Copyright (C) 2018 aixigo AG
  * %%
@@ -23,7 +23,4 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-pub mod apps_service;
-pub mod config_service;
-pub mod docker;
-pub mod infrastructure;
+pub mod docker_infrastructure;

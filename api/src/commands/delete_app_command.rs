@@ -56,7 +56,7 @@ impl<'a, 'r> FromRequest<'a, 'r> for DeleteAppCommand {
 
 impl DeleteAppCommand {
     pub fn delete_app(&self, app_name: &String) -> Result<Vec<Service>, DeleteAppError> {
-        let apps_service = AppsService::new();
+        let apps_service = AppsService::new()?;
         let mut services = apps_service.delete_app(app_name)?;
 
         for service in services.iter_mut() {
