@@ -126,6 +126,10 @@ impl ServiceConfig {
         )
     }
 
+    pub fn set_service_name(&mut self, service_name: &String) {
+        self.service_name = service_name.clone()
+    }
+
     pub fn get_service_name(&self) -> &String {
         &self.service_name
     }
@@ -135,6 +139,10 @@ impl ServiceConfig {
             None => "latest".to_owned(),
             Some(tag) => tag.clone(),
         }
+    }
+
+    pub fn set_env(&mut self, env: &Option<Vec<String>>) {
+        self.env = env.clone();
     }
 
     pub fn get_env(&self) -> Option<Vec<String>> {
@@ -229,7 +237,7 @@ impl Serialize for Service {
     }
 }
 
-#[derive(Serialize, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum ContainerType {
     Instance,
     Replica,

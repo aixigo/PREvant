@@ -29,6 +29,7 @@ extern crate crossbeam_utils;
 #[macro_use]
 extern crate failure;
 extern crate goji;
+extern crate handlebars;
 extern crate hyper;
 #[macro_use]
 extern crate log;

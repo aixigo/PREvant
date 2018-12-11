@@ -67,6 +67,8 @@ remote.services={{#each services~}}
 
 The list of available handlebars variables:
 
+- `application`: The companion's application information
+  - `name`: The application name
 - `applicationPath`: The root path to the application.
 - `services`: An array of the services of the application. Each element has following structure:
   - `name`: The service name which is equivalent to the network alias
@@ -75,13 +77,13 @@ The list of available handlebars variables:
 
 ### Service Based
 
-The service-based companions works the in the same way as the application-based services
+The service-based companions works the in the same way as the application-based services. Make sure, that the `serviceName` is unique by using the handlebars templating.
 
 ```toml
 [[companions]]
 [[companions.services]]
-serviceName = 'postgres'
-image = 'private.example.com/library/opendid:latest'
+serviceName = '{{service.name}}-db'
+image = 'postgres:11'
 env = [ 'KEY=VALUE' ]
 [companions.services.postgres.volumes]
 "/path/to/volume.properties" == "…"
@@ -92,7 +94,8 @@ env = [ 'KEY=VALUE' ]
 
 The list of available handlebars variables:
 
-- `applicationPath`: The root path to the application.
+- `application`: The companion's application information
+  - `name`: The application name
 - `service`: The companion's service containing following fields:
   - `name`: The service name which is equivalent to the network alias
   - `port`: The exposed port of the service

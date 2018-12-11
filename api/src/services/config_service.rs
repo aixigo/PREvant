@@ -34,7 +34,7 @@ use serde::{de, Deserialize, Deserializer};
 use toml::de::Error as TomlError;
 use toml::from_str;
 
-use models::service::ServiceConfig;
+use models::service::{ContainerType, ServiceConfig};
 
 #[derive(Clone, Deserialize)]
 pub struct ContainerConfig {
@@ -132,7 +132,9 @@ impl Config {
             .filter(|(k, _)| k.as_str() == "application")
             .map(|(_, v)| v)
         {
-            companions.push(ServiceConfig::try_from(companion)?);
+            let mut config = ServiceConfig::try_from(companion)?;
+            config.set_container_type(ContainerType::ApplicationCompanion);
+            companions.push(config);
         }
 
         Ok(companions)
@@ -253,6 +255,10 @@ mod tests {
                 "private.example.com/library/opendid:latest"
             );
             assert_eq!(config.get_image_tag(), "latest");
+            assert_eq!(
+                config.get_container_type(),
+                &ContainerType::ApplicationCompanion
+            );
         });
     }
 
