@@ -125,7 +125,7 @@ pub enum AppsServiceError {
     InfrastructureError(failure::Error),
     /// Will be used if the service configuration cannot be loaded.
     InvalidServerConfiguration(ConfigError),
-    InvalidTemplateFormat(TemplateRenderError)
+    InvalidTemplateFormat(TemplateRenderError),
 }
 
 impl From<ConfigError> for AppsServiceError {
@@ -145,4 +145,3 @@ impl From<TemplateRenderError> for AppsServiceError {
         AppsServiceError::InvalidTemplateFormat(error)
     }
 }
-

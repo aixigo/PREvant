@@ -35,11 +35,16 @@ pub fn apply_templating_for_application_companion(
         application: ApplicationTemplateParameter {
             name: app_name.clone(),
         },
-        services: Some(service_configs.iter().map(|c| ServiceTemplateParameter {
-            name: c.get_service_name().clone(),
-            container_type: c.get_container_type().clone(),
-            port: 80
-        }).collect()),
+        services: Some(
+            service_configs
+                .iter()
+                .map(|c| ServiceTemplateParameter {
+                    name: c.get_service_name().clone(),
+                    container_type: c.get_container_type().clone(),
+                    port: 80,
+                })
+                .collect(),
+        ),
         service: None,
     };
 
@@ -124,15 +129,19 @@ mod tests {
 
         let service_configs = vec![
             ServiceConfig::new(&String::from("service-a"), &String::from("service"), None),
-            ServiceConfig::new(&String::from("service-b"), &String::from("service"), None)
+            ServiceConfig::new(&String::from("service-b"), &String::from("service"), None),
         ];
         let templated_config = apply_templating_for_application_companion(
             &config,
             &String::from("master"),
             &service_configs,
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert_eq!(templated_config.get_env().unwrap().get(0).unwrap(), "DATABASE_SCHEMAS=service-a,service-b,");
+        assert_eq!(
+            templated_config.get_env().unwrap().get(0).unwrap(),
+            "DATABASE_SCHEMAS=service-a,service-b,"
+        );
     }
 
     #[test]
@@ -150,11 +159,8 @@ mod tests {
             Some(env),
         );
 
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &vec![],
-        );
+        let templated_config =
+            apply_templating_for_application_companion(&config, &String::from("master"), &vec![]);
 
         assert_eq!(templated_config.is_err(), true);
     }

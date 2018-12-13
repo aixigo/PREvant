@@ -28,6 +28,7 @@
 extern crate crossbeam_utils;
 #[macro_use]
 extern crate failure;
+extern crate futures;
 extern crate goji;
 extern crate handlebars;
 extern crate hyper;
@@ -53,6 +54,8 @@ use std::fs::File;
 use rocket_contrib::json::Json;
 use serde_yaml::{from_reader, to_string, Value};
 use shiplift::{ContainerListOptions, Docker};
+use tokio::prelude::Future;
+use tokio::runtime::Runtime;
 
 use models::request_info::RequestInfo;
 
@@ -70,21 +73,24 @@ struct AppsStatus {
     portainer_available: bool,
 }
 
-fn is_container_available(container_image_pattern: &str) -> bool {
-    let docker = Docker::new();
-    let containers = docker.containers();
+fn is_container_available(container_image_pattern: &'static str) -> bool {
+    let future = Docker::new()
+        .containers()
+        .list(&ContainerListOptions::builder().build())
+        .map(move |containers| {
+            containers
+                .iter()
+                .any(|c| c.image.starts_with(container_image_pattern))
+        });
 
-    let running_containers = match containers.list(&ContainerListOptions::builder().build()) {
+    let mut runtime = Runtime::new().unwrap();
+    match runtime.block_on(future) {
         Err(e) => {
             error!("Cannot list running containers: {}", e);
-            return false;
+            false
         }
-        Ok(containers) => containers,
-    };
-
-    running_containers
-        .iter()
-        .any(|c| c.image.starts_with(container_image_pattern))
+        Ok(available) => available,
+    }
 }
 
 #[get("/", format = "application/json")]

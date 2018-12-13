@@ -29,6 +29,8 @@ use services::infrastructure::Infrastructure;
 
 use super::super::config_service::ContainerConfig;
 use failure::Error;
+use futures::future::join_all;
+use futures::{Future, Stream};
 use models;
 use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
@@ -40,6 +42,7 @@ use shiplift::{
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
 use std::sync::mpsc;
+use tokio::runtime::Runtime;
 
 static APP_NAME_LABEL: &str = "preview.servant.app-name";
 static SERVICE_NAME_LABEL: &str = "preview.servant.service-name";
@@ -76,20 +79,24 @@ impl DockerInfrastructure {
         let network_name = format!("{}-net", app_name);
 
         let docker = Docker::new();
-        if let Some(n) = docker
-            .networks()
-            .list(&Default::default())?
+        let mut runtime = Runtime::new()?;
+        let network_id = runtime
+            .block_on(docker.networks().list(&Default::default()))?
             .iter()
             .find(|n| &n.name == &network_name)
-        {
-            return Ok(n.id.clone());
+            .map(|n| n.id.clone());
+
+        if let Some(n) = network_id {
+            return Ok(n.clone());
         }
 
         debug!("Creating network for app {}.", app_name);
 
-        let network_create_info = docker
-            .networks()
-            .create(&NetworkCreateOptions::builder(network_name.as_ref()).build())?;
+        let network_create_info = runtime.block_on(
+            docker
+                .networks()
+                .create(&NetworkCreateOptions::builder(network_name.as_ref()).build()),
+        )?;
 
         debug!(
             "Created network for app {} with id {}",
@@ -103,33 +110,13 @@ impl DockerInfrastructure {
         let network_name = format!("{}-net", app_name);
 
         let docker = Docker::new();
-        for n in docker
-            .networks()
-            .list(&Default::default())?
+        let mut runtime = Runtime::new()?;
+        for n in runtime
+            .block_on(docker.networks().list(&Default::default()))?
             .iter()
             .filter(|n| &n.name == &network_name)
         {
-            docker.networks().get(&n.id).delete()?;
-        }
-
-        Ok(())
-    }
-
-    fn delete_container(&self, app_name: &String, service: &Service) -> Result<(), ShipLiftError> {
-        let docker = Docker::new();
-        let containers = docker.containers();
-        if let Some(c) = self.get_app_container(app_name, service.get_service_name()) {
-            let container = containers.get(&c.id);
-
-            container.stop(None)?;
-            info!(
-                "Stopped service {:?} (container id={:?}) for review app {:?}",
-                service.get_service_name(),
-                c.id,
-                app_name
-            );
-
-            container.delete()?;
+            runtime.block_on(docker.networks().get(&n.id).delete())?;
         }
 
         Ok(())
@@ -145,24 +132,25 @@ impl DockerInfrastructure {
         let docker = Docker::new();
         let containers = docker.containers();
         let images = docker.images();
+        let mut runtime = Runtime::new()?;
 
         if !service_config.refers_to_image_id() {
-            self.pull_image(app_name, &service_config)?;
+            self.pull_image(&mut runtime, app_name, &service_config)?;
         }
 
         let mut image_to_delete = None;
         if let Some(ref container_info) =
-            self.get_app_container(app_name, service_config.get_service_name())
+            self.get_app_container(app_name, service_config.get_service_name())?
         {
             let container = containers.get(&container_info.id);
-            let container_image_id = container.inspect().unwrap().image.clone();
+            let container_image_id = runtime.block_on(container.inspect())?.image.clone();
 
             info!(
                 "Removing container {:?} of review app {:?}",
                 container_info, app_name
             );
-            container.stop(Some(core::time::Duration::from_secs(10)))?;
-            container.delete()?;
+            runtime.block_on(container.stop(Some(core::time::Duration::from_secs(10))))?;
+            runtime.block_on(container.delete())?;
 
             image_to_delete = Some(container_image_id.clone());
         }
@@ -205,16 +193,18 @@ impl DockerInfrastructure {
             options.memory(memory_limit.clone());
         }
 
-        let container_info = containers.create(&options.build())?;
+        let container_info = runtime.block_on(containers.create(&options.build()))?;
         debug!("Created container: {:?}", container_info);
 
-        containers.get(&container_info.id).start()?;
+        runtime.block_on(containers.get(&container_info.id).start())?;
         debug!("Started container: {:?}", container_info);
 
-        docker.networks().get(network_id).connect(
-            &ContainerConnectionOptions::builder(&container_info.id)
-                .aliases(vec![service_config.get_service_name().as_str()])
-                .build(),
+        runtime.block_on(
+            docker.networks().get(network_id).connect(
+                &ContainerConnectionOptions::builder(&container_info.id)
+                    .aliases(vec![service_config.get_service_name().as_str()])
+                    .build(),
+            ),
         )?;
         debug!(
             "Connected container {:?} to {:?}",
@@ -222,12 +212,12 @@ impl DockerInfrastructure {
         );
 
         let mut service =
-            Service::try_from(&self.get_app_container_by_id(&container_info.id).unwrap())?;
+            Service::try_from(&self.get_app_container_by_id(&container_info.id)?.unwrap())?;
         service.set_container_type(service_config.get_container_type().clone());
 
         if let Some(image) = image_to_delete {
             info!("Clean up image {:?} of app {:?}", image, app_name);
-            match images.get(&image).delete() {
+            match runtime.block_on(images.get(&image).delete()) {
                 Ok(output) => {
                     for o in output {
                         debug!("{:?}", o);
@@ -240,7 +230,12 @@ impl DockerInfrastructure {
         Ok(service)
     }
 
-    fn pull_image(&self, app_name: &String, config: &ServiceConfig) -> Result<(), ShipLiftError> {
+    fn pull_image(
+        &self,
+        runtime: &mut Runtime,
+        app_name: &String,
+        config: &ServiceConfig,
+    ) -> Result<(), ShipLiftError> {
         let image = config.get_docker_image();
 
         info!(
@@ -254,22 +249,27 @@ impl DockerInfrastructure {
 
         let docker = Docker::new();
         let images = docker.images();
-        for o in images.pull(&pull_options) {
-            debug!("{:?}", o);
-        }
+        runtime.block_on(images.pull(&pull_options).for_each(|output| {
+            debug!("{:?}", output);
+            Ok(())
+        }))?;
 
         Ok(())
     }
 
-    fn get_app_container(&self, app_name: &String, service_name: &String) -> Option<Container> {
+    fn get_app_container(
+        &self,
+        app_name: &String,
+        service_name: &String,
+    ) -> Result<Option<Container>, ShipLiftError> {
         let docker = Docker::new();
         let containers = docker.containers();
+        let mut runtime = Runtime::new()?;
 
         let list_options = ContainerListOptions::builder().build();
 
-        containers
-            .list(&list_options)
-            .unwrap()
+        Ok(runtime
+            .block_on(containers.list(&list_options))?
             .iter()
             .filter(|c| match c.labels.get(APP_NAME_LABEL) {
                 None => false,
@@ -280,54 +280,54 @@ impl DockerInfrastructure {
                 Some(service) => service == service_name,
             })
             .map(|c| c.to_owned())
-            .next()
+            .next())
     }
 
-    fn get_app_container_by_id(&self, container_id: &String) -> Option<Container> {
+    fn get_app_container_by_id(
+        &self,
+        container_id: &String,
+    ) -> Result<Option<Container>, ShipLiftError> {
         let docker = Docker::new();
         let containers = docker.containers();
+        let mut runtime = Runtime::new()?;
 
         let list_options = ContainerListOptions::builder().build();
 
-        containers
-            .list(&list_options)
-            .unwrap()
+        Ok(runtime
+            .block_on(containers.list(&list_options))?
             .iter()
             .filter(|c| container_id == &c.id)
             .map(|c| c.to_owned())
-            .next()
-    }
-
-    fn get_app_containers(&self, app_name: &String) -> Result<Vec<Container>, ShipLiftError> {
-        let f1 = ContainerFilter::Label(APP_NAME_LABEL.to_owned(), app_name.clone());
-
-        let docker = Docker::new();
-        let containers = docker.containers();
-
-        let list_options = ContainerListOptions::builder().filter(vec![f1]).build();
-
-        Ok(containers.list(&list_options)?)
+            .next())
     }
 }
 
 impl Infrastructure for DockerInfrastructure {
     fn get_services(&self) -> Result<MultiMap<String, Service>, Error> {
-        let mut apps: MultiMap<String, Service> = MultiMap::new();
-
         let docker = Docker::new();
         let containers = docker.containers();
 
         let f = ContainerFilter::LabelName(String::from(APP_NAME_LABEL));
-        for c in containers.list(&ContainerListOptions::builder().filter(vec![f]).build())? {
-            let app_name = c.labels.get(APP_NAME_LABEL).unwrap().to_string();
 
-            match Service::try_from(&c) {
-                Ok(service) => apps.insert(app_name, service),
-                Err(e) => debug!("Container does not provide required data: {:?}", e),
-            }
-        }
+        let future = containers
+            .list(&ContainerListOptions::builder().filter(vec![f]).build())
+            .map(|containers| {
+                let mut apps: MultiMap<String, Service> = MultiMap::new();
 
-        Ok(apps)
+                for c in containers {
+                    let app_name = c.labels.get(APP_NAME_LABEL).unwrap().to_string();
+
+                    match Service::try_from(&c) {
+                        Ok(service) => apps.insert(app_name, service),
+                        Err(e) => debug!("Container does not provide required data: {:?}", e),
+                    }
+                }
+
+                apps
+            });
+
+        let mut runtime = Runtime::new()?;
+        Ok(runtime.block_on(future)?)
     }
 
     fn start_services(
@@ -374,21 +374,35 @@ impl Infrastructure for DockerInfrastructure {
             Some(services) => services.clone(),
         };
 
-        let (tx, rx) = mpsc::channel();
+        let docker = Docker::new();
+        let containers = docker.containers();
 
-        crossbeam_utils::thread::scope(|scope| {
-            for service in &services {
-                let tx_clone = tx.clone();
-                scope.spawn(move || {
-                    let result = self.delete_container(app_name, service);
-                    tx_clone.send(result).unwrap();
-                });
-            }
-        });
+        let f1 = ContainerFilter::Label(APP_NAME_LABEL.to_owned(), app_name.clone());
+        let list_options = ContainerListOptions::builder().filter(vec![f1]).build();
 
-        for _ in &services {
-            rx.recv()??;
+        let future = containers
+            .list(&list_options)
+            .map(|containers| containers.iter().map(|c| c.id.clone()).collect());
+
+        let mut runtime = Runtime::new()?;
+        let container_ids: Vec<String> = runtime.block_on(future)?;
+
+        let mut futures = Vec::new();
+        for f in container_ids.iter().map(|id| {
+            let docker = Docker::new();
+            let container = docker.containers().get(&id);
+
+            let id_clone = id.clone();
+            container.stop(None).map(move |_| id_clone).and_then(|id| {
+                let docker = Docker::new();
+                let container = docker.containers().get(&id);
+                container.delete()
+            })
+        }) {
+            futures.push(f);
         }
+
+        runtime.block_on(join_all(futures))?;
 
         self.delete_network(app_name)?;
 
@@ -396,11 +410,15 @@ impl Infrastructure for DockerInfrastructure {
     }
 
     fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error> {
-        let mut configs = Vec::new();
-
         let docker = Docker::new();
         let containers = docker.containers();
-        for container in self.get_app_containers(app_name)? {
+
+        let f1 = ContainerFilter::Label(APP_NAME_LABEL.to_owned(), app_name.clone());
+        let list_options = ContainerListOptions::builder().filter(vec![f1]).build();
+
+        let mut runtime = Runtime::new()?;
+        let mut future_configs = Vec::new();
+        for container in runtime.block_on(containers.list(&list_options))? {
             let service = match Service::try_from(&container) {
                 Err(e) => {
                     warn!(
@@ -417,28 +435,34 @@ impl Infrastructure for DockerInfrastructure {
                 _ => {}
             };
 
-            let details = containers.get(&container.id).inspect()?;
-            let env: Option<Vec<String>> = match details.config.env {
-                None => None,
-                Some(env) => Some(env.clone()),
-            };
+            let future_details =
+                containers
+                    .get(&container.id)
+                    .inspect()
+                    .map(move |container_details| {
+                        let env: Option<Vec<String>> = match container_details.config.env {
+                            None => None,
+                            Some(env) => Some(env.clone()),
+                        };
 
-            // TODO: clone volume data...
+                        // TODO: clone volume data...
 
-            println!("{}", &container.image);
+                        let (repo, user, registry, tag) =
+                            models::service::parse_image_string(&container_details.image).unwrap();
+                        let mut service_config =
+                            ServiceConfig::new(service.get_service_name(), &repo, env);
 
-            let (repo, user, registry, tag) =
-                models::service::parse_image_string(&container.image)?;
-            let mut service_config = ServiceConfig::new(service.get_service_name(), &repo, env);
+                        service_config.set_image_user(&user);
+                        service_config.set_registry(&registry);
+                        service_config.set_image_tag(&tag);
 
-            service_config.set_image_user(&user);
-            service_config.set_registry(&registry);
-            service_config.set_image_tag(&tag);
+                        service_config
+                    });
 
-            configs.push(service_config);
+            future_configs.push(future_details);
         }
 
-        Ok(configs)
+        Ok(runtime.block_on(join_all(future_configs))?)
     }
 }
 
