@@ -62,7 +62,7 @@ impl FromDataSimple for CreateOrUpdateAppCommand {
                 return Failure((
                     Status::BadRequest,
                     format!("Cannot read body as JSON: {:?}", err),
-                ))
+                ));
             }
         };
 

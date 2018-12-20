@@ -23,14 +23,13 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+use regex::Regex;
+use serde::{de, Deserialize, Deserializer};
+use std::collections::BTreeMap;
 use std::convert::{From, TryFrom};
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::Error as IOError;
-
-use multimap::MultiMap;
-use regex::Regex;
-use serde::{de, Deserialize, Deserializer};
 use toml::de::Error as TomlError;
 use toml::from_str;
 
@@ -53,49 +52,36 @@ pub struct JiraConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Companion {
     service_name: String,
+    #[serde(rename = "type")]
+    companion_type: CompanionType,
     image: String,
     env: Vec<String>,
+    volumes: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Clone, Deserialize, PartialEq)]
+enum CompanionType {
+    #[serde(rename = "application")]
+    Application,
+    #[serde(rename = "service")]
+    Service,
 }
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
-    #[serde(deserialize_with = "Config::from_companions_table_array")]
-    companions: MultiMap<String, Companion>,
+    companions: Vec<BTreeMap<String, Companion>>,
 }
 
 impl Config {
-    fn from_companions_table_array<'de, D>(
-        deserializer: D,
-    ) -> Result<MultiMap<String, Companion>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let mut companions = MultiMap::new();
-
-        let companions_table_array = toml::Value::deserialize(deserializer)?;
-        for companions_table in companions_table_array.as_array().unwrap_or(&vec![]) {
-            if let Some(companions_table) = companions_table.as_table() {
-                for (k, v) in companions_table {
-                    match from_str::<Companion>(&toml::to_string(v).unwrap()) {
-                        Ok(companion) => companions.insert(k.clone(), companion),
-                        Err(e) => warn!("Cannot parse companion config for {}. {}", k, e),
-                    };
-                }
-            }
-        }
-
-        Ok(companions)
-    }
-
     pub fn load() -> Result<Config, ConfigError> {
         let mut f = match File::open("config.toml") {
             Err(e) => {
                 warn!("Cannot find config file ({}) Loading default.", e);
                 return Ok(Config {
                     containers: None,
-                    companions: MultiMap::new(),
+                    companions: Vec::new(),
                     jira: None,
                 });
             }
@@ -129,11 +115,16 @@ impl Config {
         for companion in self
             .companions
             .iter()
-            .filter(|(k, _)| k.as_str() == "application")
-            .map(|(_, v)| v)
+            .flat_map(|companions| companions.values())
+            .filter(|companion| companion.companion_type == CompanionType::Application)
         {
             let mut config = ServiceConfig::try_from(companion)?;
-            config.set_container_type(ContainerType::ApplicationCompanion);
+
+            config.set_container_type(match &companion.companion_type {
+                CompanionType::Application => ContainerType::ApplicationCompanion,
+                CompanionType::Service => ContainerType::ServiceCompanion,
+            });
+
             companions.push(config);
         }
 
@@ -226,6 +217,10 @@ impl TryFrom<&Companion> for ServiceConfig {
         config.set_image_user(&user);
         config.set_image_tag(&tag);
 
+        if let Some(volumes) = &companion.volumes {
+            config.set_volumes(volumes);
+        }
+
         Ok(config)
     }
 }
@@ -238,9 +233,16 @@ mod tests {
     fn should_return_application_companions_as_service_configs() {
         let config_str = r#"
             [[companions]]
-            [companions.application]
+            [companions.openid]
             serviceName = 'openid'
+            type = 'application'
             image = 'private.example.com/library/opendid:latest'
+            env = [ 'KEY=VALUE' ]
+
+            [companions.nginx]
+            serviceName = '{{service-name}}-nginx'
+            type = 'service'
+            image = 'nginx:latest'
             env = [ 'KEY=VALUE' ]
         "#;
 
@@ -263,11 +265,36 @@ mod tests {
     }
 
     #[test]
+    fn should_return_application_companions_as_service_configs_with_volumes() {
+        let config_str = r#"
+            [[companions]]
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/opendid:latest'
+            env = [ 'KEY=VALUE' ]
+
+            [companions.openid.volumes]
+            '/tmp/test-1.json' = '{}'
+            '/tmp/test-2.json' = '{}'
+        "#;
+
+        let config = from_str::<Config>(config_str).unwrap();
+        let companion_configs = config.get_application_companion_configs().unwrap();
+
+        assert_eq!(companion_configs.len(), 1);
+        companion_configs.iter().for_each(|config| {
+            assert_eq!(config.get_volumes().len(), 2);
+        });
+    }
+
+    #[test]
     fn should_return_application_companions_as_error_when_invalid_image_is_provided() {
         let config_str = r#"
             [[companions]]
-            [companions.application]
+            [companions.openid]
             serviceName = 'openid'
+            type = 'application'
             image = ''
             env = [ 'KEY=VALUE' ]
         "#;

@@ -42,8 +42,8 @@ If you want to include an OpenID provider for every application, you could use f
 
 ```toml
 [[companions]]
-[[companions.application]]
-serviceName = 'openid'
+[companions.openid]
+type = 'application'
 image = 'private.example.com/library/opendid:latest'
 env = [ 'KEY=VALUE' ]
 ```
@@ -53,7 +53,7 @@ The provided values of `serviceName` and `env` can include the [handlebars synta
 Additionally, you could mount files that are generated from handlebars templates (example contains a properties generation):
 
 ```toml
-[companions.application.openid.volumes]
+[companions.openid.volumes]
 "/path/to/volume.properties" = """
 remote.services={{#each services~}}
   {{~#if (eq type 'instance')~}}

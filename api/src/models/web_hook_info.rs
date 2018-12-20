@@ -115,7 +115,7 @@ impl FromDataSimple for WebHookInfo {
                 return Failure((
                     Status::BadRequest,
                     format!("Cannot read body as JSON: {:?}", err),
-                ))
+                ));
             }
         };
 

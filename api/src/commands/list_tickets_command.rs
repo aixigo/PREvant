@@ -60,7 +60,7 @@ impl ListTicketsCommand {
             None => {
                 return Err(ListTicketsError::Internal(String::from(
                     "No JIRA Configuration",
-                )))
+                )));
             }
             Some(jira_config) => {
                 let apps_service = AppsService::new()?;

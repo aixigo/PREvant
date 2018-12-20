@@ -171,9 +171,9 @@ impl DockerInfrastructure {
             options.env(env.iter().map(|e| e.as_str()).collect());
         }
 
-        if let Some(ref volumes) = service_config.get_volumes() {
-            options.volumes(volumes.iter().map(|v| v.as_str()).collect());
-        }
+        // TODO:  if let Some(ref volumes) = service_config.get_volumes() {
+        //            options.volumes(volumes.iter().map(|v| v.as_str()).collect());
+        //        }
 
         let traefik_frontend = format!(
             "ReplacePathRegex: ^/{p1}/{p2}(.*) /$1;PathPrefix:/{p1}/{p2};",
@@ -475,7 +475,7 @@ impl TryFrom<&Container> for Service {
             None => {
                 return Err(DockerInfrastructureError::MissingServiceNameLabel {
                     container_id: c.id.clone(),
-                })
+                });
             }
         };
 
@@ -484,7 +484,7 @@ impl TryFrom<&Container> for Service {
             None => {
                 return Err(DockerInfrastructureError::MissingAppNameLabel {
                     container_id: c.id.clone(),
-                })
+                });
             }
         };
 
