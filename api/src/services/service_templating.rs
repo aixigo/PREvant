@@ -25,6 +25,7 @@
  */
 use handlebars::{Handlebars, TemplateRenderError};
 use models::service::{ContainerType, ServiceConfig};
+use std::collections::BTreeMap;
 
 pub fn apply_templating_for_application_companion(
     service_config: &ServiceConfig,
@@ -62,6 +63,19 @@ pub fn apply_templating_for_application_companion(
         }
 
         templated_config.set_env(&Some(templated_env));
+    }
+
+    if service_config.get_volumes().len() > 0 {
+        let mut templated_volumes = BTreeMap::new();
+
+        for (mount_point, file_content) in service_config.get_volumes() {
+            templated_volumes.insert(
+                mount_point.clone(),
+                reg.render_template(file_content, &parameters)?,
+            );
+        }
+
+        templated_config.set_volumes(&templated_volumes);
     }
 
     Ok(templated_config)
@@ -163,5 +177,49 @@ mod tests {
             apply_templating_for_application_companion(&config, &String::from("master"), &vec![]);
 
         assert_eq!(templated_config.is_err(), true);
+    }
+
+    #[test]
+    fn should_apply_app_companion_templating_with_volumes() {
+        let mut config =
+            ServiceConfig::new(&String::from("nginx-proxy"), &String::from("nginx"), None);
+
+        let mount_path = String::from("/etc/ningx/conf.d/default.conf");
+        let mut volumes = BTreeMap::new();
+        volumes.insert(
+            mount_path.clone(),
+            String::from(
+                r#"{{#each services}}
+location /{{name}} {
+    proxy_pass http://{{~name~}};
+}
+{{/each}}"#,
+            ),
+        );
+        config.set_volumes(&volumes);
+
+        let service_configs = vec![
+            ServiceConfig::new(&String::from("service-a"), &String::from("service"), None),
+            ServiceConfig::new(&String::from("service-b"), &String::from("service"), None),
+        ];
+        let templated_config = apply_templating_for_application_companion(
+            &config,
+            &String::from("master"),
+            &service_configs,
+        )
+        .unwrap();
+
+        assert_eq!(
+            templated_config.get_volumes().get(&mount_path).unwrap(),
+            r#"
+location /service-a {
+    proxy_pass http://service-a;
+}
+
+location /service-b {
+    proxy_pass http://service-b;
+}
+"#
+        );
     }
 }

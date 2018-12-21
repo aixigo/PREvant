@@ -23,7 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use regex::Regex;
+use models::service::{parse_image_string, ContainerType, ServiceConfig};
 use serde::{de, Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::convert::{From, TryFrom};
@@ -32,8 +32,6 @@ use std::io::prelude::*;
 use std::io::Error as IOError;
 use toml::de::Error as TomlError;
 use toml::from_str;
-
-use models::service::{ContainerType, ServiceConfig};
 
 #[derive(Clone, Deserialize)]
 pub struct ContainerConfig {
@@ -195,21 +193,10 @@ impl TryFrom<&Companion> for ServiceConfig {
     type Error = ConfigError;
 
     fn try_from(companion: &Companion) -> Result<ServiceConfig, ConfigError> {
-        let regex =
-            Regex::new(r"^(((?P<registry>.+)/)?(?P<user>\w+)/)?(?P<repo>\w+)(:(?P<tag>\w+))?$")
-                .unwrap();
-        let captures = match regex.captures(&companion.image) {
-            Some(captures) => captures,
-            None => return Err(ConfigError::UnableToParseImage),
+        let (repo, user, registry, tag) = match parse_image_string(&companion.image) {
+            Ok((repo, user, registry, tag)) => (repo, user, registry, tag),
+            Err(_) => return Err(ConfigError::UnableToParseImage),
         };
-
-        let repo = captures
-            .name("repo")
-            .map(|m| String::from(m.as_str()))
-            .unwrap();
-        let registry = captures.name("registry").map(|m| String::from(m.as_str()));
-        let user = captures.name("user").map(|m| String::from(m.as_str()));
-        let tag = captures.name("tag").map(|m| String::from(m.as_str()));
 
         let mut config =
             ServiceConfig::new(&companion.service_name, &repo, Some(companion.env.clone()));
@@ -271,7 +258,7 @@ mod tests {
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
-            image = 'private.example.com/library/opendid:latest'
+            image = 'private.example.com/library/opendid:11-alpine'
             env = [ 'KEY=VALUE' ]
 
             [companions.openid.volumes]

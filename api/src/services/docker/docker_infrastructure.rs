@@ -23,30 +23,30 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use models::service::{ContainerType, Service, ServiceConfig, ServiceError};
-use multimap::MultiMap;
-use services::infrastructure::Infrastructure;
-
 use super::super::config_service::ContainerConfig;
 use failure::Error;
 use futures::future::join_all;
 use futures::{Future, Stream};
 use models;
+use models::service::{ContainerType, Service, ServiceConfig, ServiceError};
+use multimap::MultiMap;
+use services::infrastructure::Infrastructure;
 use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
 use shiplift::rep::Container;
 use shiplift::{
     ContainerConnectionOptions, ContainerFilter, ContainerListOptions, Docker,
-    NetworkCreateOptions, PullOptions,
+    NetworkCreateOptions, PullOptions, VolumeCreateOptions,
 };
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
+use std::path::Path;
 use std::sync::mpsc;
 use tokio::runtime::Runtime;
 
-static APP_NAME_LABEL: &str = "preview.servant.app-name";
-static SERVICE_NAME_LABEL: &str = "preview.servant.service-name";
-static CONTAINER_TYPE_LABEL: &str = "preview.servant.container-type";
+static APP_NAME_LABEL: &str = "com.aixigo.preview.servant.app-name";
+static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
+static CONTAINER_TYPE_LABEL: &str = "com.aixigo.preview.servant.container-type";
 
 pub struct DockerInfrastructure {}
 
@@ -171,9 +171,9 @@ impl DockerInfrastructure {
             options.env(env.iter().map(|e| e.as_str()).collect());
         }
 
-        // TODO:  if let Some(ref volumes) = service_config.get_volumes() {
-        //            options.volumes(volumes.iter().map(|v| v.as_str()).collect());
-        //        }
+        if service_config.get_volumes().len() > 0 {
+            self.create_volume(&mut runtime, app_name, service_config)?;
+        }
 
         let traefik_frontend = format!(
             "ReplacePathRegex: ^/{p1}/{p2}(.*) /$1;PathPrefix:/{p1}/{p2};",
@@ -228,6 +228,78 @@ impl DockerInfrastructure {
         }
 
         Ok(service)
+    }
+
+    fn create_volume(
+        &self,
+        runtime: &mut Runtime,
+        app_name: &String,
+        config: &ServiceConfig,
+    ) -> Result<String, ShipLiftError> {
+        info!(
+            "Creating volume for {:?} of app {:?}",
+            config.get_service_name(),
+            app_name
+        );
+
+        let docker = Docker::new();
+        let containers = docker.containers();
+        let volumes = docker.volumes();
+
+        let mut labels: HashMap<&str, &str> = HashMap::new();
+        labels.insert(APP_NAME_LABEL, app_name);
+        labels.insert(SERVICE_NAME_LABEL, &config.get_service_name());
+
+        let future_create_volume = volumes
+            .create(&VolumeCreateOptions::builder().labels(&labels).build())
+            .map(|create_info| create_info.name);
+
+        let name = runtime.block_on(future_create_volume)?;
+
+        runtime.block_on(
+            docker
+                .images()
+                .pull(&PullOptions::builder().image("bash").build())
+                .for_each(|output| {
+                    debug!("{:?}", output);
+                    Ok(())
+                }),
+        )?;
+
+        let mut futures = Vec::new();
+        for (mount_point, file_content) in config.get_volumes() {
+            let target = Path::new(mount_point)
+                .parent()
+                .map_or_else(|| "", |p| p.to_str().unwrap());
+            let volume = format!("{}:{}", name, target);
+
+            let cmd = "echo \"".to_owned() + &file_content + "\" > " + mount_point;
+
+            futures.push(
+                containers
+                    .create(
+                        &ContainerOptions::builder("bash")
+                            .volumes(vec![&volume])
+                            .cmd(vec!["sh", "-c", &cmd])
+                            // TODO: use auto remove: https://github.com/softprops/shiplift/pull/137
+                            .build(),
+                    )
+                    .map(move |info| {
+                        let docker = Docker::new();
+                        tokio::spawn(
+                            docker
+                                .containers()
+                                .get(&info.id)
+                                .start()
+                                .map_err(|e| warn!("Volume init error: {}", e)),
+                        );
+                    }),
+            );
+        }
+
+        runtime.block_on(join_all(futures))?;
+
+        Ok(name)
     }
 
     fn pull_image(
@@ -528,8 +600,8 @@ impl From<ServiceError> for DockerInfrastructureError {
                     unknown_label: label,
                 }
             }
-            _err => DockerInfrastructureError::UnexpectedError {
-                internal_message: String::from(""),
+            err => DockerInfrastructureError::UnexpectedError {
+                internal_message: err.to_string(),
             },
         }
     }
