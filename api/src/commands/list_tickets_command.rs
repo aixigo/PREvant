@@ -23,22 +23,20 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
-use std::io::Cursor;
-
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
+use models::ticket_info::TicketInfo;
 use rocket::http::{ContentType, Status};
 use rocket::request::{self, FromRequest, Request};
 use rocket::response::{self, Responder, Response};
 use rocket::Outcome::Success;
 use rocket_contrib::json;
-
-use models::ticket_info::TicketInfo;
 use services::apps_service::{AppsService, AppsServiceError};
 use services::config_service::{Config, ConfigError};
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
+use std::io::Cursor;
 
 pub struct ListTicketsCommand {}
 

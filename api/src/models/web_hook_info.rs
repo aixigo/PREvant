@@ -23,8 +23,6 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use std::io::Read;
-
 use regex::Regex;
 use rocket::data::{self, FromDataSimple};
 use rocket::http::Status;
@@ -34,6 +32,7 @@ use rocket::Outcome::{Failure, Success};
 use serde::de::Error as DeserializeError;
 use serde::{Deserialize, Deserializer};
 use serde_json::from_str;
+use std::io::Read;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

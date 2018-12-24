@@ -23,16 +23,14 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use std::convert::From;
-
 use handlebars::TemplateRenderError;
 use models::service::{ContainerType, Service, ServiceConfig, ServiceError};
 use multimap::MultiMap;
 use services::config_service::{Config, ConfigError};
-
 use services::docker::docker_infrastructure::DockerInfrastructure;
 use services::infrastructure::Infrastructure;
 use services::service_templating::apply_templating_for_application_companion;
+use std::convert::From;
 
 pub struct AppsService {
     config: Config,

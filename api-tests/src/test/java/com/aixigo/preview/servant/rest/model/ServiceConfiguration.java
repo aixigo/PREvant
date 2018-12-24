@@ -31,7 +31,9 @@ import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @RequiredArgsConstructor
 @Data
@@ -46,10 +48,10 @@ public class ServiceConfiguration {
     @NonNull
     private final String imageRepository;
 
-    private List<String> volumes = new ArrayList<>();
+    private Map<String, String> volumes = new HashMap<>();
 
-    public ServiceConfiguration addVolume(String volume) {
-        volumes.add(volume);
+    public ServiceConfiguration addVolume(String path, String volume) {
+        volumes.put(path, volume);
         return this;
     }
 }

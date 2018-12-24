@@ -23,20 +23,18 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
-use std::io::Cursor;
-
+use models::request_info::RequestInfo;
+use models::service::Service;
 use multimap::MultiMap;
 use rocket::http::{ContentType, Status};
 use rocket::request::{self, FromRequest, Request};
 use rocket::response::{self, Responder, Response};
 use rocket::Outcome::{Failure, Success};
 use rocket_contrib::json;
-
-use models::request_info::RequestInfo;
-use models::service::Service;
 use services::apps_service::{AppsService, AppsServiceError};
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
+use std::io::Cursor;
 
 pub struct ListAppsCommand {
     request_info: RequestInfo,

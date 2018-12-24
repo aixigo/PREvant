@@ -65,17 +65,17 @@ pub fn apply_templating_for_application_companion(
         templated_config.set_env(&Some(templated_env));
     }
 
-    if service_config.get_volumes().len() > 0 {
+    if let Some(volumes) = service_config.get_volumes() {
         let mut templated_volumes = BTreeMap::new();
 
-        for (mount_point, file_content) in service_config.get_volumes() {
+        for (mount_point, file_content) in volumes {
             templated_volumes.insert(
                 mount_point.clone(),
                 reg.render_template(file_content, &parameters)?,
             );
         }
 
-        templated_config.set_volumes(&templated_volumes);
+        templated_config.set_volumes(&Some(templated_volumes));
     }
 
     Ok(templated_config)

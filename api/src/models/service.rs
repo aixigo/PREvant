@@ -47,7 +47,7 @@ pub struct ServiceConfig {
     image_user: Option<String>,
     image_tag: Option<String>,
     env: Option<Vec<String>>,
-    volumes: BTreeMap<String, String>,
+    volumes: Option<BTreeMap<String, String>>,
     #[serde(skip, default = "ContainerType::default")]
     container_type: ContainerType,
 }
@@ -56,7 +56,6 @@ impl ServiceConfig {
     pub fn new(
         service_name: &String,
         image_repository: &String,
-        env: Option<Vec<String>>,
     ) -> ServiceConfig {
         ServiceConfig {
             service_name: service_name.clone(),
@@ -64,8 +63,8 @@ impl ServiceConfig {
             registry: None,
             image_user: None,
             image_tag: None,
-            env,
-            volumes: BTreeMap::new(),
+            env: None,
+            volumes: None,
             container_type: ContainerType::Instance,
         }
     }
@@ -145,19 +144,22 @@ impl ServiceConfig {
         self.env = env.clone();
     }
 
-    pub fn get_env(&self) -> Option<Vec<String>> {
+    pub fn get_env<'a, 'b: 'a>(&'b self) -> Option<&'a Vec<String>> {
         match &self.env {
             None => None,
-            Some(env) => Some(env.clone()),
+            Some(env) => Some(&env),
         }
     }
 
-    pub fn set_volumes(&mut self, volumes: &BTreeMap<String, String>) {
+    pub fn set_volumes(&mut self, volumes: &Option<BTreeMap<String, String>>) {
         self.volumes = volumes.clone();
     }
 
-    pub fn get_volumes(&self) -> &BTreeMap<String, String> {
-        &self.volumes
+    pub fn get_volumes<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<String, String>> {
+        match &self.volumes {
+            None => None,
+            Some(volumes) => Some(&volumes),
+        }
     }
 }
 

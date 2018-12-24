@@ -23,10 +23,9 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use std::convert::From;
-
 use goji::Issue;
 use serde::ser::{Serialize, Serializer};
+use std::convert::From;
 use url::Url;
 
 pub struct TicketInfo {

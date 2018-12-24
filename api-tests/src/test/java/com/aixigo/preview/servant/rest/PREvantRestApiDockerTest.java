@@ -35,6 +35,7 @@ import io.restassured.response.ValidatableResponse;
 import org.junit.Rule;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.support.io.TempDirectory;
 import org.junit.jupiter.migrationsupport.rules.EnableRuleMigrationSupport;
 import org.junit.rules.TemporaryFolder;
 
@@ -43,7 +44,10 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
+import java.io.StringWriter;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static io.restassured.RestAssured.given;
@@ -55,12 +59,6 @@ import static java.util.Collections.singletonList;
 class PREvantRestApiDockerTest {
 
     private static final int WAIT_FOR_SERVICES = 5_000;
-
-    /**
-     * TODO: Replace {@code TempDirectory} extension when junit 5.4.0 has been released
-     */
-    @Rule
-    public final TemporaryFolder temporaryFolder = new TemporaryFolder();
 
     @Test
     void shouldDeployDockerContainer_WhenRequestToDeployService(URI restApiURI) throws Exception {
@@ -84,7 +82,7 @@ class PREvantRestApiDockerTest {
         postServiceConfiguration(restApiURI, "master", "httpd", "library", "httpd");
         postServiceConfiguration(restApiURI, "master",
                 new ServiceConfiguration("nginx", "library", "nginx")
-                        .addVolume(createNginxConfigVolume()));
+                        .addVolume("/etc/nginx/conf.d/default.conf", createNginxConfigFile()));
 
         postServiceConfiguration(restApiURI, "master", "httpd", "library", "httpd");
 
@@ -125,9 +123,9 @@ class PREvantRestApiDockerTest {
                 .statusCode(200);
     }
 
-    private String createNginxConfigVolume() throws IOException {
-        File nginxConfig = temporaryFolder.newFile();
-        try (BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(nginxConfig)))) {
+    private String createNginxConfigFile() throws IOException {
+        StringWriter writer = new StringWriter();
+        try (BufferedWriter bw = new BufferedWriter(writer)) {
             bw.write("server {");
             bw.newLine();
             bw.write("  resolver 127.0.0.11 valid=0s;");
@@ -150,7 +148,7 @@ class PREvantRestApiDockerTest {
             bw.newLine();
         }
 
-        return nginxConfig.getAbsolutePath() + ":/etc/nginx/conf.d/default.conf";
+        return writer.toString();
     }
 
     private ValidatableResponse postServiceConfiguration(URI restApiURI, String appName, String serviceName, String imageUser, String imageRepository) {

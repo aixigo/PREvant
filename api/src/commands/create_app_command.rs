@@ -23,11 +23,8 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
-use std::io::Cursor;
-use std::io::Read;
-
+use models::request_info::RequestInfo;
+use models::service::{Service, ServiceConfig, ServiceError};
 use rocket::data::{self, FromDataSimple};
 use rocket::http::{ContentType, Status};
 use rocket::request::{FromRequest, Request};
@@ -36,11 +33,11 @@ use rocket::Data;
 use rocket::Outcome::{Failure, Success};
 use rocket_contrib::json;
 use serde_json::from_str;
-
-use models::request_info::RequestInfo;
-use models::service::{Service, ServiceConfig, ServiceError};
-
 use services::apps_service::{AppsService, AppsServiceError};
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
+use std::io::Cursor;
+use std::io::Read;
 
 pub struct CreateOrUpdateAppCommand {
     data: Vec<ServiceConfig>,

@@ -23,18 +23,16 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use std::collections::HashMap;
-
-use multimap::MultiMap;
-use rocket::http::RawStr;
-use rocket_contrib::json::Json;
-
 use commands::create_app_command::{CreateOrUpdateAppCommand, CreateOrUpdateError};
 use commands::delete_app_command::{DeleteAppCommand, DeleteAppError};
 use commands::list_apps_command::{ListAppsCommand, ListAppsError};
 use commands::list_tickets_command::{ListTicketsCommand, ListTicketsError};
 use models::service::Service;
 use models::ticket_info::TicketInfo;
+use multimap::MultiMap;
+use rocket::http::RawStr;
+use rocket_contrib::json::Json;
+use std::collections::HashMap;
 
 #[get("/apps", format = "application/json")]
 pub fn apps(

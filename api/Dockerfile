@@ -1,10 +1,10 @@
 FROM docker.io/library/rust:1.30.0-slim as builder
 RUN apt update ; \
-    apt install -y libssl-dev pkg-config
+    apt install -y libssl-dev pkg-config ; \
+    rustup default nightly
 WORKDIR /usr/src/api
 COPY . .
-RUN rustup default nightly ; \
-    cargo install --path . ; \
+RUN cargo install --path . ; \
     chown root:root /usr/local/cargo/bin/api
 
 FROM docker.io/library/debian:stretch-slim

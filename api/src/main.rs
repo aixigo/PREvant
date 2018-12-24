@@ -49,15 +49,13 @@ extern crate tokio;
 extern crate toml;
 extern crate url;
 
-use std::fs::File;
-
+use models::request_info::RequestInfo;
 use rocket_contrib::json::Json;
 use serde_yaml::{from_reader, to_string, Value};
 use shiplift::{ContainerListOptions, Docker};
+use std::fs::File;
 use tokio::prelude::Future;
 use tokio::runtime::Runtime;
-
-use models::request_info::RequestInfo;
 
 mod apps;
 mod commands;

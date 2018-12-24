@@ -171,7 +171,7 @@ impl DockerInfrastructure {
             options.env(env.iter().map(|e| e.as_str()).collect());
         }
 
-        if service_config.get_volumes().len() > 0 {
+        if let Some(_volumes) = service_config.get_volumes() {
             self.create_volume(&mut runtime, app_name, service_config)?;
         }
 
@@ -267,7 +267,7 @@ impl DockerInfrastructure {
         )?;
 
         let mut futures = Vec::new();
-        for (mount_point, file_content) in config.get_volumes() {
+        for (mount_point, file_content) in config.get_volumes().unwrap() {
             let target = Path::new(mount_point)
                 .parent()
                 .map_or_else(|| "", |p| p.to_str().unwrap());
@@ -521,12 +521,12 @@ impl Infrastructure for DockerInfrastructure {
 
                         let (repo, user, registry, tag) =
                             models::service::parse_image_string(&container_details.image).unwrap();
-                        let mut service_config =
-                            ServiceConfig::new(service.get_service_name(), &repo, env);
+                        let mut service_config = ServiceConfig::new(service.get_service_name(), &repo);
 
                         service_config.set_image_user(&user);
                         service_config.set_registry(&registry);
                         service_config.set_image_tag(&tag);
+                        service_config.set_env(&env);
 
                         service_config
                     });

@@ -23,11 +23,10 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use rocket_contrib::json::Json;
-
 use commands::delete_app_command::{DeleteAppCommand, DeleteAppError};
 use models::service::Service;
 use models::web_hook_info::WebHookInfo;
+use rocket_contrib::json::Json;
 
 #[post("/webhooks", format = "application/json", data = "<web_hook_info>")]
 pub fn webhooks(
