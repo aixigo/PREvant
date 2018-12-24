@@ -281,12 +281,12 @@ impl DockerInfrastructure {
                         &ContainerOptions::builder("bash")
                             .volumes(vec![&volume])
                             .cmd(vec!["sh", "-c", &cmd])
-                            // TODO: use auto remove: https://github.com/softprops/shiplift/pull/137
+                            .auto_remove(true)
                             .build(),
                     )
                     .map(move |info| {
                         let docker = Docker::new();
-                        tokio::spawn(
+                        tokio::run(
                             docker
                                 .containers()
                                 .get(&info.id)
@@ -465,11 +465,33 @@ impl Infrastructure for DockerInfrastructure {
             let container = docker.containers().get(&id);
 
             let id_clone = id.clone();
-            container.stop(None).map(move |_| id_clone).and_then(|id| {
-                let docker = Docker::new();
-                let container = docker.containers().get(&id);
-                container.delete()
-            })
+            container
+                .stop(None)
+                .map(move |_| {
+                    let docker = Docker::new();
+                    let container = docker.containers().get(&id_clone);
+
+                    container
+                        .inspect()
+                        .map(|container_details| container_details)
+                })
+                .and_then(|container_details| container_details)
+                .and_then(|container_details| {
+                    let docker = Docker::new();
+                    let container = docker.containers().get(&container_details.id);
+
+                    for mount in container_details.mounts {
+                        tokio::run(
+                            docker
+                                .volumes()
+                                .get(&mount.source)
+                                .delete()
+                                .map_err(|err| error!("Cannot delete volume: {}", err)),
+                        );
+                    }
+
+                    container.delete()
+                })
         }) {
             futures.push(f);
         }
@@ -521,7 +543,8 @@ impl Infrastructure for DockerInfrastructure {
 
                         let (repo, user, registry, tag) =
                             models::service::parse_image_string(&container_details.image).unwrap();
-                        let mut service_config = ServiceConfig::new(service.get_service_name(), &repo);
+                        let mut service_config =
+                            ServiceConfig::new(service.get_service_name(), &repo);
 
                         service_config.set_image_user(&user);
                         service_config.set_registry(&registry);

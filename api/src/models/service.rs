@@ -53,10 +53,7 @@ pub struct ServiceConfig {
 }
 
 impl ServiceConfig {
-    pub fn new(
-        service_name: &String,
-        image_repository: &String,
-    ) -> ServiceConfig {
+    pub fn new(service_name: &String, image_repository: &String) -> ServiceConfig {
         ServiceConfig {
             service_name: service_name.clone(),
             image_repository: image_repository.clone(),
