@@ -109,11 +109,11 @@ mod tests {
     #[test]
     fn should_apply_app_companion_templating_with_service_name() {
         let env = vec![];
-        let config = ServiceConfig::new(
+        let mut config = ServiceConfig::new(
             &String::from("postgres-{{application.name}}"),
             &String::from("postgres"),
-            Some(env),
         );
+        config.set_env(&Some(env));
 
         let service_configs = vec![];
         let templated_config = apply_templating_for_application_companion(
@@ -135,15 +135,13 @@ mod tests {
                 {{~/each~}}"#,
         )];
 
-        let config = ServiceConfig::new(
-            &String::from("postgres-db"),
-            &String::from("postgres"),
-            Some(env),
-        );
+        let mut config =
+            ServiceConfig::new(&String::from("postgres-db"), &String::from("postgres"));
+        config.set_env(&Some(env));
 
         let service_configs = vec![
-            ServiceConfig::new(&String::from("service-a"), &String::from("service"), None),
-            ServiceConfig::new(&String::from("service-b"), &String::from("service"), None),
+            ServiceConfig::new(&String::from("service-a"), &String::from("service")),
+            ServiceConfig::new(&String::from("service-b"), &String::from("service")),
         ];
         let templated_config = apply_templating_for_application_companion(
             &config,
@@ -167,11 +165,9 @@ mod tests {
                 {{~/each~}}"#,
         )];
 
-        let config = ServiceConfig::new(
-            &String::from("postgres-db"),
-            &String::from("postgres"),
-            Some(env),
-        );
+        let mut config =
+            ServiceConfig::new(&String::from("postgres-db"), &String::from("postgres"));
+        config.set_env(&Some(env));
 
         let templated_config =
             apply_templating_for_application_companion(&config, &String::from("master"), &vec![]);
@@ -181,8 +177,7 @@ mod tests {
 
     #[test]
     fn should_apply_app_companion_templating_with_volumes() {
-        let mut config =
-            ServiceConfig::new(&String::from("nginx-proxy"), &String::from("nginx"), None);
+        let mut config = ServiceConfig::new(&String::from("nginx-proxy"), &String::from("nginx"));
 
         let mount_path = String::from("/etc/ningx/conf.d/default.conf");
         let mut volumes = BTreeMap::new();
@@ -196,11 +191,11 @@ location /{{name}} {
 {{/each}}"#,
             ),
         );
-        config.set_volumes(&volumes);
+        config.set_volumes(&Some(volumes));
 
         let service_configs = vec![
-            ServiceConfig::new(&String::from("service-a"), &String::from("service"), None),
-            ServiceConfig::new(&String::from("service-b"), &String::from("service"), None),
+            ServiceConfig::new(&String::from("service-a"), &String::from("service")),
+            ServiceConfig::new(&String::from("service-b"), &String::from("service")),
         ];
         let templated_config = apply_templating_for_application_companion(
             &config,
@@ -210,7 +205,11 @@ location /{{name}} {
         .unwrap();
 
         assert_eq!(
-            templated_config.get_volumes().get(&mount_path).unwrap(),
+            templated_config
+                .get_volumes()
+                .unwrap()
+                .get(&mount_path)
+                .unwrap(),
             r#"
 location /service-a {
     proxy_pass http://service-a;

@@ -53,7 +53,7 @@ pub struct Companion {
     #[serde(rename = "type")]
     companion_type: CompanionType,
     image: String,
-    env: Vec<String>,
+    env: Option<Vec<String>>,
     volumes: Option<BTreeMap<String, String>>,
 }
 
@@ -202,7 +202,7 @@ impl TryFrom<&Companion> for ServiceConfig {
         config.set_registry(&registry);
         config.set_image_user(&user);
         config.set_image_tag(&tag);
-        config.set_env(&Some(companion.env.clone())); // TODO: use move semantics
+        config.set_env(&companion.env.clone()); // TODO: use move semantics
 
         if let Some(volumes) = &companion.volumes {
             config.set_volumes(&Some(volumes.clone())); // TODO: use move semantics
@@ -271,7 +271,7 @@ mod tests {
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
-            assert_eq!(config.get_volumes().len(), 2);
+            assert_eq!(config.get_volumes().unwrap().len(), 2);
         });
     }
 

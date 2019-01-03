@@ -172,13 +172,18 @@ impl DockerInfrastructure {
         }
 
         if let Some(_volumes) = service_config.get_volumes() {
-            self.create_volume(&mut runtime, app_name, service_config)?;
+            let volumes: Vec<String> = self
+                .create_volumes(&mut runtime, app_name, service_config)?
+                .iter()
+                .map(|(path, volume_name)| format!("{}:{}", volume_name, path))
+                .collect();
+            options.volumes(volumes.iter().map(|v| v.as_ref()).collect());
         }
 
         let traefik_frontend = format!(
-            "ReplacePathRegex: ^/{p1}/{p2}(.*) /$1;PathPrefix:/{p1}/{p2};",
-            p1 = app_name,
-            p2 = service_config.get_service_name()
+            "PathPrefixStrip: /{app_name}/{service_name};",
+            app_name = app_name,
+            service_name = service_config.get_service_name()
         );
         let mut labels: HashMap<&str, &str> = HashMap::new();
         labels.insert(APP_NAME_LABEL, app_name);
@@ -230,20 +235,70 @@ impl DockerInfrastructure {
         Ok(service)
     }
 
-    fn create_volume(
+    fn create_volumes(
         &self,
         runtime: &mut Runtime,
         app_name: &String,
         config: &ServiceConfig,
-    ) -> Result<String, ShipLiftError> {
+    ) -> Result<HashMap<String, String>, ShipLiftError> {
+        let mut volumes: HashMap<String, String> = HashMap::new();
+
         info!(
-            "Creating volume for {:?} of app {:?}",
+            "Creating volumes for {:?} of app {:?}",
             config.get_service_name(),
             app_name
         );
 
         let docker = Docker::new();
         let containers = docker.containers();
+
+        let mut create_futures = Vec::new();
+        for (mount_point, file_content) in config.get_volumes().unwrap() {
+            let target = Path::new(mount_point)
+                .parent()
+                .map_or_else(|| "", |p| p.to_str().unwrap())
+                .to_string();
+
+            if let None = volumes.get(&target) {
+                volumes.insert(
+                    target.clone(),
+                    self.create_volume(runtime, app_name, config)?,
+                );
+            }
+            let volume_name = volumes.get(&target).unwrap();
+
+            let cmd = "echo -e \"".to_owned()
+                + &file_content.replace("\n", "\\n")
+                + "\" > "
+                + mount_point;
+
+            create_futures.push(
+                containers.create(
+                    &ContainerOptions::builder("bash")
+                        .volumes(vec![format!("{}:{}", volume_name, target).as_ref()])
+                        .cmd(vec!["sh", "-c", &cmd])
+                        .auto_remove(true)
+                        .build(),
+                ),
+            );
+        }
+
+        let mut echo_futures = Vec::new();
+        for info in runtime.block_on(join_all(create_futures))? {
+            echo_futures.push(docker.containers().get(&info.id).start());
+        }
+        runtime.block_on(join_all(echo_futures))?;
+
+        Ok(volumes)
+    }
+
+    fn create_volume(
+        &self,
+        runtime: &mut Runtime,
+        app_name: &String,
+        config: &ServiceConfig,
+    ) -> Result<String, ShipLiftError> {
+        let docker = Docker::new();
         let volumes = docker.volumes();
 
         let mut labels: HashMap<&str, &str> = HashMap::new();
@@ -265,39 +320,6 @@ impl DockerInfrastructure {
                     Ok(())
                 }),
         )?;
-
-        let mut futures = Vec::new();
-        for (mount_point, file_content) in config.get_volumes().unwrap() {
-            let target = Path::new(mount_point)
-                .parent()
-                .map_or_else(|| "", |p| p.to_str().unwrap());
-            let volume = format!("{}:{}", name, target);
-
-            let cmd = "echo \"".to_owned() + &file_content + "\" > " + mount_point;
-
-            futures.push(
-                containers
-                    .create(
-                        &ContainerOptions::builder("bash")
-                            .volumes(vec![&volume])
-                            .cmd(vec!["sh", "-c", &cmd])
-                            .auto_remove(true)
-                            .build(),
-                    )
-                    .map(move |info| {
-                        let docker = Docker::new();
-                        tokio::run(
-                            docker
-                                .containers()
-                                .get(&info.id)
-                                .start()
-                                .map_err(|e| warn!("Volume init error: {}", e)),
-                        );
-                    }),
-            );
-        }
-
-        runtime.block_on(join_all(futures))?;
 
         Ok(name)
     }

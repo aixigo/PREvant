@@ -90,8 +90,8 @@ impl AppsService {
                 &app_companion_config,
                 app_name,
                 &configs,
-            );
-            configs.push(applied_template_config?);
+            )?;
+            configs.push(applied_template_config);
         }
 
         let services = self.infrastructure.start_services(

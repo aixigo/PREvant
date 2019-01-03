@@ -6,7 +6,7 @@ services:
     network_mode: "bridge"
     userns_mode: "host"
     labels:
-      traefik.frontend.rule: 'ReplacePathRegex: ^/api(.*) /$$1;PathPrefix:/api;'
+      traefik.frontend.rule: 'PathPrefixStrip: /api;'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
