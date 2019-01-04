@@ -30,6 +30,7 @@ use futures::{Future, Stream};
 use models;
 use models::service::{ContainerType, Service, ServiceConfig, ServiceError};
 use multimap::MultiMap;
+use regex::Regex;
 use services::infrastructure::Infrastructure;
 use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
@@ -70,6 +71,20 @@ pub enum DockerInfrastructureError {
     UnknownServiceType { unknown_label: String },
 }
 
+fn escape_bash_string(string: &str) -> String {
+    let chars_to_escape_regex = Regex::new(r#"["\$]"#).unwrap();
+
+    string
+        .chars()
+        .into_iter()
+        .map(|c| match chars_to_escape_regex.is_match(&c.to_string()) {
+            false => c.to_string(),
+            true => format!("\\{}", c),
+        })
+        .collect::<String>()
+        .replace("\n", "\\n")
+}
+
 impl DockerInfrastructure {
     pub fn new() -> DockerInfrastructure {
         DockerInfrastructure {}
@@ -106,6 +121,64 @@ impl DockerInfrastructure {
         Ok(network_create_info.id)
     }
 
+    fn connect_traefik(&self, network_id: &String) -> Result<(), ShipLiftError> {
+        let docker = Docker::new();
+        let mut runtime = Runtime::new()?;
+
+        let traefik_container_id = runtime.block_on(
+            docker
+                .containers()
+                .list(&ContainerListOptions::builder().build())
+                .map(move |containers| {
+                    containers
+                        .into_iter()
+                        .find(|c| c.image.contains("traefik"))
+                        .map(|c| c.id)
+                }),
+        )?;
+
+        if let Some(id) = traefik_container_id {
+            if let Err(e) = runtime.block_on(
+                docker
+                    .networks()
+                    .get(network_id)
+                    .connect(&ContainerConnectionOptions::builder(&id).build()),
+            ) {
+                debug!("Cannot traefik: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn disconnect_traefik(&self, network_id: &String) -> Result<(), ShipLiftError> {
+        let docker = Docker::new();
+        let mut runtime = Runtime::new()?;
+
+        let traefik_container_id = runtime.block_on(
+            docker
+                .containers()
+                .list(&ContainerListOptions::builder().build())
+                .map(move |containers| {
+                    containers
+                        .into_iter()
+                        .find(|c| c.image.contains("traefik"))
+                        .map(|c| c.id)
+                }),
+        )?;
+
+        if let Some(id) = traefik_container_id {
+            runtime.block_on(
+                docker
+                    .networks()
+                    .get(network_id)
+                    .disconnect(&ContainerConnectionOptions::builder(&id).build()),
+            )?;
+        }
+
+        Ok(())
+    }
+
     fn delete_network(&self, app_name: &String) -> Result<(), ShipLiftError> {
         let network_name = format!("{}-net", app_name);
 
@@ -116,6 +189,7 @@ impl DockerInfrastructure {
             .iter()
             .filter(|n| &n.name == &network_name)
         {
+            self.disconnect_traefik(&n.id)?;
             runtime.block_on(docker.networks().get(&n.id).delete())?;
         }
 
@@ -181,7 +255,7 @@ impl DockerInfrastructure {
         }
 
         let traefik_frontend = format!(
-            "PathPrefixStrip: /{app_name}/{service_name};",
+            "ReplacePathRegex: ^/{app_name}/{service_name}/(.*) /$1;PathPrefix:/{app_name}/{service_name}/;",
             app_name = app_name,
             service_name = service_config.get_service_name()
         );
@@ -267,11 +341,11 @@ impl DockerInfrastructure {
             }
             let volume_name = volumes.get(&target).unwrap();
 
-            let cmd = "echo -e \"".to_owned()
-                + &file_content.replace("\n", "\\n")
-                + "\" > "
-                + mount_point;
-
+            let cmd = format!(
+                r#"echo -e "{}" > {}"#,
+                escape_bash_string(file_content),
+                mount_point
+            );
             create_futures.push(
                 containers.create(
                     &ContainerOptions::builder("bash")
@@ -283,11 +357,11 @@ impl DockerInfrastructure {
             );
         }
 
-        let mut echo_futures = Vec::new();
+        let mut start_futures = Vec::new();
         for info in runtime.block_on(join_all(create_futures))? {
-            echo_futures.push(docker.containers().get(&info.id).start());
+            start_futures.push(docker.containers().get(&info.id).start());
         }
-        runtime.block_on(join_all(echo_futures))?;
+        runtime.block_on(join_all(start_futures))?;
 
         Ok(volumes)
     }
@@ -432,6 +506,8 @@ impl Infrastructure for DockerInfrastructure {
     ) -> Result<Vec<Service>, Error> {
         let network_id = self.create_or_get_network_id(app_name)?;
 
+        self.connect_traefik(&network_id)?;
+
         let mut count = 0;
         let (tx, rx) = mpsc::channel();
 
@@ -481,44 +557,34 @@ impl Infrastructure for DockerInfrastructure {
         let mut runtime = Runtime::new()?;
         let container_ids: Vec<String> = runtime.block_on(future)?;
 
-        let mut futures = Vec::new();
-        for f in container_ids.iter().map(|id| {
-            let docker = Docker::new();
-            let container = docker.containers().get(&id);
-
+        let mut container_details_futures = Vec::new();
+        for id in container_ids {
             let id_clone = id.clone();
-            container
+            let future = containers
+                .get(&id)
                 .stop(None)
                 .map(move |_| {
                     let docker = Docker::new();
                     let container = docker.containers().get(&id_clone);
-
-                    container
-                        .inspect()
-                        .map(|container_details| container_details)
+                    container.inspect()
                 })
-                .and_then(|container_details| container_details)
-                .and_then(|container_details| {
-                    let docker = Docker::new();
-                    let container = docker.containers().get(&container_details.id);
+                .and_then(|container_details| container_details);
 
-                    for mount in container_details.mounts {
-                        tokio::run(
-                            docker
-                                .volumes()
-                                .get(&mount.source)
-                                .delete()
-                                .map_err(|err| error!("Cannot delete volume: {}", err)),
-                        );
-                    }
-
-                    container.delete()
-                })
-        }) {
-            futures.push(f);
+            container_details_futures.push(future);
         }
 
-        runtime.block_on(join_all(futures))?;
+        let container_details = runtime.block_on(join_all(container_details_futures))?;
+        let mut delete_volumes_futures = Vec::new();
+        for mount in container_details
+            .into_iter()
+            .flat_map(|container_details| container_details.mounts)
+        {
+            delete_volumes_futures.push(docker.volumes().get(&mount.source).delete());
+        }
+
+        if let Err(e) = runtime.block_on(join_all(delete_volumes_futures)) {
+            error!("Cannot delete volume: {}", e);
+        }
 
         self.delete_network(app_name)?;
 
@@ -649,5 +715,30 @@ impl From<ServiceError> for DockerInfrastructureError {
                 internal_message: err.to_string(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn should_escape_bash_string() {
+        let escaped_string = escape_bash_string(
+            r#"server {
+  resolver 127.0.0.11 valid=0s;
+  listen       80;
+  server_name  localhost;
+  access_log   /var/log/nginx/access.log main;
+  location / {
+    set $upstream httpd:80;
+    proxy_pass http://$upstream;
+    add_header X-MyHeader "Test String";
+  }
+}"#,
+        );
+
+        assert_eq!("server {\\n  resolver 127.0.0.11 valid=0s;\\n  listen       80;\\n  server_name  localhost;\\n  access_log   /var/log/nginx/access.log main;\\n  location / {\\n    set \\$upstream httpd:80;\\n    proxy_pass http://\\$upstream;\\n    add_header X-MyHeader \\\"Test String\\\";\\n  }\\n}", &escaped_string);
     }
 }

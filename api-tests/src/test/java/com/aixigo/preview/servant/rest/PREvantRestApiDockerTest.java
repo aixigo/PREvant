@@ -73,8 +73,6 @@ class PREvantRestApiDockerTest {
                 new ServiceConfiguration("nginx", "library", "nginx")
                         .addVolume("/etc/nginx/conf.d/default.conf", createNginxConfigFile()));
 
-        postServiceConfiguration(restApiURI, "master", "httpd", "library", "httpd");
-
         Thread.sleep(WAIT_FOR_SERVICES);
         given().baseUri(restApiURI.toString())
                 .get("/master/nginx/")
