@@ -49,7 +49,7 @@ extern crate tokio;
 extern crate toml;
 extern crate url;
 
-use models::request_info::RequestInfo;
+use crate::models::request_info::RequestInfo;
 use rocket_contrib::json::Json;
 use serde_yaml::{from_reader, to_string, Value};
 use shiplift::{ContainerListOptions, Docker};

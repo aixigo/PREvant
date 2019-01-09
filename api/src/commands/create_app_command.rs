@@ -23,8 +23,8 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use models::request_info::RequestInfo;
-use models::service::{Service, ServiceConfig, ServiceError};
+use crate::models::request_info::RequestInfo;
+use crate::models::service::{Service, ServiceConfig, ServiceError};
 use rocket::data::{self, FromDataSimple};
 use rocket::http::{ContentType, Status};
 use rocket::request::{FromRequest, Request};
@@ -33,7 +33,7 @@ use rocket::Data;
 use rocket::Outcome::{Failure, Success};
 use rocket_contrib::json;
 use serde_json::from_str;
-use services::apps_service::{AppsService, AppsServiceError};
+use crate::services::apps_service::{AppsService, AppsServiceError};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::Cursor;

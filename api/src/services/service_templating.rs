@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 use handlebars::{Handlebars, TemplateRenderError};
-use models::service::{ContainerType, ServiceConfig};
+use crate::models::service::{ContainerType, ServiceConfig};
 use std::collections::BTreeMap;
 
 pub fn apply_templating_for_application_companion(

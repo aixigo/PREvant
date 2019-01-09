@@ -24,12 +24,12 @@
  * =========================LICENSE_END==================================
  */
 use handlebars::TemplateRenderError;
-use models::service::{ContainerType, Service, ServiceConfig, ServiceError};
+use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceError};
 use multimap::MultiMap;
-use services::config_service::{Config, ConfigError};
-use services::docker::docker_infrastructure::DockerInfrastructure;
-use services::infrastructure::Infrastructure;
-use services::service_templating::apply_templating_for_application_companion;
+use crate::services::config_service::{Config, ConfigError};
+use crate::services::docker::docker_infrastructure::DockerInfrastructure;
+use crate::services::infrastructure::Infrastructure;
+use crate::services::service_templating::apply_templating_for_application_companion;
 use std::convert::From;
 
 pub struct AppsService {

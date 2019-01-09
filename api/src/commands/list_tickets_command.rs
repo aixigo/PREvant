@@ -25,14 +25,14 @@
  */
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
-use models::ticket_info::TicketInfo;
+use crate::models::ticket_info::TicketInfo;
 use rocket::http::{ContentType, Status};
 use rocket::request::{self, FromRequest, Request};
 use rocket::response::{self, Responder, Response};
 use rocket::Outcome::Success;
 use rocket_contrib::json;
-use services::apps_service::{AppsService, AppsServiceError};
-use services::config_service::{Config, ConfigError};
+use crate::services::apps_service::{AppsService, AppsServiceError};
+use crate::services::config_service::{Config, ConfigError};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

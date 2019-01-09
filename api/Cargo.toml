@@ -3,6 +3,7 @@ name = "api"
 version = "0.9.0"
 authors = ["Marc Schreiber <marc.schreiber@aixigo.de>"]
 repository = "https://github.com/aixigo/PREvant/"
+edition = "2018"
 
 [dependencies]
 crossbeam = "0.4"

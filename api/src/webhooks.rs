@@ -23,9 +23,9 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use commands::delete_app_command::{DeleteAppCommand, DeleteAppError};
-use models::service::Service;
-use models::web_hook_info::WebHookInfo;
+use crate::commands::delete_app_command::{DeleteAppCommand, DeleteAppError};
+use crate::models::service::Service;
+use crate::models::web_hook_info::WebHookInfo;
 use rocket_contrib::json::Json;
 
 #[post("/webhooks", format = "application/json", data = "<web_hook_info>")]

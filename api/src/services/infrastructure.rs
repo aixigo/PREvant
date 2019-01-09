@@ -25,7 +25,7 @@
  */
 use super::config_service::ContainerConfig;
 use failure::Error;
-use models::service::{Service, ServiceConfig};
+use crate::models::service::{Service, ServiceConfig};
 use multimap::MultiMap;
 
 pub trait Infrastructure {

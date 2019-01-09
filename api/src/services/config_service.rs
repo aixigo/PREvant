@@ -23,7 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use models::service::{parse_image_string, ContainerType, ServiceConfig};
+use crate::models::service::{parse_image_string, ContainerType, ServiceConfig};
 use serde::{de, Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::convert::{From, TryFrom};
