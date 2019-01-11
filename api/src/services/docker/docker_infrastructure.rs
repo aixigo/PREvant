@@ -24,14 +24,14 @@
  * =========================LICENSE_END==================================
  */
 use super::super::config_service::ContainerConfig;
+use crate::models;
+use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceError};
+use crate::services::infrastructure::Infrastructure;
 use failure::Error;
 use futures::future::join_all;
 use futures::{Future, Stream};
-use crate::models;
-use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceError};
 use multimap::MultiMap;
 use regex::Regex;
-use crate::services::infrastructure::Infrastructure;
 use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
 use shiplift::rep::Container;

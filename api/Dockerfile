@@ -1,9 +1,10 @@
-FROM docker.io/library/rust:1.30.0-slim as builder
+FROM docker.io/library/rust:1.31.0-slim as builder
 RUN apt update ; \
     apt install -y libssl-dev pkg-config ; \
     rustup default nightly
 WORKDIR /usr/src/api
-COPY . .
+COPY Cargo.toml Cargo.lock /usr/src/api/
+COPY src /usr/src/api/src
 RUN cargo install --path . ; \
     chown root:root /usr/local/cargo/bin/api
 

@@ -23,20 +23,14 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use goji::Error as GojiError;
-use goji::{Credentials, Jira, SearchOptions};
 use crate::models::ticket_info::TicketInfo;
-use rocket::http::{ContentType, Status};
-use rocket::request::{self, FromRequest, Request};
-use rocket::response::{self, Responder, Response};
-use rocket::Outcome::Success;
-use rocket_contrib::json;
 use crate::services::apps_service::{AppsService, AppsServiceError};
 use crate::services::config_service::{Config, ConfigError};
+use goji::Error as GojiError;
+use goji::{Credentials, Jira, SearchOptions};
+use rocket::request::{self, FromRequest, Request};
+use rocket::Outcome::Success;
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
-use std::io::Cursor;
 
 pub struct ListTicketsCommand {}
 
@@ -56,9 +50,9 @@ impl ListTicketsCommand {
 
         match Config::load()?.get_jira_config() {
             None => {
-                return Err(ListTicketsError::Internal(String::from(
-                    "No JIRA Configuration",
-                )));
+                return Err(ListTicketsError::MissingIssueTrackingConfiguration(
+                    "".to_string(),
+                ));
             }
             Some(jira_config) => {
                 let apps_service = AppsService::new()?;
@@ -100,51 +94,39 @@ impl ListTicketsCommand {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Fail, Responder)]
 pub enum ListTicketsError {
-    Internal(String),
+    #[fail(display = "No issue tracking configuration")]
+    #[response(status = 204)]
+    MissingIssueTrackingConfiguration(String),
+    #[fail(
+        display = "Unexpected issue tracking system error: {}",
+        internal_message
+    )]
+    #[response(status = 500)]
+    UnexpectedError { internal_message: String },
 }
 
 impl From<AppsServiceError> for ListTicketsError {
     fn from(err: AppsServiceError) -> Self {
-        ListTicketsError::Internal(format!("{:?}", err))
+        ListTicketsError::UnexpectedError {
+            internal_message: format!("{:?}", err),
+        }
     }
 }
 
 impl From<ConfigError> for ListTicketsError {
     fn from(err: ConfigError) -> Self {
-        ListTicketsError::Internal(format!("{:?}", err))
+        ListTicketsError::UnexpectedError {
+            internal_message: format!("{:?}", err),
+        }
     }
 }
 
 impl From<GojiError> for ListTicketsError {
     fn from(err: GojiError) -> Self {
-        ListTicketsError::Internal(format!("{:?}", err))
-    }
-}
-
-impl Error for ListTicketsError {
-    fn description(&self) -> &str {
-        "List Tickets Error"
-    }
-}
-
-impl Display for ListTicketsError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            ListTicketsError::Internal(err) => f.write_str(&format!("Internal error: {:?}", err)),
-        }
-    }
-}
-
-impl<'r> Responder<'r> for ListTicketsError {
-    fn respond_to(self, _: &Request) -> response::Result<'r> {
-        match self {
-            ListTicketsError::Internal(error) => Response::build()
-                .sized_body(Cursor::new(json!({ "error": error }).to_string()))
-                .header(ContentType::JSON)
-                .status(Status::InternalServerError)
-                .ok(),
+        ListTicketsError::UnexpectedError {
+            internal_message: format!("{:?}", err),
         }
     }
 }

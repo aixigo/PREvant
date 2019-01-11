@@ -10,7 +10,6 @@ crossbeam = "0.4"
 crossbeam-utils = "0.5"
 failure = "0.1"
 futures = "0.1"
-goji = "0.2"
 handlebars = "1.1"
 hyper = "0.10"
 log = "0.4"
@@ -31,3 +30,12 @@ git = "https://github.com/softprops/shiplift.git"
 rev = "0ca553e5976acd49f2b9177755e1b2c685c19e48"
 default-features = false
 features = ["unix-socket"]
+
+[dependencies.goji]
+git = "https://github.com/softprops/goji.git"
+rev = "1d72ffee98b88321418181998225c700904be414"
+
+[dependencies.reqwest]
+version = "0.9.7"
+default-features = false
+features = ["rustls-tls"]

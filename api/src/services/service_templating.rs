@@ -23,8 +23,8 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use handlebars::{Handlebars, TemplateRenderError};
 use crate::models::service::{ContainerType, ServiceConfig};
+use handlebars::{Handlebars, TemplateRenderError};
 use std::collections::BTreeMap;
 
 pub fn apply_templating_for_application_companion(

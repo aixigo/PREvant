@@ -23,13 +23,13 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use handlebars::TemplateRenderError;
 use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceError};
-use multimap::MultiMap;
 use crate::services::config_service::{Config, ConfigError};
 use crate::services::docker::docker_infrastructure::DockerInfrastructure;
 use crate::services::infrastructure::Infrastructure;
 use crate::services::service_templating::apply_templating_for_application_companion;
+use handlebars::TemplateRenderError;
+use multimap::MultiMap;
 use std::convert::From;
 
 pub struct AppsService {

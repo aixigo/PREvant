@@ -24,8 +24,8 @@
  * =========================LICENSE_END==================================
  */
 use super::config_service::ContainerConfig;
-use failure::Error;
 use crate::models::service::{Service, ServiceConfig};
+use failure::Error;
 use multimap::MultiMap;
 
 pub trait Infrastructure {

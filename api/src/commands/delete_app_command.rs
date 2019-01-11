@@ -25,12 +25,12 @@
  */
 use crate::models::request_info::RequestInfo;
 use crate::models::service::Service;
+use crate::services::apps_service::{AppsService, AppsServiceError};
 use rocket::http::{ContentType, Status};
 use rocket::request::{self, FromRequest, Request};
 use rocket::response::{self, Responder, Response};
 use rocket::Outcome::{Failure, Success};
 use rocket_contrib::json;
-use crate::services::apps_service::{AppsService, AppsServiceError};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::Cursor;
