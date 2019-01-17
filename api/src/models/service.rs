@@ -48,34 +48,37 @@ pub struct ServiceConfig {
     image_tag: Option<String>,
     env: Option<Vec<String>>,
     volumes: Option<BTreeMap<String, String>>,
+    #[serde(skip)]
+    labels: Option<BTreeMap<String, String>>,
     #[serde(skip, default = "ContainerType::default")]
     container_type: ContainerType,
 }
 
 impl ServiceConfig {
-    pub fn new(service_name: &String, image_repository: &String) -> ServiceConfig {
+    pub fn new(service_name: String, image_repository: String) -> ServiceConfig {
         ServiceConfig {
-            service_name: service_name.clone(),
-            image_repository: image_repository.clone(),
+            service_name,
+            image_repository,
             registry: None,
             image_user: None,
             image_tag: None,
             env: None,
             volumes: None,
+            labels: None,
             container_type: ContainerType::Instance,
         }
     }
 
-    pub fn set_registry(&mut self, registry: &Option<String>) {
-        self.registry = registry.clone()
+    pub fn set_registry(&mut self, registry: Option<String>) {
+        self.registry = registry
     }
 
-    pub fn set_image_user(&mut self, image_user: &Option<String>) {
-        self.image_user = image_user.clone()
+    pub fn set_image_user(&mut self, image_user: Option<String>) {
+        self.image_user = image_user
     }
 
-    pub fn set_image_tag(&mut self, image_tag: &Option<String>) {
-        self.image_tag = image_tag.clone()
+    pub fn set_image_tag(&mut self, image_tag: Option<String>) {
+        self.image_tag = image_tag;
     }
 
     fn get_docker_image_base(&self) -> String {
@@ -137,8 +140,8 @@ impl ServiceConfig {
         }
     }
 
-    pub fn set_env(&mut self, env: &Option<Vec<String>>) {
-        self.env = env.clone();
+    pub fn set_env(&mut self, env: Option<Vec<String>>) {
+        self.env = env;
     }
 
     pub fn get_env<'a, 'b: 'a>(&'b self) -> Option<&'a Vec<String>> {
@@ -148,8 +151,19 @@ impl ServiceConfig {
         }
     }
 
-    pub fn set_volumes(&mut self, volumes: &Option<BTreeMap<String, String>>) {
-        self.volumes = volumes.clone();
+    pub fn set_labels(&mut self, labels: Option<BTreeMap<String, String>>) {
+        self.labels = labels;
+    }
+
+    pub fn get_labels<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<String, String>> {
+        match &self.labels {
+            None => None,
+            Some(labels) => Some(&labels),
+        }
+    }
+
+    pub fn set_volumes(&mut self, volumes: Option<BTreeMap<String, String>>) {
+        self.volumes = volumes;
     }
 
     pub fn get_volumes<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<String, String>> {

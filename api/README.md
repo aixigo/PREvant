@@ -63,6 +63,13 @@ remote.services={{#each services~}}
 """
 ```
 
+Furthermore, you can provide labels through handlebars templating:
+
+```toml
+[companions.openid.labels]
+"com.github.prevant" = "bar-{{application.name}}"
+```
+
 #### Template Variables
 
 The list of available handlebars variables:
@@ -87,6 +94,8 @@ image = 'postgres:11'
 env = [ 'KEY=VALUE' ]
 [companions.services.postgres.volumes]
 "/path/to/volume.properties" == "…"
+[companions.openid.labels]
+"com.github.prevant" = "bar-{{application.name}}"
 ```
 
 

@@ -260,10 +260,17 @@ impl DockerInfrastructure {
             service_name = service_config.get_service_name()
         );
         let mut labels: HashMap<&str, &str> = HashMap::new();
+        labels.insert("traefik.frontend.rule", &traefik_frontend);
+
+        if let Some(config_labels) = service_config.get_labels() {
+            for (k, v) in config_labels {
+                labels.insert(k, v);
+            }
+        }
+
         labels.insert(APP_NAME_LABEL, app_name);
         labels.insert(SERVICE_NAME_LABEL, &service_config.get_service_name());
         labels.insert(CONTAINER_TYPE_LABEL, &container_type_name);
-        labels.insert("traefik.frontend.rule", &traefik_frontend);
 
         options.labels(&labels);
         options.restart_policy("always", 5);
@@ -632,12 +639,12 @@ impl Infrastructure for DockerInfrastructure {
                         let (repo, user, registry, tag) =
                             models::service::parse_image_string(&container_details.image).unwrap();
                         let mut service_config =
-                            ServiceConfig::new(service.get_service_name(), &repo);
+                            ServiceConfig::new(service.get_service_name().clone(), repo);
 
-                        service_config.set_image_user(&user);
-                        service_config.set_registry(&registry);
-                        service_config.set_image_tag(&tag);
-                        service_config.set_env(&env);
+                        service_config.set_image_user(user);
+                        service_config.set_registry(registry);
+                        service_config.set_image_tag(tag);
+                        service_config.set_env(env);
 
                         service_config
                     });

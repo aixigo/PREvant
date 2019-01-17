@@ -54,6 +54,7 @@ pub struct Companion {
     companion_type: CompanionType,
     image: String,
     env: Option<Vec<String>>,
+    labels: Option<BTreeMap<String, String>>,
     volumes: Option<BTreeMap<String, String>>,
 }
 
@@ -198,14 +199,15 @@ impl TryFrom<&Companion> for ServiceConfig {
             Err(_) => return Err(ConfigError::UnableToParseImage),
         };
 
-        let mut config = ServiceConfig::new(&companion.service_name, &repo);
-        config.set_registry(&registry);
-        config.set_image_user(&user);
-        config.set_image_tag(&tag);
-        config.set_env(&companion.env.clone()); // TODO: use move semantics
+        let mut config = ServiceConfig::new(companion.service_name.clone(), repo);
+        config.set_registry(registry);
+        config.set_image_user(user);
+        config.set_image_tag(tag);
+        config.set_env(companion.env.clone());
+        config.set_labels(companion.labels.clone());
 
         if let Some(volumes) = &companion.volumes {
-            config.set_volumes(&Some(volumes.clone())); // TODO: use move semantics
+            config.set_volumes(Some(volumes.clone()));
         }
 
         Ok(config)
@@ -248,6 +250,7 @@ mod tests {
                 config.get_container_type(),
                 &ContainerType::ApplicationCompanion
             );
+            assert_eq!(config.get_labels(), None);
         });
     }
 
@@ -272,6 +275,31 @@ mod tests {
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
             assert_eq!(config.get_volumes().unwrap().len(), 2);
+        });
+    }
+
+    #[test]
+    fn should_return_application_companions_as_service_configs_with_labels() {
+        let config_str = r#"
+            [[companions]]
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/opendid:11-alpine'
+
+            [companions.openid.labels]
+            'com.example.foo' = 'bar'
+        "#;
+
+        let config = from_str::<Config>(config_str).unwrap();
+        let companion_configs = config.get_application_companion_configs().unwrap();
+
+        assert_eq!(companion_configs.len(), 1);
+        companion_configs.iter().for_each(|config| {
+            for (k, v) in config.get_labels().unwrap().iter() {
+                assert_eq!(k, "com.example.foo");
+                assert_eq!(v, "bar");
+            }
         });
     }
 

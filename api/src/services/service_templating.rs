@@ -62,23 +62,32 @@ pub fn apply_templating_for_application_companion(
             templated_env.push(reg.render_template(&e, &parameters)?);
         }
 
-        templated_config.set_env(&Some(templated_env));
+        templated_config.set_env(Some(templated_env));
     }
 
     if let Some(volumes) = service_config.get_volumes() {
-        let mut templated_volumes = BTreeMap::new();
+        templated_config.set_volumes(Some(apply_templates(&reg, &parameters, volumes)?));
+    }
 
-        for (mount_point, file_content) in volumes {
-            templated_volumes.insert(
-                mount_point.clone(),
-                reg.render_template(file_content, &parameters)?,
-            );
-        }
-
-        templated_config.set_volumes(&Some(templated_volumes));
+    if let Some(labels) = service_config.get_labels() {
+        templated_config.set_labels(Some(apply_templates(&reg, &parameters, labels)?));
     }
 
     Ok(templated_config)
+}
+
+fn apply_templates(
+    reg: &Handlebars,
+    parameters: &TemplateParameters,
+    original_values: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, TemplateRenderError> {
+    let mut templated_values = BTreeMap::new();
+
+    for (k, v) in original_values {
+        templated_values.insert(k.clone(), reg.render_template(v, &parameters)?);
+    }
+
+    Ok(templated_values)
 }
 
 #[derive(Serialize)]
@@ -110,10 +119,10 @@ mod tests {
     fn should_apply_app_companion_templating_with_service_name() {
         let env = vec![];
         let mut config = ServiceConfig::new(
-            &String::from("postgres-{{application.name}}"),
-            &String::from("postgres"),
+            String::from("postgres-{{application.name}}"),
+            String::from("postgres"),
         );
-        config.set_env(&Some(env));
+        config.set_env(Some(env));
 
         let service_configs = vec![];
         let templated_config = apply_templating_for_application_companion(
@@ -135,13 +144,12 @@ mod tests {
                 {{~/each~}}"#,
         )];
 
-        let mut config =
-            ServiceConfig::new(&String::from("postgres-db"), &String::from("postgres"));
-        config.set_env(&Some(env));
+        let mut config = ServiceConfig::new(String::from("postgres-db"), String::from("postgres"));
+        config.set_env(Some(env));
 
         let service_configs = vec![
-            ServiceConfig::new(&String::from("service-a"), &String::from("service")),
-            ServiceConfig::new(&String::from("service-b"), &String::from("service")),
+            ServiceConfig::new(String::from("service-a"), String::from("service")),
+            ServiceConfig::new(String::from("service-b"), String::from("service")),
         ];
         let templated_config = apply_templating_for_application_companion(
             &config,
@@ -157,6 +165,34 @@ mod tests {
     }
 
     #[test]
+    fn should_apply_app_companion_templating_with_labels() {
+        let mut config = ServiceConfig::new(String::from("postgres-db"), String::from("postgres"));
+
+        let mut labels = BTreeMap::new();
+        labels.insert(
+            String::from("com.foo.bar"),
+            String::from("app-{{application.name}}"),
+        );
+        config.set_labels(Some(labels));
+
+        let service_configs = vec![
+            ServiceConfig::new(String::from("service-a"), String::from("service")),
+            ServiceConfig::new(String::from("service-b"), String::from("service")),
+        ];
+        let templated_config = apply_templating_for_application_companion(
+            &config,
+            &String::from("master"),
+            &service_configs,
+        )
+        .unwrap();
+
+        for (k, v) in templated_config.get_labels().unwrap().iter() {
+            assert_eq!(k, "com.foo.bar");
+            assert_eq!(v, "app-master");
+        }
+    }
+
+    #[test]
     fn should_not_apply_app_companion_templating_with_invalid_envs() {
         let env = vec![String::from(
             r#"DATABASE_SCHEMAS=
@@ -165,9 +201,8 @@ mod tests {
                 {{~/each~}}"#,
         )];
 
-        let mut config =
-            ServiceConfig::new(&String::from("postgres-db"), &String::from("postgres"));
-        config.set_env(&Some(env));
+        let mut config = ServiceConfig::new(String::from("postgres-db"), String::from("postgres"));
+        config.set_env(Some(env));
 
         let templated_config =
             apply_templating_for_application_companion(&config, &String::from("master"), &vec![]);
@@ -177,7 +212,7 @@ mod tests {
 
     #[test]
     fn should_apply_app_companion_templating_with_volumes() {
-        let mut config = ServiceConfig::new(&String::from("nginx-proxy"), &String::from("nginx"));
+        let mut config = ServiceConfig::new(String::from("nginx-proxy"), String::from("nginx"));
 
         let mount_path = String::from("/etc/ningx/conf.d/default.conf");
         let mut volumes = BTreeMap::new();
@@ -191,11 +226,11 @@ location /{{name}} {
 {{/each}}"#,
             ),
         );
-        config.set_volumes(&Some(volumes));
+        config.set_volumes(Some(volumes));
 
         let service_configs = vec![
-            ServiceConfig::new(&String::from("service-a"), &String::from("service")),
-            ServiceConfig::new(&String::from("service-b"), &String::from("service")),
+            ServiceConfig::new(String::from("service-a"), String::from("service")),
+            ServiceConfig::new(String::from("service-b"), String::from("service")),
         ];
         let templated_config = apply_templating_for_application_companion(
             &config,
