@@ -26,8 +26,11 @@
 use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceError};
 use crate::services::config_service::{Config, ConfigError};
 use crate::services::docker::docker_infrastructure::DockerInfrastructure;
-use crate::services::infrastructure::Infrastructure;
 use crate::services::service_templating::apply_templating_for_application_companion;
+use crate::services::{
+    images_service::{ImagesService, ImagesServiceError},
+    infrastructure::Infrastructure,
+};
 use handlebars::TemplateRenderError;
 use multimap::MultiMap;
 use std::convert::From;
@@ -85,6 +88,14 @@ impl AppsService {
             }
         }
 
+        let images_service = ImagesService::new();
+        let mappings = images_service.resolve_image_ports(&configs)?;
+        for config in configs.iter_mut() {
+            if let Some(port) = mappings.get(config) {
+                config.set_port(port.clone());
+            }
+        }
+
         for app_companion_config in self.config.get_application_companion_configs()? {
             let applied_template_config = apply_templating_for_application_companion(
                 &app_companion_config,
@@ -124,6 +135,7 @@ pub enum AppsServiceError {
     /// Will be used if the service configuration cannot be loaded.
     InvalidServerConfiguration(ConfigError),
     InvalidTemplateFormat(TemplateRenderError),
+    UnableToResolveImage(ImagesServiceError),
 }
 
 impl From<ConfigError> for AppsServiceError {
@@ -141,5 +153,11 @@ impl From<failure::Error> for AppsServiceError {
 impl From<TemplateRenderError> for AppsServiceError {
     fn from(error: TemplateRenderError) -> Self {
         AppsServiceError::InvalidTemplateFormat(error)
+    }
+}
+
+impl From<ImagesServiceError> for AppsServiceError {
+    fn from(error: ImagesServiceError) -> Self {
+        AppsServiceError::UnableToResolveImage(error)
     }
 }

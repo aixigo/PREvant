@@ -38,7 +38,7 @@ pub struct Service {
     base_url: Option<Url>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Eq, Hash, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
     service_name: String,
@@ -52,42 +52,51 @@ pub struct ServiceConfig {
     labels: Option<BTreeMap<String, String>>,
     #[serde(skip, default = "ContainerType::default")]
     container_type: ContainerType,
+    #[serde(skip)]
+    port: u16,
+}
+
+pub enum Image {
+    Named {
+        image_repository: String,
+        registry: Option<String>,
+        image_user: Option<String>,
+        image_tag: Option<String>,
+    },
+    Digest {
+        hash: String,
+    },
 }
 
 impl ServiceConfig {
-    pub fn new(service_name: String, image_repository: String) -> ServiceConfig {
+    pub fn new(service_name: String, image: &Image) -> ServiceConfig {
+        let (image_repository, registry, image_user, image_tag) = match image {
+            Image::Digest { hash } => (hash.clone(), None, None, None),
+            Image::Named {
+                image_repository,
+                registry,
+                image_user,
+                image_tag,
+            } => (
+                image_repository.clone(),
+                registry.clone(),
+                image_user.clone(),
+                image_tag.clone(),
+            ),
+        };
+
         ServiceConfig {
             service_name,
             image_repository,
-            registry: None,
-            image_user: None,
-            image_tag: None,
+            registry,
+            image_user,
+            image_tag,
             env: None,
             volumes: None,
             labels: None,
             container_type: ContainerType::Instance,
+            port: 80,
         }
-    }
-
-    pub fn set_registry(&mut self, registry: Option<String>) {
-        self.registry = registry
-    }
-
-    pub fn set_image_user(&mut self, image_user: Option<String>) {
-        self.image_user = image_user
-    }
-
-    pub fn set_image_tag(&mut self, image_tag: Option<String>) {
-        self.image_tag = image_tag;
-    }
-
-    fn get_docker_image_base(&self) -> String {
-        let image_user = match &self.image_user {
-            Some(user) => user.clone(),
-            None => String::from("library"),
-        };
-
-        format!("{}/{}", image_user, self.image_repository)
     }
 
     pub fn set_container_type(&mut self, container_type: ContainerType) {
@@ -98,7 +107,7 @@ impl ServiceConfig {
         &self.container_type
     }
 
-    pub fn refers_to_image_id(&self) -> bool {
+    fn refers_to_image_id(&self) -> bool {
         let regex = Regex::new(r"^(sha256:)?(?P<id>[a-fA-F0-9]+)$").unwrap();
         regex
             .captures(&self.image_repository)
@@ -106,23 +115,20 @@ impl ServiceConfig {
             .unwrap_or_else(|| false)
     }
 
-    /// Returns a fully qualifying docker image string
-    pub fn get_docker_image(&self) -> String {
+    /// Returns a fully qualifying docker image
+    pub fn get_image(&self) -> Image {
         if self.refers_to_image_id() {
-            return self.image_repository.clone();
+            return Image::Digest {
+                hash: self.image_repository.clone(),
+            };
         }
 
-        let registry = match &self.registry {
-            None => String::from("docker.io"),
-            Some(registry) => registry.clone(),
-        };
-
-        format!(
-            "{}/{}:{}",
-            registry,
-            self.get_docker_image_base(),
-            self.get_image_tag()
-        )
+        Image::Named {
+            image_repository: self.image_repository.clone(),
+            registry: self.registry.clone(),
+            image_user: self.image_user.clone(),
+            image_tag: self.image_tag.clone(),
+        }
     }
 
     pub fn set_service_name(&mut self, service_name: &String) {
@@ -131,13 +137,6 @@ impl ServiceConfig {
 
     pub fn get_service_name(&self) -> &String {
         &self.service_name
-    }
-
-    pub fn get_image_tag(&self) -> String {
-        match &self.image_tag {
-            None => "latest".to_owned(),
-            Some(tag) => tag.clone(),
-        }
     }
 
     pub fn set_env(&mut self, env: Option<Vec<String>>) {
@@ -171,6 +170,14 @@ impl ServiceConfig {
             None => None,
             Some(volumes) => Some(&volumes),
         }
+    }
+
+    pub fn set_port(&mut self, port: u16) {
+        self.port = port;
+    }
+
+    pub fn get_port(&self) -> u16 {
+        self.port
     }
 }
 
@@ -251,7 +258,7 @@ impl Serialize for Service {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize)]
 pub enum ContainerType {
     Instance,
     Replica,
@@ -305,107 +312,166 @@ pub enum ServiceError {
     InvalidImageString { invalid_string: String },
 }
 
-/// Parse a docker image string and returns either `imageRepository` with `imageUser`, `registry`,
-/// and `imageTag` or the image id.
-pub fn parse_image_string(
-    image: &str,
-) -> Result<(String, Option<String>, Option<String>, Option<String>), ServiceError> {
-    let mut regex = Regex::new(r"^(sha256:)?(?P<id>[a-fA-F0-9]+)$").unwrap();
-    if let Some(captures) = regex.captures(image) {
-        return Ok((
-            captures
-                .name("id")
-                .map(|m| String::from(m.as_str()))
-                .unwrap(),
-            None,
-            None,
-            None,
-        ));
+impl Image {
+    pub fn get_tag(&self) -> Option<String> {
+        match &self {
+            Image::Digest { .. } => None,
+            Image::Named {
+                image_repository: _,
+                registry: _,
+                image_user: _,
+                image_tag,
+            } => match &image_tag {
+                None => Some(String::from("latest")),
+                Some(tag) => Some(tag.clone()),
+            },
+        }
     }
 
-    regex = Regex::new(
-        r"^(((?P<registry>.+)/)?(?P<user>[\w-]+)/)?(?P<repo>[\w-]+)(:(?P<tag>[\w-]+))?$",
-    )
-    .unwrap();
-    let captures = match regex.captures(image) {
-        Some(captures) => captures,
-        None => {
-            return Err(ServiceError::InvalidImageString {
-                invalid_string: String::from(image),
+    pub fn get_name(&self) -> Option<String> {
+        match &self {
+            Image::Digest { .. } => None,
+            Image::Named {
+                image_repository,
+                registry: _,
+                image_user,
+                image_tag: _,
+            } => {
+                let user = match &image_user {
+                    None => String::from("library"),
+                    Some(user) => user.clone(),
+                };
+
+                Some(format!("{}/{}", user, image_repository))
+            }
+        }
+    }
+}
+
+/// Parse a docker image string and returns an image
+impl std::str::FromStr for Image {
+    type Err = ServiceError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut regex = Regex::new(r"^(sha256:)?(?P<id>[a-fA-F0-9]+)$").unwrap();
+        if let Some(_captures) = regex.captures(s) {
+            return Ok(Image::Digest {
+                hash: s.to_string(),
             });
         }
-    };
 
-    let repo = captures
-        .name("repo")
-        .map(|m| String::from(m.as_str()))
+        regex = Regex::new(
+            r"^(((?P<registry>.+)/)?(?P<user>[\w-]+)/)?(?P<repo>[\w-]+)(:(?P<tag>[\w-]+))?$",
+        )
         .unwrap();
-    let registry = captures.name("registry").map(|m| String::from(m.as_str()));
-    let user = captures.name("user").map(|m| String::from(m.as_str()));
-    let tag = captures.name("tag").map(|m| String::from(m.as_str()));
+        let captures = match regex.captures(s) {
+            Some(captures) => captures,
+            None => {
+                return Err(ServiceError::InvalidImageString {
+                    invalid_string: s.to_string(),
+                });
+            }
+        };
 
-    Ok((repo, user, registry, tag))
+        let repo = captures
+            .name("repo")
+            .map(|m| String::from(m.as_str()))
+            .unwrap();
+        let registry = captures.name("registry").map(|m| String::from(m.as_str()));
+        let user = captures.name("user").map(|m| String::from(m.as_str()));
+        let tag = captures.name("tag").map(|m| String::from(m.as_str()));
+
+        Ok(Image::Named {
+            image_repository: repo,
+            registry,
+            image_user: user,
+            image_tag: tag,
+        })
+    }
+}
+
+impl std::string::ToString for Image {
+    fn to_string(&self) -> String {
+        match &self {
+            Image::Digest { hash } => hash.clone(),
+            Image::Named {
+                image_repository,
+                registry,
+                image_user,
+                image_tag,
+            } => {
+                let registry = match &registry {
+                    None => String::from("docker.io"),
+                    Some(registry) => registry.clone(),
+                };
+
+                let user = match &image_user {
+                    None => String::from("library"),
+                    Some(user) => user.clone(),
+                };
+
+                let tag = match &image_tag {
+                    None => "latest".to_owned(),
+                    Some(tag) => tag.clone(),
+                };
+
+                format!("{}/{}/{}:{}", registry, user, image_repository, tag)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn should_parse_image_id_with_sha_prefix() {
-        let (repo, user, registry, tag) = super::parse_image_string(
+        let image = Image::from_str(
             "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913",
         )
         .unwrap();
 
         assert_eq!(
-            &repo,
-            "9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913"
+            &image.to_string(),
+            "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913"
         );
-        assert_eq!(user, None);
-        assert_eq!(registry, None);
-        assert_eq!(tag, None);
+        assert_eq!(image.get_name(), None);
+        assert_eq!(image.get_tag(), None);
     }
 
     #[test]
     fn should_parse_image_id() {
-        let (repo, user, registry, tag) = super::parse_image_string("9895c9b90b58").unwrap();
+        let image = Image::from_str("9895c9b90b58").unwrap();
 
-        assert_eq!(&repo, "9895c9b90b58");
-        assert_eq!(user, None);
-        assert_eq!(registry, None);
-        assert_eq!(tag, None);
+        assert_eq!(&image.to_string(), "9895c9b90b58");
+        assert_eq!(image.get_name(), None);
+        assert_eq!(image.get_tag(), None);
     }
 
     #[test]
     fn should_parse_image_with_repo_and_user() {
-        let (repo, user, registry, tag) =
-            super::parse_image_string("zammad/zammad-docker-compose").unwrap();
+        let image = Image::from_str("zammad/zammad-docker-compose").unwrap();
 
-        assert_eq!(&repo, "zammad-docker-compose");
-        assert_eq!(&user.unwrap(), "zammad");
-        assert_eq!(registry, None);
-        assert_eq!(tag, None);
+        assert_eq!(&image.get_name().unwrap(), "zammad/zammad-docker-compose");
+        assert_eq!(&image.get_tag().unwrap(), "latest");
     }
 
     #[test]
     fn should_parse_image_with_version() {
-        let (repo, user, registry, tag) = super::parse_image_string("nginx:latest").unwrap();
+        let image = Image::from_str("nginx:latest").unwrap();
 
-        assert_eq!(&repo, "nginx");
-        assert_eq!(user, None);
-        assert_eq!(registry, None);
-        assert_eq!(&tag.unwrap(), "latest");
+        assert_eq!(&image.get_name().unwrap(), "library/nginx");
+        assert_eq!(&image.get_tag().unwrap(), "latest");
+        assert_eq!(&image.to_string(), "docker.io/library/nginx:latest");
     }
 
     #[test]
     fn should_parse_image_with_all_information() {
-        let (repo, user, registry, tag) =
-            super::parse_image_string("docker.io/library/nginx:latest").unwrap();
+        let image = Image::from_str("docker.io/library/nginx:latest").unwrap();
 
-        assert_eq!(&repo, "nginx");
-        assert_eq!(&user.unwrap(), "library");
-        assert_eq!(&registry.unwrap(), "docker.io");
-        assert_eq!(&tag.unwrap(), "latest");
+        assert_eq!(&image.to_string(), "docker.io/library/nginx:latest");
     }
 
 }

@@ -26,5 +26,6 @@
 pub mod apps_service;
 pub mod config_service;
 pub mod docker;
+pub mod images_service;
 pub mod infrastructure;
 pub mod service_templating;

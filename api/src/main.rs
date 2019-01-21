@@ -26,6 +26,7 @@
 #![feature(proc_macro_hygiene, decl_macro, try_from)]
 
 extern crate crossbeam_utils;
+extern crate dkregistry;
 #[macro_use]
 extern crate failure;
 extern crate futures;

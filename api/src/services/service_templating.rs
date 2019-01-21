@@ -42,7 +42,7 @@ pub fn apply_templating_for_application_companion(
                 .map(|c| ServiceTemplateParameter {
                     name: c.get_service_name().clone(),
                     container_type: c.get_container_type().clone(),
-                    port: 80,
+                    port: c.get_port(),
                 })
                 .collect(),
         ),
@@ -114,13 +114,15 @@ struct ServiceTemplateParameter {
 mod tests {
 
     use super::*;
+    use crate::models::service::Image;
+    use std::str::FromStr;
 
     #[test]
     fn should_apply_app_companion_templating_with_service_name() {
         let env = vec![];
         let mut config = ServiceConfig::new(
             String::from("postgres-{{application.name}}"),
-            String::from("postgres"),
+            &Image::from_str("postgres").unwrap(),
         );
         config.set_env(Some(env));
 
@@ -144,12 +146,21 @@ mod tests {
                 {{~/each~}}"#,
         )];
 
-        let mut config = ServiceConfig::new(String::from("postgres-db"), String::from("postgres"));
+        let mut config = ServiceConfig::new(
+            String::from("postgres-db"),
+            &Image::from_str("postgres").unwrap(),
+        );
         config.set_env(Some(env));
 
         let service_configs = vec![
-            ServiceConfig::new(String::from("service-a"), String::from("service")),
-            ServiceConfig::new(String::from("service-b"), String::from("service")),
+            ServiceConfig::new(
+                String::from("service-a"),
+                &Image::from_str("service").unwrap(),
+            ),
+            ServiceConfig::new(
+                String::from("service-b"),
+                &Image::from_str("service").unwrap(),
+            ),
         ];
         let templated_config = apply_templating_for_application_companion(
             &config,
@@ -166,7 +177,10 @@ mod tests {
 
     #[test]
     fn should_apply_app_companion_templating_with_labels() {
-        let mut config = ServiceConfig::new(String::from("postgres-db"), String::from("postgres"));
+        let mut config = ServiceConfig::new(
+            String::from("postgres-db"),
+            &Image::from_str("postgres").unwrap(),
+        );
 
         let mut labels = BTreeMap::new();
         labels.insert(
@@ -176,8 +190,14 @@ mod tests {
         config.set_labels(Some(labels));
 
         let service_configs = vec![
-            ServiceConfig::new(String::from("service-a"), String::from("service")),
-            ServiceConfig::new(String::from("service-b"), String::from("service")),
+            ServiceConfig::new(
+                String::from("service-a"),
+                &Image::from_str("service").unwrap(),
+            ),
+            ServiceConfig::new(
+                String::from("service-b"),
+                &Image::from_str("service").unwrap(),
+            ),
         ];
         let templated_config = apply_templating_for_application_companion(
             &config,
@@ -201,7 +221,10 @@ mod tests {
                 {{~/each~}}"#,
         )];
 
-        let mut config = ServiceConfig::new(String::from("postgres-db"), String::from("postgres"));
+        let mut config = ServiceConfig::new(
+            String::from("postgres-db"),
+            &Image::from_str("postgres").unwrap(),
+        );
         config.set_env(Some(env));
 
         let templated_config =
@@ -212,7 +235,10 @@ mod tests {
 
     #[test]
     fn should_apply_app_companion_templating_with_volumes() {
-        let mut config = ServiceConfig::new(String::from("nginx-proxy"), String::from("nginx"));
+        let mut config = ServiceConfig::new(
+            String::from("nginx-proxy"),
+            &Image::from_str("nginx").unwrap(),
+        );
 
         let mount_path = String::from("/etc/ningx/conf.d/default.conf");
         let mut volumes = BTreeMap::new();
@@ -229,8 +255,14 @@ location /{{name}} {
         config.set_volumes(Some(volumes));
 
         let service_configs = vec![
-            ServiceConfig::new(String::from("service-a"), String::from("service")),
-            ServiceConfig::new(String::from("service-b"), String::from("service")),
+            ServiceConfig::new(
+                String::from("service-a"),
+                &Image::from_str("service").unwrap(),
+            ),
+            ServiceConfig::new(
+                String::from("service-b"),
+                &Image::from_str("service").unwrap(),
+            ),
         ];
         let templated_config = apply_templating_for_application_companion(
             &config,

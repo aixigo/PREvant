@@ -23,13 +23,14 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use crate::models::service::{parse_image_string, ContainerType, ServiceConfig};
+use crate::models::service::{ContainerType, Image, ServiceConfig};
 use serde::{de, Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::convert::{From, TryFrom};
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::Error as IOError;
+use std::str::FromStr;
 use toml::de::Error as TomlError;
 use toml::from_str;
 
@@ -194,15 +195,12 @@ impl TryFrom<&Companion> for ServiceConfig {
     type Error = ConfigError;
 
     fn try_from(companion: &Companion) -> Result<ServiceConfig, ConfigError> {
-        let (repo, user, registry, tag) = match parse_image_string(&companion.image) {
-            Ok((repo, user, registry, tag)) => (repo, user, registry, tag),
+        let image = match Image::from_str(&companion.image) {
+            Ok(image) => image,
             Err(_) => return Err(ConfigError::UnableToParseImage),
         };
 
-        let mut config = ServiceConfig::new(companion.service_name.clone(), repo);
-        config.set_registry(registry);
-        config.set_image_user(user);
-        config.set_image_tag(tag);
+        let mut config = ServiceConfig::new(companion.service_name.clone(), &image);
         config.set_env(companion.env.clone());
         config.set_labels(companion.labels.clone());
 
@@ -242,10 +240,9 @@ mod tests {
         companion_configs.iter().for_each(|config| {
             assert_eq!(config.get_service_name(), "openid");
             assert_eq!(
-                config.get_docker_image(),
+                &config.get_image().to_string(),
                 "private.example.com/library/opendid:latest"
             );
-            assert_eq!(config.get_image_tag(), "latest");
             assert_eq!(
                 config.get_container_type(),
                 &ContainerType::ApplicationCompanion

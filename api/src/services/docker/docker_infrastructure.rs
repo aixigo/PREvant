@@ -24,8 +24,7 @@
  * =========================LICENSE_END==================================
  */
 use super::super::config_service::ContainerConfig;
-use crate::models;
-use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceError};
+use crate::models::service::{ContainerType, Image, Service, ServiceConfig, ServiceError};
 use crate::services::infrastructure::Infrastructure;
 use failure::Error;
 use futures::future::join_all;
@@ -42,6 +41,7 @@ use shiplift::{
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::mpsc;
 use tokio::runtime::Runtime;
 
@@ -208,7 +208,7 @@ impl DockerInfrastructure {
         let images = docker.images();
         let mut runtime = Runtime::new()?;
 
-        if !service_config.refers_to_image_id() {
+        if let Image::Named { .. } = service_config.get_image() {
             self.pull_image(&mut runtime, app_name, &service_config)?;
         }
 
@@ -230,7 +230,7 @@ impl DockerInfrastructure {
         }
 
         let container_type_name = service_config.get_container_type().to_string();
-        let image = service_config.get_docker_image();
+        let image = service_config.get_image().to_string();
 
         info!(
             "Creating new review app container for {:?}: service={:?} with image={:?} ({:?})",
@@ -411,7 +411,7 @@ impl DockerInfrastructure {
         app_name: &String,
         config: &ServiceConfig,
     ) -> Result<(), ShipLiftError> {
-        let image = config.get_docker_image();
+        let image = config.get_image().to_string();
 
         info!(
             "Pulling {:?} for {:?} of app {:?}",
@@ -636,14 +636,9 @@ impl Infrastructure for DockerInfrastructure {
 
                         // TODO: clone volume data...
 
-                        let (repo, user, registry, tag) =
-                            models::service::parse_image_string(&container_details.image).unwrap();
+                        let image = Image::from_str(&container_details.image).unwrap();
                         let mut service_config =
-                            ServiceConfig::new(service.get_service_name().clone(), repo);
-
-                        service_config.set_image_user(user);
-                        service_config.set_registry(registry);
-                        service_config.set_image_tag(tag);
+                            ServiceConfig::new(service.get_service_name().clone(), &image);
                         service_config.set_env(env);
 
                         service_config
