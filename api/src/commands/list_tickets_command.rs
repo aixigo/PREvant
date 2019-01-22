@@ -69,6 +69,8 @@ impl ListTicketsCommand {
                     .collect::<Vec<String>>()
                     .join(", ");
 
+                debug!("Search for issues: {}", issue_keys);
+
                 let options = SearchOptions::builder().validate(false).build();
 
                 match jira
@@ -84,7 +86,11 @@ impl ListTicketsCommand {
                         GojiError::Fault { code, errors } => {
                             debug!("No issue for {}: {:?} {:?}", issue_keys, code, errors)
                         }
-                        err => return Err(ListTicketsError::from(err)),
+                        err => {
+                            let e = ListTicketsError::from(err);
+                            error!("Cannot retrieve ticket information: {}", e);
+                            return Err(e);
+                        },
                     },
                 }
             }

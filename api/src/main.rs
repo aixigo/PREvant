@@ -115,6 +115,8 @@ fn swagger(request_info: RequestInfo) -> String {
 }
 
 fn main() {
+    env_logger::init();
+
     rocket::ignite()
         .mount("/", routes![index])
         .mount("/", routes![swagger])
