@@ -260,9 +260,13 @@ impl Serialize for Service {
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize)]
 pub enum ContainerType {
+    #[serde(rename = "instance")]
     Instance,
+    #[serde(rename = "replica")]
     Replica,
+    #[serde(rename = "app-companion")]
     ApplicationCompanion,
+    #[serde(rename = "service-companion")]
     ServiceCompanion,
 }
 
@@ -473,5 +477,4 @@ mod tests {
 
         assert_eq!(&image.to_string(), "docker.io/library/nginx:latest");
     }
-
 }

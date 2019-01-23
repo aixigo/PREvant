@@ -90,7 +90,7 @@ impl ListTicketsCommand {
                             let e = ListTicketsError::from(err);
                             error!("Cannot retrieve ticket information: {}", e);
                             return Err(e);
-                        },
+                        }
                     },
                 }
             }

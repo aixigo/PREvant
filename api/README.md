@@ -82,6 +82,13 @@ The list of available handlebars variables:
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
 
+#### Handlebar Helpers
+
+PREvant provides some handlebars helpers which can be used to generate more complex configuration files. See handlerbar's [block helper documentation](https://handlebarsjs.com/block_helpers.html) for more details.
+
+- `{{#isCompanion <type>}}` A conditional handlerbars block helper that checks if the given service type matches any companion type.
+- `isNotCompanion <type>` A conditional handlerbars block helper that checks if the given service type does not match any companion type.
+
 ### Service Based
 
 The service-based companions works the in the same way as the application-based services. Make sure, that the `serviceName` is unique by using the handlebars templating.

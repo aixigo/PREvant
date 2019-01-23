@@ -24,8 +24,12 @@
  * =========================LICENSE_END==================================
  */
 use crate::models::service::{ContainerType, ServiceConfig};
-use handlebars::{Handlebars, TemplateRenderError};
+use handlebars::{
+    Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderError, Renderable,
+    TemplateRenderError,
+};
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 pub fn apply_templating_for_application_companion(
     service_config: &ServiceConfig,
@@ -49,7 +53,9 @@ pub fn apply_templating_for_application_companion(
         service: None,
     };
 
-    let reg = Handlebars::new();
+    let mut reg = Handlebars::new();
+    reg.register_helper("isCompanion", Box::new(is_companion));
+    reg.register_helper("isNotCompanion", Box::new(is_not_companion));
 
     let mut templated_config = service_config.clone();
     templated_config
@@ -74,6 +80,62 @@ pub fn apply_templating_for_application_companion(
     }
 
     Ok(templated_config)
+}
+
+fn is_not_companion<'reg, 'rc>(
+    h: &Helper<'reg, 'rc>,
+    r: &'reg Handlebars,
+    ctx: &Context,
+    rc: &mut RenderContext<'reg>,
+    out: &mut Output,
+) -> HelperResult {
+    let s = h
+        .param(0)
+        .map(|v| v.value())
+        .map(|v| v.as_str().unwrap())
+        .ok_or(RenderError::new("parameter type is required"))?;
+
+    let container_type = ContainerType::from_str(s)
+        .map_err(|e| RenderError::new(format!("Invalid type paramter {:?}. {}", s, e)))?;
+
+    match container_type {
+        ContainerType::ServiceCompanion | ContainerType::ApplicationCompanion => h
+            .inverse()
+            .map(|t| t.render(r, ctx, rc, out))
+            .unwrap_or(Ok(())),
+        _ => h
+            .template()
+            .map(|t| t.render(r, ctx, rc, out))
+            .unwrap_or(Ok(())),
+    }
+}
+
+fn is_companion<'reg, 'rc>(
+    h: &Helper<'reg, 'rc>,
+    r: &'reg Handlebars,
+    ctx: &Context,
+    rc: &mut RenderContext<'reg>,
+    out: &mut Output,
+) -> HelperResult {
+    let s = h
+        .param(0)
+        .map(|v| v.value())
+        .map(|v| v.as_str().unwrap())
+        .ok_or(RenderError::new("parameter type is required"))?;
+
+    let container_type = ContainerType::from_str(s)
+        .map_err(|e| RenderError::new(format!("Invalid type paramter {:?}. {}", s, e)))?;
+
+    match container_type {
+        ContainerType::ServiceCompanion | ContainerType::ApplicationCompanion => h
+            .template()
+            .map(|t| t.render(r, ctx, rc, out))
+            .unwrap_or(Ok(())),
+        _ => h
+            .inverse()
+            .map(|t| t.render(r, ctx, rc, out))
+            .unwrap_or(Ok(())),
+    }
 }
 
 fn apply_templates(
@@ -286,6 +348,142 @@ location /service-b {
     proxy_pass http://service-b;
 }
 "#
+        );
+    }
+
+    #[test]
+    fn should_apply_templating_with_is_not_companion_helper() {
+        let mut service_a = ServiceConfig::new(
+            String::from("service-a"),
+            &Image::from_str("service").unwrap(),
+        );
+        service_a.set_container_type(ContainerType::Instance);
+        let mut service_b = ServiceConfig::new(
+            String::from("service-b"),
+            &Image::from_str("service").unwrap(),
+        );
+        service_b.set_container_type(ContainerType::Replica);
+        let mut service_c = ServiceConfig::new(
+            String::from("service-c"),
+            &Image::from_str("service").unwrap(),
+        );
+        service_c.set_container_type(ContainerType::ApplicationCompanion);
+        let mut service_d = ServiceConfig::new(
+            String::from("service-d"),
+            &Image::from_str("service").unwrap(),
+        );
+        service_d.set_container_type(ContainerType::ServiceCompanion);
+
+        let service_configs = vec![service_a, service_b, service_c, service_d];
+
+        let mut config = ServiceConfig::new(
+            String::from("nginx-proxy"),
+            &Image::from_str("nginx").unwrap(),
+        );
+        let mount_path = String::from("/etc/ningx/conf.d/default.conf");
+        let mut volumes = BTreeMap::new();
+        volumes.insert(
+            mount_path.clone(),
+            String::from(
+                r#"{{#each services}}
+{{~#isNotCompanion type}}
+location /{{name}} {
+    proxy_pass http://{{~name~}};
+}
+{{~/isNotCompanion}}
+{{~/each}}"#,
+            ),
+        );
+        config.set_volumes(Some(volumes));
+
+        let templated_config = apply_templating_for_application_companion(
+            &config,
+            &String::from("master"),
+            &service_configs,
+        )
+        .unwrap();
+
+        assert_eq!(
+            templated_config
+                .get_volumes()
+                .unwrap()
+                .get(&mount_path)
+                .unwrap(),
+            r#"
+location /service-a {
+    proxy_pass http://service-a;
+}
+location /service-b {
+    proxy_pass http://service-b;
+}"#
+        );
+    }
+
+    #[test]
+    fn should_apply_templating_with_is_companion_helper() {
+        let mut service_a = ServiceConfig::new(
+            String::from("service-a"),
+            &Image::from_str("service").unwrap(),
+        );
+        service_a.set_container_type(ContainerType::Instance);
+        let mut service_b = ServiceConfig::new(
+            String::from("service-b"),
+            &Image::from_str("service").unwrap(),
+        );
+        service_b.set_container_type(ContainerType::Replica);
+        let mut service_c = ServiceConfig::new(
+            String::from("service-c"),
+            &Image::from_str("service").unwrap(),
+        );
+        service_c.set_container_type(ContainerType::ApplicationCompanion);
+        let mut service_d = ServiceConfig::new(
+            String::from("service-d"),
+            &Image::from_str("service").unwrap(),
+        );
+        service_d.set_container_type(ContainerType::ServiceCompanion);
+
+        let service_configs = vec![service_a, service_b, service_c, service_d];
+
+        let mut config = ServiceConfig::new(
+            String::from("nginx-proxy"),
+            &Image::from_str("nginx").unwrap(),
+        );
+        let mount_path = String::from("/etc/ningx/conf.d/default.conf");
+        let mut volumes = BTreeMap::new();
+        volumes.insert(
+            mount_path.clone(),
+            String::from(
+                r#"{{#each services}}
+{{~#isCompanion type}}
+location /{{name}} {
+    proxy_pass http://{{~name~}};
+}
+{{~/isCompanion}}
+{{~/each}}"#,
+            ),
+        );
+        config.set_volumes(Some(volumes));
+
+        let templated_config = apply_templating_for_application_companion(
+            &config,
+            &String::from("master"),
+            &service_configs,
+        )
+        .unwrap();
+
+        assert_eq!(
+            templated_config
+                .get_volumes()
+                .unwrap()
+                .get(&mount_path)
+                .unwrap(),
+            r#"
+location /service-c {
+    proxy_pass http://service-c;
+}
+location /service-d {
+    proxy_pass http://service-d ;
+}"#
         );
     }
 }
