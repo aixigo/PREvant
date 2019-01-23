@@ -1,7 +1,7 @@
 FROM docker.io/library/node:10-alpine as frontend-builder
 WORKDIR /usr/src/apps/
 COPY . .
-RUN npm install && npm run build
+RUN npm ci && npm run build
 
 FROM docker.io/library/nginx:1.15-alpine
 LABEL maintainer="marc.schreiber@aixigo.de"
