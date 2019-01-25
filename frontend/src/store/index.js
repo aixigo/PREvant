@@ -173,8 +173,13 @@ export default new Vuex.Store( {
                   return;
                }
 
+               const undefinedVersion = { 'build.time': 'N/A', 'git.revision': 'N/A' };
+               if ( container.versionUrl == null ) {
+                  promises.push( Promise.resolve( ( { name, containerIndex, version: undefinedVersion } ) ) );
+               }
+
                promises.push( fetch( container.versionUrl )
-                  .then( res => res.ok ? res.json() : { 'build.time': 'N/A', 'git.revision': 'N/A' } )
+                  .then( res => res.ok ? res.json() : undefinedVersion )
                   .then( version => ( { name, containerIndex, version  } ) ) );
             } );
 
