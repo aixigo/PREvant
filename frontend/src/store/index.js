@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant Frontend
  * %%
- * Copyright (C) 2018 aixigo AG
+ * Copyright (C) 2018 - 2019 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+
 import Vue from 'vue';
 import Vuex from 'vuex'
 
