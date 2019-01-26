@@ -1,11 +1,27 @@
 FROM docker.io/library/node:10-alpine as frontend-builder
-WORKDIR /usr/src/apps/
-COPY . .
+WORKDIR /usr/src/frontend/
+COPY package.json package-lock.json postcss.config.js webpack.config.js /usr/src/frontend/
+COPY src/ /usr/src/frontend/src/
 RUN npm ci && npm run build
 
-FROM docker.io/library/nginx:1.15-alpine
+
+
+FROM docker.io/ekidd/rust-musl-builder as http-backend-builder
+RUN rustup default nightly && rustup target add x86_64-unknown-linux-musl
+COPY --chown=rust Cargo.lock Cargo.toml /usr/src/frontend/
+COPY --chown=rust src/*.rs /usr/src/frontend/src/
+WORKDIR /usr/src/frontend/
+RUN cargo build --release --target x86_64-unknown-linux-musl
+
+
+
+FROM alpine
 LABEL maintainer="marc.schreiber@aixigo.de"
 
-COPY --from=frontend-builder /usr/src/apps/dist/* /usr/share/nginx/html/dist/
-COPY index.html favicon.svg  /usr/share/nginx/html/
+COPY --from=http-backend-builder /usr/src/frontend/target/x86_64-unknown-linux-musl/release/frontend /app/frontend
+COPY --from=frontend-builder /usr/src/frontend/dist/* /app/static/
+COPY index.html favicon.svg  /app/static/
 
+EXPOSE 8000
+WORKDIR /app/
+CMD ./frontend
