@@ -1,23 +1,19 @@
-FROM docker.io/library/rust:1.31.0-slim as builder
-RUN apt update ; \
-    apt install -y libssl-dev pkg-config ; \
-    rustup default nightly
-WORKDIR /usr/src/api
+FROM docker.io/ekidd/rust-musl-builder as builder
+USER root
+RUN rustup default nightly && rustup target add x86_64-unknown-linux-musl
 COPY Cargo.toml Cargo.lock /usr/src/api/
 COPY src /usr/src/api/src
-RUN cargo install --path . ; \
-    chown root:root /usr/local/cargo/bin/api
+WORKDIR /usr/src/api
+RUN cargo build --release --target x86_64-unknown-linux-musl
 
-FROM docker.io/library/debian:stretch-slim
+FROM docker.io/library/alpine
 LABEL maintainer="marc.schreiber@aixigo.de"
 
-RUN set -eux ; \
-    apt-get update ; \
-    apt-get install -y openssl ca-certificates
+RUN adduser -D -u 1000 api
+COPY --chown=api --from=builder /usr/src/api/target/x86_64-unknown-linux-musl/release/api /app/api
+COPY --chown=api res/Rocket.toml res/config.toml /app/
 
 WORKDIR /app
-COPY --from=builder /usr/local/cargo/bin/api .
-COPY res/Rocket.toml res/config.toml /app/
 EXPOSE 80
 ENV ROCKET_ENV=staging
 ENV RUST_LOG=info

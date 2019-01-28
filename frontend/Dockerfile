@@ -7,20 +7,22 @@ RUN npm ci && npm run build
 
 
 FROM docker.io/ekidd/rust-musl-builder as http-backend-builder
+USER root
 RUN rustup default nightly && rustup target add x86_64-unknown-linux-musl
-COPY --chown=rust Cargo.lock Cargo.toml /usr/src/frontend/
-COPY --chown=rust src/*.rs /usr/src/frontend/src/
+COPY Cargo.lock Cargo.toml /usr/src/frontend/
+COPY src/*.rs /usr/src/frontend/src/
 WORKDIR /usr/src/frontend/
 RUN cargo build --release --target x86_64-unknown-linux-musl
 
 
 
-FROM alpine
+FROM docker.io/library/alpine
 LABEL maintainer="marc.schreiber@aixigo.de"
 
-COPY --from=http-backend-builder /usr/src/frontend/target/x86_64-unknown-linux-musl/release/frontend /app/frontend
-COPY --from=frontend-builder /usr/src/frontend/dist/* /app/static/
-COPY index.html favicon.svg  /app/static/
+RUN adduser -D -u 1000 frontend
+COPY --chown=frontend --from=http-backend-builder /usr/src/frontend/target/x86_64-unknown-linux-musl/release/frontend /app/frontend
+COPY --chown=frontend --from=frontend-builder /usr/src/frontend/target/* /app/static/
+COPY --chown=frontend index.html favicon.svg  /app/static/
 
 EXPOSE 8000
 WORKDIR /app/
