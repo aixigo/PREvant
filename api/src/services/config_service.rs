@@ -110,24 +110,34 @@ impl Config {
         }
     }
 
+    pub fn get_service_companion_configs(&self) -> Result<Vec<ServiceConfig>, ConfigError> {
+        Ok(self.get_companion_configs(|companion| companion.companion_type == CompanionType::Service)?)
+    }
+
     pub fn get_application_companion_configs(&self) -> Result<Vec<ServiceConfig>, ConfigError> {
+        Ok(self.get_companion_configs(|companion| companion.companion_type == CompanionType::Application)?)
+    }
+
+    fn get_companion_configs<P>(&self, predicate: P) -> Result<Vec<ServiceConfig>, ConfigError>
+        where P: FnMut(&&Companion) -> bool, {
+
         let mut companions = Vec::new();
 
         for companion in self
             .companions
             .iter()
             .flat_map(|companions| companions.values())
-            .filter(|companion| companion.companion_type == CompanionType::Application)
-        {
-            let mut config = ServiceConfig::try_from(companion)?;
+            .filter(predicate)
+            {
+                let mut config = ServiceConfig::try_from(companion)?;
 
-            config.set_container_type(match &companion.companion_type {
-                CompanionType::Application => ContainerType::ApplicationCompanion,
-                CompanionType::Service => ContainerType::ServiceCompanion,
-            });
+                config.set_container_type(match &companion.companion_type {
+                    CompanionType::Application => ContainerType::ApplicationCompanion,
+                    CompanionType::Service => ContainerType::ServiceCompanion,
+                });
 
-            companions.push(config);
-        }
+                companions.push(config);
+            }
 
         Ok(companions)
     }
@@ -251,6 +261,42 @@ mod tests {
             assert_eq!(config.get_labels(), None);
         });
     }
+
+    #[test]
+    fn should_return_service_companions_as_service_configs() {
+        let config_str = r#"
+            [[companions]]
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/opendid:latest'
+            env = [ 'KEY=VALUE' ]
+
+            [companions.nginx]
+            serviceName = '{{service-name}}-nginx'
+            type = 'service'
+            image = 'nginx:latest'
+            env = [ 'KEY=VALUE' ]
+        "#;
+
+        let config = from_str::<Config>(config_str).unwrap();
+        let companion_configs = config.get_service_companion_configs().unwrap();
+
+        assert_eq!(companion_configs.len(), 1);
+        companion_configs.iter().for_each(|config| {
+            assert_eq!(config.get_service_name(), "{{service-name}}-nginx");
+            assert_eq!(
+                &config.get_image().to_string(),
+                "docker.io/library/nginx:latest"
+            );
+            assert_eq!(
+                config.get_container_type(),
+                &ContainerType::ServiceCompanion
+            );
+            assert_eq!(config.get_labels(), None);
+        });
+    }
+
 
     #[test]
     fn should_return_application_companions_as_service_configs_with_volumes() {

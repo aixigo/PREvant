@@ -483,7 +483,7 @@ location /service-c {
     proxy_pass http://service-c;
 }
 location /service-d {
-    proxy_pass http://service-d ;
+    proxy_pass http://service-d;
 }"#
         );
     }

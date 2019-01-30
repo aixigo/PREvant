@@ -176,6 +176,7 @@ export default new Vuex.Store( {
                const undefinedVersion = { 'build.time': 'N/A', 'git.revision': 'N/A' };
                if ( container.versionUrl == null ) {
                   promises.push( Promise.resolve( ( { name, containerIndex, version: undefinedVersion } ) ) );
+                  return;
                }
 
                promises.push( fetch( container.versionUrl )
