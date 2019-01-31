@@ -10,10 +10,10 @@
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -32,8 +32,28 @@ use handlebars::{
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-pub fn apply_templating_for_application_companion(
+pub fn apply_templating_for_service_companion(
+    companion_config: &ServiceConfig,
+    app_name: &String,
     service_config: &ServiceConfig,
+) -> Result<ServiceConfig, TemplateRenderError> {
+    let parameters = TemplateParameters {
+        application: ApplicationTemplateParameter {
+            name: app_name.clone(),
+        },
+        services: None,
+        service: Some(ServiceTemplateParameter {
+            name: service_config.get_service_name().clone(),
+            container_type: service_config.get_container_type().clone(),
+            port: service_config.get_port(),
+        }),
+    };
+
+    apply_template(companion_config, &parameters)
+}
+
+pub fn apply_templating_for_application_companion(
+    companion_config: &ServiceConfig,
     app_name: &String,
     service_configs: &Vec<ServiceConfig>,
 ) -> Result<ServiceConfig, TemplateRenderError> {
@@ -54,15 +74,22 @@ pub fn apply_templating_for_application_companion(
         service: None,
     };
 
+    apply_template(companion_config, &parameters)
+}
+
+fn apply_template(
+    comapnion_config: &ServiceConfig,
+    parameters: &TemplateParameters,
+) -> Result<ServiceConfig, TemplateRenderError> {
     let mut reg = Handlebars::new();
     reg.register_helper("isCompanion", Box::new(is_companion));
     reg.register_helper("isNotCompanion", Box::new(is_not_companion));
 
-    let mut templated_config = service_config.clone();
+    let mut templated_config = comapnion_config.clone();
     templated_config
-        .set_service_name(&reg.render_template(service_config.get_service_name(), &parameters)?);
+        .set_service_name(&reg.render_template(comapnion_config.get_service_name(), &parameters)?);
 
-    if let Some(env) = service_config.get_env() {
+    if let Some(env) = comapnion_config.get_env() {
         let mut templated_env = Vec::new();
 
         for e in env {
@@ -72,11 +99,11 @@ pub fn apply_templating_for_application_companion(
         templated_config.set_env(Some(templated_env));
     }
 
-    if let Some(volumes) = service_config.get_volumes() {
+    if let Some(volumes) = comapnion_config.get_volumes() {
         templated_config.set_volumes(Some(apply_templates(&reg, &parameters, volumes)?));
     }
 
-    if let Some(labels) = service_config.get_labels() {
+    if let Some(labels) = comapnion_config.get_labels() {
         templated_config.set_labels(Some(apply_templates(&reg, &parameters, labels)?));
     }
 

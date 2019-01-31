@@ -10,10 +10,10 @@
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -111,16 +111,21 @@ impl Config {
     }
 
     pub fn get_service_companion_configs(&self) -> Result<Vec<ServiceConfig>, ConfigError> {
-        Ok(self.get_companion_configs(|companion| companion.companion_type == CompanionType::Service)?)
+        Ok(self.get_companion_configs(|companion| {
+            companion.companion_type == CompanionType::Service
+        })?)
     }
 
     pub fn get_application_companion_configs(&self) -> Result<Vec<ServiceConfig>, ConfigError> {
-        Ok(self.get_companion_configs(|companion| companion.companion_type == CompanionType::Application)?)
+        Ok(self.get_companion_configs(|companion| {
+            companion.companion_type == CompanionType::Application
+        })?)
     }
 
     fn get_companion_configs<P>(&self, predicate: P) -> Result<Vec<ServiceConfig>, ConfigError>
-        where P: FnMut(&&Companion) -> bool, {
-
+    where
+        P: FnMut(&&Companion) -> bool,
+    {
         let mut companions = Vec::new();
 
         for companion in self
@@ -128,16 +133,16 @@ impl Config {
             .iter()
             .flat_map(|companions| companions.values())
             .filter(predicate)
-            {
-                let mut config = ServiceConfig::try_from(companion)?;
+        {
+            let mut config = ServiceConfig::try_from(companion)?;
 
-                config.set_container_type(match &companion.companion_type {
-                    CompanionType::Application => ContainerType::ApplicationCompanion,
-                    CompanionType::Service => ContainerType::ServiceCompanion,
-                });
+            config.set_container_type(match &companion.companion_type {
+                CompanionType::Application => ContainerType::ApplicationCompanion,
+                CompanionType::Service => ContainerType::ServiceCompanion,
+            });
 
-                companions.push(config);
-            }
+            companions.push(config);
+        }
 
         Ok(companions)
     }
@@ -296,7 +301,6 @@ mod tests {
             assert_eq!(config.get_labels(), None);
         });
     }
-
 
     #[test]
     fn should_return_application_companions_as_service_configs_with_volumes() {

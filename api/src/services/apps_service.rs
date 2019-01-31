@@ -10,10 +10,10 @@
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -27,7 +27,9 @@
 use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceError};
 use crate::services::config_service::{Config, ConfigError};
 use crate::services::docker::docker_infrastructure::DockerInfrastructure;
-use crate::services::service_templating::apply_templating_for_application_companion;
+use crate::services::service_templating::{
+    apply_templating_for_application_companion, apply_templating_for_service_companion,
+};
 use crate::services::{
     images_service::{ImagesService, ImagesServiceError},
     infrastructure::Infrastructure,
@@ -89,6 +91,8 @@ impl AppsService {
             }
         }
 
+        // TODO: when replication resolves port mapping this could be performed before replicating
+        // serivce configurations
         let images_service = ImagesService::new();
         let mappings = images_service.resolve_image_ports(&configs)?;
         for config in configs.iter_mut() {
@@ -96,6 +100,21 @@ impl AppsService {
                 config.set_port(port.clone());
             }
         }
+
+        let mut service_companions = Vec::new();
+        for config in &configs {
+            let companions = self.config.get_service_companion_configs()?;
+
+            service_companions.extend(
+                companions
+                    .iter()
+                    .map(|c| apply_templating_for_service_companion(config, app_name, c))
+                    .filter_map(|r| r.ok())
+                    .collect::<Vec<ServiceConfig>>(),
+            );
+        }
+
+        configs.extend(service_companions);
 
         for app_companion_config in self.config.get_application_companion_configs()? {
             let applied_template_config = apply_templating_for_application_companion(
