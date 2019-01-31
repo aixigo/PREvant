@@ -10,10 +10,10 @@
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -73,36 +73,49 @@
             <div v-for="container in reviewApp.containers"
                  :key="container.vhost"
                  class="ra-container">
-               <div class="ra-container__type">
-                  <i v-if="container.vhost.endsWith( '-frontend' )" class="material-icons">web</i>
-                  <i v-if="container.vhost.endsWith( '-service' )" class="material-icons">dns</i>
-                  <i v-if="container.vhost.endsWith( '-api' )" class="material-icons">developer_board</i>
+
+               <div class="ra-container__type"
+                  :class="{ 'is-expanded': expandedContainers[ container.vhost ] }"
+                  @click="toggleContainer( container )">
+                  <i v-if="expandedContainers[ container.vhost ]" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
+                  <i v-else="expandedContainers[ container.vhost ]" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
+                  <i v-if="container.vhost.endsWith( 'openid' )" class="ra-icons  material-icons">security</i>
+                  <i v-if="container.vhost.endsWith( '-proxy' )" class="ra-icons  material-icons">call_split</i>
+                  <i v-if="container.vhost.endsWith( '-frontend' )" class="ra-icons  material-icons">web</i>
+                  <i v-if="container.vhost.endsWith( '-service' )" class="ra-icons  material-icons">dns</i>
+                  <i v-if="container.vhost.endsWith( '-api' )" class="ra-icons  material-icons">developer_board</i>
                </div>
 
                <div class="ra-container__infos">
                   <h5>
                      <a :href='container.url' target="_blank">{{ container.vhost }}</a>
                   </h5>
-                  <div  class="ra-build-infos">
-                     <a v-if="container.swaggerUrl" :href="container.swaggerUrl" target="_blank">API Documentation</a>
-                     <a v-if="container.logsUrl" :href="container.logsUrl" target="_blank">Logs</a>
-                  </div>
 
-                  <div v-if="container.version" class="ra-build-infos">
-                     <span class="ra-build-infos__date">{{ container.version[ 'build.time' ] | date }}</span>,
-                     <span class="ra-build-infos__time">{{ container.version[ 'build.time' ] | time }}</span>
-                     <!-- only for layout -->
-                     <!-- <span class="ra-build-infos__date">20.07.2018</span>,
-                     <span class="ra-build-infos__time">07:54</span> -->
+                  <div class="ra-build-infos__wrapper"
+                     v-if="expandedContainers[ container.vhost ]">
+                     <div  class="ra-build-infos">
+                        <a v-if="container.swaggerUrl" :href="container.swaggerUrl" target="_blank">API Documentation</a>
+                        <a v-if="container.logsUrl" :href="container.logsUrl" target="_blank">Logs</a>
+                     </div>
+
+                     <div v-if="container.version" class="ra-build-infos">
+                        <span class="ra-build-infos__date">{{ container.version[ 'build.time' ] | date }}</span>,
+                        <span class="ra-build-infos__time">{{ container.version[ 'build.time' ] | time }}</span>
+                        <!-- only for layout -->
+                        <!-- <span class="ra-build-infos__date">20.07.2018</span>,
+                        <span class="ra-build-infos__time">07:54</span> -->
+                     </div>
+                     <p v-if="!container.version && container.vhost.endsWith( '-service' )">
+                        <font-awesome-icon icon="spinner" spin />
+                     </p>
                   </div>
-                  <p v-if="!container.version && container.vhost.endsWith( '-service' )">
-                     <font-awesome-icon icon="spinner" spin />
-                  </p>
                </div>
 
                <div class="ra-container__tags">
-                  <span class="badge" :class="badgeClass( container.containerType )" v-tooltip="tooltip( container.containerType )">{{ container.containerType }}</span>
-                  <span v-if="container.version && container.version[ 'git.revision' ]"
+                  <span class="badge"
+                     :class="badgeClass( container.containerType )"
+                     v-tooltip="tooltip( container.containerType )">{{ container.containerType }}</span>
+                  <span v-if="container.version && container.version[ 'git.revision' ] && expandedContainers[ container.vhost ]"
                      class="ra-build-infos ra-build-infos__hash text-right"
                      :title="container.version[ 'git.revision' ]">
                      {{ container.version[ 'git.revision' ].slice( 0, 7 ) }}…
@@ -137,7 +150,8 @@
    export default {
       data() {
          return {
-            currentAppName: window.location.hash.slice(1)
+            currentAppName: window.location.hash.slice(1),
+            expandedContainers: {}
          };
       },
       components: {
@@ -161,6 +175,18 @@
       },
       props: {
          reviewApp: {type: Object}
+      },
+      watch: {
+         reviewApp: function( newValue ) {
+            const { containers } = newValue;
+
+            if( containers && containers.length ) {
+               containers.forEach( ( { vhost } ) => {
+                  const expanded = vhost.endsWith( '-api' ) || vhost.endsWith( '-service' );
+                  this.$set( this.expandedContainers, [ vhost ], expanded );
+               } );
+            }
+         }
       },
       computed: {
          containerVersions() {
@@ -232,6 +258,10 @@
             }
             return '';
          },
+         toggleContainer( container ) {
+            this.expandedContainers[ container.vhost ] =
+               !this.expandedContainers[ container.vhost ] ;
+         }
       }
    }
 
