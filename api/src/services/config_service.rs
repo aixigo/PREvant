@@ -188,22 +188,25 @@ impl ContainerConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Fail)]
 pub enum ConfigError {
-    CannotOpenConfigFile(IOError),
-    ConfigFormatError(TomlError),
+    #[fail(display = "Cannot open config file. {}", error)]
+    CannotOpenConfigFile { error: IOError },
+    #[fail(display = "Invalid config file format. {}", error)]
+    ConfigFormatError { error: TomlError },
+    #[fail(display = "Unable to parse image.")]
     UnableToParseImage,
 }
 
 impl From<IOError> for ConfigError {
-    fn from(err: IOError) -> Self {
-        ConfigError::CannotOpenConfigFile(err)
+    fn from(error: IOError) -> Self {
+        ConfigError::CannotOpenConfigFile { error }
     }
 }
 
 impl From<TomlError> for ConfigError {
-    fn from(err: TomlError) -> Self {
-        ConfigError::ConfigFormatError(err)
+    fn from(error: TomlError) -> Self {
+        ConfigError::ConfigFormatError { error }
     }
 }
 

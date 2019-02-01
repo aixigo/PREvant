@@ -27,6 +27,7 @@
 use crate::models::request_info::RequestInfo;
 use crate::models::service::Service;
 use crate::services::apps_service::{AppsService, AppsServiceError};
+use crate::services::config_service::Config;
 use rocket::http::{ContentType, Status};
 use rocket::request::{self, FromRequest, Request};
 use rocket::response::{self, Responder, Response};
@@ -54,8 +55,12 @@ impl<'a, 'r> FromRequest<'a, 'r> for DeleteAppCommand {
 }
 
 impl DeleteAppCommand {
-    pub fn delete_app(&self, app_name: &String) -> Result<Vec<Service>, DeleteAppError> {
-        let apps_service = AppsService::new()?;
+    pub fn delete_app(
+        &self,
+        config: &Config,
+        app_name: &String,
+    ) -> Result<Vec<Service>, DeleteAppError> {
+        let apps_service = AppsService::new(config)?;
         let mut services = apps_service.delete_app(app_name)?;
 
         for service in services.iter_mut() {

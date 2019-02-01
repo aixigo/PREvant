@@ -30,33 +30,38 @@ use crate::commands::list_apps_command::{ListAppsCommand, ListAppsError};
 use crate::commands::list_tickets_command::{ListTicketsCommand, ListTicketsError};
 use crate::models::service::Service;
 use crate::models::ticket_info::TicketInfo;
+use crate::services::config_service::Config;
 use multimap::MultiMap;
 use rocket::http::RawStr;
+use rocket::State;
 use rocket_contrib::json::Json;
 use std::collections::HashMap;
 
 #[get("/apps", format = "application/json")]
 pub fn apps(
+    config_state: State<Config>,
     list_apps_command: ListAppsCommand,
 ) -> Result<Json<MultiMap<String, Service>>, ListAppsError> {
-    let apps = list_apps_command.list_apps()?;
+    let apps = list_apps_command.list_apps(&config_state)?;
     Ok(Json(apps))
 }
 
 #[get("/apps/tickets", format = "application/json")]
 pub fn tickets(
+    config_state: State<Config>,
     list_tickets_command: ListTicketsCommand,
 ) -> Result<Json<HashMap<String, TicketInfo>>, ListTicketsError> {
-    let apps = list_tickets_command.list_ticket_infos()?;
+    let apps = list_tickets_command.list_ticket_infos(&config_state)?;
     Ok(Json(apps))
 }
 
 #[delete("/apps/<app_name>", format = "application/json")]
 pub fn delete_app(
     app_name: &RawStr,
+    config_state: State<Config>,
     delete_app_command: DeleteAppCommand,
 ) -> Result<Json<Vec<Service>>, DeleteAppError> {
-    let services = delete_app_command.delete_app(&app_name.to_string())?;
+    let services = delete_app_command.delete_app(&config_state, &app_name.to_string())?;
     Ok(Json(services))
 }
 
@@ -67,8 +72,9 @@ pub fn delete_app(
 )]
 pub fn create_app(
     app_name: &RawStr,
+    config_state: State<Config>,
     app_command: CreateOrUpdateAppCommand,
 ) -> Result<Json<Vec<Service>>, CreateOrUpdateError> {
-    let services = app_command.create_or_update_app(&app_name.to_string())?;
+    let services = app_command.create_or_update_app(&config_state, &app_name.to_string())?;
     Ok(Json(services))
 }

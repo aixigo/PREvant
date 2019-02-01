@@ -38,15 +38,15 @@ use handlebars::TemplateRenderError;
 use multimap::MultiMap;
 use std::convert::From;
 
-pub struct AppsService {
-    config: Config,
+pub struct AppsService<'a> {
+    config: &'a Config,
     infrastructure: Box<dyn Infrastructure>,
 }
 
-impl AppsService {
-    pub fn new() -> Result<AppsService, AppsServiceError> {
+impl<'a> AppsService<'a> {
+    pub fn new(config: &'a Config) -> Result<AppsService, AppsServiceError> {
         Ok(AppsService {
-            config: Config::load()?,
+            config,
             infrastructure: Box::new(DockerInfrastructure::new()),
         })
     }

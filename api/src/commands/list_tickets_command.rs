@@ -46,17 +46,20 @@ impl<'a, 'r> FromRequest<'a, 'r> for ListTicketsCommand {
 impl ListTicketsCommand {
     /// Analyzes running containers and returns a map of `review-app-name` with the
     /// corresponding `TicketInfo`.
-    pub fn list_ticket_infos(&self) -> Result<HashMap<String, TicketInfo>, ListTicketsError> {
+    pub fn list_ticket_infos(
+        &self,
+        config: &Config,
+    ) -> Result<HashMap<String, TicketInfo>, ListTicketsError> {
         let mut tickets: HashMap<String, TicketInfo> = HashMap::new();
 
-        match Config::load()?.get_jira_config() {
+        match config.get_jira_config() {
             None => {
                 return Err(ListTicketsError::MissingIssueTrackingConfiguration(
                     "".to_string(),
                 ));
             }
             Some(jira_config) => {
-                let apps_service = AppsService::new()?;
+                let apps_service = AppsService::new(config)?;
                 let services = apps_service.get_apps()?;
 
                 let jira = Jira::new(

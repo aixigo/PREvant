@@ -27,10 +27,13 @@
 use crate::commands::delete_app_command::{DeleteAppCommand, DeleteAppError};
 use crate::models::service::Service;
 use crate::models::web_hook_info::WebHookInfo;
+use crate::services::config_service::Config;
+use rocket::State;
 use rocket_contrib::json::Json;
 
 #[post("/webhooks", format = "application/json", data = "<web_hook_info>")]
 pub fn webhooks(
+    config_state: State<Config>,
     web_hook_info: WebHookInfo,
     delete_app_command: DeleteAppCommand,
 ) -> Result<Json<Vec<Service>>, DeleteAppError> {
@@ -41,6 +44,6 @@ pub fn webhooks(
         web_hook_info.get_event_key()
     );
 
-    let services = delete_app_command.delete_app(&web_hook_info.get_app_name())?;
+    let services = delete_app_command.delete_app(&config_state, &web_hook_info.get_app_name())?;
     Ok(Json(services))
 }

@@ -27,6 +27,7 @@
 use crate::models::request_info::RequestInfo;
 use crate::models::service::Service;
 use crate::services::apps_service::{AppsService, AppsServiceError};
+use crate::services::config_service::Config;
 use multimap::MultiMap;
 use rocket::http::{ContentType, Status};
 use rocket::request::{self, FromRequest, Request};
@@ -57,8 +58,8 @@ impl<'a, 'r> FromRequest<'a, 'r> for ListAppsCommand {
 impl ListAppsCommand {
     /// Analyzes running containers and returns a map of `review-app-name` with the
     /// corresponding list of `Service`s.
-    pub fn list_apps(&self) -> Result<MultiMap<String, Service>, ListAppsError> {
-        let apps_service = AppsService::new()?;
+    pub fn list_apps(&self, config: &Config) -> Result<MultiMap<String, Service>, ListAppsError> {
+        let apps_service = AppsService::new(config)?;
         let mut apps = apps_service.get_apps()?;
 
         for (_, services) in apps.iter_all_mut() {

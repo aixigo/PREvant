@@ -27,6 +27,7 @@
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceConfig, ServiceError};
 use crate::services::apps_service::{AppsService, AppsServiceError};
+use crate::services::config_service::Config;
 use rocket::data::{self, FromDataSimple};
 use rocket::http::{ContentType, Status};
 use rocket::request::{FromRequest, Request};
@@ -84,9 +85,10 @@ impl CreateOrUpdateAppCommand {
     /// and then it starts a new instance.
     pub fn create_or_update_app(
         &self,
+        config: &Config,
         app_name: &String,
     ) -> Result<Vec<Service>, CreateOrUpdateError> {
-        let apps_service = AppsService::new()?;
+        let apps_service = AppsService::new(config)?;
         let mut services = apps_service.create_or_update(app_name, &self.data)?;
 
         for service in services.iter_mut() {

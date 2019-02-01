@@ -52,10 +52,12 @@ extern crate toml;
 extern crate url;
 
 use crate::models::request_info::RequestInfo;
+use crate::services::config_service::Config;
 use rocket_contrib::json::Json;
 use serde_yaml::{from_reader, to_string, Value};
 use shiplift::{ContainerListOptions, Docker};
 use std::fs::File;
+use std::process;
 use tokio::prelude::Future;
 use tokio::runtime::Runtime;
 
@@ -118,7 +120,16 @@ fn swagger(request_info: RequestInfo) -> String {
 fn main() {
     env_logger::init();
 
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Cannot load config: {}", e);
+            process::exit(0x0100);
+        }
+    };
+
     rocket::ignite()
+        .manage(config)
         .mount("/", routes![index])
         .mount("/", routes![swagger])
         .mount("/", routes![apps::apps])
