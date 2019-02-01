@@ -366,7 +366,7 @@ impl std::str::FromStr for Image {
         }
 
         regex = Regex::new(
-            r"^(((?P<registry>.+)/)?(?P<user>[\w-]+)/)?(?P<repo>[\w-]+)(:(?P<tag>[\w-]+))?$",
+            r"^(((?P<registry>.+)/)?(?P<user>[\w-]+)/)?(?P<repo>[\w-]+)(:(?P<tag>[\w\.-]+))?$",
         )
         .unwrap();
         let captures = match regex.captures(s) {
@@ -465,6 +465,15 @@ mod tests {
 
     #[test]
     fn should_parse_image_with_version() {
+        let image = Image::from_str("mariadb:10.3").unwrap();
+
+        assert_eq!(&image.get_name().unwrap(), "library/mariadb");
+        assert_eq!(&image.get_tag().unwrap(), "10.3");
+        assert_eq!(&image.to_string(), "docker.io/library/mariadb:10.3");
+    }
+
+    #[test]
+    fn should_parse_image_with_latest_version() {
         let image = Image::from_str("nginx:latest").unwrap();
 
         assert_eq!(&image.get_name().unwrap(), "library/nginx");
