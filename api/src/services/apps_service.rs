@@ -108,7 +108,9 @@ impl<'a> AppsService<'a> {
             service_companions.extend(
                 companions
                     .iter()
-                    .map(|c| apply_templating_for_service_companion(config, app_name, c))
+                    .map(|companion_config| {
+                        apply_templating_for_service_companion(companion_config, app_name, config)
+                    })
                     .filter_map(|r| r.ok())
                     .collect::<Vec<ServiceConfig>>(),
             );
