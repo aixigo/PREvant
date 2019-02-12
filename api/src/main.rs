@@ -26,37 +26,22 @@
 
 #![feature(proc_macro_hygiene, decl_macro, try_from)]
 
-extern crate crossbeam_utils;
-extern crate dkregistry;
 #[macro_use]
 extern crate failure;
-extern crate futures;
-extern crate goji;
-extern crate handlebars;
-extern crate hyper;
 #[macro_use]
 extern crate log;
-extern crate multimap;
-extern crate regex;
 #[macro_use]
 extern crate rocket;
-extern crate rocket_contrib;
-extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_json;
-extern crate serde_yaml;
-extern crate shiplift;
-extern crate tokio;
-extern crate toml;
-extern crate url;
 
 use crate::models::request_info::RequestInfo;
 use crate::services::config_service::Config;
-use rocket_contrib::json::Json;
+use rocket::response::NamedFile;
 use serde_yaml::{from_reader, to_string, Value};
 use shiplift::{ContainerListOptions, Docker};
 use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::process;
 use tokio::prelude::Future;
 use tokio::runtime::Runtime;
@@ -95,13 +80,14 @@ fn is_container_available(container_image_pattern: &'static str) -> bool {
     }
 }
 
-#[get("/", format = "application/json")]
-fn index(request_info: RequestInfo) -> Json<AppsStatus> {
-    Json(AppsStatus {
-        root_url: request_info.get_base_url().clone().into_string(),
-        swagger_ui_available: is_container_available("swaggerapi/swagger-ui"),
-        portainer_available: is_container_available("portainer/portainer"),
-    })
+#[get("/")]
+fn index() -> Option<NamedFile> {
+    NamedFile::open(Path::new("frontend/index.html")).ok()
+}
+
+#[get("/<path..>")]
+fn files(path: PathBuf) -> Option<NamedFile> {
+    NamedFile::open(Path::new("frontend/").join(path)).ok()
 }
 
 #[get("/swagger.yaml")]
@@ -131,11 +117,12 @@ fn main() {
     rocket::ignite()
         .manage(config)
         .mount("/", routes![index])
+        .mount("/", routes![files])
         .mount("/", routes![swagger])
-        .mount("/", routes![apps::apps])
-        .mount("/", routes![apps::tickets])
-        .mount("/", routes![apps::create_app])
-        .mount("/", routes![apps::delete_app])
-        .mount("/", routes![webhooks::webhooks])
+        .mount("/api", routes![apps::apps])
+        .mount("/api", routes![apps::tickets])
+        .mount("/api", routes![apps::create_app])
+        .mount("/api", routes![apps::delete_app])
+        .mount("/api", routes![webhooks::webhooks])
         .launch();
 }

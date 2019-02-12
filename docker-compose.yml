@@ -2,20 +2,13 @@ version: "3"
 
 services:
   api:
-    image: aixigo/prevant-api
+    image: aixigo/prevant
     network_mode: "bridge"
     userns_mode: "host"
     labels:
-      traefik.frontend.rule: 'PathPrefixStrip: /api;'
+      traefik.frontend.rule: 'PathPrefix:/;'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-
-  frontend:
-    image: aixigo/prevant-frontend
-    network_mode: "bridge"
-    labels:
-      traefik.frontend.rule: 'PathPrefix:/;'
-      traefik.frontend.priority: -100
 
   traefik:
     image: traefik

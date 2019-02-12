@@ -51,11 +51,6 @@
                <font-awesome-icon icon="terminal"/>
                API
             </a>
-            <a class="btn btn-outline-success my-2 my-sm-0" v-if="portainerUrl !== ''"
-               :href="portainerUrl" target="_blank">
-               <font-awesome-icon icon="server"/>
-               Portainer
-            </a>
          </form>
       </div>
    </nav>
@@ -72,10 +67,6 @@
    import { mapGetters } from 'vuex';
 
    export default {
-
-      computed: {
-         ...mapGetters(['swaggerUrl', 'portainerUrl'])
-      },
 
       methods: {
          fireSearchEvent() {

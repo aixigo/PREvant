@@ -84,8 +84,7 @@ module.exports = {
         port: 9001,
         proxy: {
             '/api': {
-                target: 'http://localhost:8000',
-                pathRewrite: {'^/api': ''}
+                target: 'http://localhost:8000'
             }
         }
     },

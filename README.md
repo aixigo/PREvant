@@ -16,14 +16,13 @@ This project is currently being made available as open source. Not all features 
 
 # Usage
 
-In order to use the project you have to build the docker images (they will be released in the docker hub in the future).
+In order to use the project you have to build the docker image (they will be released in the docker hub in the future).
 
 ```bash
-mvn package -f api
-mvn package -f frontend
+docker build -t aixigo/prevant .
 ```
 
-When you have build the images, you can start the docker containers with the provided docker-compose file.
+When you have build the image, you can start the docker containers with the provided docker-compose file.
 
 ```
 docker-compose up -d
@@ -33,4 +32,4 @@ Now, PREvant is running at [`http://localhost`](http://localhost).
 
 # Further Readings
 
-- [All about API image](api/README.md)
+- [All about the API](api/README.md)

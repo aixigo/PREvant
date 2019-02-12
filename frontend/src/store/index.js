@@ -33,30 +33,9 @@ export default new Vuex.Store( {
    state: {
       apps: {},
       tickets: {},
-      status: {},
       appNameFilter: ''
    },
    getters: {
-
-      rootUrl: state => state.status.rootUrl,
-      swaggerUiAvailable: state => state.status.swaggerUiAvailable,
-      portainerAvailable: state => state.status.portainerAvailable,
-
-      swaggerUrl: state => {
-         if ( state.status.swaggerUiAvailable ) {
-            return `${state.status.rootUrl}api/swagger.yaml`;
-         }
-
-         return '';
-      },
-
-      portainerUrl: state => {
-         if ( state.status.portainerAvailable ) {
-            return `${state.status.rootUrl}portainer/`;
-         }
-
-         return '';
-      },
 
       reviewApps: state => {
          if ( state.apps === undefined || Object.keys( state.apps ).length == 0 ) {
@@ -98,9 +77,6 @@ export default new Vuex.Store( {
                   swaggerUrl = container.url.replace( `/${container.vhost}/`, '/swagger-ui/' )
                      + `?url=${container.version.api.url}`;
                }
-               if ( state.status.portainerAvailable && container.containerId ) {
-                  logsUrl = `${state.status.rootUrl}/portainer/#/containers/${container.containerId}/logs`;
-               }
                return Object.assign( {}, container, { swaggerUrl, logsUrl } );
             } );
             containers.sort( byVhost );
@@ -128,10 +104,6 @@ export default new Vuex.Store( {
          state.tickets = tickets;
       },
 
-      storeStatus( state, status ) {
-         state.status = status;
-      },
-
       storeVersion( state, e ) {
          e.forEach( ({ name, containerIndex, version }) => {
             Vue.set( state.apps[ name ][ containerIndex ], 'version', version );
@@ -145,8 +117,6 @@ export default new Vuex.Store( {
    actions: {
       fetchData( context ) {
          Promise.all([
-            fetch( '/api/' )
-               .then( response => response.json() ),
             fetch( '/api/apps' )
                .then( response => response.json() ),
             fetch( '/api/apps/tickets' )
@@ -157,9 +127,8 @@ export default new Vuex.Store( {
                   return {};
                } )
          ]).then((values) => {
-            context.commit( "storeStatus", values[0] );
-            context.commit( "storeTickets", values[2] );
-            context.commit( "storeApps", values[1] );
+            context.commit( "storeTickets", values[1] );
+            context.commit( "storeApps", values[0] );
             context.dispatch( 'fetchVersions' );
          });
       },

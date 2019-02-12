@@ -20,36 +20,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "api"
-version = "0.9.0"
-dependencies = [
- "crossbeam 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "crossbeam-utils 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "dkregistry 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "env_logger 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "futures 0.1.25 (registry+https://github.com/rust-lang/crates.io-index)",
- "goji 0.2.4 (git+https://github.com/softprops/goji.git?rev=1d72ffee98b88321418181998225c700904be414)",
- "handlebars 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "hyper 0.10.15 (registry+https://github.com/rust-lang/crates.io-index)",
- "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
- "multimap 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "regex 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "reqwest 0.9.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "rocket 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "rocket_contrib 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde 1.0.85 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_derive 1.0.85 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_json 1.0.36 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_yaml 0.7.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "shiplift 0.4.0 (git+https://github.com/softprops/shiplift.git?rev=0ca553e5976acd49f2b9177755e1b2c685c19e48)",
- "tokio 0.1.14 (registry+https://github.com/rust-lang/crates.io-index)",
- "tokio-core 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
- "toml 0.4.10 (registry+https://github.com/rust-lang/crates.io-index)",
- "url 1.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
 name = "argon2rs"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1270,6 +1240,36 @@ dependencies = [
 name = "pkg-config"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "prevant"
+version = "0.9.0"
+dependencies = [
+ "crossbeam 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "crossbeam-utils 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dkregistry 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "env_logger 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "failure 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures 0.1.25 (registry+https://github.com/rust-lang/crates.io-index)",
+ "goji 0.2.4 (git+https://github.com/softprops/goji.git?rev=1d72ffee98b88321418181998225c700904be414)",
+ "handlebars 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hyper 0.10.15 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "multimap 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "regex 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "reqwest 0.9.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rocket 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rocket_contrib 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde 1.0.85 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_derive 1.0.85 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_json 1.0.36 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_yaml 0.7.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "shiplift 0.4.0 (git+https://github.com/softprops/shiplift.git?rev=0ca553e5976acd49f2b9177755e1b2c685c19e48)",
+ "tokio 0.1.14 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tokio-core 0.1.17 (registry+https://github.com/rust-lang/crates.io-index)",
+ "toml 0.4.10 (registry+https://github.com/rust-lang/crates.io-index)",
+ "url 1.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "proc-macro2"

@@ -131,7 +131,7 @@
 
                   <images>
                      <image>
-                        <name>aixigo/prevant-${project.artifactId}</name>
+                        <name>aixigo/prevant</name>
                      </image>
                   </images>
                </configuration>

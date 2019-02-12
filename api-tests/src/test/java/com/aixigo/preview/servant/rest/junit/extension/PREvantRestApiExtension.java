@@ -42,7 +42,7 @@ import static org.apache.commons.lang3.StringUtils.isBlank;
 
 public class PREvantRestApiExtension implements BeforeAllCallback, AfterAllCallback, ParameterResolver {
 
-    private final GenericContainer prevantRestApiContainer = new GenericContainer("aixigo/prevant-api")
+    private final GenericContainer prevantRestApiContainer = new GenericContainer("aixigo/prevant")
             .withFileSystemBind("/var/run/docker.sock", "/var/run/docker.sock", BindMode.READ_WRITE)
             .withLabel("traefik.frontend.rule", "ReplacePathRegex: ^/api(.*) /$1;PathPrefix:/api;")
             .withLogConsumer(new Consumer<OutputFrame>() {
