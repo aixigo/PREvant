@@ -18,6 +18,7 @@
     "jquery": "^3.3.1",
     "mdn-polyfills": "^5.12.0",
     "moment": "^2.22.2",
+    "swagger-ui-dist": "^3.20.7",
     "v-tooltip": "^2.0.0-rc.33",
     "vue": "^2.5.17",
     "vue-resource": "^1.5.1",

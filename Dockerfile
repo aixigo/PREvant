@@ -22,7 +22,7 @@ LABEL maintainer="marc.schreiber@aixigo.de"
 
 RUN adduser -D -u 1000 prevant
 COPY --chown=prevant --from=backend-builder /usr/src/api/target/x86_64-unknown-linux-musl/release/prevant /app/prevant
-COPY --chown=prevant api/res/Rocket.toml api/res/config.toml /app/
+COPY --chown=prevant api/res/Rocket.toml api/res/config.toml api/res/openapi.yml /app/
 COPY --chown=prevant --from=frontend-builder /usr/src/frontend/target/* /app/frontend/
 COPY --chown=prevant frontend/index.html frontend/favicon.svg  /app/frontend/
 

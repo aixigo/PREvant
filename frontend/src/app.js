@@ -47,7 +47,7 @@ import App from './App.vue';
 import Navbar from './Navbar.vue';
 
 import {library} from '@fortawesome/fontawesome-svg-core';
-import {faCode, faServer, faSpinner, faTerminal} from '@fortawesome/free-solid-svg-icons';
+import {faCode, faServer, faSpinner, faTerminal, faWindowClose} from '@fortawesome/free-solid-svg-icons';
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome';
 import store from './store';
 
@@ -55,6 +55,7 @@ library.add(faCode);
 library.add(faServer);
 library.add(faSpinner);
 library.add(faTerminal);
+library.add(faWindowClose);
 
 Vue.use(VueResource);
 Vue.use(VTooltip);
@@ -73,5 +74,3 @@ new Vue({
     store,
     render: h => h(Navbar)
 });
-
-

@@ -1,0 +1,197 @@
+openapi: 3.0.0
+servers:
+  - url: 'https://github.com/aixigo/PREvant'
+info:
+  description: >-
+    The PREvant RESTful API allows to see and manipulate the deployed apps that are ready for reviewing purposes.
+  version: 1.0.0
+  title: PREvant RESTful API
+  contact:
+    name: Marc Schreiber
+    email: marc.schreiber@aixigo.de
+  license:
+    name: MIT License
+    url: https://opensource.org/licenses/MIT
+paths:
+  /apps/:
+    get:
+      summary: List deployed review apps.
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "^[a-zA-Z0-9_-]":
+                    $ref: '#/components/schemas/Service'
+  /apps/tickets/:
+    get:
+      summary: Provides ticket information to each review app
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "^[a-zA-Z0-9_-]":
+                    $ref: '#/components/schemas/Ticket'
+  /apps/{appName}:
+    post:
+      summary: Start or update a new review app.
+      parameters:
+        - in: path
+          name: appName
+          allowEmptyValue: false
+          schema:
+            type: string
+          required: true
+          description: Name of review app to create
+      requestBody:
+        description: Information of review app to create
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/ServiceConfiguration'
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Service'
+    delete:
+      summary: Shutdown a review app
+      parameters:
+        - in: path
+          name: appName
+          allowEmptyValue: false
+          schema:
+            type: string
+          required: true
+          description: Name of review app to delete
+      responses:
+        '200':
+          description: 'List of deleted containers'
+          content:
+            application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/Service'
+  /webhooks/:
+    post:
+      summary: Cleans up apps when webhook triggers this resource.
+      description: >-
+        If a PR has been merged or declined, a webhook can trigger this resource in order to delete the
+        corresponding review app. Currently supported are webhooks of Bitbucket:
+
+        - [Merged](https://confluence.atlassian.com/bitbucketserver/event-payload-938025882.html#Eventpayload-Merged)
+
+        - [Declined](https://confluence.atlassian.com/bitbucketserver/event-payload-938025882.html#Eventpayload-Declined)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            $ref: '#/components/schemas/BitbucketWebHookPayload'
+components:
+  schemas:
+    Service:
+      type: object
+      properties:
+        vhost:
+          type: string
+        containerType:
+          type: string
+          enum:
+            - replica
+            - linked
+            - instance
+        url:
+          type: string
+          format: url
+        versionUrl:
+          type: string
+          format: url
+      required:
+        - vhost
+        - containerType
+        - url
+        - versionUrl
+    ServiceConfiguration:
+      type: object
+      properties:
+        serviceName:
+          type: string
+          description: Name of the service to start
+          example: mariadb
+        registry:
+          type: string
+          description: Hostname of the docker registry, containing the image of the service
+          example: docker.io
+        imageUser:
+          type: string
+          description: cf. `hub-user` from command `docker push <hub-user>/<repo-name>:<tag>` ([push docker images](https://docs.docker.com/docker-hub/repos/#pushing-a-repository-image-to-docker-hub))
+          example: library
+        imageRepository:
+          type: string
+          description: cf. `repo-name` from command `docker push <hub-user>/<repo-name>:<tag>` ([push docker images](https://docs.docker.com/docker-hub/repos/#pushing-a-repository-image-to-docker-hub))
+          example: mariadb
+        imageTag:
+          type: string
+          description: cf. `tag` from command `docker push <hub-user>/<repo-name>:<tag>` ([push docker images](https://docs.docker.com/docker-hub/repos/#pushing-a-repository-image-to-docker-hub))
+          example: 10.3
+        env:
+          type: array
+          items:
+            type: string
+          description: Key value list of enviroment variables
+          example:
+          - MYSQL_USER=admin
+          - MYSQL_DATABASE=dbname
+        volumes:
+          type: array
+          items:
+            type: string
+          description: Volumes to mount
+      required:
+        - serviceName
+        - registry
+    Ticket:
+      type: object
+      properties:
+        link:
+          type: string
+          format: uri
+          description: Link to the ticket in the ticket system.
+        summary:
+          type: string
+          description: Brief description of the ticket
+        status:
+          type: string
+          description: ticket status, for example, `closed`, `review`, …
+    BitbucketWebHookPayload:
+      type: object
+      description: Excerpt of Bitbucket's [event payload](https://confluence.atlassian.com/bitbucketserver/event-payload-938025882.html)
+      properties:
+        pullRequest:
+          type: object
+          properties:
+            title:
+              type: string
+              description: Title description the pull request.
+            fromRef:
+              type: object
+              properties:
+                displayId:
+                  type: string
+                  description: The branch name containing the ticket number `XXX-123`.
+                  example: 'feature/XXX-123-some-feature-branch'

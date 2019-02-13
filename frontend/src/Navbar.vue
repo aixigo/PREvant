@@ -46,14 +46,16 @@
                <font-awesome-icon icon="code"/>
                Code
             </a>
-            <a class="btn btn-outline-success my-2 my-sm-0" v-if="swaggerUrl !== ''"
-               :href="'/swagger-ui/?url=' + swaggerUrl" target="_blank">
+            <a class="btn btn-outline-success my-2 my-sm-0" href="#" @click="showApi = true">
                <font-awesome-icon icon="terminal"/>
                API
             </a>
          </form>
       </div>
+
+      <open-api-ui url="/openapi.yaml" title="PREvant" v-if="showApi" @close="showApi = false" />
    </nav>
+
 </template>
 
 <style>
@@ -64,10 +66,17 @@
 </style>
 
 <script>
-   import { mapGetters } from 'vuex';
+   import OpenApiUI from './OpenApiUI.vue';
 
    export default {
-
+      data() {
+         return {
+            showApi: false
+         };
+      },
+      components: {
+         'open-api-ui': OpenApiUI
+      },
       methods: {
          fireSearchEvent() {
             this.$store.commit( 'filterByAppName', this.$refs.searchApps.value );

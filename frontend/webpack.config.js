@@ -85,6 +85,9 @@ module.exports = {
         proxy: {
             '/api': {
                 target: 'http://localhost:8000'
+            },
+            '/openapi.yaml': {
+               target: 'http://localhost:8000'
             }
         }
     },

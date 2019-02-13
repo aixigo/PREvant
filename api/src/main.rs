@@ -90,9 +90,15 @@ fn files(path: PathBuf) -> Option<NamedFile> {
     NamedFile::open(Path::new("frontend/").join(path)).ok()
 }
 
-#[get("/swagger.yaml")]
-fn swagger(request_info: RequestInfo) -> String {
-    let mut f = File::open("swagger.yaml").unwrap();
+#[get("/")]
+fn openapi(request_info: RequestInfo) -> Option<String> {
+    let mut f = match File::open("openapi.yml") {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Cannot find API documentation: {}", e);
+            return None;
+        }
+    };
 
     let mut v: Value = from_reader(&mut f).unwrap();
 
@@ -100,7 +106,7 @@ fn swagger(request_info: RequestInfo) -> String {
     url.set_path("/api");
     v["servers"][0]["url"] = Value::String(String::from(url.to_string()));
 
-    to_string(&v).unwrap()
+    Some(to_string(&v).unwrap())
 }
 
 fn main() {
@@ -117,8 +123,8 @@ fn main() {
     rocket::ignite()
         .manage(config)
         .mount("/", routes![index])
+        .mount("/openapi.yaml", routes![openapi])
         .mount("/", routes![files])
-        .mount("/", routes![swagger])
         .mount("/api", routes![apps::apps])
         .mount("/api", routes![apps::tickets])
         .mount("/api", routes![apps::create_app])
