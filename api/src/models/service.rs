@@ -210,17 +210,11 @@ impl Service {
         self.container_type = container_type;
     }
 
-    fn get_base_url(&self) -> Url {
-        match &self.base_url {
-            None => Url::parse("http://example.org").unwrap(),
-            Some(base_url) => base_url.clone(),
-        }
-    }
-
-    fn get_root_url(&self) -> String {
-        let mut base = self.get_base_url();
-        base.set_path(&format!("/{}/{}/", &self.app_name, &self.service_name));
-        base.into_string()
+    fn get_service_url(&self) -> Option<Url> {
+        self.base_url.clone().map(|url| {
+            url.join(&format!("/{}/{}/", &self.app_name, &self.service_name))
+                .unwrap()
+        })
     }
 
     pub fn get_service_name(&self) -> &String {
@@ -244,15 +238,27 @@ impl Serialize for Service {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Service<'a> {
-            vhost: &'a String,
-            url: String,
-            container_type: String,
+            name: &'a String,
+            url: Option<String>,
+            #[serde(rename = "type")]
+            service_type: String,
+            version_url: Option<String>,
         }
 
+        let version_url = match self.container_type {
+            ContainerType::Instance | ContainerType::Replica => self
+                .get_service_url()
+                // TODO: use Web Host Metadata (RFC 6415): .well-known/host-meta.json
+                .map(|url| url.join("version").unwrap())
+                .map(|url| url.to_string()),
+            _ => None,
+        };
+
         let s = Service {
-            vhost: &self.service_name,
-            url: self.get_root_url(),
-            container_type: self.container_type.to_string(),
+            name: &self.service_name,
+            url: self.get_service_url().map(|url| url.to_string()),
+            service_type: self.container_type.to_string(),
+            version_url,
         };
 
         Ok(s.serialize(serializer)?)

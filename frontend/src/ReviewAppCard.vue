@@ -71,31 +71,34 @@
 
          <div class="card-body">
             <div v-for="container in reviewApp.containers"
-                 :key="container.vhost"
+                 :key="container.name"
                  class="ra-container">
 
                <div class="ra-container__type"
-                  :class="{ 'is-expanded': expandedContainers[ container.vhost ] }"
+                  :class="{ 'is-expanded': isExpanded( container ) }"
                   @click="toggleContainer( container )">
-                  <i v-if="expandedContainers[ container.vhost ]" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
-                  <i v-else="expandedContainers[ container.vhost ]" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
-                  <i v-if="container.vhost.endsWith( 'openid' )" class="ra-icons  material-icons">security</i>
-                  <i v-if="container.vhost.endsWith( '-proxy' )" class="ra-icons  material-icons">call_split</i>
-                  <i v-if="container.vhost.endsWith( '-frontend' )" class="ra-icons  material-icons">web</i>
-                  <i v-if="container.vhost.endsWith( '-service' )" class="ra-icons  material-icons">dns</i>
-                  <i v-if="container.vhost.endsWith( '-api' )" class="ra-icons  material-icons">developer_board</i>
+                  <i v-if="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
+                  <i v-else="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
+                  <template>
+                     <i v-if="container.name.endsWith( 'openid' )" class="ra-icons  material-icons">security</i>
+                     <i v-else-if="container.name.endsWith( '-proxy' )" class="ra-icons  material-icons">call_split</i>
+                     <i v-else-if="container.name.endsWith( '-frontend' )" class="ra-icons  material-icons">web</i>
+                     <i v-else-if="container.name.endsWith( '-service' )" class="ra-icons  material-icons">dns</i>
+                     <i v-else-if="container.name.endsWith( '-api' )" class="ra-icons  material-icons">developer_board</i>
+                     <i v-else-if="container.name.endsWith( '-db' ) || container.name.endsWith( '-database' )" class="ra-icons  material-icons">archive</i>
+                     <i v-else class="ra-icons  material-icons">link</i>
+                  </template>
                </div>
 
                <div class="ra-container__infos">
                   <h5>
-                     <a :href='container.url' target="_blank">{{ container.vhost }}</a>
+                     <a :href='container.url' target="_blank">{{ container.name }}</a>
                   </h5>
 
                   <div class="ra-build-infos__wrapper"
-                     v-if="expandedContainers[ container.vhost ]">
+                     v-if="isExpanded( container )">
                      <div  class="ra-build-infos">
-                        <a v-if="container.swaggerUrl" :href="container.swaggerUrl" target="_blank">API Documentation</a>
-                        <a v-if="container.logsUrl" :href="container.logsUrl" target="_blank">Logs</a>
+                        <a v-if="container.apiUrl" href="#" @click="currentApiUrl = container.apiUrl">API Documentation</a>
                      </div>
 
                      <div v-if="container.version" class="ra-build-infos">
@@ -105,7 +108,7 @@
                         <!-- <span class="ra-build-infos__date">20.07.2018</span>,
                         <span class="ra-build-infos__time">07:54</span> -->
                      </div>
-                     <p v-if="!container.version && container.vhost.endsWith( '-service' )">
+                     <p v-if="!container.version && container.name.endsWith( '-service' )">
                         <font-awesome-icon icon="spinner" spin />
                      </p>
                   </div>
@@ -113,9 +116,9 @@
 
                <div class="ra-container__tags">
                   <span class="badge"
-                     :class="badgeClass( container.containerType )"
-                     v-tooltip="tooltip( container.containerType )">{{ container.containerType }}</span>
-                  <span v-if="container.version && container.version[ 'git.revision' ] && expandedContainers[ container.vhost ]"
+                     :class="badgeClass( container.type )"
+                     v-tooltip="tooltip( container.type )">{{ container.type }}</span>
+                  <span v-if="container.version && container.version[ 'git.revision' ] && isExpanded( container )"
                      class="ra-build-infos ra-build-infos__hash text-right"
                      :title="container.version[ 'git.revision' ]">
                      {{ container.version[ 'git.revision' ].slice( 0, 7 ) }}…
@@ -140,22 +143,27 @@
       </div>
 
       <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name != 'master'"/>
+
+      <open-api-ui :url="currentApiUrl" v-if="currentApiUrl != null" @close="currentApiUrl = null" />
    </div>
 </template>
 
 <script>
    import moment from 'moment';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
+   import OpenApiUI from './OpenApiUI.vue';
 
    export default {
       data() {
          return {
+            currentApiUrl: null,
             currentAppName: window.location.hash.slice(1),
             expandedContainers: {}
          };
       },
       components: {
-         'shutdown-app-dialog': ShutdownAppDialog
+         'shutdown-app-dialog': ShutdownAppDialog,
+         'open-api-ui': OpenApiUI
       },
       filters: {
          date(buildDateTime) {
@@ -181,9 +189,9 @@
             const { containers } = newValue;
 
             if( containers && containers.length ) {
-               containers.forEach( ( { vhost } ) => {
-                  const expanded = vhost.endsWith( '-api' ) || vhost.endsWith( '-service' );
-                  this.$set( this.expandedContainers, [ vhost ], expanded );
+               containers.forEach( ( { name } ) => {
+                  const expanded = name.endsWith( '-api' ) || name.endsWith( '-service' );
+                  this.$set( this.expandedContainers, [ name ], expanded );
                } );
             }
          }
@@ -196,7 +204,7 @@
                this.reviewApp.containers
                   .filter(container => !!container.version)
                   .forEach(container => {
-                     res[container.vhost] = container.version['git.revision'];
+                     res[container.name] = container.version['git.revision'];
                   });
             }
 
@@ -236,8 +244,8 @@
          openDeleteDialog() {
             this.$refs.deleteDlg.open();
          },
-         badgeClass( containerType ) {
-            switch ( containerType ) {
+         badgeClass( serviceType ) {
+            switch ( serviceType ) {
                case 'instance':
                   return 'badge-info';
                case 'linked':
@@ -247,20 +255,24 @@
             }
             return 'badge-secondary';
          },
-         tooltip( containerType ) {
-            switch ( containerType ) {
+         tooltip( serviceType ) {
+            switch ( serviceType ) {
                case 'instance':
                   return 'This service has been deployed especially for the review-app.';
-               case 'linked':
-                  return 'This service has been linked to the service of the master review-app. Every change to this service affects the service of master review-app.';
                case 'replica':
                   return 'This service has been replicated from the service of the master review app. Changes to this service won\'t affect the service of master review-app.';
             }
             return '';
          },
          toggleContainer( container ) {
-            this.expandedContainers[ container.vhost ] =
-               !this.expandedContainers[ container.vhost ] ;
+            this.expandedContainers[ container.name ] = !this.isExpanded( container );
+         },
+         isExpanded( container ) {
+             if( this.expandedContainers[ container.name ] == undefined ) {
+                 return container.type === 'instance' || container.type === 'replica';
+             }
+
+             return this.expandedContainers[ container.name ] == true;
          }
       }
    }

@@ -25,17 +25,17 @@
  */
 <template>
    <transition name="modal">
-      <div class="modal-mask">
-         <div class="modal-wrapper">
-            <div class="modal-container">
+      <div class="ra-modal-mask">
+         <div class="ra-modal-wrapper">
+            <div class="ra-modal-container">
 
-               <div class="modal-header">
+               <div class="ra-modal-header">
                   <h1>API Documentation<span v-if="showAdditionalHeadlineInformation"> – {{ this.title }}</span></h1>
 
-                  <font-awesome-icon icon="window-close" @click="close()" />
+                  <font-awesome-icon icon="window-close" @click="close()" class="ra-modal-close-button"/>
                </div>
 
-               <div class="modal-body">
+               <div class="ra-modal-body">
                   <div :id="`swagger-ui-${this._uid}`"></div>
                </div>
             </div>
@@ -47,7 +47,24 @@
 <style type="text/css">
    @import "~swagger-ui-dist/swagger-ui.css";
 
-   .modal-mask {
+   /* Fixes swagger ui response column width */
+   .ra-modal-container .col.response-col_status {
+       width: 10% !important;
+   }
+   .ra-modal-container .col_header.parameters-col_name {
+       width: 10% !important;
+   }
+   .ra-modal-container .col.parameters-col_name {
+       width: 10% !important;
+   }
+
+   .ra-modal-close-button {
+       position: absolute;
+       right: 20px;
+       top: 20px;
+   }
+
+   .ra-modal-mask {
       position: fixed;
       z-index: 9998;
       top: 0;
@@ -59,12 +76,12 @@
       transition: opacity .3s ease;
    }
 
-   .modal-wrapper {
+   .ra-modal-wrapper {
       display: table-cell;
       vertical-align: middle;
    }
 
-   .modal-container {
+   .ra-modal-container {
       position: fixed;
       top: 50px;
       left: 50px;
@@ -80,17 +97,17 @@
       overflow-y: scroll;
    }
 
-   .modal-header h3 {
+   .ra-modal-header h3 {
       margin-top: 0;
       color: #42b983;
    }
 
-   .modal-body {
+   .ra-modal-body {
       margin: 20px 0;
    }
 
-   .modal-enter .modal-container,
-   .modal-leave-active .modal-container {
+   .ra-modal-enter .ra-modal-container,
+   .ra-modal-leave-active .ra-modal-container {
       -webkit-transform: scale(0.1);
       transform: scale(0.1);
    }
@@ -118,7 +135,7 @@
          }
       },
       mounted() {
-         const ui = SwaggerUIBundle( {
+         SwaggerUIBundle( {
             url: this.url,
             dom_id: `#swagger-ui-${this._uid}`,
             presets: [

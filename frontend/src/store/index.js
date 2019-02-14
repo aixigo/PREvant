@@ -29,6 +29,22 @@ import Vuex from 'vuex'
 
 Vue.use( Vuex );
 
+const SERVICE_TYPE_ORDER = [
+    'instance',
+    'replica',
+    'app-companion',
+    'service-companion'
+];
+
+function timeout(ms, promise) {
+    return new Promise(function(resolve, reject) {
+        setTimeout(function() {
+            reject(new Error("timeout"))
+        }, ms)
+        promise.then(resolve, reject)
+    })
+}
+
 export default new Vuex.Store( {
    state: {
       apps: {},
@@ -65,30 +81,33 @@ export default new Vuex.Store( {
 
             const containers = [
                ...appContainers
-                  .map( ( { vhost, url, version, containerType, containerId } ) => {
+                  .map( ( { name, url, version, type } ) => {
                      return {
-                        vhost, url, version, label: name, containerType, containerId
+                         name, url, version, type
                      };
                   } )
             ].map( container => {
-               let swaggerUrl = undefined;
-               let logsUrl = undefined;
-               // if ( state.status.swaggerUiAvailable && container.version && container.version.api ) {
-               //    swaggerUrl = container.url.replace( `/${container.vhost}/`, '/swagger-ui/' )
-               //       + `?url=${container.version.api.url}`;
-               // }
+               let apiUrl = undefined;
+               if ( container.version && container.version.api ) {
+                  apiUrl = container.version.api.url;
+               }
 
-               return Object.assign( {}, container, { swaggerUrl, logsUrl } );
+               return Object.assign( {}, container, { apiUrl } );
             } );
-            containers.sort( byVhost );
+            containers.sort( byTypeAndName );
             return { name, ticket, containers };
          }
 
-         function byVhost( containerA, containerB ) {
-            const [ keyA, keyB ] = [ containerA, containerB ]
-               .map( ( { vhost } ) => `${vhost.endsWith( '-frontend' ) ? 0 : 1 }-${vhost}` );
-            return keyA < keyB ? -1 : 1;
-         }
+          function byTypeAndName(containerA, containerB) {
+              const typeIndexA = SERVICE_TYPE_ORDER.indexOf(containerA.type);
+              const typeIndexB = SERVICE_TYPE_ORDER.indexOf(containerB.type);
+
+              if (typeIndexA !== typeIndexB) {
+                  return typeIndexA < typeIndexB ? -1 : 1;
+              }
+
+              return containerA.name < containerB.name ? -1 : 1;
+          }
 
          function byAppNameDesc( appA, appB ) {
             const [ keyA, keyB ] = [ appA, appB ].map( ( { name } ) => name );
@@ -144,19 +163,15 @@ export default new Vuex.Store( {
 
             let promises = [];
             context.state.apps[ name ].forEach( ( container, containerIndex ) => {
-               if ( container.vhost.endsWith( '-frontend' ) ) {
-                  return;
-               }
-
                const undefinedVersion = { 'build.time': 'N/A', 'git.revision': 'N/A' };
                if ( container.versionUrl == null ) {
                   promises.push( Promise.resolve( ( { name, containerIndex, version: undefinedVersion } ) ) );
                   return;
                }
 
-               promises.push( fetch( container.versionUrl )
+               promises.push( timeout(500, fetch( container.versionUrl )
                   .then( res => res.ok ? res.json() : undefinedVersion )
-                  .then( version => ( { name, containerIndex, version  } ) ) );
+                  .then( version => ( { name, containerIndex, version  } ) ) ) );
             } );
 
             Promise.all(promises)
