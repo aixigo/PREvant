@@ -73,10 +73,11 @@ export default new Vuex.Store( {
             ].map( container => {
                let swaggerUrl = undefined;
                let logsUrl = undefined;
-               if ( state.status.swaggerUiAvailable && container.version && container.version.api ) {
-                  swaggerUrl = container.url.replace( `/${container.vhost}/`, '/swagger-ui/' )
-                     + `?url=${container.version.api.url}`;
-               }
+               // if ( state.status.swaggerUiAvailable && container.version && container.version.api ) {
+               //    swaggerUrl = container.url.replace( `/${container.vhost}/`, '/swagger-ui/' )
+               //       + `?url=${container.version.api.url}`;
+               // }
+
                return Object.assign( {}, container, { swaggerUrl, logsUrl } );
             } );
             containers.sort( byVhost );
@@ -118,13 +119,18 @@ export default new Vuex.Store( {
       fetchData( context ) {
          Promise.all([
             fetch( '/api/apps' )
-               .then( response => response.json() ),
+               .then( response => {
+                   if (response.ok && response.status === 200) {
+                       return response.json();
+                   }
+                   return Promise.resolve(() => {});
+               } ),
             fetch( '/api/apps/tickets' )
                .then( response => {
-                  if (response.ok) {
-                     return response.json()
+                  if (response.ok && response.status === 200) {
+                     return response.json();
                   }
-                  return {};
+                   return Promise.resolve(() => {});
                } )
          ]).then((values) => {
             context.commit( "storeTickets", values[1] );
