@@ -91,8 +91,6 @@ impl<'a> AppsService<'a> {
             }
         }
 
-        // TODO: when replication resolves port mapping this could be performed before replicating
-        // serivce configurations
         let images_service = ImagesService::new();
         let mappings = images_service.resolve_image_ports(&configs)?;
         for config in configs.iter_mut() {
@@ -127,6 +125,12 @@ impl<'a> AppsService<'a> {
             configs.push(applied_template_config);
         }
 
+        configs.sort_unstable_by(|a, b| {
+            let index1 = AppsService::container_type_index(a.get_container_type());
+            let index2 = AppsService::container_type_index(b.get_container_type());
+            index1.cmp(&index2)
+        });
+
         let services = self.infrastructure.start_services(
             app_name,
             &configs,
@@ -134,6 +138,14 @@ impl<'a> AppsService<'a> {
         )?;
 
         Ok(services)
+    }
+
+    fn container_type_index(container_type: &ContainerType) -> i32 {
+        match container_type {
+            ContainerType::ApplicationCompanion => 0,
+            ContainerType::ServiceCompanion => 1,
+            ContainerType::Instance | ContainerType::Replica => 2,
+        }
     }
 
     /// Deletes all services for the given `app_name`.

@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::service::ServiceConfig;
+use crate::models::service::{Image, ServiceConfig};
 use dkregistry::errors::Error as DKRegistryError;
 use dkregistry::reference;
 use futures::Future;
@@ -52,6 +52,10 @@ impl ImagesService {
         let mut port_mappings = HashMap::new();
 
         for config in configs.iter() {
+            if let Image::Digest { hash: _ } = config.get_image() {
+                break;
+            }
+
             let reference = reference::Reference::from_str(&config.get_image().to_string())?;
 
             let image = config.get_image().get_name().unwrap();

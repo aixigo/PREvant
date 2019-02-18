@@ -642,6 +642,22 @@ impl Infrastructure for DockerInfrastructure {
                             ServiceConfig::new(service.get_service_name().clone(), &image);
                         service_config.set_env(env);
 
+                        if let Some(ports) = container_details.network_settings.ports {
+                            let ports_regex = Regex::new(r#"^(?P<port>\d+).*"#).unwrap();
+
+                            let port = ports
+                                .keys()
+                                .filter_map(|port| ports_regex.captures(port))
+                                .map(|captures| {
+                                    String::from(captures.name("port").unwrap().as_str())
+                                })
+                                .filter_map(|port| port.parse::<u16>().ok())
+                                .min()
+                                .unwrap_or(80);
+
+                            service_config.set_port(port);
+                        }
+
                         service_config
                     });
 

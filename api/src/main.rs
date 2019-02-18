@@ -110,7 +110,9 @@ fn openapi(request_info: RequestInfo) -> Option<String> {
 }
 
 fn main() {
-    env_logger::init();
+    if cfg!(not(debug_assertions)) {
+        env_logger::init();
+    }
 
     let config = match Config::load() {
         Ok(config) => config,
