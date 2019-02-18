@@ -1,0 +1,183 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=1024"/>
+    <meta name="apple-mobile-web-app-capable" content="yes"/>
+    <title>PREvant (Preview Servant): Composing Microservices into Reviewable and Testable Applications |
+        by Marc Schreiber</title>
+
+    <meta name="author" content="Marc Schreiber"/>
+
+    <link href="css/font-awesome.all.min.css" rel="stylesheet"/>
+    <link href="css/impress-demo.css" rel="stylesheet"/>
+</head>
+
+<body class="impress-not-supported"
+      style="height: 100%; background-color:#232835; overflow: hidden;">
+
+
+<div class="fallback-message">
+    <p>Your browser <b>doesn't support the features required</b> by impress.js, so you are presented with a simplified
+        version of this presentation.</p>
+    <p>For the best experience please use the latest <b>Chrome</b>, <b>Safari</b> or <b>Firefox</b> browser.</p>
+</div>
+
+
+<div id="impress">
+
+    <div data-section="Intro" id="title" class="step" data-scale="4" data-x="0" data-y="-13000" data-z="7000"
+         data-rotate-x="90" data-rotate-y="0" data-rotate-z="180">
+        <h1>PREvant (Preview Servant)</h1>
+        <h2>Composing Microservices into Reviewable and Testable Applications</h2>
+
+        <p><br></p>
+        <p class="footnote">Marc Schreiber, M. Sc.<br>aixigo AG</p>
+        <p><br></p>
+        <p class="footnote">
+            <a href="https://github.com/aixigo/PREvant">
+                <i class="fab fa-github"></i> https://github.com/aixigo/PREvant
+            </a>
+        </p>
+    </div>
+
+    <div id="agenda" class="step" data-scale="4" data-x="0" data-y="-17000" data-z="-5000" data-rotate-x="90"
+         data-rotate-y="0" data-rotate-z="180">
+
+        <h2>Agenda</h2>
+        <ul id="agenda-list"></ul>
+
+    </div>
+
+
+    <div data-section="Scenario" id="scenario" class="step" data-x="0" data-y="100" data-z="1000" data-scale="4">
+        <h2>Why do we use Microservices?</h2>
+
+        <ul>
+            <li>Scalable</li>
+            <li>Fast deployment cycle</li>
+            <li>Superior quality</li>
+            <li>Greater flexibility</li>
+        </ul>
+    </div>
+    <div id="preview" class="step" data-x="0" data-y="4440" data-z="1000" data-scale="4">
+        <h2>How do you transit from monolith to microservices?</h2>
+        <br>
+        <br>
+        <img src="../assets/initial-preview.svg" width="100%">
+    </div>
+    <div id="chaos" class="step" data-x="2350" data-y="7500" data-z="1000" data-scale="12">
+        <img src="../assets/in-the-beginning.svg" width="100%">
+    </div>
+    <div id="git-flow" class="step" data-x="2500" data-y="4500" data-z="1000" data-scale="0.25"
+         data-rotate-x="-90" data-rotate-y="90">
+
+        <img src="../assets/git-flow.svg" width="100%">
+    </div>
+    <div id="chaos-recap" class="step" data-x="2350" data-y="7500" data-z="1000" data-scale="12">
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <p>How to simplify preview deployment and quality assurance?</p>
+    </div>
+
+
+    <div data-section="PREvant" id="nutshell" class="step" data-x="2500" data-y="20000" data-z="1000" data-scale="4">
+        <h2>PREvant in a nutshell</h2>
+        <br>
+        <img src="../assets/chaos-resolved-1.svg" width="100%">
+    </div>
+    <div id="chaos-resolved" class="step" data-x="5000" data-y="22000" data-z="1000"
+         data-scale="12">
+        <img src="../assets/chaos-resolved-2.svg" width="100%">
+    </div>
+
+
+    <div data-section="Demo" id="demo" class="step" data-x="0" data-y="21000" data-z="1000" data-scale="0.2"
+         data-rotate-x="-90" data-rotate-y="-90">
+
+        <h2>Demo</h2>
+
+        <img src="../assets/screenshot.png" width="100%">
+
+        <p class="footnote">
+            FinovateFall 2018:
+            <a href="https://www.youtube.com/watch?v=eHS_Gol2Mv0">https://www.youtube.com/watch?v=eHS_Gol2Mv0</a>
+        </p>
+    </div>
+
+
+    <div data-section="Q&A" id="qa"  class="step" data-x="0" data-y="21000" data-z="2000" data-scale="0.2"
+         data-rotate-x="-90" data-rotate-y="-90">
+
+        <h2>Thank you for your attention</h2>
+        <p>Any questions<i class="fas fa-question-circle"></i></p>
+    </div>
+
+</div>
+
+<footer>
+    <div id="section-name"></div>
+    <div id="slide-numbers"></div>
+</footer>
+
+<script src="js/impress.js"></script>
+<script>
+    const rootElement = document.getElementById("impress");
+
+    const slides = Array.prototype.slice.call(rootElement.getElementsByTagName("div"));
+
+    const slideSectionMapping = {};
+    let currentSection = undefined;
+    let index = 0;
+    slides.forEach(function (slide) {
+        const section = slide.dataset.section;
+        if (section != null) {
+            currentSection = {name: section, index};
+            ++index;
+        }
+        slideSectionMapping[slide.id] = currentSection;
+    });
+
+    rootElement.addEventListener("impress:stepenter", function (e) {
+        const index = slides.indexOf(e.explicitOriginalTarget) + 1;
+
+        const slideNumbers = document.getElementById("slide-numbers");
+        slideNumbers.innerHTML = `${index} / ${slides.length}`;
+
+        const section = slideSectionMapping[e.explicitOriginalTarget.id];
+        const sectionName = document.getElementById("section-name");
+        sectionName.innerHTML = section.name;
+    });
+
+    const sections = Array.from(new Set(Object.keys(slideSectionMapping)
+        .map(function (key) {
+            return slideSectionMapping[key]
+        })))
+        .filter(function (section) {
+            return section.index > 0;
+        })
+        .sort(function (a, b) {
+            return a.index - b.index;
+        });
+
+    const agendaList = document.getElementById("agenda-list");
+    sections.forEach(function (section) {
+        const li = document.createElement("li");
+        li.innerHTML = section.name;
+        agendaList.appendChild(li);
+    });
+
+    impress().init();
+</script>
+</body>
+</html>
