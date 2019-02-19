@@ -1,0 +1,101 @@
+:root {
+   font-size: 36px;
+}
+
+body {
+   font-size: 1rem;
+   color: #555;
+   background:#343A40;
+   background:white;
+}
+
+
+h1 {
+   font-size: 2rem !important;
+   position: relative;
+   margin-bottom: 1em;
+}
+
+h1 > span {
+   display: inline-block;
+   padding: 0 .25em;
+   color: white;
+   background-color: #333;
+}
+
+h1 > small {
+   font-size: 0.65rem;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: .25em;
+  white-space: nowrap;
+  color: #999;
+}
+
+h2 {
+   font-size: 1.5rem !important;
+   line-height: 1.25;
+   margin-bottom: 1em;
+}
+
+a {
+   color: #37B1DA;
+}
+
+p + p {
+   margin-top: 1.5em;
+}
+
+ul li {
+   position: relative;
+   margin-bottom: 1em;
+   padding-left: .5em;
+}
+
+ul li:before {
+   position: absolute;
+   top: 50%;
+   left: 0;
+   transform: translateY(-50%);
+   display: inline-block;
+   width: 1.5em;
+   height: 1.5em;
+
+   content: '';
+   background-image: url(../images/ok.svg);
+   background-repeat: no-repeat;
+   background-size: contain;
+}
+
+img {
+   width: 100%;
+}
+
+.container {
+   margin-top: 1em;
+}
+
+.step {
+
+   font-size: 1em;
+
+   display: flex;
+   flex-direction: column;
+   align-items: center;
+   justify-content: center;
+   width: 94vw;
+   height: 52.875vw;
+   line-height: 1.25;
+   padding: 2em !important;
+
+   /* outline: 1px solid deeppink; */
+}
+
+.impress-enabled .step {
+   opacity: 0;
+}
+
+.footnote {
+   color: #999;
+}
