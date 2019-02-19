@@ -357,6 +357,18 @@ impl Image {
             }
         }
     }
+
+    pub fn get_registry(&self) -> Option<String> {
+        match &self {
+            Image::Digest { .. } => None,
+            Image::Named {
+                image_repository: _,
+                registry,
+                image_user: _,
+                image_tag: _,
+            } => registry.clone(),
+        }
+    }
 }
 
 /// Parse a docker image string and returns an image
@@ -492,5 +504,13 @@ mod tests {
         let image = Image::from_str("docker.io/library/nginx:latest").unwrap();
 
         assert_eq!(&image.to_string(), "docker.io/library/nginx:latest");
+    }
+
+    #[test]
+    fn should_parse_image_from_localhost() {
+        let image = Image::from_str("localhost:5000/library/nginx:latest").unwrap();
+
+        assert_eq!(&image.to_string(), "localhost:5000/library/nginx:latest");
+        assert_eq!(&image.get_registry().unwrap(), "localhost:5000");
     }
 }

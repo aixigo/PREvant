@@ -34,10 +34,10 @@ use multimap::MultiMap;
 use regex::Regex;
 use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
-use shiplift::rep::Container;
+use shiplift::rep::{Container, ContainerCreateInfo};
 use shiplift::{
     ContainerConnectionOptions, ContainerFilter, ContainerListOptions, Docker,
-    NetworkCreateOptions, PullOptions, VolumeCreateOptions,
+    NetworkCreateOptions, PullOptions,
 };
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
@@ -70,20 +70,6 @@ pub enum DockerInfrastructureError {
     UnexpectedError { internal_message: String },
     #[fail(display = "Unknown service type label: {}", unknown_label)]
     UnknownServiceType { unknown_label: String },
-}
-
-fn escape_bash_string(string: &str) -> String {
-    let chars_to_escape_regex = Regex::new(r#"["\$]"#).unwrap();
-
-    string
-        .chars()
-        .into_iter()
-        .map(|c| match chars_to_escape_regex.is_match(&c.to_string()) {
-            false => c.to_string(),
-            true => format!("\\{}", c),
-        })
-        .collect::<String>()
-        .replace("\n", "\\n")
 }
 
 impl DockerInfrastructure {
@@ -246,15 +232,6 @@ impl DockerInfrastructure {
             options.env(env.iter().map(|e| e.as_str()).collect());
         }
 
-        if let Some(_volumes) = service_config.get_volumes() {
-            let volumes: Vec<String> = self
-                .create_volumes(&mut runtime, app_name, service_config)?
-                .iter()
-                .map(|(path, volume_name)| format!("{}:{}", volume_name, path))
-                .collect();
-            options.volumes(volumes.iter().map(|v| v.as_ref()).collect());
-        }
-
         let traefik_frontend = format!(
             "ReplacePathRegex: ^/{app_name}/{service_name}/(.*) /$1;PathPrefix:/{app_name}/{service_name}/;",
             app_name = app_name,
@@ -282,6 +259,8 @@ impl DockerInfrastructure {
 
         let container_info = runtime.block_on(containers.create(&options.build()))?;
         debug!("Created container: {:?}", container_info);
+
+        self.copy_volume_data(&container_info, service_config)?;
 
         runtime.block_on(containers.get(&container_info.id).start())?;
         debug!("Started container: {:?}", container_info);
@@ -317,93 +296,31 @@ impl DockerInfrastructure {
         Ok(service)
     }
 
-    fn create_volumes(
+    fn copy_volume_data(
         &self,
-        runtime: &mut Runtime,
-        app_name: &String,
-        config: &ServiceConfig,
-    ) -> Result<HashMap<String, String>, ShipLiftError> {
-        let mut volumes: HashMap<String, String> = HashMap::new();
+        container_info: &ContainerCreateInfo,
+        service_config: &ServiceConfig,
+    ) -> Result<(), ShipLiftError> {
+        let volumes = match service_config.get_volumes() {
+            None => return Ok(()),
+            Some(volumes) => volumes,
+        };
 
-        info!(
-            "Creating volumes for {:?} of app {:?}",
-            config.get_service_name(),
-            app_name
-        );
+        debug!("Copy data to container: {:?} (service = {})", container_info, service_config.get_service_name());
 
         let docker = Docker::new();
         let containers = docker.containers();
+        let mut runtime = Runtime::new()?;
 
-        let mut create_futures = Vec::new();
-        for (mount_point, file_content) in config.get_volumes().unwrap() {
-            let target = Path::new(mount_point)
-                .parent()
-                .map_or_else(|| "", |p| p.to_str().unwrap())
-                .to_string();
-
-            if let None = volumes.get(&target) {
-                volumes.insert(
-                    target.clone(),
-                    self.create_volume(runtime, app_name, config)?,
-                );
-            }
-            let volume_name = volumes.get(&target).unwrap();
-
-            let cmd = format!(
-                r#"echo -e "{}" > {}"#,
-                escape_bash_string(file_content),
-                mount_point
-            );
-            create_futures.push(
-                containers.create(
-                    &ContainerOptions::builder("bash")
-                        .volumes(vec![format!("{}:{}", volume_name, target).as_ref()])
-                        .cmd(vec!["sh", "-c", &cmd])
-                        .auto_remove(true)
-                        .build(),
-                ),
-            );
+        for (path, data) in volumes {
+            runtime.block_on(
+                containers
+                    .get(&container_info.id)
+                    .copy_into(Path::new(path), &Vec::from(data.as_bytes())),
+            )?;
         }
 
-        let mut start_futures = Vec::new();
-        for info in runtime.block_on(join_all(create_futures))? {
-            start_futures.push(docker.containers().get(&info.id).start());
-        }
-        runtime.block_on(join_all(start_futures))?;
-
-        Ok(volumes)
-    }
-
-    fn create_volume(
-        &self,
-        runtime: &mut Runtime,
-        app_name: &String,
-        config: &ServiceConfig,
-    ) -> Result<String, ShipLiftError> {
-        let docker = Docker::new();
-        let volumes = docker.volumes();
-
-        let mut labels: HashMap<&str, &str> = HashMap::new();
-        labels.insert(APP_NAME_LABEL, app_name);
-        labels.insert(SERVICE_NAME_LABEL, &config.get_service_name());
-
-        let future_create_volume = volumes
-            .create(&VolumeCreateOptions::builder().labels(&labels).build())
-            .map(|create_info| create_info.name);
-
-        let name = runtime.block_on(future_create_volume)?;
-
-        runtime.block_on(
-            docker
-                .images()
-                .pull(&PullOptions::builder().image("bash").build())
-                .for_each(|output| {
-                    debug!("{:?}", output);
-                    Ok(())
-                }),
-        )?;
-
-        Ok(name)
+        Ok(())
     }
 
     fn pull_image(
@@ -734,30 +651,5 @@ impl From<ServiceError> for DockerInfrastructureError {
                 internal_message: err.to_string(),
             },
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[test]
-    fn should_escape_bash_string() {
-        let escaped_string = escape_bash_string(
-            r#"server {
-  resolver 127.0.0.11 valid=0s;
-  listen       80;
-  server_name  localhost;
-  access_log   /var/log/nginx/access.log main;
-  location / {
-    set $upstream httpd:80;
-    proxy_pass http://$upstream;
-    add_header X-MyHeader "Test String";
-  }
-}"#,
-        );
-
-        assert_eq!("server {\\n  resolver 127.0.0.11 valid=0s;\\n  listen       80;\\n  server_name  localhost;\\n  access_log   /var/log/nginx/access.log main;\\n  location / {\\n    set \\$upstream httpd:80;\\n    proxy_pass http://\\$upstream;\\n    add_header X-MyHeader \\\"Test String\\\";\\n  }\\n}", &escaped_string);
     }
 }
