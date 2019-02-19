@@ -498,19 +498,6 @@ impl Infrastructure for DockerInfrastructure {
             container_details_futures.push(future);
         }
 
-        let container_details = runtime.block_on(join_all(container_details_futures))?;
-        let mut delete_volumes_futures = Vec::new();
-        for mount in container_details
-            .into_iter()
-            .flat_map(|container_details| container_details.mounts)
-        {
-            delete_volumes_futures.push(docker.volumes().get(&mount.source).delete());
-        }
-
-        if let Err(e) = runtime.block_on(join_all(delete_volumes_futures)) {
-            error!("Cannot delete volume: {}", e);
-        }
-
         self.delete_network(app_name)?;
 
         Ok(services)
