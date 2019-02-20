@@ -2,148 +2,184 @@
 
 <html lang="en">
 <head>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=1024"/>
-    <meta name="apple-mobile-web-app-capable" content="yes"/>
-    <title>PREvant (Preview Servant): Composing Microservices into Reviewable and Testable Applications |
-        by Marc Schreiber</title>
+   <meta charset="utf-8"/>
+   <meta name="viewport" content="width=1024"/>
+   <meta name="apple-mobile-web-app-capable" content="yes"/>
+   <title>PREvant (Preview Servant): Composing Microservices into Reviewable and Testable Applications |
+      by Marc Schreiber</title>
 
-    <meta name="author" content="Marc Schreiber"/>
+   <meta name="author" content="Marc Schreiber"/>
 
-    <link href="css/font-awesome.all.min.css" rel="stylesheet"/>
-    <link href="css/impress-demo.css" rel="stylesheet"/>
-    <link href="css/prevent.css" rel="stylesheet"/>
+   <link href="css/font-awesome.all.min.css" rel="stylesheet"/>
+   <link href="css/impress-demo.css" rel="stylesheet"/>
+   <link href="css/prevent.css" rel="stylesheet"/>
 
-    <link href="css/highlight.js/idea.css" rel="stylesheet">
-    <script src="js/highlight.pack.js"></script>
+   <link href="css/highlight.js/idea.css" rel="stylesheet">
+   <script src="js/highlight.pack.js"></script>
 </head>
 
 <body class="impress-not-supported"
       style="height: 100%;  overflow: hidden;">
 
-
-<div class="fallback-message">
-    <p>Your browser <b>doesn't support the features required</b> by impress.js, so you are presented with a simplified
-        version of this presentation.</p>
-    <p>For the best experience please use the latest <b>Chrome</b>, <b>Safari</b> or <b>Firefox</b> browser.</p>
-</div>
+<!-- <div class="fallback-message">
+   <p>Your browser <b>doesn't support the features required</b> by impress.js, so you are presented with a simplified
+      version of this presentation.</p>
+   <p>For the best experience please use the latest <b>Chrome</b>, <b>Safari</b> or <b>Firefox</b> browser.</p>
+</div> -->
 
 
 <div id="impress">
-
-    <div data-section="Intro" id="title" class="step" data-scale="4" data-x="0" data-y="-13000" data-z="7000"
-         data-rotate-x="90" data-rotate-y="0" data-rotate-z="180">
+   <div id="title" class="step"
+      data-section="Intro" data-scale="1"
+      data-x="0" data-y="-13000" data-z="7000"
+      data-rotate-x="90" data-rotate-y="0" data-rotate-z="180">
       <h1>
-         <span>PREvant</span><br>
-         <small>(Preview Servant)</small>
+         <span>PREvant</span>
+         <small>Preview Servant</small>
       </h1>
       <div class="container">
-         <p>
-            Composing Microservices into Reviewable<br>
-            and Testable Applications
-         </p>
+         <h3>
+            <b>Composing Microservices into Reviewable<br>
+               and Testable Applications</b>
+         </h3>
 
          <p>
-            <b>
-               Marc Schreiber, M. Sc.<br>
-               aixigo AG
-            </b>
+            Marc Schreiber, M. Sc.<br>
+            aixigo AG
          </p>
 
          <p class="footnote">
             <a href="https://github.com/aixigo/PREvant">
-                  <i class="fab fa-github"></i> https://github.com/aixigo/PREvant
+               <i class="fab fa-github"></i> https://github.com/aixigo/PREvant
             </a>
          </p>
       </div>
-    </div>
-
-    <div id="agenda" class="step" data-x="0" data-y="-17000" data-z="-5000" data-rotate-x="90" data-scale="1"
-         data-rotate-y="0" data-rotate-z="180">
-
-        <h1>Agenda</h1>
-        <ul id="agenda-list"></ul>
-
-    </div>
+   </div>
 
 
-    <div data-section="Scenario" id="scenario" class="step" data-x="0" data-y="100" data-z="1000" data-scale="1">
-        <h2>Why do we use Microservices?</h2>
+   <div id="agenda" class="step"
+      data-scale="1"
+      data-x="0" data-y="-17000" data-z="-5000"
+      data-rotate-x="90" data-rotate-y="0" data-rotate-z="180">
 
-        <ul>
-            <li>Scalable</li>
-            <li>Fast deployment cycle</li>
-            <li>Superior quality</li>
-            <li>Greater flexibility</li>
-        </ul>
+      <h1>Agenda</h1>
+      <ul id="agenda-list"></ul>
 
-        <p class="footnote">At aixigo we are in the migration phase.</p>
-    </div>
+   </div>
 
-    <div id="preview" class="step" data-x="0" data-y="4440" data-z="1000" data-scale="1">
-        <h2>How do you transit from monolith to microservices?</h2>
-        <img src="../assets/initial-preview.svg">
-    </div>
 
-    <div id="chaos" class="step" data-x="2350" data-y="7500" data-z="1000" data-scale="1">
-        <img src="../assets/in-the-beginning.svg">
-    </div>
+   <div id="scenario" class="step"
+      data-scale="1"
+      data-x="0" data-y="100" data-z="1000">
 
-    <div id="git-flow" class="step" data-x="2500" data-y="4500" data-z="1000" data-scale="1"
-         data-rotate-x="-90" data-rotate-y="90">
+      <h2>Why do we use Microservices?</h2>
+      <ul>
+         <li>Scalable</li>
+         <li>Fast deployment cycle</li>
+         <li>Superior quality</li>
+         <li>Greater flexibility</li>
+      </ul>
+      <p class="footnote">At aixigo we are in the migration phase.</p>
 
-        <img src="../assets/git-flow.svg">
-    </div>
+   </div>
 
-    <div id="chaos-recap" class="step" data-x="2350" data-y="7500" data-z="1000" data-scale="1">
-        <h2>How to simplify preview deployment<br>
+
+   <div id="preview" class="step"
+      data-section="Preview" data-scale="1"
+      data-x="0" data-y="4440" data-z="1000">
+
+      <h2>How do you transit from monolith to microservices?</h2>
+      <img class="initial-preview-1a" src="../assets/initial-preview-1a.svg">
+      <img class="initial-preview-1b" src="../assets/initial-preview-1b.svg">
+
+   </div>
+
+
+   <div id="chaos" class="step"
+      data-scale="1"
+      data-x="-1000" data-y="4500" data-z="2200">
+
+      <img src="../assets/in-the-beginning.svg">
+
+   </div>
+
+
+   <div id="git-flow" class="step"
+      data-scale="1"
+      data-x="2500" data-y="4500" data-z="1000"
+      data-rotate-x="-90" data-rotate-y="90">
+
+      <img src="../assets/git-flow.svg">
+
+   </div>
+
+
+   <div id="chaos-recap" class="step"
+      data-scale="1"
+      data-x="2350" data-y="7500" data-z="1000">
+
+      <h2>How to simplify preview deployment<br>
          and quality assurance?</h2>
-    </div>
+
+   </div>
 
 
-    <div data-section="PREvant" id="nutshell" class="step" data-x="2500" data-y="20000" data-z="1000" data-scale="1">
-        <h2>PREvant in a nutshell</h2>
-        <img src="../assets/chaos-resolved-1.svg">
-    </div>
+   <div id="nutshell" class="step"
+      data-section="PREvant" data-scale="1"
+      data-x="2500" data-y="20000" data-z="1000">
 
-    <div id="chaos-resolved" class="step" data-x="5000" data-y="22000" data-z="1000"
-         data-scale="1">
+      <h2>PREvant in a nutshell</h2>
+      <img class="chaos-resolved-1a" src="../assets/chaos-resolved-1a.svg">
+      <img class="chaos-resolved-1b" src="../assets/chaos-resolved-1b.svg">
+
+   </div>
+
+
+    <div id="chaos-resolved" class="step"
+      data-scale="1"
+      data-x="1450" data-y="19975" data-z="2250">
         <img src="../assets/chaos-resolved-2.svg">
     </div>
 
 
-    <div data-section="Demo" id="demo" class="step" data-x="0" data-y="21000" data-z="1000" data-scale="1"
-         data-rotate-x="-90" data-rotate-y="-90">
+   <div id="demo" class="step"
+      data-scale="1"
+      data-x="0" data-y="21000" data-z="1000"
+      data-rotate-x="-90" data-rotate-y="-90">
+      <h2>Demo</h2>
+      <img src="../assets/screenshot.png">
+      <p class="footnote">
+         <a href="https://www.youtube.com/watch?v=eHS_Gol2Mv0">
+               FinovateFall 2018: <i class="fab fa-youtube" style="color: #ff0000"></i> https://www.youtube.com/watch?v=eHS_Gol2Mv0
+         </a>
+      </p>
+   </div>
 
-        <h2>Demo</h2>
 
-        <img src="../assets/screenshot.png">
+   <div id="work-1" class="step"
+      data-section="How does it work" data-scale="1"
+      data-x="0" data-y="21000" data-z="-2000"
+      data-rotate-x="-90" data-rotate-y="-90">
 
-        <p class="footnote">
-            <a href="https://www.youtube.com/watch?v=eHS_Gol2Mv0">
-                FinovateFall 2018: <i class="fab fa-youtube" style="color: #ff0000"></i> https://www.youtube.com/watch?v=eHS_Gol2Mv0
-            </a>
-        </p>
-    </div>
+      <h2>How does it work?</h2>
+      <ul>
+         <li>Provides a RESTful API<br>
+            to abstract microservice deployment</li>
+         <li>Services of multiple repository<br>
+             are combined into one application</li>
+         <li>Replication from master</li>
+         <li>Companions for infrastructure services</li>
+      </ul>
 
-    <div data-section="How does it work" id="work-1" class="step" data-x="0" data-y="21000" data-z="-2000" data-scale="1"
-         data-rotate-x="-90" data-rotate-y="-90">
-        <h2>How does it work?</h2>
+   </div>
 
-        <ul>
-            <li>Provides a RESTful API to abstract microservice deployment</li>
-            <li>Services of multiple repository are combined into one application</li>
-            <li>Replication from master</li>
-            <li>Companions for infrastructure services</li>
-        </ul>
-    </div>
+   <div id="work-2" class="step"
+      data-scale="1"
+      data-x="0" data-y="21000" data-z="-4000"
+      data-rotate-x="-90" data-rotate-y="-90">
 
-    <div id="work-2" class="step" data-x="0" data-y="21000" data-z="-4000" data-scale="1"
-         data-rotate-x="-90" data-rotate-y="-90">
-
-        <h2>It is just a Docker setup</h2>
-
-        <pre><code class="yaml">
+      <h2>It is just a Docker setup</h2>
+      <pre><code class="yaml">
 version: "3"
 services:
   prevant:
@@ -164,16 +200,18 @@ services:
       - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-        </code></pre>
-    </div>
+      </code></pre>
+   </div>
 
 
-    <div id="work-3" class="step" data-x="0" data-y="21000" data-z="-6000" data-scale="1"
-         data-rotate-x="-90" data-rotate-y="-90">
+   <div id="work-3" class="step"
+      data-scale="1"
+      data-x="0" data-y="21000" data-z="-6000"
+      data-rotate-x="-90" data-rotate-y="-90">
 
-        <h2>Companions</h2>
+      <h2>Companions</h2>
 
-        <pre><code class="ini">
+      <pre><code class="ini">
 [[companions]]
 # A database for each service
 [companions.mariadb]
@@ -187,24 +225,28 @@ env = [ 'MYSQL_DATABASE={{service.name}}', 'MYSQL_ALLOW_EMPTY_PASSWORD=yes'
 type = 'application'
 image = 'registry.example.com/org/openid-provider:latest'
 serviceName = 'openid'
-        </code></pre>
+      </code></pre>
 
-        <p class="footnote">Handlebars templates to configure companions</p>
-    </div>
+      <p class="footnote">Handlebars templates to configure companions</p>
+   </div>
 
 
-    <div data-section="Q&A" id="qa" class="step" data-x="0" data-y="21000" data-z="2000" data-scale="0.2"
-         data-rotate-x="-90" data-rotate-y="-90">
+   <div id="qa" class="step"
+      data-section="Q&A" data-scale="1"
+      data-x="0" data-y="21000" data-z="2000"
+      data-rotate-x="-90" data-rotate-y="-90">
 
-        <h2>Thank you for your attention.</h2>
-        <p>Any questions?</p>
-    </div>
+      <h2>Thank you for your attention.</h2>
+      <p>Any questions?</p>
 
+   </div>
 </div>
 
 <footer>
-    <div id="section-name"></div>
-    <div id="slide-numbers"></div>
+   <div class="footer-info">
+      <span id="section-name"></span>
+      <span id="slide-numbers"></span>
+   </div>
 </footer>
 
 <script src="js/impress.js"></script>
@@ -229,7 +271,7 @@ serviceName = 'openid'
         const index = slides.indexOf(e.explicitOriginalTarget) + 1;
 
         const slideNumbers = document.getElementById("slide-numbers");
-        slideNumbers.innerHTML = `${index} / ${slides.length}`;
+        slideNumbers.innerHTML = `${index}/${slides.length}`;
 
         const section = slideSectionMapping[e.explicitOriginalTarget.id];
         const sectionName = document.getElementById("section-name");
