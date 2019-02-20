@@ -30,7 +30,7 @@ url = "1.7"
 
 [dependencies.shiplift]
 git = "https://github.com/schrieveslaach/shiplift.git"
-rev = "ae8606cb0172c1a3fa87bed0f672e4c454f8ff68"
+rev = "7d1067cb71f5a619e78c967084f5e59de38fd0b7"
 default-features = false
 features = ["unix-socket"]
 

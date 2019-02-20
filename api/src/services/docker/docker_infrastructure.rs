@@ -316,7 +316,7 @@ impl DockerInfrastructure {
             runtime.block_on(
                 containers
                     .get(&container_info.id)
-                    .copy_into(Path::new(path), &Vec::from(data.as_bytes())),
+                    .copy_file_into(Path::new(path), &data.as_bytes()),
             )?;
         }
 
