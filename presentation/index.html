@@ -75,27 +75,25 @@
    </div>
 
 
-   <div id="scenario" class="step"
+   <div data-section="Introduction" id="scenario" class="step"
       data-scale="1"
       data-x="0" data-y="100" data-z="1000">
 
       <h2>Why do we use Microservices?</h2>
       <ul>
-         <li>Scalable</li>
+         <li>Scalable (make use of Conway's law)</li>
          <li>Fast deployment cycle</li>
-         <li>Superior quality</li>
-         <li>Greater flexibility</li>
+         <li>Superior quality, greater flexibility, ...</li>
       </ul>
-      <p class="footnote">At aixigo we are in the migration phase.</p>
+      <p>At aixigo we are in the migration phase.</p>
 
    </div>
 
 
-   <div id="preview" class="step"
-      data-section="Preview" data-scale="1"
+   <div id="preview" class="step" data-scale="1"
       data-x="0" data-y="4440" data-z="1000">
 
-      <h2>How do you transit from monolith to microservices?</h2>
+      <h2>How did we start developing Microservices?</h2>
       <img class="initial-preview-1a" src="../assets/initial-preview-1a.svg">
       <img class="initial-preview-1b" src="../assets/initial-preview-1b.svg">
 
@@ -132,7 +130,7 @@
 
 
    <div id="nutshell" class="step"
-      data-section="PREvant" data-scale="1"
+      data-section="PREvant in a nutshell" data-scale="1"
       data-x="2500" data-y="20000" data-z="1000">
 
       <h2>PREvant in a nutshell</h2>
@@ -149,7 +147,7 @@
     </div>
 
 
-   <div id="demo" class="step"
+   <div id="demo" class="step" data-section="Demo"
       data-scale="1"
       data-x="0" data-y="21000" data-z="1000"
       data-rotate-x="-90" data-rotate-y="-90">
@@ -174,8 +172,8 @@
             to abstract microservice deployment</li>
          <li>Services of multiple repository<br>
              are combined into one application</li>
-         <li>Replication from master</li>
-         <li>Companions for infrastructure services</li>
+         <li>Replication is usefult for Git-flow based development</li>
+         <li>Companions are useful for infrastructure services</li>
       </ul>
 
    </div>
@@ -246,6 +244,16 @@ serviceName = 'openid'
       <h2>Thank you for your attention.</h2>
       <p>Any questions?</p>
 
+      <img src="images/github-prevant.svg" style="width: 15%;
+position: absolute;
+left: 5px;
+bottom: 40px;">
+
+      <p class="footnote">
+        <a href="https://github.com/aixigo/PREvant">
+           <i class="fab fa-github"></i> https://github.com/aixigo/PREvant
+        </a>
+      </p>
    </div>
 </div>
 
