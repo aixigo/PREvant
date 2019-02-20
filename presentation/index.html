@@ -13,6 +13,9 @@
     <link href="css/font-awesome.all.min.css" rel="stylesheet"/>
     <link href="css/impress-demo.css" rel="stylesheet"/>
     <link href="css/prevent.css" rel="stylesheet"/>
+
+    <link href="css/highlight.js/idea.css" rel="stylesheet">
+    <script src="js/highlight.pack.js"></script>
 </head>
 
 <body class="impress-not-supported"
@@ -73,6 +76,8 @@
             <li>Superior quality</li>
             <li>Greater flexibility</li>
         </ul>
+
+        <p class="footnote">At aixigo we are in the migration phase.</p>
     </div>
 
     <div id="preview" class="step" data-x="0" data-y="4440" data-z="1000" data-scale="1">
@@ -119,6 +124,72 @@
                 FinovateFall 2018: <i class="fab fa-youtube" style="color: #ff0000"></i> https://www.youtube.com/watch?v=eHS_Gol2Mv0
             </a>
         </p>
+    </div>
+
+    <div data-section="How does it work" id="work-1" class="step" data-x="0" data-y="21000" data-z="-2000" data-scale="1"
+         data-rotate-x="-90" data-rotate-y="-90">
+        <h2>How does it work?</h2>
+
+        <ul>
+            <li>Provides a RESTful API to abstract microservice deployment</li>
+            <li>Services of multiple repository are combined into one application</li>
+            <li>Replication from master</li>
+            <li>Companions for infrastructure services</li>
+        </ul>
+    </div>
+
+    <div id="work-2" class="step" data-x="0" data-y="21000" data-z="-4000" data-scale="1"
+         data-rotate-x="-90" data-rotate-y="-90">
+
+        <h2>It is just a Docker setup</h2>
+
+        <pre><code class="yaml">
+version: "3"
+services:
+  prevant:
+    image: aixigo/prevant
+    labels:
+      traefik.frontend.rule: 'PathPrefix:/,/index.html,/init.css,/app.js,/openapi.yaml,/api'
+      traefik.frontend.priority: -100
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./PREvant-config.toml:/app/config.toml
+
+  traefik:
+    image: traefik:alpine
+    command: --api --docker
+    network_mode: "bridge"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+        </code></pre>
+    </div>
+
+
+    <div id="work-3" class="step" data-x="0" data-y="21000" data-z="-6000" data-scale="1"
+         data-rotate-x="-90" data-rotate-y="-90">
+
+        <h2>Companions</h2>
+
+        <pre><code class="ini">
+[[companions]]
+# A database for each service
+[companions.mariadb]
+type = 'service'
+image = 'mariadb:10.3'
+serviceName = '{{service.name}}-db'
+env = [ 'MYSQL_DATABASE={{service.name}}', 'MYSQL_ALLOW_EMPTY_PASSWORD=yes'
+
+# A OpenID provide for the application
+[companions.openid]
+type = 'application'
+image = 'registry.example.com/org/openid-provider:latest'
+serviceName = 'openid'
+        </code></pre>
+
+        <p class="footnote">Handlebars templates to configure companions</p>
     </div>
 
 
@@ -184,6 +255,8 @@
     });
 
     impress().init();
+
+    hljs.initHighlightingOnLoad();
 </script>
 </body>
 </html>

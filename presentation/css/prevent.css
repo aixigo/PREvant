@@ -99,3 +99,12 @@ img {
 .footnote {
    color: #999;
 }
+
+
+.hljs, .hljs-subst {
+   font-size: 18px;
+}
+
+.hljs-symbol, .hljs-bullet, .hljs-formula {
+   background: none !important;
+}
