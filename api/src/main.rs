@@ -38,13 +38,11 @@ extern crate serde_derive;
 use crate::models::request_info::RequestInfo;
 use crate::services::config_service::Config;
 use rocket::response::NamedFile;
+use rocket_cache_response::CacheResponse;
 use serde_yaml::{from_reader, to_string, Value};
-use shiplift::{ContainerListOptions, Docker};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process;
-use tokio::prelude::Future;
-use tokio::runtime::Runtime;
 
 mod apps;
 mod commands;
@@ -52,42 +50,22 @@ mod models;
 mod services;
 mod webhooks;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AppsStatus {
-    root_url: String,
-    swagger_ui_available: bool,
-    portainer_available: bool,
-}
-
-fn is_container_available(container_image_pattern: &'static str) -> bool {
-    let future = Docker::new()
-        .containers()
-        .list(&ContainerListOptions::builder().build())
-        .map(move |containers| {
-            containers
-                .iter()
-                .any(|c| c.image.starts_with(container_image_pattern))
-        });
-
-    let mut runtime = Runtime::new().unwrap();
-    match runtime.block_on(future) {
-        Err(e) => {
-            error!("Cannot list running containers: {}", e);
-            false
-        }
-        Ok(available) => available,
+#[get("/")]
+fn index() -> CacheResponse<Option<NamedFile>> {
+    CacheResponse::Public {
+        responder: NamedFile::open(Path::new("frontend/index.html")).ok(),
+        max_age: 60 * 60, // cached for seconds
+        must_revalidate: false,
     }
 }
 
-#[get("/")]
-fn index() -> Option<NamedFile> {
-    NamedFile::open(Path::new("frontend/index.html")).ok()
-}
-
 #[get("/<path..>")]
-fn files(path: PathBuf) -> Option<NamedFile> {
-    NamedFile::open(Path::new("frontend/").join(path)).ok()
+fn files(path: PathBuf) -> CacheResponse<Option<NamedFile>> {
+    CacheResponse::Public {
+        responder: NamedFile::open(Path::new("frontend/").join(path)).ok(),
+        max_age: 60 * 60, // cached for seconds
+        must_revalidate: false,
+    }
 }
 
 #[get("/")]

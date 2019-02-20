@@ -26,6 +26,7 @@ toml = "0.4"
 regex = "1.0"
 rocket = "0.4"
 rocket_contrib = "0.4"
+rocket-cache-response = "0.5"
 url = "1.7"
 
 [dependencies.shiplift]
