@@ -482,21 +482,16 @@ impl Infrastructure for DockerInfrastructure {
         let mut runtime = Runtime::new()?;
         let container_ids: Vec<String> = runtime.block_on(future)?;
 
-        let mut container_details_futures = Vec::new();
+        let mut stop_futures = Vec::new();
         for id in container_ids {
-            let id_clone = id.clone();
             let future = containers
                 .get(&id)
-                .stop(None)
-                .map(move |_| {
-                    let docker = Docker::new();
-                    let container = docker.containers().get(&id_clone);
-                    container.inspect()
-                })
-                .and_then(|container_details| container_details);
+                .stop(None);
 
-            container_details_futures.push(future);
+            stop_futures.push(future);
         }
+
+        runtime.block_on(join_all(stop_futures))?;
 
         self.delete_network(app_name)?;
 

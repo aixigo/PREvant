@@ -169,9 +169,10 @@ export default new Vuex.Store( {
                   return;
                }
 
-               promises.push( timeout(500, fetch( container.versionUrl )
+               promises.push( timeout( 2000, fetch( container.versionUrl )
                   .then( res => res.ok ? res.json() : undefinedVersion )
-                  .then( version => ( { name, containerIndex, version  } ) ) ) );
+                  .then( version => ( { name, containerIndex, version } ) ) )
+                  .catch( err => ( { name, containerIndex, version: undefinedVersion } ) ) );
             } );
 
             Promise.all(promises)

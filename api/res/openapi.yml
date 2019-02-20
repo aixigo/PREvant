@@ -78,15 +78,20 @@ paths:
             type: string
           required: true
           description: Name of review app to delete
+      requestBody:
+        description: ''
+        required: false
+        content:
+          application/json:
       responses:
         '200':
           description: 'List of deleted containers'
           content:
             application/json:
-            schema:
-              type: array
-              items:
-                $ref: '#/components/schemas/Service'
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Service'
   /webhooks/:
     post:
       summary: Cleans up apps when webhook triggers this resource.
