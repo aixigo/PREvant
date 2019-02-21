@@ -115,15 +115,7 @@ impl<'a> AppsService<'a> {
         }
 
         configs.extend(service_companions);
-
-        for app_companion_config in self.config.get_application_companion_configs()? {
-            let applied_template_config = apply_templating_for_application_companion(
-                &app_companion_config,
-                app_name,
-                &configs,
-            )?;
-            configs.push(applied_template_config);
-        }
+        configs.extend(self.get_application_companion_configs(app_name, &configs)?);
 
         configs.sort_unstable_by(|a, b| {
             let index1 = AppsService::container_type_index(a.get_container_type());
@@ -138,6 +130,45 @@ impl<'a> AppsService<'a> {
         )?;
 
         Ok(services)
+    }
+
+    fn get_application_companion_configs(
+        &self,
+        app_name: &String,
+        service_configs: &Vec<ServiceConfig>,
+    ) -> Result<Vec<ServiceConfig>, AppsServiceError> {
+        let mut configs_for_templating = service_configs.clone();
+
+        // TODO: make sure that service companions are included!
+        for config in self
+            .infrastructure
+            .get_configs_of_app(app_name)?
+            .into_iter()
+            .filter(|config| {
+                match service_configs
+                    .iter()
+                    .find(|c| c.get_service_name() == config.get_service_name())
+                {
+                    None => true,
+                    Some(_) => false,
+                }
+            })
+        {
+            configs_for_templating.push(config);
+        }
+
+        let mut companion_configs = Vec::new();
+        for app_companion_config in self.config.get_application_companion_configs()? {
+            let c = apply_templating_for_application_companion(
+                &app_companion_config,
+                app_name,
+                &configs_for_templating,
+            )?;
+
+            companion_configs.push(c);
+        }
+
+        Ok(companion_configs)
     }
 
     fn container_type_index(container_type: &ContainerType) -> i32 {

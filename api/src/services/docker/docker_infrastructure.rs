@@ -306,7 +306,11 @@ impl DockerInfrastructure {
             Some(volumes) => volumes,
         };
 
-        debug!("Copy data to container: {:?} (service = {})", container_info, service_config.get_service_name());
+        debug!(
+            "Copy data to container: {:?} (service = {})",
+            container_info,
+            service_config.get_service_name()
+        );
 
         let docker = Docker::new();
         let containers = docker.containers();
@@ -483,15 +487,20 @@ impl Infrastructure for DockerInfrastructure {
         let container_ids: Vec<String> = runtime.block_on(future)?;
 
         let mut stop_futures = Vec::new();
-        for id in container_ids {
-            let future = containers
-                .get(&id)
-                .stop(None);
+        for id in &container_ids {
+            let future = containers.get(&id).stop(None);
 
             stop_futures.push(future);
         }
-
         runtime.block_on(join_all(stop_futures))?;
+
+        let mut delete_futures = Vec::new();
+        for id in &container_ids {
+            let future = containers.get(&id).delete();
+
+            delete_futures.push(future);
+        }
+        runtime.block_on(join_all(delete_futures))?;
 
         self.delete_network(app_name)?;
 
