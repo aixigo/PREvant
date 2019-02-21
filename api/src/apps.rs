@@ -24,34 +24,36 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::commands::create_app_command::{CreateOrUpdateAppCommand, CreateOrUpdateError};
-use crate::commands::delete_app_command::{DeleteAppCommand, DeleteAppError};
-use crate::commands::list_apps_command::{ListAppsCommand, ListAppsError};
-use crate::commands::list_tickets_command::{ListTicketsCommand, ListTicketsError};
-use crate::models::service::Service;
-use crate::models::ticket_info::TicketInfo;
+use crate::models::request_info::RequestInfo;
+use crate::models::service::{Service, ServiceConfig};
+use crate::services::apps_service::AppsService;
 use crate::services::config_service::Config;
+use http_api_problem::HttpApiProblem;
 use multimap::MultiMap;
+use rocket::data::{self, FromDataSimple};
 use rocket::http::RawStr;
+use rocket::http::Status;
+use rocket::request::Request;
+use rocket::Data;
+use rocket::Outcome::{Failure, Success};
 use rocket::State;
 use rocket_contrib::json::Json;
-use std::collections::HashMap;
+use std::io::Read;
 
 #[get("/apps", format = "application/json")]
 pub fn apps(
     config_state: State<Config>,
-    list_apps_command: ListAppsCommand,
-) -> Result<Json<MultiMap<String, Service>>, ListAppsError> {
-    let apps = list_apps_command.list_apps(&config_state)?;
-    Ok(Json(apps))
-}
+    request_info: RequestInfo,
+) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
+    let apps_service = AppsService::new(&config_state)?;
+    let mut apps = apps_service.get_apps()?;
 
-#[get("/apps/tickets", format = "application/json")]
-pub fn tickets(
-    config_state: State<Config>,
-    list_tickets_command: ListTicketsCommand,
-) -> Result<Json<HashMap<String, TicketInfo>>, ListTicketsError> {
-    let apps = list_tickets_command.list_ticket_infos(&config_state)?;
+    for (_, services) in apps.iter_all_mut() {
+        for service in services.iter_mut() {
+            service.set_base_url(request_info.get_base_url());
+        }
+    }
+
     Ok(Json(apps))
 }
 
@@ -59,22 +61,63 @@ pub fn tickets(
 pub fn delete_app(
     app_name: &RawStr,
     config_state: State<Config>,
-    delete_app_command: DeleteAppCommand,
-) -> Result<Json<Vec<Service>>, DeleteAppError> {
-    let services = delete_app_command.delete_app(&config_state, &app_name.to_string())?;
+    request_info: RequestInfo,
+) -> Result<Json<Vec<Service>>, HttpApiProblem> {
+    let apps_service = AppsService::new(&config_state)?;
+    let mut services = apps_service.delete_app(&app_name.to_string())?;
+
+    for service in services.iter_mut() {
+        service.set_base_url(request_info.get_base_url());
+    }
+
     Ok(Json(services))
 }
 
 #[post(
     "/apps/<app_name>",
     format = "application/json",
-    data = "<app_command>"
+    data = "<service_configs_data>"
 )]
 pub fn create_app(
     app_name: &RawStr,
     config_state: State<Config>,
-    app_command: CreateOrUpdateAppCommand,
-) -> Result<Json<Vec<Service>>, CreateOrUpdateError> {
-    let services = app_command.create_or_update_app(&config_state, &app_name.to_string())?;
+    request_info: RequestInfo,
+    service_configs_data: ServiceConfigsData,
+) -> Result<Json<Vec<Service>>, HttpApiProblem> {
+    let apps_service = AppsService::new(&config_state)?;
+    let mut services = apps_service
+        .create_or_update(&app_name.to_string(), &service_configs_data.service_configs)?;
+
+    for service in services.iter_mut() {
+        service.set_base_url(request_info.get_base_url());
+    }
+
     Ok(Json(services))
+}
+
+pub struct ServiceConfigsData {
+    service_configs: Vec<ServiceConfig>,
+}
+
+impl FromDataSimple for ServiceConfigsData {
+    type Error = String;
+
+    fn from_data(_request: &Request, data: Data) -> data::Outcome<ServiceConfigsData, String> {
+        let mut body = String::new();
+        if let Err(e) = data.open().read_to_string(&mut body) {
+            return Failure((Status::InternalServerError, format!("{:?}", e)));
+        }
+
+        let service_configs = match serde_json::from_str::<Vec<ServiceConfig>>(&body) {
+            Ok(v) => v,
+            Err(err) => {
+                return Failure((
+                    Status::BadRequest,
+                    format!("Cannot read body as JSON: {:?}", err),
+                ));
+            }
+        };
+
+        Success(ServiceConfigsData { service_configs })
+    }
 }

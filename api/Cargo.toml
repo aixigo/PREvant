@@ -29,9 +29,13 @@ rocket_contrib = "0.4"
 rocket-cache-response = "0.5"
 url = "1.7"
 
+[dependencies.http-api-problem]
+version = "0.12"
+features = ["with_rocket"]
+
 [dependencies.shiplift]
 git = "https://github.com/schrieveslaach/shiplift.git"
-rev = "7d1067cb71f5a619e78c967084f5e59de38fd0b7"
+rev = "00df424336b919184b8d0d26a85822589577913d"
 default-features = false
 features = ["unix-socket"]
 

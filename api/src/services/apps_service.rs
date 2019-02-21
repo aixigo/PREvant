@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceError};
+use crate::models::service::{ContainerType, Service, ServiceConfig};
 use crate::services::config_service::{Config, ConfigError};
 use crate::services::docker::docker_infrastructure::DockerInfrastructure;
 use crate::services::service_templating::{
@@ -35,6 +35,7 @@ use crate::services::{
     infrastructure::Infrastructure,
 };
 use handlebars::TemplateRenderError;
+use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
 use std::convert::From;
 
@@ -182,47 +183,68 @@ impl<'a> AppsService<'a> {
     /// Deletes all services for the given `app_name`.
     pub fn delete_app(&self, app_name: &String) -> Result<Vec<Service>, AppsServiceError> {
         match self.infrastructure.get_services()?.get_vec(app_name) {
-            None => Err(AppsServiceError::AppNotFound(app_name.clone())),
+            None => Err(AppsServiceError::AppNotFound {
+                app_name: app_name.clone(),
+            }),
             Some(_) => Ok(self.infrastructure.stop_services(app_name)?),
         }
     }
 }
 
 /// Defines error cases for the `AppService`
-#[derive(Debug)]
+#[derive(Debug, Fail)]
 pub enum AppsServiceError {
-    /// Will be used when the service configuration is invalid that has been request by the client
-    InvalidServiceModel(ServiceError),
     /// Will be used when no app with a given name is found
-    AppNotFound(String),
+    #[fail(display = "Cannot find app {}.", app_name)]
+    AppNotFound { app_name: String },
     /// Will be used when the service cannot interact correctly with the infrastructure.
-    InfrastructureError(failure::Error),
+    #[fail(display = "Cannot interact with infrastructure: {}", error)]
+    InfrastructureError { error: failure::Error },
     /// Will be used if the service configuration cannot be loaded.
-    InvalidServerConfiguration(ConfigError),
-    InvalidTemplateFormat(TemplateRenderError),
-    UnableToResolveImage(ImagesServiceError),
+    #[fail(display = "Invalid configuration: {}", error)]
+    InvalidServerConfiguration { error: ConfigError },
+    #[fail(display = "Invalid configuration (invalid template): {}", error)]
+    InvalidTemplateFormat { error: TemplateRenderError },
+    #[fail(display = "Unable to resolve information about image: {}", error)]
+    UnableToResolveImage { error: ImagesServiceError },
+}
+
+impl From<AppsServiceError> for HttpApiProblem {
+    fn from(error: AppsServiceError) -> Self {
+        let status = match error {
+            AppsServiceError::AppNotFound { app_name: _ } => StatusCode::NOT_FOUND,
+            AppsServiceError::InfrastructureError { error: _ }
+            | AppsServiceError::InvalidServerConfiguration { error: _ }
+            | AppsServiceError::InvalidTemplateFormat { error: _ }
+            | AppsServiceError::UnableToResolveImage { error: _ } => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        };
+
+        HttpApiProblem::with_title_and_type_from_status(status).set_detail(format!("{}", error))
+    }
 }
 
 impl From<ConfigError> for AppsServiceError {
-    fn from(err: ConfigError) -> Self {
-        AppsServiceError::InvalidServerConfiguration(err)
+    fn from(error: ConfigError) -> Self {
+        AppsServiceError::InvalidServerConfiguration { error }
     }
 }
 
 impl From<failure::Error> for AppsServiceError {
     fn from(error: failure::Error) -> Self {
-        AppsServiceError::InfrastructureError(error)
+        AppsServiceError::InfrastructureError { error }
     }
 }
 
 impl From<TemplateRenderError> for AppsServiceError {
     fn from(error: TemplateRenderError) -> Self {
-        AppsServiceError::InvalidTemplateFormat(error)
+        AppsServiceError::InvalidTemplateFormat { error }
     }
 }
 
 impl From<ImagesServiceError> for AppsServiceError {
     fn from(error: ImagesServiceError) -> Self {
-        AppsServiceError::UnableToResolveImage(error)
+        AppsServiceError::UnableToResolveImage { error }
     }
 }

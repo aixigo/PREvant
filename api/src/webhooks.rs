@@ -24,10 +24,13 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::commands::delete_app_command::{DeleteAppCommand, DeleteAppError};
+use crate::apps::delete_app;
+use crate::models::request_info::RequestInfo;
 use crate::models::service::Service;
 use crate::models::web_hook_info::WebHookInfo;
 use crate::services::config_service::Config;
+use http_api_problem::HttpApiProblem;
+use rocket::http::RawStr;
 use rocket::State;
 use rocket_contrib::json::Json;
 
@@ -35,8 +38,8 @@ use rocket_contrib::json::Json;
 pub fn webhooks(
     config_state: State<Config>,
     web_hook_info: WebHookInfo,
-    delete_app_command: DeleteAppCommand,
-) -> Result<Json<Vec<Service>>, DeleteAppError> {
+    request_info: RequestInfo,
+) -> Result<Json<Vec<Service>>, HttpApiProblem> {
     info!(
         "Deleting app {:?} through web hook {:?} with event {:?}",
         web_hook_info.get_app_name(),
@@ -44,6 +47,9 @@ pub fn webhooks(
         web_hook_info.get_event_key()
     );
 
-    let services = delete_app_command.delete_app(&config_state, &web_hook_info.get_app_name())?;
-    Ok(Json(services))
+    delete_app(
+        &RawStr::from_str(&web_hook_info.get_app_name()),
+        config_state,
+        request_info,
+    )
 }

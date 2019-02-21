@@ -26,6 +26,12 @@ paths:
                 properties:
                   "^[a-zA-Z0-9_-]":
                     $ref: '#/components/schemas/Service'
+        '500':
+          description: Server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
   /apps/tickets/:
     get:
       summary: Provides ticket information to each review app
@@ -39,6 +45,14 @@ paths:
                 properties:
                   "^[a-zA-Z0-9_-]":
                     $ref: '#/components/schemas/Ticket'
+        '204':
+          description: 'No ticket system configuration'
+        '500':
+          description: Server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
   /apps/{appName}:
     post:
       summary: Start or update a new review app.
@@ -68,6 +82,12 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Service'
+        '500':
+          description: Server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
     delete:
       summary: Shutdown a review app
       parameters:
@@ -92,6 +112,18 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Service'
+        '404':
+          description: Cannot find app
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: Server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
   /webhooks/:
     post:
       summary: Cleans up apps when webhook triggers this resource.
@@ -106,7 +138,29 @@ paths:
         required: true
         content:
           application/json:
-            $ref: '#/components/schemas/BitbucketWebHookPayload'
+            schema:
+              $ref: '#/components/schemas/BitbucketWebHookPayload'
+      responses:
+        '200':
+          description: 'List of deleted containers'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Service'
+        '404':
+          description: Cannot find app
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: Server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 components:
   schemas:
     Service:
@@ -162,8 +216,8 @@ components:
             type: string
           description: Key value list of enviroment variables
           example:
-          - MYSQL_USER=admin
-          - MYSQL_DATABASE=dbname
+            - MYSQL_USER=admin
+            - MYSQL_DATABASE=dbname
         volumes:
           type: array
           items:
@@ -202,3 +256,15 @@ components:
                   type: string
                   description: The branch name containing the ticket number `XXX-123`.
                   example: 'feature/XXX-123-some-feature-branch'
+    ProblemDetails:
+      type: object
+      description: Defines a "problem detail" according to [RFC 7807](https://tools.ietf.org/html/rfc7807).
+      properties:
+        type:
+          type: string
+        status:
+          type: integer
+        title:
+          type: string
+        detail:
+          type: string

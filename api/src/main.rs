@@ -45,9 +45,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 mod apps;
-mod commands;
 mod models;
 mod services;
+mod tickets;
 mod webhooks;
 
 #[get("/")]
@@ -106,9 +106,9 @@ fn main() {
         .mount("/openapi.yaml", routes![openapi])
         .mount("/", routes![files])
         .mount("/api", routes![apps::apps])
-        .mount("/api", routes![apps::tickets])
         .mount("/api", routes![apps::create_app])
         .mount("/api", routes![apps::delete_app])
+        .mount("/api", routes![tickets::tickets])
         .mount("/api", routes![webhooks::webhooks])
         .launch();
 }
