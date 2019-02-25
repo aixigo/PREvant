@@ -34,8 +34,8 @@ version = "0.12"
 features = ["with_rocket"]
 
 [dependencies.shiplift]
-git = "https://github.com/schrieveslaach/shiplift.git"
-rev = "00df424336b919184b8d0d26a85822589577913d"
+git = "https://github.com/softprops/shiplift.git"
+rev = "0ae953c69ce7a336794244adc29bbc206320705d"
 default-features = false
 features = ["unix-socket"]
 
