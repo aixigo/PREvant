@@ -219,7 +219,7 @@ impl TryFrom<&Companion> for ServiceConfig {
             Err(_) => return Err(ConfigError::UnableToParseImage),
         };
 
-        let mut config = ServiceConfig::new(companion.service_name.clone(), &image);
+        let mut config = ServiceConfig::new(companion.service_name.clone(), image);
         config.set_env(companion.env.clone());
         config.set_labels(companion.labels.clone());
 
@@ -257,16 +257,16 @@ mod tests {
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
-            assert_eq!(config.get_service_name(), "openid");
+            assert_eq!(config.service_name(), "openid");
             assert_eq!(
-                &config.get_image().to_string(),
+                &config.image().to_string(),
                 "private.example.com/library/opendid:latest"
             );
             assert_eq!(
-                config.get_container_type(),
+                config.container_type(),
                 &ContainerType::ApplicationCompanion
             );
-            assert_eq!(config.get_labels(), None);
+            assert_eq!(config.labels(), None);
         });
     }
 
@@ -292,16 +292,16 @@ mod tests {
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
-            assert_eq!(config.get_service_name(), "{{service-name}}-nginx");
+            assert_eq!(config.service_name(), "{{service-name}}-nginx");
             assert_eq!(
-                &config.get_image().to_string(),
+                &config.image().to_string(),
                 "docker.io/library/nginx:latest"
             );
             assert_eq!(
-                config.get_container_type(),
+                config.container_type(),
                 &ContainerType::ServiceCompanion
             );
-            assert_eq!(config.get_labels(), None);
+            assert_eq!(config.labels(), None);
         });
     }
 
@@ -325,7 +325,7 @@ mod tests {
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
-            assert_eq!(config.get_volumes().unwrap().len(), 2);
+            assert_eq!(config.volumes().unwrap().len(), 2);
         });
     }
 
@@ -347,7 +347,7 @@ mod tests {
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
-            for (k, v) in config.get_labels().unwrap().iter() {
+            for (k, v) in config.labels().unwrap().iter() {
                 assert_eq!(k, "com.example.foo");
                 assert_eq!(v, "bar");
             }

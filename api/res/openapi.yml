@@ -194,22 +194,12 @@ components:
           type: string
           description: Name of the service to start
           example: mariadb
-        registry:
+        image:
           type: string
-          description: Hostname of the docker registry, containing the image of the service
-          example: docker.io
-        imageUser:
-          type: string
-          description: cf. `hub-user` from command `docker push <hub-user>/<repo-name>:<tag>` ([push docker images](https://docs.docker.com/docker-hub/repos/#pushing-a-repository-image-to-docker-hub))
-          example: library
-        imageRepository:
-          type: string
-          description: cf. `repo-name` from command `docker push <hub-user>/<repo-name>:<tag>` ([push docker images](https://docs.docker.com/docker-hub/repos/#pushing-a-repository-image-to-docker-hub))
-          example: mariadb
-        imageTag:
-          type: string
-          description: cf. `tag` from command `docker push <hub-user>/<repo-name>:<tag>` ([push docker images](https://docs.docker.com/docker-hub/repos/#pushing-a-repository-image-to-docker-hub))
-          example: 10.3
+          description: >-
+            The docker image with `<repo-name>/<hub-user>/<repo-name>:<tag>`. `<repo-name>`, `<hub-user>` and `<tag>`
+            are optional values.
+          example: mariadb:10.3
         env:
           type: array
           items:

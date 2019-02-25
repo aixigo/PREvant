@@ -79,7 +79,7 @@ impl<'a> AppsService<'a> {
                 .filter(|config| {
                     match service_configs
                         .iter()
-                        .find(|c| c.get_service_name() == config.get_service_name())
+                        .find(|c| c.service_name() == config.service_name())
                     {
                         None => true,
                         Some(_) => false,
@@ -119,8 +119,8 @@ impl<'a> AppsService<'a> {
         configs.extend(self.get_application_companion_configs(app_name, &configs)?);
 
         configs.sort_unstable_by(|a, b| {
-            let index1 = AppsService::container_type_index(a.get_container_type());
-            let index2 = AppsService::container_type_index(b.get_container_type());
+            let index1 = AppsService::container_type_index(a.container_type());
+            let index2 = AppsService::container_type_index(b.container_type());
             index1.cmp(&index2)
         });
 
@@ -148,7 +148,7 @@ impl<'a> AppsService<'a> {
             .filter(|config| {
                 match service_configs
                     .iter()
-                    .find(|c| c.get_service_name() == config.get_service_name())
+                    .find(|c| c.service_name() == config.service_name())
                 {
                     None => true,
                     Some(_) => false,

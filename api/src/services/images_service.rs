@@ -52,14 +52,14 @@ impl ImagesService {
         let mut port_mappings = HashMap::new();
 
         for config in configs.iter() {
-            if let Image::Digest { hash: _ } = config.get_image() {
+            if let Image::Digest { hash: _ } = config.image() {
                 break;
             }
 
-            let reference = reference::Reference::from_str(&config.get_image().to_string())?;
+            let reference = reference::Reference::from_str(&config.image().to_string())?;
 
-            let image = config.get_image().get_name().unwrap();
-            let tag = config.get_image().get_tag().unwrap();
+            let image = config.image().name().unwrap();
+            let tag = config.image().tag().unwrap();
 
             let client = dkregistry::v2::Client::configure(&core.handle())
                 .registry(&reference.registry())

@@ -43,9 +43,9 @@ pub fn apply_templating_for_service_companion(
         },
         services: None,
         service: Some(ServiceTemplateParameter {
-            name: service_config.get_service_name().clone(),
-            container_type: service_config.get_container_type().clone(),
-            port: service_config.get_port(),
+            name: service_config.service_name().clone(),
+            container_type: service_config.container_type().clone(),
+            port: service_config.port(),
         }),
     };
 
@@ -65,9 +65,9 @@ pub fn apply_templating_for_application_companion(
             service_configs
                 .iter()
                 .map(|c| ServiceTemplateParameter {
-                    name: c.get_service_name().clone(),
-                    container_type: c.get_container_type().clone(),
-                    port: c.get_port(),
+                    name: c.service_name().clone(),
+                    container_type: c.container_type().clone(),
+                    port: c.port(),
                 })
                 .collect(),
         ),
@@ -87,9 +87,9 @@ fn apply_template(
 
     let mut templated_config = comapnion_config.clone();
     templated_config
-        .set_service_name(&reg.render_template(comapnion_config.get_service_name(), &parameters)?);
+        .set_service_name(&reg.render_template(comapnion_config.service_name(), &parameters)?);
 
-    if let Some(env) = comapnion_config.get_env() {
+    if let Some(env) = comapnion_config.env() {
         let mut templated_env = Vec::new();
 
         for e in env {
@@ -99,11 +99,11 @@ fn apply_template(
         templated_config.set_env(Some(templated_env));
     }
 
-    if let Some(volumes) = comapnion_config.get_volumes() {
+    if let Some(volumes) = comapnion_config.volumes() {
         templated_config.set_volumes(Some(apply_templates(&reg, &parameters, volumes)?));
     }
 
-    if let Some(labels) = comapnion_config.get_labels() {
+    if let Some(labels) = comapnion_config.labels() {
         templated_config.set_labels(Some(apply_templates(&reg, &parameters, labels)?));
     }
 
@@ -212,7 +212,7 @@ mod tests {
         let env = vec![];
         let mut config = ServiceConfig::new(
             String::from("postgres-{{application.name}}"),
-            &Image::from_str("postgres").unwrap(),
+            Image::from_str("postgres").unwrap(),
         );
         config.set_env(Some(env));
 
@@ -224,7 +224,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(templated_config.get_service_name(), "postgres-master");
+        assert_eq!(templated_config.service_name(), "postgres-master");
     }
 
     #[test]
@@ -238,18 +238,18 @@ mod tests {
 
         let mut config = ServiceConfig::new(
             String::from("postgres-db"),
-            &Image::from_str("postgres").unwrap(),
+            Image::from_str("postgres").unwrap(),
         );
         config.set_env(Some(env));
 
         let service_configs = vec![
             ServiceConfig::new(
                 String::from("service-a"),
-                &Image::from_str("service").unwrap(),
+                Image::from_str("service").unwrap(),
             ),
             ServiceConfig::new(
                 String::from("service-b"),
-                &Image::from_str("service").unwrap(),
+                Image::from_str("service").unwrap(),
             ),
         ];
         let templated_config = apply_templating_for_application_companion(
@@ -260,7 +260,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            templated_config.get_env().unwrap().get(0).unwrap(),
+            templated_config.env().unwrap().get(0).unwrap(),
             "DATABASE_SCHEMAS=service-a,service-b,"
         );
     }
@@ -269,7 +269,7 @@ mod tests {
     fn should_apply_app_companion_templating_with_labels() {
         let mut config = ServiceConfig::new(
             String::from("postgres-db"),
-            &Image::from_str("postgres").unwrap(),
+            Image::from_str("postgres").unwrap(),
         );
 
         let mut labels = BTreeMap::new();
@@ -282,11 +282,11 @@ mod tests {
         let service_configs = vec![
             ServiceConfig::new(
                 String::from("service-a"),
-                &Image::from_str("service").unwrap(),
+                Image::from_str("service").unwrap(),
             ),
             ServiceConfig::new(
                 String::from("service-b"),
-                &Image::from_str("service").unwrap(),
+                Image::from_str("service").unwrap(),
             ),
         ];
         let templated_config = apply_templating_for_application_companion(
@@ -296,7 +296,7 @@ mod tests {
         )
         .unwrap();
 
-        for (k, v) in templated_config.get_labels().unwrap().iter() {
+        for (k, v) in templated_config.labels().unwrap().iter() {
             assert_eq!(k, "com.foo.bar");
             assert_eq!(v, "app-master");
         }
@@ -313,7 +313,7 @@ mod tests {
 
         let mut config = ServiceConfig::new(
             String::from("postgres-db"),
-            &Image::from_str("postgres").unwrap(),
+            Image::from_str("postgres").unwrap(),
         );
         config.set_env(Some(env));
 
@@ -327,7 +327,7 @@ mod tests {
     fn should_apply_app_companion_templating_with_volumes() {
         let mut config = ServiceConfig::new(
             String::from("nginx-proxy"),
-            &Image::from_str("nginx").unwrap(),
+            Image::from_str("nginx").unwrap(),
         );
 
         let mount_path = String::from("/etc/ningx/conf.d/default.conf");
@@ -347,11 +347,11 @@ location /{{name}} {
         let service_configs = vec![
             ServiceConfig::new(
                 String::from("service-a"),
-                &Image::from_str("service").unwrap(),
+                Image::from_str("service").unwrap(),
             ),
             ServiceConfig::new(
                 String::from("service-b"),
-                &Image::from_str("service").unwrap(),
+                Image::from_str("service").unwrap(),
             ),
         ];
         let templated_config = apply_templating_for_application_companion(
@@ -363,7 +363,7 @@ location /{{name}} {
 
         assert_eq!(
             templated_config
-                .get_volumes()
+                .volumes()
                 .unwrap()
                 .get(&mount_path)
                 .unwrap(),
@@ -383,22 +383,22 @@ location /service-b {
     fn should_apply_templating_with_is_not_companion_helper() {
         let mut service_a = ServiceConfig::new(
             String::from("service-a"),
-            &Image::from_str("service").unwrap(),
+            Image::from_str("service").unwrap(),
         );
         service_a.set_container_type(ContainerType::Instance);
         let mut service_b = ServiceConfig::new(
             String::from("service-b"),
-            &Image::from_str("service").unwrap(),
+            Image::from_str("service").unwrap(),
         );
         service_b.set_container_type(ContainerType::Replica);
         let mut service_c = ServiceConfig::new(
             String::from("service-c"),
-            &Image::from_str("service").unwrap(),
+            Image::from_str("service").unwrap(),
         );
         service_c.set_container_type(ContainerType::ApplicationCompanion);
         let mut service_d = ServiceConfig::new(
             String::from("service-d"),
-            &Image::from_str("service").unwrap(),
+            Image::from_str("service").unwrap(),
         );
         service_d.set_container_type(ContainerType::ServiceCompanion);
 
@@ -406,7 +406,7 @@ location /service-b {
 
         let mut config = ServiceConfig::new(
             String::from("nginx-proxy"),
-            &Image::from_str("nginx").unwrap(),
+            Image::from_str("nginx").unwrap(),
         );
         let mount_path = String::from("/etc/ningx/conf.d/default.conf");
         let mut volumes = BTreeMap::new();
@@ -433,7 +433,7 @@ location /{{name}} {
 
         assert_eq!(
             templated_config
-                .get_volumes()
+                .volumes()
                 .unwrap()
                 .get(&mount_path)
                 .unwrap(),
@@ -451,22 +451,22 @@ location /service-b {
     fn should_apply_templating_with_is_companion_helper() {
         let mut service_a = ServiceConfig::new(
             String::from("service-a"),
-            &Image::from_str("service").unwrap(),
+            Image::from_str("service").unwrap(),
         );
         service_a.set_container_type(ContainerType::Instance);
         let mut service_b = ServiceConfig::new(
             String::from("service-b"),
-            &Image::from_str("service").unwrap(),
+            Image::from_str("service").unwrap(),
         );
         service_b.set_container_type(ContainerType::Replica);
         let mut service_c = ServiceConfig::new(
             String::from("service-c"),
-            &Image::from_str("service").unwrap(),
+            Image::from_str("service").unwrap(),
         );
         service_c.set_container_type(ContainerType::ApplicationCompanion);
         let mut service_d = ServiceConfig::new(
             String::from("service-d"),
-            &Image::from_str("service").unwrap(),
+            Image::from_str("service").unwrap(),
         );
         service_d.set_container_type(ContainerType::ServiceCompanion);
 
@@ -474,7 +474,7 @@ location /service-b {
 
         let mut config = ServiceConfig::new(
             String::from("nginx-proxy"),
-            &Image::from_str("nginx").unwrap(),
+            Image::from_str("nginx").unwrap(),
         );
         let mount_path = String::from("/etc/ningx/conf.d/default.conf");
         let mut volumes = BTreeMap::new();
@@ -501,7 +501,7 @@ location /{{name}} {
 
         assert_eq!(
             templated_config
-                .get_volumes()
+                .volumes()
                 .unwrap()
                 .get(&mount_path)
                 .unwrap(),

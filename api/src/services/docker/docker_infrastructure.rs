@@ -195,13 +195,13 @@ impl DockerInfrastructure {
         let images = docker.images();
         let mut runtime = Runtime::new()?;
 
-        if let Image::Named { .. } = service_config.get_image() {
+        if let Image::Named { .. } = service_config.image() {
             self.pull_image(&mut runtime, app_name, &service_config)?;
         }
 
         let mut image_to_delete = None;
         if let Some(ref container_info) =
-            self.get_app_container(app_name, service_config.get_service_name())?
+            self.get_app_container(app_name, service_config.service_name())?
         {
             let container = containers.get(&container_info.id);
             let container_image_id = runtime.block_on(container.inspect())?.image.clone();
@@ -216,38 +216,38 @@ impl DockerInfrastructure {
             image_to_delete = Some(container_image_id.clone());
         }
 
-        let container_type_name = service_config.get_container_type().to_string();
-        let image = service_config.get_image().to_string();
+        let container_type_name = service_config.container_type().to_string();
+        let image = service_config.image().to_string();
 
         info!(
             "Creating new review app container for {:?}: service={:?} with image={:?} ({:?})",
             app_name,
-            service_config.get_service_name(),
+            service_config.service_name(),
             image,
             container_type_name
         );
 
         let mut options = ContainerOptions::builder(&image);
-        if let Some(ref env) = service_config.get_env() {
+        if let Some(ref env) = service_config.env() {
             options.env(env.iter().map(|e| e.as_str()).collect());
         }
 
         let traefik_frontend = format!(
             "ReplacePathRegex: ^/{app_name}/{service_name}/(.*) /$1;PathPrefix:/{app_name}/{service_name}/;",
             app_name = app_name,
-            service_name = service_config.get_service_name()
+            service_name = service_config.service_name()
         );
         let mut labels: HashMap<&str, &str> = HashMap::new();
         labels.insert("traefik.frontend.rule", &traefik_frontend);
 
-        if let Some(config_labels) = service_config.get_labels() {
+        if let Some(config_labels) = service_config.labels() {
             for (k, v) in config_labels {
                 labels.insert(k, v);
             }
         }
 
         labels.insert(APP_NAME_LABEL, app_name);
-        labels.insert(SERVICE_NAME_LABEL, &service_config.get_service_name());
+        labels.insert(SERVICE_NAME_LABEL, &service_config.service_name());
         labels.insert(CONTAINER_TYPE_LABEL, &container_type_name);
 
         options.labels(&labels);
@@ -268,7 +268,7 @@ impl DockerInfrastructure {
         runtime.block_on(
             docker.networks().get(network_id).connect(
                 &ContainerConnectionOptions::builder(&container_info.id)
-                    .aliases(vec![service_config.get_service_name().as_str()])
+                    .aliases(vec![service_config.service_name().as_str()])
                     .build(),
             ),
         )?;
@@ -279,7 +279,7 @@ impl DockerInfrastructure {
 
         let mut service =
             Service::try_from(&self.get_app_container_by_id(&container_info.id)?.unwrap())?;
-        service.set_container_type(service_config.get_container_type().clone());
+        service.set_container_type(service_config.container_type().clone());
 
         if let Some(image) = image_to_delete {
             info!("Clean up image {:?} of app {:?}", image, app_name);
@@ -301,7 +301,7 @@ impl DockerInfrastructure {
         container_info: &ContainerCreateInfo,
         service_config: &ServiceConfig,
     ) -> Result<(), ShipLiftError> {
-        let volumes = match service_config.get_volumes() {
+        let volumes = match service_config.volumes() {
             None => return Ok(()),
             Some(volumes) => volumes,
         };
@@ -309,7 +309,7 @@ impl DockerInfrastructure {
         debug!(
             "Copy data to container: {:?} (service = {})",
             container_info,
-            service_config.get_service_name()
+            service_config.service_name()
         );
 
         let docker = Docker::new();
@@ -333,12 +333,12 @@ impl DockerInfrastructure {
         app_name: &String,
         config: &ServiceConfig,
     ) -> Result<(), ShipLiftError> {
-        let image = config.get_image().to_string();
+        let image = config.image().to_string();
 
         info!(
             "Pulling {:?} for {:?} of app {:?}",
             image,
-            config.get_service_name(),
+            config.service_name(),
             app_name
         );
 
@@ -528,7 +528,7 @@ impl Infrastructure for DockerInfrastructure {
                 Ok(service) => service,
             };
 
-            match service.get_container_type() {
+            match service.container_type() {
                 ContainerType::ApplicationCompanion | ContainerType::ServiceCompanion => continue,
                 _ => {}
             };
@@ -547,7 +547,7 @@ impl Infrastructure for DockerInfrastructure {
 
                         let image = Image::from_str(&container_details.image).unwrap();
                         let mut service_config =
-                            ServiceConfig::new(service.get_service_name().clone(), &image);
+                            ServiceConfig::new(service.service_name().clone(), image);
                         service_config.set_env(env);
 
                         if let Some(ports) = container_details.network_settings.ports {

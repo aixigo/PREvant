@@ -26,6 +26,7 @@
 
 use regex::Regex;
 use serde::ser::{Serialize, Serializer};
+use serde::{de, Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use url::Url;
@@ -43,10 +44,8 @@ pub struct Service {
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
     service_name: String,
-    image_repository: String,
-    registry: Option<String>,
-    image_user: Option<String>,
-    image_tag: Option<String>,
+    #[serde(deserialize_with = "Image::parse_from_string")]
+    image: Image,
     env: Option<Vec<String>>,
     volumes: Option<BTreeMap<String, String>>,
     #[serde(skip)]
@@ -57,6 +56,7 @@ pub struct ServiceConfig {
     port: u16,
 }
 
+#[derive(Clone, Deserialize, Eq, Hash, PartialEq)]
 pub enum Image {
     Named {
         image_repository: String,
@@ -70,28 +70,10 @@ pub enum Image {
 }
 
 impl ServiceConfig {
-    pub fn new(service_name: String, image: &Image) -> ServiceConfig {
-        let (image_repository, registry, image_user, image_tag) = match image {
-            Image::Digest { hash } => (hash.clone(), None, None, None),
-            Image::Named {
-                image_repository,
-                registry,
-                image_user,
-                image_tag,
-            } => (
-                image_repository.clone(),
-                registry.clone(),
-                image_user.clone(),
-                image_tag.clone(),
-            ),
-        };
-
+    pub fn new(service_name: String, image: Image) -> ServiceConfig {
         ServiceConfig {
             service_name,
-            image_repository,
-            registry,
-            image_user,
-            image_tag,
+            image,
             env: None,
             volumes: None,
             labels: None,
@@ -104,39 +86,20 @@ impl ServiceConfig {
         self.container_type = container_type;
     }
 
-    pub fn get_container_type(&self) -> &ContainerType {
+    pub fn container_type(&self) -> &ContainerType {
         &self.container_type
     }
 
-    fn refers_to_image_id(&self) -> bool {
-        let regex = Regex::new(r"^(sha256:)?(?P<id>[a-fA-F0-9]+)$").unwrap();
-        regex
-            .captures(&self.image_repository)
-            .map(|_| true)
-            .unwrap_or_else(|| false)
-    }
-
     /// Returns a fully qualifying docker image
-    pub fn get_image(&self) -> Image {
-        if self.refers_to_image_id() {
-            return Image::Digest {
-                hash: self.image_repository.clone(),
-            };
-        }
-
-        Image::Named {
-            image_repository: self.image_repository.clone(),
-            registry: self.registry.clone(),
-            image_user: self.image_user.clone(),
-            image_tag: self.image_tag.clone(),
-        }
+    pub fn image(&self) -> &Image {
+        &self.image
     }
 
     pub fn set_service_name(&mut self, service_name: &String) {
         self.service_name = service_name.clone()
     }
 
-    pub fn get_service_name(&self) -> &String {
+    pub fn service_name(&self) -> &String {
         &self.service_name
     }
 
@@ -144,7 +107,7 @@ impl ServiceConfig {
         self.env = env;
     }
 
-    pub fn get_env<'a, 'b: 'a>(&'b self) -> Option<&'a Vec<String>> {
+    pub fn env<'a, 'b: 'a>(&'b self) -> Option<&'a Vec<String>> {
         match &self.env {
             None => None,
             Some(env) => Some(&env),
@@ -155,7 +118,7 @@ impl ServiceConfig {
         self.labels = labels;
     }
 
-    pub fn get_labels<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<String, String>> {
+    pub fn labels<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<String, String>> {
         match &self.labels {
             None => None,
             Some(labels) => Some(&labels),
@@ -166,7 +129,7 @@ impl ServiceConfig {
         self.volumes = volumes;
     }
 
-    pub fn get_volumes<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<String, String>> {
+    pub fn volumes<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<String, String>> {
         match &self.volumes {
             None => None,
             Some(volumes) => Some(&volumes),
@@ -177,7 +140,7 @@ impl ServiceConfig {
         self.port = port;
     }
 
-    pub fn get_port(&self) -> u16 {
+    pub fn port(&self) -> u16 {
         self.port
     }
 }
@@ -210,22 +173,22 @@ impl Service {
         self.container_type = container_type;
     }
 
-    fn get_service_url(&self) -> Option<Url> {
+    fn service_url(&self) -> Option<Url> {
         self.base_url.clone().map(|url| {
             url.join(&format!("/{}/{}/", &self.app_name, &self.service_name))
                 .unwrap()
         })
     }
 
-    pub fn get_service_name(&self) -> &String {
+    pub fn service_name(&self) -> &String {
         &self.service_name
     }
 
-    pub fn get_container_id(&self) -> &String {
+    pub fn container_id(&self) -> &String {
         &self.container_id
     }
 
-    pub fn get_container_type(&self) -> &ContainerType {
+    pub fn container_type(&self) -> &ContainerType {
         &self.container_type
     }
 }
@@ -247,7 +210,7 @@ impl Serialize for Service {
 
         let version_url = match self.container_type {
             ContainerType::Instance | ContainerType::Replica => self
-                .get_service_url()
+                .service_url()
                 // TODO: use Web Host Metadata (RFC 6415): .well-known/host-meta.json
                 .map(|url| url.join("version").unwrap())
                 .map(|url| url.to_string()),
@@ -256,7 +219,7 @@ impl Serialize for Service {
 
         let s = Service {
             name: &self.service_name,
-            url: self.get_service_url().map(|url| url.to_string()),
+            url: self.service_url().map(|url| url.to_string()),
             service_type: self.container_type.to_string(),
             version_url,
         };
@@ -324,7 +287,15 @@ pub enum ServiceError {
 }
 
 impl Image {
-    pub fn get_tag(&self) -> Option<String> {
+    fn parse_from_string<'de, D>(deserializer: D) -> Result<Image, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let img = String::deserialize(deserializer)?;
+        Image::from_str(&img).map_err(de::Error::custom)
+    }
+
+    pub fn tag(&self) -> Option<String> {
         match &self {
             Image::Digest { .. } => None,
             Image::Named {
@@ -339,7 +310,7 @@ impl Image {
         }
     }
 
-    pub fn get_name(&self) -> Option<String> {
+    pub fn name(&self) -> Option<String> {
         match &self {
             Image::Digest { .. } => None,
             Image::Named {
@@ -358,7 +329,7 @@ impl Image {
         }
     }
 
-    pub fn get_registry(&self) -> Option<String> {
+    pub fn registry(&self) -> Option<String> {
         match &self {
             Image::Digest { .. } => None,
             Image::Named {
@@ -460,8 +431,8 @@ mod tests {
             &image.to_string(),
             "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913"
         );
-        assert_eq!(image.get_name(), None);
-        assert_eq!(image.get_tag(), None);
+        assert_eq!(image.name(), None);
+        assert_eq!(image.tag(), None);
     }
 
     #[test]
@@ -469,24 +440,24 @@ mod tests {
         let image = Image::from_str("9895c9b90b58").unwrap();
 
         assert_eq!(&image.to_string(), "9895c9b90b58");
-        assert_eq!(image.get_name(), None);
-        assert_eq!(image.get_tag(), None);
+        assert_eq!(image.name(), None);
+        assert_eq!(image.tag(), None);
     }
 
     #[test]
     fn should_parse_image_with_repo_and_user() {
         let image = Image::from_str("zammad/zammad-docker-compose").unwrap();
 
-        assert_eq!(&image.get_name().unwrap(), "zammad/zammad-docker-compose");
-        assert_eq!(&image.get_tag().unwrap(), "latest");
+        assert_eq!(&image.name().unwrap(), "zammad/zammad-docker-compose");
+        assert_eq!(&image.tag().unwrap(), "latest");
     }
 
     #[test]
     fn should_parse_image_with_version() {
         let image = Image::from_str("mariadb:10.3").unwrap();
 
-        assert_eq!(&image.get_name().unwrap(), "library/mariadb");
-        assert_eq!(&image.get_tag().unwrap(), "10.3");
+        assert_eq!(&image.name().unwrap(), "library/mariadb");
+        assert_eq!(&image.tag().unwrap(), "10.3");
         assert_eq!(&image.to_string(), "docker.io/library/mariadb:10.3");
     }
 
@@ -494,8 +465,8 @@ mod tests {
     fn should_parse_image_with_latest_version() {
         let image = Image::from_str("nginx:latest").unwrap();
 
-        assert_eq!(&image.get_name().unwrap(), "library/nginx");
-        assert_eq!(&image.get_tag().unwrap(), "latest");
+        assert_eq!(&image.name().unwrap(), "library/nginx");
+        assert_eq!(&image.tag().unwrap(), "latest");
         assert_eq!(&image.to_string(), "docker.io/library/nginx:latest");
     }
 
@@ -511,6 +482,30 @@ mod tests {
         let image = Image::from_str("localhost:5000/library/nginx:latest").unwrap();
 
         assert_eq!(&image.to_string(), "localhost:5000/library/nginx:latest");
-        assert_eq!(&image.get_registry().unwrap(), "localhost:5000");
+        assert_eq!(&image.registry().unwrap(), "localhost:5000");
+    }
+
+    #[test]
+    fn should_parse_service_config_json() {
+        let json = r#"{
+    "serviceName": "mariadb",
+    "image": "mariadb:10.3",
+    "env": [
+      "MYSQL_USER=admin",
+      "MYSQL_DATABASE=dbname"
+    ]
+  }"#;
+
+        let config = serde_json::from_str::<ServiceConfig>(json).unwrap();
+
+        assert_eq!(config.service_name(), "mariadb");
+        assert_eq!(config.image().to_string(), "docker.io/library/mariadb:10.3");
+        assert_eq!(
+            config.env(),
+            Some(&vec![
+                String::from("MYSQL_USER=admin"),
+                String::from("MYSQL_DATABASE=dbname")
+            ])
+        );
     }
 }
