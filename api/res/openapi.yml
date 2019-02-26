@@ -45,10 +45,14 @@ paths:
                 properties:
                   "^[a-zA-Z0-9_-]":
                     $ref: '#/components/schemas/Ticket'
-        '204':
-          description: 'No ticket system configuration'
         '500':
           description: Server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: 'No ticket system configuration'
           content:
             application/problem+json:
               schema:

@@ -113,7 +113,7 @@ pub enum ListTicketsError {
 impl From<ListTicketsError> for HttpApiProblem {
     fn from(error: ListTicketsError) -> Self {
         let status = match error {
-            ListTicketsError::MissingIssueTrackingConfiguration => StatusCode::NO_CONTENT,
+            ListTicketsError::MissingIssueTrackingConfiguration => StatusCode::SERVICE_UNAVAILABLE,
             ListTicketsError::UnexpectedError {
                 internal_message: _,
             } => StatusCode::INTERNAL_SERVER_ERROR,
