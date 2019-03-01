@@ -274,6 +274,10 @@ bottom: 40px;">
     let currentSection = undefined;
     let index = 0;
     slides.forEach(function (slide) {
+        if (slide.id == null || slide.id == "") {
+            return;
+        }
+
         const section = slide.dataset.section;
         if (section != null) {
             currentSection = {name: section, index};
@@ -283,12 +287,12 @@ bottom: 40px;">
     });
 
     rootElement.addEventListener("impress:stepenter", function (e) {
-        const index = slides.indexOf(e.explicitOriginalTarget) + 1;
+        const index = slides.indexOf(e.target) + 1;
 
         const slideNumbers = document.getElementById("slide-numbers");
         slideNumbers.innerHTML = `${index}/${slides.length}`;
 
-        const section = slideSectionMapping[e.explicitOriginalTarget.id];
+        const section = slideSectionMapping[e.target.id];
         const sectionName = document.getElementById("section-name");
         sectionName.innerHTML = section.name;
     });
