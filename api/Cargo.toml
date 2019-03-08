@@ -15,6 +15,7 @@ futures = "0.1"
 handlebars = "1.1"
 hyper = "0.10"
 log = "0.4"
+mockers_derive = "0.13.1"
 multimap = "0.4"
 serde = "1.0"
 serde_derive = "1.0"
@@ -47,3 +48,6 @@ rev = "1d72ffee98b88321418181998225c700904be414"
 version = "0.9.7"
 default-features = false
 features = ["rustls-tls"]
+
+[dev-dependencies]
+mockers = "0.13.1"

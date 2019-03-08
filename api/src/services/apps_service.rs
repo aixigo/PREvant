@@ -26,7 +26,6 @@
 
 use crate::models::service::{ContainerType, Service, ServiceConfig};
 use crate::services::config_service::{Config, ConfigError};
-use crate::services::docker::docker_infrastructure::DockerInfrastructure;
 use crate::services::service_templating::{
     apply_templating_for_application_companion, apply_templating_for_service_companion,
 };
@@ -45,10 +44,13 @@ pub struct AppsService<'a> {
 }
 
 impl<'a> AppsService<'a> {
-    pub fn new(config: &'a Config) -> Result<AppsService, AppsServiceError> {
+    pub fn new(
+        config: &'a Config,
+        infrastructure: Box<dyn Infrastructure>,
+    ) -> Result<AppsService, AppsServiceError> {
         Ok(AppsService {
             config,
-            infrastructure: Box::new(DockerInfrastructure::new()),
+            infrastructure,
         })
     }
 
@@ -64,26 +66,28 @@ impl<'a> AppsService<'a> {
     /// - the replications from the running template application (e.g. master)
     /// - the application companions (see README)
     /// - the service companions (see README)
+    ///
+    /// # Arguments
+    /// * `replicate_from` - The application name that is used as a template.
     pub fn create_or_update(
         &self,
         app_name: &String,
+        replicate_from: Option<String>,
         service_configs: &Vec<ServiceConfig>,
     ) -> Result<Vec<Service>, AppsServiceError> {
         let mut configs: Vec<ServiceConfig> = service_configs.clone();
 
-        if "master" != app_name {
+        let replicate_from_app_name = replicate_from.unwrap_or_else(|| String::from("master"));
+        if &replicate_from_app_name != app_name {
             for config in self
                 .infrastructure
-                .get_configs_of_app(&String::from("master"))?
+                .get_configs_of_app(&replicate_from_app_name)?
                 .iter()
                 .filter(|config| {
-                    match service_configs
+                    service_configs
                         .iter()
                         .find(|c| c.service_name() == config.service_name())
-                    {
-                        None => true,
-                        Some(_) => false,
-                    }
+                        .is_none()
                 })
             {
                 let mut replicated_config = config.clone();
@@ -146,13 +150,10 @@ impl<'a> AppsService<'a> {
             .get_configs_of_app(app_name)?
             .into_iter()
             .filter(|config| {
-                match service_configs
+                service_configs
                     .iter()
                     .find(|c| c.service_name() == config.service_name())
-                {
-                    None => true,
-                    Some(_) => false,
-                }
+                    .is_none()
             })
         {
             configs_for_templating.push(config);
@@ -247,4 +248,50 @@ impl From<ImagesServiceError> for AppsServiceError {
     fn from(error: ImagesServiceError) -> Self {
         AppsServiceError::UnableToResolveImage { error }
     }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use crate::models::service::Image;
+    use crate::services::config_service::ContainerConfig;
+    use mockers::matchers::any;
+    use mockers::Scenario;
+    use std::str::FromStr;
+
+    #[test]
+    fn should_create_app_for_master() {
+        let app_name = String::from("master");
+        let services = vec![ServiceConfig::new(
+            String::from("service-a"),
+            Image::from_str(
+                "sha256:541b21b43bdd8f1547599d0350713d82c74c9a72c13cfd47e742b377ea638ee2",
+            )
+            .unwrap(),
+        )];
+
+        let scenario = Scenario::new();
+        let infrastructure = scenario.create_mock_for::<Infrastructure>();
+        scenario.expect(
+            infrastructure
+                .get_configs_of_app_call(any::<&String>())
+                .and_return(Ok(vec![])),
+        );
+        scenario.expect(
+            infrastructure
+                .start_services_call(
+                    any::<&String>(),
+                    any::<&Vec<ServiceConfig>>(),
+                    any::<&ContainerConfig>(),
+                )
+                .and_return(Ok(vec![])),
+        );
+
+        let config = Config::default();
+        let apps = AppsService::new(&config, Box::new(infrastructure)).unwrap();
+
+        apps.create_or_update(&app_name, None, &services).unwrap();
+    }
+
 }

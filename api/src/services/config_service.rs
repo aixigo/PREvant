@@ -68,7 +68,7 @@ enum CompanionType {
     Service,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 pub struct Config {
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
@@ -149,14 +149,14 @@ impl Config {
 }
 
 impl JiraConfig {
-    pub fn get_host(&self) -> String {
-        self.host.clone()
+    pub fn host(&self) -> &String {
+        &self.host
     }
-    pub fn get_user(&self) -> String {
-        self.user.clone()
+    pub fn user(&self) -> &String {
+        &self.user
     }
-    pub fn get_password(&self) -> String {
-        self.password.clone()
+    pub fn password(&self) -> &String {
+        &self.password
     }
 }
 
@@ -297,10 +297,7 @@ mod tests {
                 &config.image().to_string(),
                 "docker.io/library/nginx:latest"
             );
-            assert_eq!(
-                config.container_type(),
-                &ContainerType::ServiceCompanion
-            );
+            assert_eq!(config.container_type(), &ContainerType::ServiceCompanion);
             assert_eq!(config.labels(), None);
         });
     }

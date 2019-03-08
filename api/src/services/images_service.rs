@@ -129,14 +129,19 @@ impl ImageBlob {
 #[derive(Deserialize)]
 struct ImageConfig {
     #[serde(rename = "ExposedPorts")]
-    exposed_ports: HashMap<String, serde_json::Value>,
+    exposed_ports: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl ImageConfig {
     fn get_exposed_port(&self) -> Option<u16> {
         let regex = Regex::new(r"^(?P<port>\d+)/(tcp|udp)$").unwrap();
 
-        self.exposed_ports
+        let ports = match &self.exposed_ports {
+            Some(ports) => ports,
+            None => return None,
+        };
+
+        ports
             .iter()
             .map(|(k, _)| k)
             .filter_map(|port| regex.captures(port))
@@ -204,6 +209,24 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(blob.get_exposed_port().unwrap(), 8080u16);
+        assert_eq!(blob.get_exposed_port(), Some(8080u16));
+    }
+
+    #[test]
+    fn should_return_exposed_port_without_ports() {
+        let blob = serde_json::from_str::<ImageBlob>(
+            r#"{
+                "config": {
+                    "Hostname": "837a64dcc771",
+                    "Domainname": "",
+                    "User": "",
+                    "AttachStdin": false,
+                    "AttachStdout": false,
+                    "AttachStderr": false
+                } }"#,
+        )
+        .unwrap();
+
+        assert_eq!(blob.get_exposed_port(), None);
     }
 }

@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use url::Url;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Service {
     app_name: String,
     service_name: String,
@@ -40,7 +40,7 @@ pub struct Service {
     base_url: Option<Url>,
 }
 
-#[derive(Clone, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
     service_name: String,
@@ -56,7 +56,7 @@ pub struct ServiceConfig {
     port: u16,
 }
 
-#[derive(Clone, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
 pub enum Image {
     Named {
         image_repository: String,

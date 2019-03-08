@@ -27,6 +27,7 @@
 use crate::models::ticket_info::TicketInfo;
 use crate::services::apps_service::{AppsService, AppsServiceError};
 use crate::services::config_service::Config;
+use crate::services::docker::docker_infrastructure::DockerInfrastructure;
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
 use http_api_problem::{HttpApiProblem, StatusCode};
@@ -50,12 +51,13 @@ pub fn tickets(
             ));
         }
         Some(jira_config) => {
-            let apps_service = AppsService::new(&config_state)?;
+            let apps_service =
+                AppsService::new(&config_state, Box::new(DockerInfrastructure::new()))?;
             let services = apps_service.get_apps()?;
 
             let jira = match Jira::new(
-                jira_config.get_host(),
-                Credentials::Basic(jira_config.get_user(), jira_config.get_password()),
+                jira_config.host().clone(),
+                Credentials::Basic(jira_config.user().clone(), jira_config.password().clone()),
             ) {
                 Ok(jira) => jira,
                 Err(e) => return Err(HttpApiProblem::from(ListTicketsError::from(e))),
@@ -113,7 +115,7 @@ pub enum ListTicketsError {
 impl From<ListTicketsError> for HttpApiProblem {
     fn from(error: ListTicketsError) -> Self {
         let status = match error {
-            ListTicketsError::MissingIssueTrackingConfiguration => StatusCode::SERVICE_UNAVAILABLE,
+            ListTicketsError::MissingIssueTrackingConfiguration => StatusCode::NO_CONTENT,
             ListTicketsError::UnexpectedError {
                 internal_message: _,
             } => StatusCode::INTERNAL_SERVER_ERROR,

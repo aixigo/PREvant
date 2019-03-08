@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-#![feature(proc_macro_hygiene, decl_macro, try_from)]
+#![feature(custom_attribute, proc_macro_hygiene, decl_macro, try_from)]
 
 #[macro_use]
 extern crate failure;
@@ -52,19 +52,17 @@ mod webhooks;
 
 #[get("/")]
 fn index() -> CacheResponse<Option<NamedFile>> {
-    CacheResponse::Public {
+    CacheResponse::Private {
         responder: NamedFile::open(Path::new("frontend/index.html")).ok(),
         max_age: 60 * 60, // cached for seconds
-        must_revalidate: false,
     }
 }
 
 #[get("/<path..>")]
 fn files(path: PathBuf) -> CacheResponse<Option<NamedFile>> {
-    CacheResponse::Public {
+    CacheResponse::Private {
         responder: NamedFile::open(Path::new("frontend/").join(path)).ok(),
         max_age: 60 * 60, // cached for seconds
-        must_revalidate: false,
     }
 }
 

@@ -45,14 +45,10 @@ paths:
                 properties:
                   "^[a-zA-Z0-9_-]":
                     $ref: '#/components/schemas/Ticket'
-        '500':
-          description: Server error
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '503':
+        '204':
           description: 'No ticket system configuration'
+        '500':
+          description: Internal server error
           content:
             application/problem+json:
               schema:
@@ -68,6 +64,12 @@ paths:
             type: string
           required: true
           description: Name of review app to create
+        - in: query
+          name: replicateFrom
+          schema:
+            type: string
+            default: 'master'
+          description: The application name that will be used to replicate from.
       requestBody:
         description: Information of review app to create
         required: true

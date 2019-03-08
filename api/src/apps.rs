@@ -28,12 +28,13 @@ use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceConfig};
 use crate::services::apps_service::AppsService;
 use crate::services::config_service::Config;
+use crate::services::docker::docker_infrastructure::DockerInfrastructure;
 use http_api_problem::HttpApiProblem;
 use multimap::MultiMap;
 use rocket::data::{self, FromDataSimple};
 use rocket::http::RawStr;
 use rocket::http::Status;
-use rocket::request::Request;
+use rocket::request::{Form, Request};
 use rocket::Data;
 use rocket::Outcome::{Failure, Success};
 use rocket::State;
@@ -45,7 +46,7 @@ pub fn apps(
     config_state: State<Config>,
     request_info: RequestInfo,
 ) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
-    let apps_service = AppsService::new(&config_state)?;
+    let apps_service = AppsService::new(&config_state, Box::new(DockerInfrastructure::new()))?;
     let mut apps = apps_service.get_apps()?;
 
     for (_, services) in apps.iter_all_mut() {
@@ -63,7 +64,7 @@ pub fn delete_app(
     config_state: State<Config>,
     request_info: RequestInfo,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
-    let apps_service = AppsService::new(&config_state)?;
+    let apps_service = AppsService::new(&config_state, Box::new(DockerInfrastructure::new()))?;
     let mut services = apps_service.delete_app(&app_name.to_string())?;
 
     for service in services.iter_mut() {
@@ -74,25 +75,41 @@ pub fn delete_app(
 }
 
 #[post(
-    "/apps/<app_name>",
+    "/apps/<app_name>?<create_app_form..>",
     format = "application/json",
     data = "<service_configs_data>"
 )]
 pub fn create_app(
     app_name: &RawStr,
     config_state: State<Config>,
+    create_app_form: Form<CreateAppOptions>,
     request_info: RequestInfo,
     service_configs_data: ServiceConfigsData,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
-    let apps_service = AppsService::new(&config_state)?;
-    let mut services = apps_service
-        .create_or_update(&app_name.to_string(), &service_configs_data.service_configs)?;
+    let apps_service = AppsService::new(&config_state, Box::new(DockerInfrastructure::new()))?;
+    let mut services = apps_service.create_or_update(
+        &app_name.to_string(),
+        create_app_form.replicate_from().clone(),
+        &service_configs_data.service_configs,
+    )?;
 
     for service in services.iter_mut() {
         service.set_base_url(request_info.get_base_url());
     }
 
     Ok(Json(services))
+}
+
+#[derive(FromForm)]
+pub struct CreateAppOptions {
+    #[form(field = "replicateFrom")]
+    replicate_from: Option<String>,
+}
+
+impl CreateAppOptions {
+    fn replicate_from(&self) -> &Option<String> {
+        &self.replicate_from
+    }
 }
 
 pub struct ServiceConfigsData {
