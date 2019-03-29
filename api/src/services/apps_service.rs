@@ -36,21 +36,25 @@ use crate::services::{
 use handlebars::TemplateRenderError;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
+use std::collections::HashSet;
 use std::convert::From;
+use std::sync::Mutex;
 
-pub struct AppsService<'a> {
-    config: &'a Config,
+pub struct AppsService {
+    config: Config,
     infrastructure: Box<dyn Infrastructure>,
+    apps_in_deployment: Mutex<HashSet<String>>,
 }
 
-impl<'a> AppsService<'a> {
+impl AppsService {
     pub fn new(
-        config: &'a Config,
+        config: Config,
         infrastructure: Box<dyn Infrastructure>,
     ) -> Result<AppsService, AppsServiceError> {
         Ok(AppsService {
             config,
             infrastructure,
+            apps_in_deployment: Mutex::new(HashSet::new()),
         })
     }
 
@@ -58,6 +62,16 @@ impl<'a> AppsService<'a> {
     /// corresponding list of `Service`s.
     pub fn get_apps(&self) -> Result<MultiMap<String, Service>, AppsServiceError> {
         Ok(self.infrastructure.get_services()?)
+    }
+
+    fn is_in_deployment(&self, app_name: &String) -> bool {
+        let mut apps_in_deployment = self.apps_in_deployment.lock().unwrap();
+        !apps_in_deployment.insert(app_name.clone())
+    }
+
+    fn clear_deployment_status(&self, app_name: &String) {
+        let mut apps_in_deployment = self.apps_in_deployment.lock().unwrap();
+        apps_in_deployment.remove(app_name);
     }
 
     /// Creates or updates a app to review with the given service configurations.
@@ -75,6 +89,12 @@ impl<'a> AppsService<'a> {
         replicate_from: Option<String>,
         service_configs: &Vec<ServiceConfig>,
     ) -> Result<Vec<Service>, AppsServiceError> {
+        if self.is_in_deployment(app_name) {
+            return Err(AppsServiceError::AppIsInDeployment {
+                app_name: app_name.clone(),
+            });
+        }
+
         let mut configs: Vec<ServiceConfig> = service_configs.clone();
 
         let replicate_from_app_name = replicate_from.unwrap_or_else(|| String::from("master"));
@@ -133,6 +153,8 @@ impl<'a> AppsService<'a> {
             &configs,
             &self.config.get_container_config(),
         )?;
+
+        self.clear_deployment_status(app_name);
 
         Ok(services)
     }
@@ -198,6 +220,11 @@ pub enum AppsServiceError {
     /// Will be used when no app with a given name is found
     #[fail(display = "Cannot find app {}.", app_name)]
     AppNotFound { app_name: String },
+    #[fail(
+        display = "The app {} is currently beeing deployed in by another request.",
+        app_name
+    )]
+    AppIsInDeployment { app_name: String },
     /// Will be used when the service cannot interact correctly with the infrastructure.
     #[fail(display = "Cannot interact with infrastructure: {}", error)]
     InfrastructureError { error: failure::Error },
@@ -214,6 +241,7 @@ impl From<AppsServiceError> for HttpApiProblem {
     fn from(error: AppsServiceError) -> Self {
         let status = match error {
             AppsServiceError::AppNotFound { app_name: _ } => StatusCode::NOT_FOUND,
+            AppsServiceError::AppIsInDeployment { app_name: _ } => StatusCode::CONFLICT,
             AppsServiceError::InfrastructureError { error: _ }
             | AppsServiceError::InvalidServerConfiguration { error: _ }
             | AppsServiceError::InvalidTemplateFormat { error: _ }
@@ -255,9 +283,7 @@ mod tests {
 
     use super::*;
     use crate::models::service::Image;
-    use crate::services::config_service::ContainerConfig;
-    use mockers::matchers::any;
-    use mockers::Scenario;
+    use crate::services::dummy_infrastructure::DummyInfrastructure;
     use std::str::FromStr;
 
     #[test]
@@ -271,27 +297,17 @@ mod tests {
             .unwrap(),
         )];
 
-        let scenario = Scenario::new();
-        let infrastructure = scenario.create_mock_for::<Infrastructure>();
-        scenario.expect(
-            infrastructure
-                .get_configs_of_app_call(any::<&String>())
-                .and_return(Ok(vec![])),
-        );
-        scenario.expect(
-            infrastructure
-                .start_services_call(
-                    any::<&String>(),
-                    any::<&Vec<ServiceConfig>>(),
-                    any::<&ContainerConfig>(),
-                )
-                .and_return(Ok(vec![])),
-        );
-
         let config = Config::default();
-        let apps = AppsService::new(&config, Box::new(infrastructure)).unwrap();
+        let infrastructure = Box::new(DummyInfrastructure::new());
+        let apps = AppsService::new(config, infrastructure).unwrap();
 
         apps.create_or_update(&app_name, None, &services).unwrap();
+
+        let deployed_apps = apps.get_apps().unwrap();
+        assert_eq!(deployed_apps.len(), 1);
+        let services = deployed_apps.get_vec("master").unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services.get(0).unwrap().service_name(), "service-a")
     }
 
 }

@@ -27,7 +27,6 @@
 use crate::models::ticket_info::TicketInfo;
 use crate::services::apps_service::{AppsService, AppsServiceError};
 use crate::services::config_service::Config;
-use crate::services::docker::docker_infrastructure::DockerInfrastructure;
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
 use http_api_problem::{HttpApiProblem, StatusCode};
@@ -41,6 +40,7 @@ use std::convert::From;
 #[get("/apps/tickets", format = "application/json")]
 pub fn tickets(
     config_state: State<Config>,
+    apps_service: State<AppsService>,
 ) -> Result<Json<HashMap<String, TicketInfo>>, HttpApiProblem> {
     let mut tickets: HashMap<String, TicketInfo> = HashMap::new();
 
@@ -51,8 +51,6 @@ pub fn tickets(
             ));
         }
         Some(jira_config) => {
-            let apps_service =
-                AppsService::new(&config_state, Box::new(DockerInfrastructure::new()))?;
             let services = apps_service.get_apps()?;
 
             let jira = match Jira::new(

@@ -44,10 +44,7 @@ public class ServiceConfiguration {
     private final String serviceName;
 
     @NonNull
-    private final String imageUser;
-
-    @NonNull
-    private final String imageRepository;
+    private final String image;
 
     private Map<String, String> volumes = new HashMap<>();
 

@@ -44,7 +44,7 @@ public class PREvantRestApiExtension implements BeforeAllCallback, AfterAllCallb
 
     private final GenericContainer prevantRestApiContainer = new GenericContainer("aixigo/prevant")
             .withFileSystemBind("/var/run/docker.sock", "/var/run/docker.sock", BindMode.READ_WRITE)
-            .withLabel("traefik.frontend.rule", "ReplacePathRegex: ^/api(.*) /$1;PathPrefix:/api;")
+            .withLabel("traefik.frontend.rule", "PathPrefix:/;")
             .withLogConsumer(new Consumer<OutputFrame>() {
 
                 private final Logger LOGGER = LoggerFactory.getLogger("rest api");

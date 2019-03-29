@@ -29,6 +29,7 @@ package com.aixigo.preview.servant.rest;
 
 import com.aixigo.preview.servant.rest.junit.extension.PREvantRestApiExtension;
 import com.aixigo.preview.servant.rest.model.ServiceConfiguration;
+import io.restassured.response.ResponseBodyExtractionOptions;
 import io.restassured.response.ValidatableResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -52,7 +53,7 @@ class PREvantRestApiDockerTest {
 
     @Test
     void shouldDeployDockerContainer_WhenRequestToDeployService(URI restApiURI) throws Exception {
-        String uri = postServiceConfiguration(restApiURI, "master", "nginx", "library", "nginx")
+        String uri = postServiceConfiguration(restApiURI, "master", "nginx", "nginx:1.15-alpine")
                 .extract()
                 .body()
                 .path("[0].url");
@@ -69,9 +70,9 @@ class PREvantRestApiDockerTest {
 
     @Test
     void shouldLinkDockerContainerToNetwork_WhenRequestToDeployService(URI restApiURI) throws Exception {
-        postServiceConfiguration(restApiURI, "master", "httpd", "library", "httpd");
+        postServiceConfiguration(restApiURI, "master", "httpd", "httpd:2.4-alpine");
         postServiceConfiguration(restApiURI, "master",
-                new ServiceConfiguration("nginx", "library", "nginx")
+                new ServiceConfiguration("nginx", "nginx:1.15-alpine")
                         .addVolume("/etc/nginx/conf.d/default.conf", createNginxConfigFile()));
 
         Thread.sleep(WAIT_FOR_SERVICES);
@@ -87,11 +88,11 @@ class PREvantRestApiDockerTest {
     @Test
     void shouldReplicateRemainingServicesFromMasterWhenDeployingToFeatureBranch(URI restApiURI) throws Exception {
         postServiceConfiguration(restApiURI, "master", asList(
-                new ServiceConfiguration("httpd", "library", "httpd"),
-                new ServiceConfiguration("nginx", "library", "nginx")
+                new ServiceConfiguration("httpd", "httpd:2.4-alpine"),
+                new ServiceConfiguration("nginx", "nginx:1.15-alpine")
         ));
 
-        postServiceConfiguration(restApiURI, "master-1x", "httpd", "library", "httpd")
+        postServiceConfiguration(restApiURI, "master-1x", "httpd", "httpd:2.4-alpine")
                 .statusCode(200);
 
         Thread.sleep(WAIT_FOR_SERVICES);
@@ -139,8 +140,8 @@ class PREvantRestApiDockerTest {
         return writer.toString();
     }
 
-    private ValidatableResponse postServiceConfiguration(URI restApiURI, String appName, String serviceName, String imageUser, String imageRepository) {
-        return postServiceConfiguration(restApiURI, appName, new ServiceConfiguration(serviceName, imageUser, imageRepository));
+    private ValidatableResponse postServiceConfiguration(URI restApiURI, String appName, String serviceName, String image) {
+        return postServiceConfiguration(restApiURI, appName, new ServiceConfiguration(serviceName, image));
     }
 
     private ValidatableResponse postServiceConfiguration(URI restApiURI, String appName, ServiceConfiguration serviceConfiguration) {

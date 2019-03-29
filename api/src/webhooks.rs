@@ -28,7 +28,7 @@ use crate::apps::delete_app;
 use crate::models::request_info::RequestInfo;
 use crate::models::service::Service;
 use crate::models::web_hook_info::WebHookInfo;
-use crate::services::config_service::Config;
+use crate::services::apps_service::AppsService;
 use http_api_problem::HttpApiProblem;
 use rocket::http::RawStr;
 use rocket::State;
@@ -36,7 +36,7 @@ use rocket_contrib::json::Json;
 
 #[post("/webhooks", format = "application/json", data = "<web_hook_info>")]
 pub fn webhooks(
-    config_state: State<Config>,
+    apps_service: State<AppsService>,
     web_hook_info: WebHookInfo,
     request_info: RequestInfo,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
@@ -49,7 +49,7 @@ pub fn webhooks(
 
     delete_app(
         &RawStr::from_str(&web_hook_info.get_app_name()),
-        config_state,
+        apps_service,
         request_info,
     )
 }

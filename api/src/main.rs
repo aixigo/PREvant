@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-#![feature(custom_attribute, proc_macro_hygiene, decl_macro, try_from)]
+#![feature(custom_attribute, proc_macro_hygiene, decl_macro)]
 
 #[macro_use]
 extern crate failure;
@@ -36,7 +36,9 @@ extern crate rocket;
 extern crate serde_derive;
 
 use crate::models::request_info::RequestInfo;
+use crate::services::apps_service::AppsService;
 use crate::services::config_service::Config;
+use crate::services::docker::DockerInfrastructure;
 use rocket::response::NamedFile;
 use rocket_cache_response::CacheResponse;
 use serde_yaml::{from_reader, to_string, Value};
@@ -98,8 +100,18 @@ fn main() {
         }
     };
 
+    let apps_service = match AppsService::new(config.clone(), Box::new(DockerInfrastructure::new()))
+    {
+        Ok(apps_service) => apps_service,
+        Err(e) => {
+            error!("Cannot create apps service: {}", e);
+            process::exit(0x0200);
+        }
+    };
+
     rocket::ignite()
         .manage(config)
+        .manage(apps_service)
         .mount("/", routes![index])
         .mount("/openapi.yaml", routes![openapi])
         .mount("/", routes![files])

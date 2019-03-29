@@ -27,6 +27,8 @@
 pub mod apps_service;
 pub mod config_service;
 pub mod docker;
+#[cfg(test)]
+pub mod dummy_infrastructure;
 pub mod images_service;
 pub mod infrastructure;
 pub mod service_templating;

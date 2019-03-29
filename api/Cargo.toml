@@ -6,8 +6,8 @@ repository = "https://github.com/aixigo/PREvant/"
 edition = "2018"
 
 [dependencies]
-crossbeam = "0.4"
-crossbeam-utils = "0.5"
+crossbeam = "0.7"
+crossbeam-utils = "0.6"
 dkregistry = "0.2"
 env_logger = "0.6"
 failure = "0.1"
@@ -48,6 +48,3 @@ rev = "1d72ffee98b88321418181998225c700904be414"
 version = "0.9.7"
 default-features = false
 features = ["rustls-tls"]
-
-[dev-dependencies]
-mockers = "0.13.1"

@@ -27,12 +27,9 @@
 use super::config_service::ContainerConfig;
 use crate::models::service::{Service, ServiceConfig};
 use failure::Error;
-#[cfg(test)]
-use mockers_derive::mocked;
 use multimap::MultiMap;
 
-#[cfg_attr(test, mocked)]
-pub trait Infrastructure {
+pub trait Infrastructure: Send + Sync {
     fn get_services(&self) -> Result<MultiMap<String, Service>, Error>;
 
     /// Starts the services of the given set of `ServiceConfig`.

@@ -88,6 +88,12 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Service'
+        '409':
+          description: The application is currently in deployment. A parallel deployment of two apps is not allowed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '500':
           description: Server error
           content:

@@ -24,8 +24,8 @@
  * =========================LICENSE_END==================================
  */
 
-use super::super::config_service::ContainerConfig;
 use crate::models::service::{ContainerType, Image, Service, ServiceConfig, ServiceError};
+use crate::services::config_service::ContainerConfig;
 use crate::services::infrastructure::Infrastructure;
 use failure::Error;
 use futures::future::join_all;
@@ -446,7 +446,7 @@ impl Infrastructure for DockerInfrastructure {
 
                 let network_id_clone = network_id.clone();
                 let tx_clone = tx.clone();
-                scope.spawn(move || {
+                scope.spawn(move |_| {
                     let service = self.start_container(
                         app_name,
                         &network_id_clone,
@@ -456,7 +456,8 @@ impl Infrastructure for DockerInfrastructure {
                     tx_clone.send(service).unwrap();
                 });
             }
-        });
+        })
+        .unwrap();
 
         let mut services: Vec<Service> = Vec::new();
         for _ in 0..count {
