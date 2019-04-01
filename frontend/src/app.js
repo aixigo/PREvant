@@ -47,14 +47,17 @@ import App from './App.vue';
 import Navbar from './Navbar.vue';
 
 import {library} from '@fortawesome/fontawesome-svg-core';
-import {faCode, faServer, faSpinner, faTerminal, faWindowClose} from '@fortawesome/free-solid-svg-icons';
+import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose} from '@fortawesome/free-solid-svg-icons';
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome';
 import store from './store';
 
+library.add(faClipboard);
 library.add(faCode);
+library.add(faCopy);
 library.add(faServer);
 library.add(faSpinner);
 library.add(faTerminal);
+library.add(faTrash);
 library.add(faWindowClose);
 
 Vue.use(VueResource);

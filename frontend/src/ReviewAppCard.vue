@@ -30,7 +30,7 @@
          <div class="card-header">
             <div class="d-flex justify-content-between">
                <h4 v-if="reviewApp.ticket !== undefined"
-                  class="ra-headline">
+                   class="ra-headline">
                   <a :href="reviewApp.ticket.link" target="_blank">{{ reviewApp.name }}</a>
                </h4>
                <h4 v-else>
@@ -38,29 +38,33 @@
                </h4>
 
                <div class="dropdown menu">
-                  <button class="btn bmd-btn-icon dropdown-toggle" type="button" :id="'menu' + reviewApp.name" data-toggle="dropdown"
-                        aria-haspopup="true" aria-expanded="false">
+                  <button class="btn bmd-btn-icon dropdown-toggle" type="button" :id="'menu' + reviewApp.name"
+                          data-toggle="dropdown"
+                          aria-haspopup="true" aria-expanded="false">
                      <i class="material-icons">more_vert</i>
                   </button>
 
                   <div class="dropdown-menu dropdown-menu-left" :aria-labelledby="'menu' + reviewApp.name">
                      <button type="button" class="dropdown-item btn btn-primary" @click="copyVersions()">
-                        Copy Versions
+                        <font-awesome-icon icon="clipboard"/> &nbsp; Versions
+                     </button>
+                     <button type="button" class="dropdown-item btn btn-primary" @click="duplicateApp()">
+                        <font-awesome-icon icon="copy"/> &nbsp; Duplicate
                      </button>
                      <button type="button" class="dropdown-item btn btn-danger" @click="openDeleteDialog()"
-                           v-if="reviewApp.name != 'master'">
-                        Shutdown
+                             v-if="reviewApp.name != 'master'">
+                        <font-awesome-icon icon="trash"/> &nbsp; Shutdown
                      </button>
                   </div>
                </div>
             </div>
 
             <div v-if="reviewApp.ticket !== undefined"
-               class="ra-headline__intro">
+                 class="ra-headline__intro">
                <span class="ra-ellipsis"
-                  :title="reviewApp.ticket['summary']">{{ reviewApp.ticket['summary'] }}</span>
+                     :title="reviewApp.ticket['summary']">{{ reviewApp.ticket['summary'] }}</span>
                <span class="badge"
-                  :class="{ 'jira--ready': reviewApp.ticket['status'] === 'Bereit',
+                     :class="{ 'jira--ready': reviewApp.ticket['status'] === 'Bereit',
                             'jira--process': reviewApp.ticket['status'] === 'In Bearbeitung',
                             'jira--review': reviewApp.ticket['status'] === 'Review',
                             'jira--done': reviewApp.ticket['status'] === 'Erledigt' }">
@@ -75,8 +79,8 @@
                  class="ra-container">
 
                <div class="ra-container__type"
-                  :class="{ 'is-expanded': isExpanded( container ) }"
-                  @click="toggleContainer( container )">
+                    :class="{ 'is-expanded': isExpanded( container ) }"
+                    @click="toggleContainer( container )">
                   <i v-if="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
                   <i v-else="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
                   <template>
@@ -96,9 +100,10 @@
                   </h5>
 
                   <div class="ra-build-infos__wrapper"
-                     v-if="isExpanded( container )">
-                     <div  class="ra-build-infos">
-                        <a v-if="container.apiUrl" href="#" @click="currentApiUrl = container.apiUrl">API Documentation</a>
+                       v-if="isExpanded( container )">
+                     <div class="ra-build-infos">
+                        <a v-if="container.apiUrl" href="#" @click="currentApiUrl = container.apiUrl">API
+                           Documentation</a>
                      </div>
 
                      <div v-if="container.version" class="ra-build-infos">
@@ -109,18 +114,18 @@
                         <span class="ra-build-infos__time">07:54</span> -->
                      </div>
                      <p v-if="!container.version && container.name.endsWith( '-service' )">
-                        <font-awesome-icon icon="spinner" spin />
+                        <font-awesome-icon icon="spinner" spin/>
                      </p>
                   </div>
                </div>
 
                <div class="ra-container__tags">
                   <span class="badge"
-                     :class="badgeClass( container.type )"
-                     v-tooltip="tooltip( container.type )">{{ container.type }}</span>
+                        :class="badgeClass( container.type )"
+                        v-tooltip="tooltip( container.type )">{{ container.type }}</span>
                   <span v-if="container.version && container.version[ 'git.revision' ] && isExpanded( container )"
-                     class="ra-build-infos ra-build-infos__hash text-right"
-                     :title="container.version[ 'git.revision' ]">
+                        class="ra-build-infos ra-build-infos__hash text-right"
+                        :title="container.version[ 'git.revision' ]">
                      {{ container.version[ 'git.revision' ].slice( 0, 7 ) }}…
                      <!-- only for layout -->
                      <!-- c63ae57… -->
@@ -129,27 +134,30 @@
             </div>
 
             <textarea
-               v-if="displayVersion"
-               class="ra-version-display"
-               ref="versionDisplay"
-               :value="displayVersion"
-               maxlength="500"
-               autocomplete="off"
-               autocorrect="off"
-               autocapitalize="off"
-               spellcheck="false">
+                  v-if="displayVersion"
+                  class="ra-version-display"
+                  ref="versionDisplay"
+                  :value="displayVersion"
+                  maxlength="500"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="off"
+                  spellcheck="false">
             </textarea>
          </div>
       </div>
 
       <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name != 'master'"/>
 
-      <open-api-ui :url="currentApiUrl" v-if="currentApiUrl != null" @close="currentApiUrl = null" />
+      <open-api-ui :url="currentApiUrl" v-if="currentApiUrl != null" @close="currentApiUrl = null"/>
+
+      <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
    </div>
 </template>
 
 <script>
    import moment from 'moment';
+   import DuplicateAppDialog from './DuplicateAppDialog.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
    import OpenApiUI from './OpenApiUI.vue';
 
@@ -162,6 +170,7 @@
          };
       },
       components: {
+         'duplicate-app-dialog': DuplicateAppDialog,
          'shutdown-app-dialog': ShutdownAppDialog,
          'open-api-ui': OpenApiUI
       },
@@ -185,14 +194,14 @@
          reviewApp: {type: Object}
       },
       watch: {
-         reviewApp: function( newValue ) {
-            const { containers } = newValue;
+         reviewApp: function (newValue) {
+            const {containers} = newValue;
 
-            if( containers && containers.length ) {
-               containers.forEach( ( { name } ) => {
-                  const expanded = name.endsWith( '-api' ) || name.endsWith( '-service' );
-                  this.$set( this.expandedContainers, [ name ], expanded );
-               } );
+            if (containers && containers.length) {
+               containers.forEach(({name}) => {
+                  const expanded = name.endsWith('-api') || name.endsWith('-service');
+                  this.$set(this.expandedContainers, [name], expanded);
+               });
             }
          }
       },
@@ -224,6 +233,9 @@
          }
       },
       methods: {
+         duplicateApp() {
+            this.$refs.duplicateDlg.open();
+         },
          copyVersions() {
             const {versionDisplay} = this.$refs;
             versionDisplay.focus();
@@ -244,8 +256,8 @@
          openDeleteDialog() {
             this.$refs.deleteDlg.open();
          },
-         badgeClass( serviceType ) {
-            switch ( serviceType ) {
+         badgeClass(serviceType) {
+            switch (serviceType) {
                case 'instance':
                   return 'badge-info';
                case 'linked':
@@ -255,8 +267,8 @@
             }
             return 'badge-secondary';
          },
-         tooltip( serviceType ) {
-            switch ( serviceType ) {
+         tooltip(serviceType) {
+            switch (serviceType) {
                case 'instance':
                   return 'This service has been deployed especially for the review-app.';
                case 'replica':
@@ -264,15 +276,15 @@
             }
             return '';
          },
-         toggleContainer( container ) {
-            this.expandedContainers[ container.name ] = !this.isExpanded( container );
+         toggleContainer(container) {
+            this.expandedContainers[container.name] = !this.isExpanded(container);
          },
-         isExpanded( container ) {
-             if( this.expandedContainers[ container.name ] == undefined ) {
-                 return container.type === 'instance' || container.type === 'replica';
-             }
+         isExpanded(container) {
+            if (this.expandedContainers[container.name] == undefined) {
+               return container.type === 'instance' || container.type === 'replica';
+            }
 
-             return this.expandedContainers[ container.name ] == true;
+            return this.expandedContainers[container.name] == true;
          }
       }
    }

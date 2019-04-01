@@ -8,19 +8,19 @@
     "build": "cross-env NODE_ENV=production webpack --progress --hide-modules"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^5.3.1",
-    "@fortawesome/fontawesome-svg-core": "^1.2.4",
-    "@fortawesome/free-solid-svg-icons": "^5.3.1",
-    "@fortawesome/vue-fontawesome": "^0.1.1",
+    "@fortawesome/fontawesome-free": "^5.8.1",
+    "@fortawesome/fontawesome-svg-core": "^1.2.17",
+    "@fortawesome/free-solid-svg-icons": "^5.8.1",
+    "@fortawesome/vue-fontawesome": "^0.1.6",
     "bootstrap-material-design": "^4.1.1",
     "extract-text-webpack-plugin": "^3.0.2",
     "isomorphic-fetch": "^2.2.1",
     "jquery": "^3.3.1",
-    "mdn-polyfills": "^5.12.0",
+    "mdn-polyfills": "^5.16.0",
     "moment": "^2.22.2",
-    "swagger-ui-dist": "^3.20.7",
+    "swagger-ui-dist": "^3.22.0",
     "v-tooltip": "^2.0.0-rc.33",
-    "vue": "^2.5.17",
+    "vue": "^2.6.10",
     "vue-resource": "^1.5.1",
     "vuex": "^3.0.1"
   },
@@ -31,9 +31,9 @@
     "Chrome >= 60"
   ],
   "devDependencies": {
-    "@babel/core": "^7.1.2",
-    "@babel/preset-env": "^7.1.0",
-    "autoprefixer": "^9.1.5",
+    "@babel/core": "^7.4.0",
+    "@babel/preset-env": "^7.4.2",
+    "autoprefixer": "^9.5.0",
     "babel-loader": "^8.0.4",
     "cross-env": "^5.0.5",
     "css-loader": "^0.28.11",
@@ -43,11 +43,11 @@
     "postcss-loader": "^3.0.0",
     "sass-loader": "^7.0.3",
     "style-loader": "^0.21.0",
-    "vue-loader": "^15.2.6",
-    "vue-template-compiler": "^2.5.17",
-    "webpack": "^4.16.1",
-    "webpack-cli": "^3.1.0",
-    "webpack-dev-server": "^3.1.4",
+    "vue-loader": "^15.7.0",
+    "vue-template-compiler": "^2.6.10",
+    "webpack": "^4.29.6",
+    "webpack-cli": "^3.3.0",
+    "webpack-dev-server": "^3.2.1",
     "webpack-notifier": "^1.6.0"
   }
 }

@@ -25,16 +25,14 @@
  */
 
 <template>
-   <dlg ref="dialog" :title="'Shutdown ' + appName" :error-status="errorStatus" :error-status-text="errorStatusText">
+   <dlg ref="dialog" :title="'Duplicate' + appName" :error-status="errorStatus" :error-status-text="errorStatusText">
       <template slot="body">
-         <p>Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing in the app:</p>
-
          <div class="form-group">
             <input
                   type="name"
                   class="form-control"
                   placeholder="Enter app name"
-                  v-model="confirmedAppName"
+                  v-model="newAppName"
                   :disabled="noInteraction ? true : false"
                   @keyup="keyPressed">
          </div>
@@ -42,10 +40,10 @@
       <template slot="footer">
          <button
                type="button"
-               class="btn btn-outline-danger"
-               @click="deleteApp()"
-               :disabled="noInteraction || confirmedAppName !== appName">
-            <font-awesome-icon icon="spinner" spin v-if="noInteraction"/> Confirm
+               class="btn btn-outline-primary"
+               @click="duplicateApp()"
+               :disabled="noInteraction">
+            <font-awesome-icon icon="spinner" spin v-if="noInteraction"/> Duplicate
          </button>
       </template>
    </dlg>
@@ -57,37 +55,33 @@
    export default {
       data() {
          return {
+            newAppName: '',
+            noInteraction: false,
             errorStatus: null,
             errorStatusText: null,
-            confirmedAppName: '',
-            noInteraction: false
-         }
+         };
       },
       components: {
          'dlg': Dialog
       },
       props: {
-         appName: {type: String}
+         duplicateFromAppName: {type: String}
       },
       methods: {
          open() {
             this.$refs.dialog.open();
          },
+
          keyPressed(e) {
             if (e.keyCode === 13) {
-               this.deleteApp();
+               this.duplicateApp();
             }
          },
-         deleteApp() {
-            if (this.confirmedAppName !== this.appName) {
-               return;
-            }
 
-            this.errorStatus = null;
-            this.errorStatusText = null;
+         duplicateApp() {
             this.noInteraction = true;
 
-            this.$http.delete(`/api/apps/${this.confirmedAppName}`)
+            this.$http.post(`/api/apps/${this.newAppName}?replicateFrom=${this.duplicateFromAppName}`, JSON.stringify([]))
                .then(r => {
                   this.noInteraction = false;
                   this.$refs.dialog.close();
