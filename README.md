@@ -10,19 +10,9 @@ Through PREvant's web interface domain experts, managers, developers, and sales 
 
 ![Access the application](assets/screenshot.png "Access the application")
 
-# Disclaimer :warning:
-
-This project is currently being made available as open source. Not all features are available yet.
-
 # Usage
 
-In order to use the project you have to build the docker image (they will be released in the docker hub in the future).
-
-```bash
-docker build -t aixigo/prevant .
-```
-
-When you have build the image, you can start the docker containers with the provided docker-compose file.
+Have a look at [docker-compose.yml](docker-compose.yml) and use following command to start PREvant.
 
 ```
 docker-compose up -d
@@ -30,6 +20,9 @@ docker-compose up -d
 
 Now, PREvant is running at [`http://localhost`](http://localhost).
 
+If you want to customize PREvant's behaviour, you can mount a TOML file into the container at the path `/app/config.toml`. You will find more information about the configuration [here](api/README.md).
+
 # Further Readings
 
-- [All about the API](api/README.md)
+PREvant's concept has been published at the conference [_Microservices 2019_ in Dortmund](https://www.conf-micro.services/2019/). You can read [the abstract here](https://www.conf-micro.services/2019/papers/Microservices_2019_paper_14.pdf).
+
