@@ -81,14 +81,18 @@ export default new Vuex.Store( {
 
             const containers = [
                ...appContainers
-                  .map( ( { name, url, version, type } ) => {
+                  .map( ( { name, url, openApiUrl, version, type } ) => {
                      return {
-                         name, url, version, type
+                         name, url, openApiUrl, version, type
                      };
                   } )
             ].map( container => {
                let apiUrl = undefined;
-               if ( container.version && container.version.api ) {
+               if ( container.openApiUrl ) {
+                  apiUrl = container.openApiUrl;
+               }
+               // TODO
+               else if ( container.version && container.version.api ) {
                   apiUrl = container.version.api.url;
                }
 
@@ -154,30 +158,7 @@ export default new Vuex.Store( {
          ]).then((values) => {
             context.commit( "storeTickets", values[1] );
             context.commit( "storeApps", values[0] );
-            context.dispatch( 'fetchVersions' );
          });
-      },
-
-      fetchVersions( context ) {
-         for ( let name of Object.keys( context.state.apps ) ) {
-
-            let promises = [];
-            context.state.apps[ name ].forEach( ( container, containerIndex ) => {
-               const undefinedVersion = { 'build.time': 'N/A', 'git.revision': 'N/A' };
-               if ( container.versionUrl == null ) {
-                  promises.push( Promise.resolve( ( { name, containerIndex, version: undefinedVersion } ) ) );
-                  return;
-               }
-
-               promises.push( timeout( 2000, fetch( container.versionUrl )
-                  .then( res => res.ok ? res.json() : undefinedVersion )
-                  .then( version => ( { name, containerIndex, version } ) ) )
-                  .catch( err => ( { name, containerIndex, version: undefinedVersion } ) ) );
-            } );
-
-            Promise.all(promises)
-               .then( versions => context.commit( "storeVersion", versions ) );
-         }
       }
    }
 } );

@@ -34,6 +34,33 @@ pub struct RequestInfo {
 }
 
 impl RequestInfo {
+    #[cfg(test)]
+    pub fn new(base_url: Url) -> Self {
+        RequestInfo { base_url }
+    }
+
+    /// Returns the value for the `host` value of the
+    /// [Forwarded](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Forwarded) header.
+    pub fn host(&self) -> String {
+        match self.base_url.scheme() {
+            "http" => match self.base_url.port() {
+                None | Some(80) => String::from(self.base_url.host_str().unwrap()),
+                Some(port) => format!("{}:{}", self.base_url.host_str().unwrap(), port),
+            },
+            "https" => match self.base_url.port() {
+                None | Some(443) => String::from(self.base_url.host_str().unwrap()),
+                Some(port) => format!("{}:{}", self.base_url.host_str().unwrap(), port),
+            },
+            _ => String::from(self.base_url.host_str().unwrap()),
+        }
+    }
+
+    /// Returns the value for the `proto` value of the
+    /// [Forwarded](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Forwarded) header.
+    pub fn scheme(&self) -> &str {
+        self.base_url.scheme()
+    }
+
     pub fn get_base_url(&self) -> &Url {
         &self.base_url
     }

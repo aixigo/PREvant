@@ -24,10 +24,13 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::models::web_host_meta::WebHostMeta;
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::ser::{Serialize, Serializer};
 use serde::{de, Deserialize, Deserializer};
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::str::FromStr;
 use url::Url;
 
@@ -36,8 +39,25 @@ pub struct Service {
     app_name: String,
     service_name: String,
     container_type: ContainerType,
-    container_id: String,
     base_url: Option<Url>,
+    endpoint: Option<ServiceEndpoint>,
+    web_host_meta: Option<WebHostMeta>,
+}
+
+#[derive(Clone, Debug)]
+struct ServiceEndpoint {
+    internal_addr: IpAddr,
+    exposed_port: u16,
+}
+
+impl ServiceEndpoint {
+    fn to_url(&self) -> Url {
+        Url::parse(&format!(
+            "http://{}:{}/",
+            self.internal_addr, self.exposed_port
+        ))
+        .unwrap()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -146,18 +166,14 @@ impl ServiceConfig {
 }
 
 impl Service {
-    pub fn new(
-        app_name: String,
-        service_name: String,
-        container_id: String,
-        container_type: ContainerType,
-    ) -> Service {
+    pub fn new(app_name: String, service_name: String, container_type: ContainerType) -> Service {
         Service {
             app_name,
             service_name,
-            container_id,
             container_type,
             base_url: None,
+            endpoint: None,
+            web_host_meta: None,
         }
     }
 
@@ -184,12 +200,33 @@ impl Service {
         &self.service_name
     }
 
-    pub fn container_id(&self) -> &String {
-        &self.container_id
-    }
-
     pub fn container_type(&self) -> &ContainerType {
         &self.container_type
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        match &self.endpoint {
+            None => None,
+            Some(endpoint) => Some(endpoint.exposed_port),
+        }
+    }
+
+    pub fn set_endpoint(&mut self, addr: IpAddr, port: u16) {
+        self.endpoint = Some(ServiceEndpoint {
+            internal_addr: addr,
+            exposed_port: port,
+        })
+    }
+
+    pub fn endpoint_url(&self) -> Option<Url> {
+        match &self.endpoint {
+            None => None,
+            Some(endpoint) => Some(endpoint.to_url()),
+        }
+    }
+
+    pub fn set_web_host_meta(&mut self, meta: Option<WebHostMeta>) {
+        self.web_host_meta = meta;
     }
 }
 
@@ -205,23 +242,39 @@ impl Serialize for Service {
             url: Option<String>,
             #[serde(rename = "type")]
             service_type: String,
-            version_url: Option<String>,
+            version: Option<Version>,
+            open_api_url: Option<String>,
         }
 
-        let version_url = match self.container_type {
-            ContainerType::Instance | ContainerType::Replica => self
-                .service_url()
-                // TODO: use Web Host Metadata (RFC 6415): .well-known/host-meta.json
-                .map(|url| url.join("version").unwrap())
-                .map(|url| url.to_string()),
-            _ => None,
-        };
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Version {
+            git_commit: Option<String>,
+            software_version: Option<String>,
+            date_modified: Option<DateTime<Utc>>,
+        }
+
+        let software_version = self.web_host_meta.clone().and_then(|meta| meta.version());
+        let open_api_url = self.web_host_meta.clone().and_then(|meta| meta.openapi());
+        let git_commit = self.web_host_meta.clone().and_then(|meta| meta.commit());
+        let date_modified = self
+            .web_host_meta
+            .clone()
+            .and_then(|meta| meta.date_modified());
 
         let s = Service {
             name: &self.service_name,
-            url: self.service_url().map(|url| url.to_string()),
+            url: match self.web_host_meta {
+                None => None,
+                Some(_) => self.service_url().map(|url| url.to_string()),
+            },
             service_type: self.container_type.to_string(),
-            version_url,
+            version: Some(Version {
+                git_commit,
+                software_version,
+                date_modified,
+            }),
+            open_api_url,
         };
 
         Ok(s.serialize(serializer)?)

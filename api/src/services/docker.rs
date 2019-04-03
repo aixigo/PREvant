@@ -34,13 +34,14 @@ use multimap::MultiMap;
 use regex::Regex;
 use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
-use shiplift::rep::{Container, ContainerCreateInfo};
+use shiplift::rep::{Container, ContainerCreateInfo, ContainerDetails};
 use shiplift::{
     ContainerConnectionOptions, ContainerFilter, ContainerListOptions, Docker,
     NetworkCreateOptions, PullOptions,
 };
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
+use std::net::{AddrParseError, IpAddr};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::mpsc;
@@ -70,6 +71,8 @@ pub enum DockerInfrastructureError {
     UnexpectedError { internal_message: String },
     #[fail(display = "Unknown service type label: {}", unknown_label)]
     UnknownServiceType { unknown_label: String },
+    #[fail(display = "Unexpected container address: {}", internal_message)]
+    InvalidContainerAddress { internal_message: String },
 }
 
 impl DockerInfrastructure {
@@ -232,6 +235,9 @@ impl DockerInfrastructure {
             options.env(env.iter().map(|e| e.as_str()).collect());
         }
 
+        // TODO: this combination of ReplacePathRegex and PathPrefix should be replaced by
+        // PathPrefixStrip so that the request to the service contains the X-Forwarded-Prefix header
+        // which can be used by the service to generate dynamic links.
         let traefik_frontend = format!(
             "ReplacePathRegex: ^/{app_name}/{service_name}/(.*) /$1;PathPrefix:/{app_name}/{service_name}/;",
             app_name = app_name,
@@ -397,34 +403,71 @@ impl DockerInfrastructure {
             .map(|c| c.to_owned())
             .next())
     }
+
+    fn get_container_details(
+        &self,
+        app_name: Option<String>,
+    ) -> Result<MultiMap<String, ContainerDetails>, Error> {
+        let docker = Docker::new();
+        let containers = docker.containers();
+        let mut runtime = Runtime::new()?;
+
+        let f = match app_name {
+            None => ContainerFilter::LabelName(String::from(APP_NAME_LABEL)),
+            Some(app_name) => ContainerFilter::Label(String::from(APP_NAME_LABEL), app_name),
+        };
+        let list_options = &ContainerListOptions::builder().filter(vec![f]).build();
+
+        let mut futures = Vec::new();
+        for container in runtime.block_on(containers.list(&list_options))? {
+            futures.push(
+                containers
+                    .get(&container.id)
+                    .inspect()
+                    .map(|container_details| {
+                        let app_name = container_details
+                            .config
+                            .labels
+                            .clone()
+                            .unwrap()
+                            .get(APP_NAME_LABEL)
+                            .unwrap()
+                            .clone();
+
+                        (app_name, container_details.clone())
+                    }),
+            );
+        }
+
+        let mut container_details = MultiMap::new();
+        for (app_name, details) in runtime.block_on(join_all(futures))? {
+            container_details.insert(app_name, details);
+        }
+
+        Ok(container_details)
+    }
 }
 
 impl Infrastructure for DockerInfrastructure {
     fn get_services(&self) -> Result<MultiMap<String, Service>, Error> {
-        let docker = Docker::new();
-        let containers = docker.containers();
+        let mut apps = MultiMap::new();
+        let container_details = self.get_container_details(None)?;
 
-        let f = ContainerFilter::LabelName(String::from(APP_NAME_LABEL));
-
-        let future = containers
-            .list(&ContainerListOptions::builder().filter(vec![f]).build())
-            .map(|containers| {
-                let mut apps: MultiMap<String, Service> = MultiMap::new();
-
-                for c in containers {
-                    let app_name = c.labels.get(APP_NAME_LABEL).unwrap().to_string();
-
-                    match Service::try_from(&c) {
-                        Ok(service) => apps.insert(app_name, service),
-                        Err(e) => debug!("Container does not provide required data: {:?}", e),
+        for (app_name, details_vec) in container_details.iter_all() {
+            for details in details_vec {
+                let service = match Service::try_from(details) {
+                    Ok(service) => service,
+                    Err(e) => {
+                        debug!("Container does not provide required data: {:?}", e);
+                        continue;
                     }
-                }
+                };
 
-                apps
-            });
+                apps.insert(app_name.clone(), service);
+            }
+        }
 
-        let mut runtime = Runtime::new()?;
-        Ok(runtime.block_on(future)?)
+        Ok(apps)
     }
 
     fn start_services(
@@ -509,71 +552,103 @@ impl Infrastructure for DockerInfrastructure {
     }
 
     fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error> {
-        let docker = Docker::new();
-        let containers = docker.containers();
+        let mut configs = Vec::new();
 
-        let f1 = ContainerFilter::Label(APP_NAME_LABEL.to_owned(), app_name.clone());
-        let list_options = ContainerListOptions::builder().filter(vec![f1]).build();
+        for (_, details_vec) in self
+            .get_container_details(Some(app_name.clone()))?
+            .iter_all()
+        {
+            for container_details in details_vec {
+                let service = match Service::try_from(container_details) {
+                    Err(e) => {
+                        warn!(
+                            "Container {} does not provide required information: {}",
+                            container_details.id, e
+                        );
+                        continue;
+                    }
+                    Ok(service) => service,
+                };
 
-        let mut runtime = Runtime::new()?;
-        let mut future_configs = Vec::new();
-        for container in runtime.block_on(containers.list(&list_options))? {
-            let service = match Service::try_from(&container) {
-                Err(e) => {
-                    warn!(
-                        "Container {} does not provide required information: {}",
-                        container.id, e
-                    );
-                    continue;
+                match service.container_type() {
+                    ContainerType::ApplicationCompanion | ContainerType::ServiceCompanion => {
+                        continue
+                    }
+                    _ => {}
+                };
+
+                let image = Image::from_str(&container_details.image).unwrap();
+                let mut service_config = ServiceConfig::new(service.service_name().clone(), image);
+                if let Some(env) = container_details.config.env.clone() {
+                    service_config.set_env(Some(env));
                 }
-                Ok(service) => service,
-            };
+                if let Some(port) = service.port() {
+                    service_config.set_port(port);
+                }
 
-            match service.container_type() {
-                ContainerType::ApplicationCompanion | ContainerType::ServiceCompanion => continue,
-                _ => {}
-            };
-
-            let future_details =
-                containers
-                    .get(&container.id)
-                    .inspect()
-                    .map(move |container_details| {
-                        let env: Option<Vec<String>> = match container_details.config.env {
-                            None => None,
-                            Some(env) => Some(env.clone()),
-                        };
-
-                        // TODO: clone volume data...
-
-                        let image = Image::from_str(&container_details.image).unwrap();
-                        let mut service_config =
-                            ServiceConfig::new(service.service_name().clone(), image);
-                        service_config.set_env(env);
-
-                        if let Some(ports) = container_details.network_settings.ports {
-                            let ports_regex = Regex::new(r#"^(?P<port>\d+).*"#).unwrap();
-
-                            let port = ports
-                                .keys()
-                                .filter_map(|port| ports_regex.captures(port))
-                                .map(|captures| {
-                                    String::from(captures.name("port").unwrap().as_str())
-                                })
-                                .filter_map(|port| port.parse::<u16>().ok())
-                                .min()
-                                .unwrap_or(80);
-
-                            service_config.set_port(port);
-                        }
-
-                        service_config
-                    });
-
-            future_configs.push(future_details);
+                configs.push(service_config);
+            }
         }
 
-        Ok(runtime.block_on(join_all(future_configs))?)
+        Ok(configs)
+    }
+}
+
+impl TryFrom<&ContainerDetails> for Service {
+    type Error = DockerInfrastructureError;
+
+    fn try_from(
+        container_details: &ContainerDetails,
+    ) -> Result<Service, DockerInfrastructureError> {
+        let labels = container_details
+            .config
+            .labels
+            .clone()
+            .unwrap_or(HashMap::new());
+
+        let service_name = match labels.get(SERVICE_NAME_LABEL) {
+            Some(name) => name,
+            None => {
+                return Err(DockerInfrastructureError::MissingServiceNameLabel {
+                    container_id: container_details.id.clone(),
+                });
+            }
+        };
+
+        let app_name = match labels.get(APP_NAME_LABEL) {
+            Some(name) => name,
+            None => {
+                return Err(DockerInfrastructureError::MissingAppNameLabel {
+                    container_id: container_details.id.clone(),
+                });
+            }
+        };
+
+        let container_type = match labels.get(CONTAINER_TYPE_LABEL) {
+            None => ContainerType::Instance,
+            Some(lb) => lb.parse::<ContainerType>()?,
+        };
+
+        let addr = IpAddr::from_str(&container_details.network_settings.ip_address)?;
+        let port = match &container_details.network_settings.ports {
+            None => 80u16,
+            Some(ports) => {
+                let ports_regex = Regex::new(r#"^(?P<port>\d+).*"#).unwrap();
+                ports
+                    .keys()
+                    .filter_map(|port| ports_regex.captures(port))
+                    .map(|captures| String::from(captures.name("port").unwrap().as_str()))
+                    .filter_map(|port| port.parse::<u16>().ok())
+                    .min()
+                    .unwrap_or(80u16)
+            }
+        };
+
+        let mut service = Service::new(app_name.clone(), service_name.clone(), container_type);
+
+        service.set_endpoint(addr, port);
+
+        Ok(service)
     }
 }
 
@@ -607,7 +682,6 @@ impl TryFrom<&Container> for Service {
         Ok(Service::new(
             app_name.clone(),
             service_name.clone(),
-            c.id.clone(),
             container_type,
         ))
     }
@@ -642,6 +716,14 @@ impl From<ServiceError> for DockerInfrastructureError {
             err => DockerInfrastructureError::UnexpectedError {
                 internal_message: err.to_string(),
             },
+        }
+    }
+}
+
+impl From<AddrParseError> for DockerInfrastructureError {
+    fn from(err: AddrParseError) -> Self {
+        DockerInfrastructureError::InvalidContainerAddress {
+            internal_message: err.to_string(),
         }
     }
 }

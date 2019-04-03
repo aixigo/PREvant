@@ -96,7 +96,8 @@
 
                <div class="ra-container__infos">
                   <h5>
-                     <a :href='container.url' target="_blank">{{ container.name }}</a>
+                     <a v-if="container.url" :href='container.url' target="_blank">{{ container.name }}</a>
+                     <span v-else>{{ container.name }}</span>
                   </h5>
 
                   <div class="ra-build-infos__wrapper"
@@ -107,11 +108,8 @@
                      </div>
 
                      <div v-if="container.version" class="ra-build-infos">
-                        <span class="ra-build-infos__date">{{ container.version[ 'build.time' ] | date }}</span>,
-                        <span class="ra-build-infos__time">{{ container.version[ 'build.time' ] | time }}</span>
-                        <!-- only for layout -->
-                        <!-- <span class="ra-build-infos__date">20.07.2018</span>,
-                        <span class="ra-build-infos__time">07:54</span> -->
+                        <span>{{ container.version.dateModified | date }}</span>,
+                        <span>{{ container.version.dateModified | time }}</span>
                      </div>
                      <p v-if="!container.version && container.name.endsWith( '-service' )">
                         <font-awesome-icon icon="spinner" spin/>
@@ -123,10 +121,10 @@
                   <span class="badge"
                         :class="badgeClass( container.type )"
                         v-tooltip="tooltip( container.type )">{{ container.type }}</span>
-                  <span v-if="container.version && container.version[ 'git.revision' ] && isExpanded( container )"
+                  <span v-if="container.version && container.version.gitCommit && isExpanded( container )"
                         class="ra-build-infos ra-build-infos__hash text-right"
-                        :title="container.version[ 'git.revision' ]">
-                     {{ container.version[ 'git.revision' ].slice( 0, 7 ) }}…
+                        :title="container.version.gitCommit">
+                     {{ container.version.gitCommit.slice( 0, 7 ) }}…
                      <!-- only for layout -->
                      <!-- c63ae57… -->
                   </span>
@@ -176,6 +174,10 @@
       },
       filters: {
          date(buildDateTime) {
+            if (buildDateTime == null) {
+               return 'N/A';
+            }
+
             const date = moment(buildDateTime);
             if (date.isValid()) {
                return date.toDate().toLocaleDateString()
@@ -183,6 +185,10 @@
             return buildDateTime;
          },
          time(buildDateTime) {
+            if (buildDateTime == null) {
+               return 'N/A';
+            }
+
             const date = moment(buildDateTime);
             if (date.isValid()) {
                return date.toDate().toLocaleTimeString()
@@ -198,8 +204,8 @@
             const {containers} = newValue;
 
             if (containers && containers.length) {
-               containers.forEach(({name}) => {
-                  const expanded = name.endsWith('-api') || name.endsWith('-service');
+               containers.forEach(({name, version, apiUrl}) => {
+                  const expanded = version != null || apiUrl != null;
                   this.$set(this.expandedContainers, [name], expanded);
                });
             }
@@ -213,7 +219,7 @@
                this.reviewApp.containers
                   .filter(container => !!container.version)
                   .forEach(container => {
-                     res[container.name] = container.version['git.revision'];
+                     res[container.name] = container.version.gitCommit;
                   });
             }
 
@@ -281,7 +287,7 @@
          },
          isExpanded(container) {
             if (this.expandedContainers[container.name] == undefined) {
-               return container.type === 'instance' || container.type === 'replica';
+               return container.apiUrl != null;
             }
 
             return this.expandedContainers[container.name] == true;
@@ -292,8 +298,8 @@
    function latestBuildTime(app) {
       const max = (a, b) => a >= b ? a : b;
       return app.containers
-         .filter(({version}) => !!version)
-         .map(({version}) => version['build.time'])
+         .filter(({version}) => !!version && !!version.dateModified)
+         .map(({version}) => version.dateModified)
          .reduce(max, 0);
    };
 </script>

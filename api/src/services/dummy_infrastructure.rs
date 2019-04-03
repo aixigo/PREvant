@@ -58,7 +58,6 @@ impl Infrastructure for DummyInfrastructure {
                 Service::new(
                     app.clone(),
                     config.service_name().clone(),
-                    String::from(""),
                     ContainerType::Instance,
                 ),
             );

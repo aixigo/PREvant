@@ -43,7 +43,7 @@ pub fn apps(
     apps_service: State<AppsService>,
     request_info: RequestInfo,
 ) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
-    let mut apps = apps_service.get_apps()?;
+    let mut apps = apps_service.get_apps(&request_info)?;
 
     for (_, services) in apps.iter_all_mut() {
         for service in services.iter_mut() {
