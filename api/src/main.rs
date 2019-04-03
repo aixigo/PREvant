@@ -27,6 +27,8 @@
 #![feature(custom_attribute, proc_macro_hygiene, decl_macro)]
 
 #[macro_use]
+extern crate clap;
+#[macro_use]
 extern crate failure;
 #[macro_use]
 extern crate log;

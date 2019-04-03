@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::models::request_info::RequestInfo;
 use crate::models::ticket_info::TicketInfo;
 use crate::services::apps_service::{AppsService, AppsServiceError};
 use crate::services::config_service::Config;
@@ -41,6 +42,7 @@ use std::convert::From;
 pub fn tickets(
     config_state: State<Config>,
     apps_service: State<AppsService>,
+    request_info: RequestInfo,
 ) -> Result<Json<HashMap<String, TicketInfo>>, HttpApiProblem> {
     let mut tickets: HashMap<String, TicketInfo> = HashMap::new();
 
@@ -51,7 +53,7 @@ pub fn tickets(
             ));
         }
         Some(jira_config) => {
-            let services = apps_service.get_apps()?;
+            let services = apps_service.get_apps(&request_info)?;
 
             let jira = match Jira::new(
                 jira_config.host().clone(),

@@ -189,16 +189,37 @@ components:
             - app-companion
             - service-companion
           example: instance
+        version:
+          type: object
+          $ref: '#/components/schemas/Version'
         url:
           type: string
           format: url
-        versionUrl:
+        openApiUrl:
           type: string
           format: url
+          example: https://speca.io/speca/petstore-api
+          description: The URL pointing to the OpenAPI specification of the service
       required:
         - name
         - type
-        - url
+        - version
+    Version:
+      type: object
+      properties:
+        gitCommit:
+          type: string
+          description: The git commit SHA hash of the service.
+          example: '43de4c6edf3c7ed93cdf8983f1ea7d73115176cc'
+        dateModified:
+          type: string
+          format: date-time
+          description: The date and time when this service has been build.
+          example: '2018-11-13T20:20:39+00:00'
+        softwareVersion:
+          type: string
+          description: The human-readable version string, see [softwareVersion](https://schema.org/softwareVersion).
+          example: '1.2.3'
     ServiceConfiguration:
       type: object
       properties:

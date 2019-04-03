@@ -30,6 +30,7 @@ use failure::Error;
 use multimap::MultiMap;
 
 pub trait Infrastructure: Send + Sync {
+    /// Returns a `MultiMap` of `app-name` and the running services for this app.
     fn get_services(&self) -> Result<MultiMap<String, Service>, Error>;
 
     /// Starts the services of the given set of `ServiceConfig`.

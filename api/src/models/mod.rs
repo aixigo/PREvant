@@ -28,3 +28,4 @@ pub mod request_info;
 pub mod service;
 pub mod ticket_info;
 pub mod web_hook_info;
+pub mod web_host_meta;

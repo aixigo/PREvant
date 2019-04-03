@@ -24,7 +24,9 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::models::request_info::RequestInfo;
 use crate::models::service::{ContainerType, Service, ServiceConfig};
+use crate::models::web_host_meta::WebHostMeta;
 use crate::services::config_service::{Config, ConfigError};
 use crate::services::service_templating::{
     apply_templating_for_application_companion, apply_templating_for_service_companion,
@@ -39,6 +41,7 @@ use multimap::MultiMap;
 use std::collections::HashSet;
 use std::convert::From;
 use std::sync::Mutex;
+use url::Url;
 
 pub struct AppsService {
     config: Config,
@@ -58,10 +61,70 @@ impl AppsService {
         })
     }
 
+    fn resolve_web_host_meta(
+        app_name: &String,
+        service_name: &String,
+        endpoint_url: &Url,
+        request_info: &RequestInfo,
+    ) -> Option<WebHostMeta> {
+        let url = endpoint_url.join(".well-known/host-meta.json").unwrap();
+
+        let get_request = reqwest::Client::builder()
+            .build()
+            .unwrap()
+            .get(url)
+            .header(
+                "Forwarded",
+                format!(
+                    "host={};proto={}",
+                    request_info.host(),
+                    request_info.scheme()
+                ),
+            )
+            .header(
+                "X-Forwarded-Prefix",
+                format!("/{}/{}", app_name, service_name),
+            )
+            .header("Accept", "application/json")
+            .header("User-Agent", format!("PREvant/{}", crate_version!()))
+            .send();
+
+        match get_request {
+            Err(err) => {
+                debug!("Cannot acquire host meta: {}", err);
+                None
+            }
+            Ok(mut response) => match response.json::<WebHostMeta>() {
+                Err(err) => {
+                    error!("Cannot parse host meta: {}", err);
+                    None
+                }
+                Ok(meta) => Some(meta),
+            },
+        }
+    }
+
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
-    pub fn get_apps(&self) -> Result<MultiMap<String, Service>, AppsServiceError> {
-        Ok(self.infrastructure.get_services()?)
+    pub fn get_apps(
+        &self,
+        request_info: &RequestInfo,
+    ) -> Result<MultiMap<String, Service>, AppsServiceError> {
+        let mut services = self.infrastructure.get_services()?;
+
+        for (app_name, service) in services.iter_mut() {
+            service.set_web_host_meta(match service.endpoint_url() {
+                None => None,
+                Some(endpoint_url) => AppsService::resolve_web_host_meta(
+                    app_name,
+                    service.service_name(),
+                    &endpoint_url,
+                    request_info,
+                ),
+            })
+        }
+
+        Ok(services)
     }
 
     fn is_in_deployment(&self, app_name: &String) -> bool {
@@ -303,7 +366,9 @@ mod tests {
 
         apps.create_or_update(&app_name, None, &services).unwrap();
 
-        let deployed_apps = apps.get_apps().unwrap();
+        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
+
+        let deployed_apps = apps.get_apps(&info).unwrap();
         assert_eq!(deployed_apps.len(), 1);
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 1);
