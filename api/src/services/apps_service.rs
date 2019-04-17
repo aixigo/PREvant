@@ -49,6 +49,18 @@ pub struct AppsService {
     apps_in_deployment: Mutex<HashSet<String>>,
 }
 
+struct DeploymentGuard<'a, 'b> {
+    apps_service: &'a AppsService,
+    app_name: &'b String,
+}
+
+impl<'a, 'b> Drop for DeploymentGuard<'a, 'b> {
+    fn drop(&mut self) {
+        let mut apps_in_deployment = self.apps_service.apps_in_deployment.lock().unwrap();
+        apps_in_deployment.remove(self.app_name);
+    }
+}
+
 impl AppsService {
     pub fn new(
         config: Config,
@@ -127,14 +139,18 @@ impl AppsService {
         Ok(services)
     }
 
-    fn is_in_deployment(&self, app_name: &String) -> bool {
+    fn create_deployment_guard<'a, 'b>(
+        &'a self,
+        app_name: &'b String,
+    ) -> Option<DeploymentGuard<'a, 'b>> {
         let mut apps_in_deployment = self.apps_in_deployment.lock().unwrap();
-        !apps_in_deployment.insert(app_name.clone())
-    }
-
-    fn clear_deployment_status(&self, app_name: &String) {
-        let mut apps_in_deployment = self.apps_in_deployment.lock().unwrap();
-        apps_in_deployment.remove(app_name);
+        match apps_in_deployment.insert(app_name.clone()) {
+            true => Some(DeploymentGuard {
+                apps_service: self,
+                app_name,
+            }),
+            false => None,
+        }
     }
 
     /// Creates or updates a app to review with the given service configurations.
@@ -152,11 +168,14 @@ impl AppsService {
         replicate_from: Option<String>,
         service_configs: &Vec<ServiceConfig>,
     ) -> Result<Vec<Service>, AppsServiceError> {
-        if self.is_in_deployment(app_name) {
-            return Err(AppsServiceError::AppIsInDeployment {
-                app_name: app_name.clone(),
-            });
-        }
+        let _guard = match self.create_deployment_guard(app_name) {
+            None => {
+                return Err(AppsServiceError::AppIsInDeployment {
+                    app_name: app_name.clone(),
+                })
+            }
+            Some(guard) => guard,
+        };
 
         let mut configs: Vec<ServiceConfig> = service_configs.clone();
 
@@ -216,8 +235,6 @@ impl AppsService {
             &configs,
             &self.config.get_container_config(),
         )?;
-
-        self.clear_deployment_status(app_name);
 
         Ok(services)
     }
