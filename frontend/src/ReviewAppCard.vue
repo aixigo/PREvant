@@ -79,10 +79,13 @@
                  class="ra-container">
 
                <div class="ra-container__type"
-                    :class="{ 'is-expanded': isExpanded( container ) }"
+                    :class="{ 'is-expanded': isExpandable( container ) && isExpanded( container ) }"
                     @click="toggleContainer( container )">
-                  <i v-if="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
-                  <i v-else="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
+
+                  <template v-if="isExpandable( container )">
+                     <i v-if="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
+                     <i v-else="!isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
+                  </template>
                   <template>
                      <i v-if="container.name.endsWith( 'openid' )" class="ra-icons  material-icons">security</i>
                      <i v-else-if="container.name.endsWith( '-proxy' )" class="ra-icons  material-icons">call_split</i>
@@ -103,17 +106,14 @@
                   <div class="ra-build-infos__wrapper"
                        v-if="isExpanded( container )">
                      <div class="ra-build-infos">
-                        <a v-if="container.apiUrl" href="#" @click="currentApiUrl = container.apiUrl">API
+                        <a v-if="container.openApiUrl" href="#" @click="currentApiUrl = container.openApiUrl">API
                            Documentation</a>
                      </div>
 
-                     <div v-if="container.version" class="ra-build-infos">
+                     <div v-if="container.version && container.version.dateModified" class="ra-build-infos">
                         <span>{{ container.version.dateModified | date }}</span>,
                         <span>{{ container.version.dateModified | time }}</span>
                      </div>
-                     <p v-if="!container.version && container.name.endsWith( '-service' )">
-                        <font-awesome-icon icon="spinner" spin/>
-                     </p>
                   </div>
                </div>
 
@@ -121,7 +121,7 @@
                   <span class="badge"
                         :class="badgeClass( container.type )"
                         v-tooltip="tooltip( container.type )">{{ container.type }}</span>
-                  <span v-if="container.version && container.version.gitCommit && isExpanded( container )"
+                  <span v-if="container.version && container.version.gitCommit"
                         class="ra-build-infos ra-build-infos__hash text-right"
                         :title="container.version.gitCommit">
                      {{ container.version.gitCommit.slice( 0, 7 ) }}…
@@ -204,8 +204,8 @@
             const {containers} = newValue;
 
             if (containers && containers.length) {
-               containers.forEach(({name, version, apiUrl}) => {
-                  const expanded = version != null || apiUrl != null;
+               containers.forEach(({name, version, openApiUrl}) => {
+                  const expanded = version != null || openApiUrl != null;
                   this.$set(this.expandedContainers, [name], expanded);
                });
             }
@@ -283,11 +283,15 @@
             return '';
          },
          toggleContainer(container) {
-            this.expandedContainers[container.name] = !this.isExpanded(container);
+            this.$set(this.expandedContainers, [container.name], !this.isExpanded(container));
+         },
+         isExpandable(container) {
+            return container.openApiUrl != null ||
+               (container.version != null && container.version.dateModified != null);
          },
          isExpanded(container) {
             if (this.expandedContainers[container.name] == undefined) {
-               return container.apiUrl != null;
+               return container.openApiUrl != null;
             }
 
             return this.expandedContainers[container.name] == true;

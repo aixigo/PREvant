@@ -86,18 +86,7 @@ export default new Vuex.Store( {
                          name, url, openApiUrl, version, type
                      };
                   } )
-            ].map( container => {
-               let apiUrl = undefined;
-               if ( container.openApiUrl ) {
-                  apiUrl = container.openApiUrl;
-               }
-               // TODO
-               else if ( container.version && container.version.api ) {
-                  apiUrl = container.version.api.url;
-               }
-
-               return Object.assign( {}, container, { apiUrl } );
-            } );
+            ];
             containers.sort( byTypeAndName );
             return { name, ticket, containers };
          }

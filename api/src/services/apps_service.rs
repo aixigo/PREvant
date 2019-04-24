@@ -109,7 +109,7 @@ impl AppsService {
             Ok(mut response) => match response.json::<WebHostMeta>() {
                 Err(err) => {
                     error!("Cannot parse host meta: {}", err);
-                    None
+                    Some(WebHostMeta::empty())
                 }
                 Ok(meta) => Some(meta),
             },
@@ -124,16 +124,18 @@ impl AppsService {
     ) -> Result<MultiMap<String, Service>, AppsServiceError> {
         let mut services = self.infrastructure.get_services()?;
 
-        for (app_name, service) in services.iter_mut() {
-            service.set_web_host_meta(match service.endpoint_url() {
-                None => None,
-                Some(endpoint_url) => AppsService::resolve_web_host_meta(
-                    app_name,
-                    service.service_name(),
-                    &endpoint_url,
-                    request_info,
-                ),
-            })
+        for (app_name, services) in services.iter_all_mut() {
+            for service in services {
+                service.set_web_host_meta(match service.endpoint_url() {
+                    None => None,
+                    Some(endpoint_url) => AppsService::resolve_web_host_meta(
+                        app_name,
+                        service.service_name(),
+                        &endpoint_url,
+                        request_info,
+                    ),
+                });
+            }
         }
 
         Ok(services)

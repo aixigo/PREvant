@@ -48,6 +48,13 @@ struct Link {
 }
 
 impl WebHostMeta {
+    pub fn empty() -> Self {
+        WebHostMeta {
+            properties: None,
+            links: None,
+        }
+    }
+
     pub fn version(&self) -> Option<String> {
         match &self.properties {
             None => None,
