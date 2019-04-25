@@ -155,6 +155,38 @@ impl AppsService {
         }
     }
 
+    fn configs_to_replicate(
+        &self,
+        services_to_deploy: &Vec<ServiceConfig>,
+        app_name: &String,
+        replicate_from_app_name: &String,
+    ) -> Result<Vec<ServiceConfig>, AppsServiceError> {
+        let running_services = self.infrastructure.get_configs_of_app(&app_name)?;
+        let running_service_names = running_services
+            .iter()
+            .filter(|c| c.container_type() == &ContainerType::Instance)
+            .map(|c| c.service_name())
+            .collect::<HashSet<&String>>();
+
+        let service_names = services_to_deploy
+            .iter()
+            .map(|c| c.service_name())
+            .collect::<HashSet<&String>>();
+
+        Ok(self
+            .infrastructure
+            .get_configs_of_app(&replicate_from_app_name)?
+            .into_iter()
+            .filter(|config| !service_names.contains(config.service_name()))
+            .filter(|config| !running_service_names.contains(config.service_name()))
+            .map(|config| {
+                let mut replicated_config = config.clone();
+                replicated_config.set_container_type(ContainerType::Replica);
+                replicated_config
+            })
+            .collect::<Vec<ServiceConfig>>())
+    }
+
     /// Creates or updates a app to review with the given service configurations.
     ///
     /// The list of given services will be extended with:
@@ -183,21 +215,11 @@ impl AppsService {
 
         let replicate_from_app_name = replicate_from.unwrap_or_else(|| String::from("master"));
         if &replicate_from_app_name != app_name {
-            for config in self
-                .infrastructure
-                .get_configs_of_app(&replicate_from_app_name)?
-                .iter()
-                .filter(|config| {
-                    service_configs
-                        .iter()
-                        .find(|c| c.service_name() == config.service_name())
-                        .is_none()
-                })
-            {
-                let mut replicated_config = config.clone();
-                replicated_config.set_container_type(ContainerType::Replica);
-                configs.push(replicated_config);
-            }
+            configs.extend(self.configs_to_replicate(
+                service_configs,
+                app_name,
+                &replicate_from_app_name,
+            )?);
         }
 
         let images_service = ImagesService::new();
@@ -366,32 +388,128 @@ mod tests {
     use super::*;
     use crate::models::service::Image;
     use crate::services::dummy_infrastructure::DummyInfrastructure;
+    use sha2::{Digest, Sha256};
     use std::str::FromStr;
 
-    #[test]
-    fn should_create_app_for_master() {
-        let app_name = String::from("master");
-        let services = vec![ServiceConfig::new(
-            String::from("service-a"),
-            Image::from_str(
-                "sha256:541b21b43bdd8f1547599d0350713d82c74c9a72c13cfd47e742b377ea638ee2",
-            )
-            .unwrap(),
-        )];
+    macro_rules! service_configs {
+        ( $( $x:expr ),* ) => {
+            {
+                let mut hasher = Sha256::new();
+                let mut temp_vec: Vec<ServiceConfig> = Vec::new();
+                $(
+                    hasher.input($x);
+                    let img_hash = &format!("sha256:{:x}", hasher.result_reset());
 
+                    temp_vec.push(ServiceConfig::new(
+                        String::from($x),
+                        Image::from_str(&img_hash).unwrap()
+                    ));
+                )*
+                temp_vec
+            }
+        };
+    }
+
+    macro_rules! assert_contains_service {
+        ( $services:expr, $service_name:expr, $container_type:expr ) => {
+            assert!(
+                $services
+                    .iter()
+                    .find(|s| s.service_name() == $service_name
+                        && s.container_type() == &$container_type)
+                    .is_some(),
+                format!(
+                    "services should contain {:?} with type {:?}",
+                    $service_name, $container_type
+                )
+            );
+        };
+    }
+
+    #[test]
+    fn should_create_app_for_master() -> Result<(), AppsServiceError> {
         let config = Config::default();
         let infrastructure = Box::new(DummyInfrastructure::new());
-        let apps = AppsService::new(config, infrastructure).unwrap();
+        let apps = AppsService::new(config, infrastructure)?;
 
-        apps.create_or_update(&app_name, None, &services).unwrap();
+        apps.create_or_update(
+            &String::from("master"),
+            None,
+            &service_configs!("service-a"),
+        )?;
 
         let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
 
-        let deployed_apps = apps.get_apps(&info).unwrap();
+        let deployed_apps = apps.get_apps(&info)?;
         assert_eq!(deployed_apps.len(), 1);
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 1);
-        assert_eq!(services.get(0).unwrap().service_name(), "service-a")
+        assert_contains_service!(services, "service-a", ContainerType::Instance);
+
+        Ok(())
     }
 
+    #[test]
+    fn should_replication_from_master() -> Result<(), AppsServiceError> {
+        let config = Config::default();
+        let infrastructure = Box::new(DummyInfrastructure::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &String::from("master"),
+            None,
+            &service_configs!("service-a", "service-b"),
+        )?;
+
+        apps.create_or_update(
+            &String::from("branch"),
+            Some(String::from("master")),
+            &service_configs!("service-b"),
+        )?;
+
+        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
+        let deployed_apps = apps.get_apps(&info)?;
+
+        let services = deployed_apps.get_vec("branch").unwrap();
+        assert_eq!(services.len(), 2);
+        assert_contains_service!(services, "service-b", ContainerType::Instance);
+        assert_contains_service!(services, "service-a", ContainerType::Replica);
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_override_replicas_from_master() -> Result<(), AppsServiceError> {
+        let config = Config::default();
+        let infrastructure = Box::new(DummyInfrastructure::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &String::from("master"),
+            None,
+            &service_configs!("service-a", "service-b"),
+        )?;
+
+        apps.create_or_update(
+            &String::from("branch"),
+            Some(String::from("master")),
+            &service_configs!("service-b"),
+        )?;
+
+        apps.create_or_update(
+            &String::from("branch"),
+            Some(String::from("master")),
+            &service_configs!("service-a"),
+        )?;
+
+        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
+        let deployed_apps = apps.get_apps(&info)?;
+
+        let services = deployed_apps.get_vec("branch").unwrap();
+        assert_eq!(services.len(), 2);
+        assert_contains_service!(services, "service-a", ContainerType::Instance);
+        assert_contains_service!(services, "service-b", ContainerType::Instance);
+
+        Ok(())
+    }
 }

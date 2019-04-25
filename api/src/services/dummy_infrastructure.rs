@@ -24,12 +24,12 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::service::ContainerType;
 use crate::models::service::Service;
 use crate::models::service::ServiceConfig;
 use crate::services::config_service::ContainerConfig;
 use crate::services::infrastructure::Infrastructure;
 use multimap::MultiMap;
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 #[cfg(test)]
@@ -52,15 +52,17 @@ impl Infrastructure for DummyInfrastructure {
         let mut s = MultiMap::new();
 
         let services = self.services.lock().unwrap();
-        for (app, config) in services.iter() {
-            s.insert(
-                app.clone(),
-                Service::new(
+        for (app, configs) in services.iter_all() {
+            for config in configs {
+                s.insert(
                     app.clone(),
-                    config.service_name().clone(),
-                    ContainerType::Instance,
-                ),
-            );
+                    Service::new(
+                        app.clone(),
+                        config.service_name().clone(),
+                        config.container_type().clone(),
+                    ),
+                );
+            }
         }
 
         Ok(s)
@@ -73,7 +75,18 @@ impl Infrastructure for DummyInfrastructure {
         _container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, failure::Error> {
         let mut services = self.services.lock().unwrap();
+
+        if let Some(running_services) = services.get_vec_mut(app_name) {
+            let service_names = configs
+                .iter()
+                .map(|c| c.service_name())
+                .collect::<HashSet<&String>>();
+
+            running_services.retain(|config| !service_names.contains(config.service_name()));
+        }
+
         for config in configs {
+            info!("started {} for {}.", config.service_name(), app_name);
             services.insert(app_name.clone(), config.clone());
         }
         Ok(vec![])
@@ -85,7 +98,11 @@ impl Infrastructure for DummyInfrastructure {
         Ok(vec![])
     }
 
-    fn get_configs_of_app(&self, _app_name: &String) -> Result<Vec<ServiceConfig>, failure::Error> {
-        Ok(vec![])
+    fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, failure::Error> {
+        let services = self.services.lock().unwrap();
+        match services.get_vec(app_name) {
+            None => Ok(vec![]),
+            Some(configs) => Ok(configs.clone()),
+        }
     }
 }
