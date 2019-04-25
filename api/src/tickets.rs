@@ -129,7 +129,7 @@ impl From<ListTicketsError> for HttpApiProblem {
 impl From<GojiError> for ListTicketsError {
     fn from(err: GojiError) -> Self {
         ListTicketsError::UnexpectedError {
-            internal_message: format!("{}", err),
+            internal_message: format!("{:?}", err),
         }
     }
 }

@@ -76,18 +76,8 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn load() -> Result<Config, ConfigError> {
-        let mut f = match File::open("config.toml") {
-            Err(e) => {
-                warn!("Cannot find config file ({}) Loading default.", e);
-                return Ok(Config {
-                    containers: None,
-                    companions: Vec::new(),
-                    jira: None,
-                });
-            }
-            Ok(f) => f,
-        };
+    pub fn load(path: &str) -> Result<Config, ConfigError> {
+        let mut f = File::open(path)?;
 
         let mut contents = String::new();
         f.read_to_string(&mut contents)?;

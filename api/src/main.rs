@@ -41,6 +41,7 @@ use crate::models::request_info::RequestInfo;
 use crate::services::apps_service::AppsService;
 use crate::services::config_service::Config;
 use crate::services::docker::DockerInfrastructure;
+use clap::{App, Arg};
 use rocket::response::NamedFile;
 use rocket_cache_response::CacheResponse;
 use serde_yaml::{from_reader, to_string, Value};
@@ -90,11 +91,23 @@ fn openapi(request_info: RequestInfo) -> Option<String> {
 }
 
 fn main() {
+    let argument_matches = App::new(crate_name!())
+        .version(crate_version!())
+        .arg(
+            Arg::with_name("config")
+                .short("c")
+                .long("config")
+                .value_name("FILE")
+                .help("The path to the configuration file")
+                .takes_value(true),
+        )
+        .get_matches();
+
     if cfg!(not(debug_assertions)) {
         env_logger::init();
     }
 
-    let config = match Config::load() {
+    let config = match Config::load(argument_matches.value_of("config").unwrap_or("config.toml")) {
         Ok(config) => config,
         Err(e) => {
             error!("Cannot load config: {}", e);
