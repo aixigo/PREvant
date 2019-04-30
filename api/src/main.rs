@@ -96,6 +96,7 @@ fn openapi(request_info: RequestInfo) -> Option<String> {
 fn main() {
     let argument_matches = App::new(crate_name!())
         .version(crate_version!())
+        .author(crate_authors!())
         .arg(
             Arg::with_name("config")
                 .short("c")

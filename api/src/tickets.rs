@@ -55,9 +55,10 @@ pub fn tickets(
         Some(jira_config) => {
             let services = apps_service.get_apps(&request_info)?;
 
+            let pw = String::from(jira_config.password().unsecure());
             let jira = match Jira::new(
                 jira_config.host().clone(),
-                Credentials::Basic(jira_config.user().clone(), jira_config.password().clone()),
+                Credentials::Basic(jira_config.user().clone(), pw),
             ) {
                 Ok(jira) => jira,
                 Err(e) => return Err(HttpApiProblem::from(ListTicketsError::from(e))),

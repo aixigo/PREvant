@@ -69,6 +69,7 @@ pub struct ServiceConfig {
     #[serde(deserialize_with = "Image::parse_from_string")]
     image: Image,
     env: Option<Vec<String>>,
+    // TODO: rename this field because it does not match to volumes any more (it is file content, cf. issue #8)
     volumes: Option<BTreeMap<String, String>>,
     #[serde(skip)]
     labels: Option<BTreeMap<String, String>>,
@@ -144,6 +145,16 @@ impl ServiceConfig {
         match &self.labels {
             None => None,
             Some(labels) => Some(&labels),
+        }
+    }
+
+    pub fn add_volume(&mut self, path: String, data: String) {
+        if let Some(ref mut volumes) = self.volumes {
+            volumes.insert(path, data);
+        } else {
+            let mut volumes = BTreeMap::new();
+            volumes.insert(path, data);
+            self.volumes = Some(volumes);
         }
     }
 
