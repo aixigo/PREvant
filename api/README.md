@@ -1,8 +1,8 @@
-The image `aixigo/prevant-api` provides the REST-API in order to deploy Docker containers and to compose them into reviewable application.
+The image `aixigo/prevant` provides the REST-API in order to deploy containers and to compose them into reviewable application.
 
 # Configuration
 
-In order to configure the REST-API container create a [TOML](https://github.com/toml-lang/toml) file that is mounted to the docker container's path `/app/config.toml`.
+In order to configure PREvant create a [TOML](https://github.com/toml-lang/toml) file that is mounted to the container's path `/app/config.toml`.
 
 ## Container Options
 
@@ -28,6 +28,32 @@ user = ''
 password = ''
 ```
 
+## Services
+
+PREvant provides central configuration options for services deployed through its REST-API. For example, you can define that PREvant mounts a secret for a specific service of an application.
+
+### Secrets
+
+As secrets in [Docker Swarm](https://docs.docker.com/engine/swarm/secrets/) and [Docker-Compose](https://docs.docker.com/compose/compose-file/#secrets) PREvant mounts secrets und `/run/secrets/<secret_name>`. Therefore, you can use following configuration section to define secrets for each service.
+
+Following example provides two secrets for the service `nginx`, mounted at `/run/secrets/cert.pem` and `/run/secrets/key.pem`, available for the application `master`.
+
+```toml
+[services.nginx]
+[[services.nginx.secrets]]
+# The name of the secret mounted in the container.
+name = "cert.pem"
+# base64 encoded value of the secret
+data = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS…FUlRJRklDQVRFLS0tLS0K"
+# An optional regular expression that checks if the secret has to be
+# mounted for this service. Default is ".+" (any app)
+appSelector = "master"
+
+[[services.nginx.secrets]]
+name = "key.pem"
+data = "LS0tLS1CRUdJTiBFTkNSWVBURUQgUF…JVkFURSBLRVktLS0tLQo="
+```
+
 ## Companions
 
 It is possible to start containers that will be started when the client requests to create a new service. For example, if the application requires an [OpenID](https://en.wikipedia.org/wiki/OpenID_Connect) provider, it is possible to create a configuration that starts the provider for each application. Another use case might be a Kafka services that is required by the application.
@@ -41,10 +67,9 @@ For these use cases following sections provide example configurations.
 If you want to include an OpenID provider for every application, you could use following configuration.
 
 ```toml
-[[companions]]
 [companions.openid]
 type = 'application'
-image = 'private.example.com/library/opendid:latest'
+image = 'private.example.com/library/openid:latest'
 env = [ 'KEY=VALUE' ]
 ```
 
@@ -94,12 +119,12 @@ PREvant provides some handlebars helpers which can be used to generate more comp
 The service-based companions works the in the same way as the application-based services. Make sure, that the `serviceName` is unique by using the handlebars templating.
 
 ```toml
-[[companions]]
-[[companions.services]]
+[companions.service-name]
 serviceName = '{{service.name}}-db'
 image = 'postgres:11'
 env = [ 'KEY=VALUE' ]
-[companions.services.postgres.volumes]
+
+[companions.service-name.postgres.volumes]
 "/path/to/volume.properties" == "…"
 [companions.openid.labels]
 "com.github.prevant" = "bar-{{application.name}}"

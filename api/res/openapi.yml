@@ -110,11 +110,6 @@ paths:
             type: string
           required: true
           description: Name of review app to delete
-      requestBody:
-        description: ''
-        required: false
-        content:
-          application/json:
       responses:
         '200':
           description: 'List of deleted containers'
@@ -190,7 +185,6 @@ components:
             - service-companion
           example: instance
         version:
-          type: object
           $ref: '#/components/schemas/Version'
         url:
           type: string

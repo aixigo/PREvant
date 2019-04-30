@@ -25,6 +25,9 @@
  */
 
 use crate::models::service::{ContainerType, Image, ServiceConfig};
+use base64::decode;
+use regex::Regex;
+use secstr::SecUtf8;
 use serde::{de, Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::convert::{From, TryFrom};
@@ -34,6 +37,10 @@ use std::io::Error as IOError;
 use std::str::FromStr;
 use toml::de::Error as TomlError;
 use toml::from_str;
+
+fn default_app_selector() -> Regex {
+    Regex::new(".+").unwrap()
+}
 
 #[derive(Clone, Deserialize)]
 pub struct ContainerConfig {
@@ -45,7 +52,8 @@ pub struct ContainerConfig {
 pub struct JiraConfig {
     host: String,
     user: String,
-    password: String,
+    #[serde(deserialize_with = "JiraConfig::parse_secstr")]
+    password: SecUtf8,
 }
 
 #[derive(Clone, Deserialize)]
@@ -58,6 +66,8 @@ pub struct Companion {
     env: Option<Vec<String>>,
     labels: Option<BTreeMap<String, String>>,
     volumes: Option<BTreeMap<String, String>>,
+    #[serde(with = "serde_regex", default = "default_app_selector")]
+    app_selector: Regex,
 }
 
 #[derive(Clone, Deserialize, PartialEq)]
@@ -68,11 +78,27 @@ enum CompanionType {
     Service,
 }
 
+#[derive(Clone, Deserialize)]
+struct Service {
+    secrets: Option<Vec<Secret>>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Secret {
+    name: String,
+    #[serde(deserialize_with = "Secret::parse_secstr", rename = "data")]
+    secret: SecUtf8,
+    #[serde(with = "serde_regex", default = "default_app_selector")]
+    app_selector: Regex,
+}
+
 #[derive(Clone, Default, Deserialize)]
 pub struct Config {
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
-    companions: Vec<BTreeMap<String, Companion>>,
+    companions: Option<BTreeMap<String, Companion>>,
+    services: Option<BTreeMap<String, Service>>,
 }
 
 impl Config {
@@ -100,41 +126,59 @@ impl Config {
         }
     }
 
-    pub fn get_service_companion_configs(&self) -> Result<Vec<ServiceConfig>, ConfigError> {
-        Ok(self.get_companion_configs(|companion| {
+    pub fn get_service_companion_configs(
+        &self,
+        app_name: &str,
+    ) -> Result<Vec<ServiceConfig>, ConfigError> {
+        Ok(self.get_companion_configs(app_name, |companion| {
             companion.companion_type == CompanionType::Service
         })?)
     }
 
-    pub fn get_application_companion_configs(&self) -> Result<Vec<ServiceConfig>, ConfigError> {
-        Ok(self.get_companion_configs(|companion| {
+    pub fn get_application_companion_configs(
+        &self,
+        app_name: &str,
+    ) -> Result<Vec<ServiceConfig>, ConfigError> {
+        Ok(self.get_companion_configs(app_name, |companion| {
             companion.companion_type == CompanionType::Application
         })?)
     }
 
-    fn get_companion_configs<P>(&self, predicate: P) -> Result<Vec<ServiceConfig>, ConfigError>
+    fn get_companion_configs<P>(
+        &self,
+        app_name: &str,
+        predicate: P,
+    ) -> Result<Vec<ServiceConfig>, ConfigError>
     where
-        P: FnMut(&&Companion) -> bool,
+        P: Fn(&Companion) -> bool,
     {
-        let mut companions = Vec::new();
+        match &self.companions {
+            None => Ok(vec![]),
+            Some(companions_map) => {
+                let mut companions = Vec::new();
 
-        for companion in self
-            .companions
-            .iter()
-            .flat_map(|companions| companions.values())
-            .filter(predicate)
-        {
-            let mut config = ServiceConfig::try_from(companion)?;
+                for (_, companion) in companions_map
+                    .iter()
+                    .filter(|(_, companion)| companion.app_selector.is_match(app_name))
+                    .filter(|(_, companion)| predicate(*companion))
+                {
+                    let mut config = ServiceConfig::try_from(companion)?;
+                    config.set_container_type(ContainerType::from(&companion.companion_type));
 
-            config.set_container_type(match &companion.companion_type {
-                CompanionType::Application => ContainerType::ApplicationCompanion,
-                CompanionType::Service => ContainerType::ServiceCompanion,
-            });
+                    companions.push(config);
+                }
 
-            companions.push(config);
+                Ok(companions)
+            }
         }
+    }
 
-        Ok(companions)
+    pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &str) {
+        if let Some(services) = &self.services {
+            if let Some(service) = services.get(service_config.service_name()) {
+                service.add_secrets_to(service_config, app_name);
+            }
+        }
     }
 }
 
@@ -145,8 +189,16 @@ impl JiraConfig {
     pub fn user(&self) -> &String {
         &self.user
     }
-    pub fn password(&self) -> &String {
+    pub fn password(&self) -> &SecUtf8 {
         &self.password
+    }
+
+    fn parse_secstr<'de, D>(deserializer: D) -> Result<SecUtf8, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let secret = String::deserialize(deserializer)?;
+        Ok(SecUtf8::from(secret))
     }
 }
 
@@ -178,14 +230,43 @@ impl ContainerConfig {
     }
 }
 
+impl Service {
+    pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &str) {
+        if let Some(secrets) = &self.secrets {
+            for s in secrets.iter().filter(|s| s.matches(app_name)) {
+                service_config.add_volume(
+                    format!("/run/secrets/{}", s.name),
+                    // TODO: use secstr in service_config (see issue #8)
+                    String::from(s.secret.unsecure()),
+                );
+            }
+        }
+    }
+}
+
+impl Secret {
+    pub fn matches(&self, app_name: &str) -> bool {
+        self.app_selector.is_match(app_name)
+    }
+
+    fn parse_secstr<'de, D>(deserializer: D) -> Result<SecUtf8, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let secret = String::deserialize(deserializer)?;
+        let decoded = decode(&secret).map_err(de::Error::custom)?;
+        Ok(SecUtf8::from(decoded))
+    }
+}
+
 #[derive(Debug, Fail)]
 pub enum ConfigError {
     #[fail(display = "Cannot open config file. {}", error)]
     CannotOpenConfigFile { error: IOError },
     #[fail(display = "Invalid config file format. {}", error)]
     ConfigFormatError { error: TomlError },
-    #[fail(display = "Unable to parse image.")]
-    UnableToParseImage,
+    #[fail(display = "Unable to parse image string {}.", image)]
+    UnableToParseImage { image: String },
 }
 
 impl From<IOError> for ConfigError {
@@ -206,7 +287,11 @@ impl TryFrom<&Companion> for ServiceConfig {
     fn try_from(companion: &Companion) -> Result<ServiceConfig, ConfigError> {
         let image = match Image::from_str(&companion.image) {
             Ok(image) => image,
-            Err(_) => return Err(ConfigError::UnableToParseImage),
+            Err(_) => {
+                return Err(ConfigError::UnableToParseImage {
+                    image: companion.image.clone(),
+                })
+            }
         };
 
         let mut config = ServiceConfig::new(companion.service_name.clone(), image);
@@ -221,18 +306,44 @@ impl TryFrom<&Companion> for ServiceConfig {
     }
 }
 
+impl From<&CompanionType> for ContainerType {
+    fn from(t: &CompanionType) -> Self {
+        match t {
+            CompanionType::Application => ContainerType::ApplicationCompanion,
+            CompanionType::Service => ContainerType::ServiceCompanion,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    macro_rules! service_config {
+        ( $name:expr ) => {{
+            let mut hasher = Sha256::new();
+            hasher.input($name);
+            let img_hash = &format!("sha256:{:x}", hasher.result_reset());
+
+            ServiceConfig::new(String::from($name), Image::from_str(&img_hash).unwrap())
+        }};
+    }
+
+    macro_rules! config_from_str {
+        ( $config_str:expr ) => {
+            from_str::<Config>($config_str).unwrap()
+        };
+    }
 
     #[test]
     fn should_return_application_companions_as_service_configs() {
-        let config_str = r#"
-            [[companions]]
+        let config = config_from_str!(
+            r#"
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
-            image = 'private.example.com/library/opendid:latest'
+            image = 'private.example.com/library/openid:latest'
             env = [ 'KEY=VALUE' ]
 
             [companions.nginx]
@@ -240,17 +351,17 @@ mod tests {
             type = 'service'
             image = 'nginx:latest'
             env = [ 'KEY=VALUE' ]
-        "#;
+            "#
+        );
 
-        let config = from_str::<Config>(config_str).unwrap();
-        let companion_configs = config.get_application_companion_configs().unwrap();
+        let companion_configs = config.get_application_companion_configs("master").unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
             assert_eq!(config.service_name(), "openid");
             assert_eq!(
                 &config.image().to_string(),
-                "private.example.com/library/opendid:latest"
+                "private.example.com/library/openid:latest"
             );
             assert_eq!(
                 config.container_type(),
@@ -262,12 +373,12 @@ mod tests {
 
     #[test]
     fn should_return_service_companions_as_service_configs() {
-        let config_str = r#"
-            [[companions]]
+        let config = config_from_str!(
+            r#"
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
-            image = 'private.example.com/library/opendid:latest'
+            image = 'private.example.com/library/openid:latest'
             env = [ 'KEY=VALUE' ]
 
             [companions.nginx]
@@ -275,10 +386,10 @@ mod tests {
             type = 'service'
             image = 'nginx:latest'
             env = [ 'KEY=VALUE' ]
-        "#;
+            "#
+        );
 
-        let config = from_str::<Config>(config_str).unwrap();
-        let companion_configs = config.get_service_companion_configs().unwrap();
+        let companion_configs = config.get_service_companion_configs("master").unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -294,21 +405,21 @@ mod tests {
 
     #[test]
     fn should_return_application_companions_as_service_configs_with_volumes() {
-        let config_str = r#"
-            [[companions]]
+        let config = config_from_str!(
+            r#"
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
-            image = 'private.example.com/library/opendid:11-alpine'
+            image = 'private.example.com/library/openid:11-alpine'
             env = [ 'KEY=VALUE' ]
 
             [companions.openid.volumes]
             '/tmp/test-1.json' = '{}'
             '/tmp/test-2.json' = '{}'
-        "#;
+            "#
+        );
 
-        let config = from_str::<Config>(config_str).unwrap();
-        let companion_configs = config.get_application_companion_configs().unwrap();
+        let companion_configs = config.get_application_companion_configs("master").unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -318,19 +429,19 @@ mod tests {
 
     #[test]
     fn should_return_application_companions_as_service_configs_with_labels() {
-        let config_str = r#"
-            [[companions]]
+        let config = config_from_str!(
+            r#"
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
-            image = 'private.example.com/library/opendid:11-alpine'
+            image = 'private.example.com/library/openid:11-alpine'
 
             [companions.openid.labels]
             'com.example.foo' = 'bar'
-        "#;
+            "#
+        );
 
-        let config = from_str::<Config>(config_str).unwrap();
-        let companion_configs = config.get_application_companion_configs().unwrap();
+        let companion_configs = config.get_application_companion_configs("master").unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -343,22 +454,148 @@ mod tests {
 
     #[test]
     fn should_return_application_companions_as_error_when_invalid_image_is_provided() {
-        let config_str = r#"
-            [[companions]]
+        let config = config_from_str!(
+            r#"
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
             image = ''
             env = [ 'KEY=VALUE' ]
-        "#;
+            "#
+        );
 
-        let config = from_str::<Config>(config_str).unwrap();
-        let result = config.get_application_companion_configs();
+        let result = config.get_application_companion_configs("master");
 
         assert_eq!(result.is_err(), true);
         match result.err().unwrap() {
-            ConfigError::UnableToParseImage => assert!(true),
+            ConfigError::UnableToParseImage { image: _ } => assert!(true),
             _ => assert!(false, "unexpected error"),
         }
+    }
+
+    #[test]
+    fn should_return_application_companions_with_specific_app_selector() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+            env = [ 'KEY=VALUE' ]
+            appSelector = "master"
+            "#
+        );
+
+        let companion_configs = config.get_application_companion_configs("master").unwrap();
+
+        assert_eq!(companion_configs.len(), 1);
+        companion_configs.iter().for_each(|config| {
+            assert_eq!(config.service_name(), "openid");
+            assert_eq!(
+                &config.image().to_string(),
+                "private.example.com/library/openid:latest"
+            );
+            assert_eq!(
+                config.container_type(),
+                &ContainerType::ApplicationCompanion
+            );
+            assert_eq!(config.labels(), None);
+        });
+    }
+
+    #[test]
+    fn should_not_return_application_companions_with_specific_app_selector() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+            env = [ 'KEY=VALUE' ]
+            appSelector = "master"
+            "#
+        );
+
+        let companion_configs = config
+            .get_application_companion_configs("random-name")
+            .unwrap();
+
+        assert_eq!(companion_configs.len(), 0);
+    }
+
+    #[test]
+    fn should_set_service_secrets_with_default_app_selector() {
+        let config = config_from_str!(
+            r#"
+            [services.mariadb]
+            [[services.mariadb.secrets]]
+            name = "user"
+            data = "SGVsbG8="
+            "#
+        );
+
+        let mut service_config = service_config!("mariadb");
+        config.add_secrets_to(&mut service_config, &String::from("master"));
+
+        let secret_file_content = service_config
+            .volumes()
+            .expect("File content is missing")
+            .get("/run/secrets/user")
+            .expect("No file for /run/secrets/user");
+        assert_eq!(secret_file_content, "Hello");
+    }
+
+    #[test]
+    fn should_set_service_secrets_with_specific_app_selector() {
+        let config = config_from_str!(
+            r#"
+            [services.mariadb]
+            [[services.mariadb.secrets]]
+            name = "user"
+            data = "SGVsbG8="
+            appSelector = "master"
+            "#
+        );
+
+        let mut service_config = service_config!("mariadb");
+        config.add_secrets_to(&mut service_config, &String::from("master"));
+
+        let secret_file_content = service_config
+            .volumes()
+            .expect("File content is missing")
+            .get("/run/secrets/user")
+            .expect("No file for /run/secrets/user");
+        assert_eq!(secret_file_content, "Hello");
+    }
+
+    #[test]
+    fn should_not_set_service_secrets_with_specific_app_selector() {
+        let config = config_from_str!(
+            r#"
+            [services.mariadb]
+            [[services.mariadb.secrets]]
+            name = "user"
+            data = "SGVsbG8="
+            appSelector = "master-.+"
+            "#
+        );
+
+        let mut service_config = service_config!("mariadb");
+        config.add_secrets_to(&mut service_config, &String::from("random-app-name"));
+
+        assert!(service_config.volumes().is_none());
+    }
+
+    #[test]
+    fn should_not_parse_config_because_of_invalid_secret_data() {
+        let config_str = r#"
+            [services.mariadb]
+            [[services.mariadb.secrets]]
+            name = "user"
+            data = "+++"
+        "#;
+
+        let config_result = from_str::<Config>(config_str);
+        assert!(config_result.is_err(), "should not parse config");
     }
 }

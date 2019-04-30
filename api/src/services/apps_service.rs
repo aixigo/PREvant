@@ -234,11 +234,13 @@ impl AppsService {
             if let Some(port) = mappings.get(config) {
                 config.set_port(port.clone());
             }
+
+            self.config.add_secrets_to(config, app_name);
         }
 
         let mut service_companions = Vec::new();
         for config in &configs {
-            let companions = self.config.get_service_companion_configs()?;
+            let companions = self.config.get_service_companion_configs(app_name)?;
 
             service_companions.extend(
                 companions
@@ -292,7 +294,7 @@ impl AppsService {
         }
 
         let mut companion_configs = Vec::new();
-        for app_companion_config in self.config.get_application_companion_configs()? {
+        for app_companion_config in self.config.get_application_companion_configs(app_name)? {
             let c = apply_templating_for_application_companion(
                 &app_companion_config,
                 app_name,
@@ -397,6 +399,12 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::str::FromStr;
     use url::Url;
+
+    macro_rules! config_from_str {
+        ( $config_str:expr ) => {
+            toml::from_str::<Config>($config_str).unwrap()
+        };
+    }
 
     macro_rules! service_configs {
         ( $( $x:expr ),* ) => {
@@ -516,6 +524,34 @@ mod tests {
         assert_eq!(services.len(), 2);
         assert_contains_service!(services, "service-a", ContainerType::Instance);
         assert_contains_service!(services, "service-b", ContainerType::Instance);
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_create_app_for_master_with_secrets() -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [services.mariadb]
+            [[services.mariadb.secrets]]
+            name = "user"
+            data = "SGVsbG8="
+            appSelector = "master"
+        "#
+        );
+
+        let infrastructure = Box::new(DummyInfrastructure::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(&String::from("master"), None, &service_configs!("mariadb"))?;
+
+        let configs = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master"))?;
+        assert_eq!(configs.len(), 1);
+
+        let volumes = configs.get(0).unwrap().volumes().unwrap();
+        assert_eq!(volumes.get("/run/secrets/user").unwrap(), "Hello");
 
         Ok(())
     }

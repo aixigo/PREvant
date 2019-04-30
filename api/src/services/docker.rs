@@ -42,7 +42,6 @@ use shiplift::{
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
 use std::net::{AddrParseError, IpAddr};
-use std::path::Path;
 use std::str::FromStr;
 use std::sync::mpsc;
 use tokio::runtime::Runtime;
@@ -309,7 +308,7 @@ impl DockerInfrastructure {
     ) -> Result<(), ShipLiftError> {
         let volumes = match service_config.volumes() {
             None => return Ok(()),
-            Some(volumes) => volumes,
+            Some(volumes) => volumes.clone(),
         };
 
         debug!(
@@ -322,11 +321,11 @@ impl DockerInfrastructure {
         let containers = docker.containers();
         let mut runtime = Runtime::new()?;
 
-        for (path, data) in volumes {
+        for (path, data) in volumes.into_iter() {
             runtime.block_on(
                 containers
                     .get(&container_info.id)
-                    .copy_file_into(Path::new(path), &data.as_bytes()),
+                    .copy_file_into(path, &data.as_bytes()),
             )?;
         }
 
@@ -577,9 +576,7 @@ impl Infrastructure for DockerInfrastructure {
 
             let image = Image::from_str(&container_details.image).unwrap();
             let mut service_config = ServiceConfig::new(service.service_name().clone(), image);
-            if let Some(env) = container_details.config.env.clone() {
-                service_config.set_env(Some(env));
-            }
+
             if let Some(port) = service.port() {
                 service_config.set_port(port);
             }
