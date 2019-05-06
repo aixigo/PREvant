@@ -22,7 +22,7 @@ module.exports = {
         new webpack.ProvidePlugin({
             'jQuery': 'jquery',
             '$': 'jquery',
-            Popper: ['popper.js', 'default']
+            Popper: 'popper.js'
         }),
         new VueLoaderPlugin(),
         new MiniCssExtractPlugin({
@@ -76,7 +76,8 @@ module.exports = {
     },
     resolve: {
         alias: {
-            'vue$': 'vue/dist/vue.esm.js'
+            'vue$': 'vue/dist/vue.esm.js',
+            'popper.js$': 'popper.js/dist/umd/popper.js'
         },
         extensions: ['*', '.js', '.vue', '.json']
     },
@@ -94,6 +95,6 @@ module.exports = {
     performance: {
         hints: false
     },
-    devtool: '#eval-source-map',
+    devtool: '#cheap-source-map',
     mode: !devMode ? 'production' : 'development'
 };
