@@ -60,3 +60,6 @@ In order to generate the correct link the API specification PREvant adds followi
 
 PREvant's concept has been published at the conference [_Microservices 2019_ in Dortmund](https://www.conf-micro.services/2019/). You can read [the abstract here](https://www.conf-micro.services/2019/papers/Microservices_2019_paper_14.pdf).
 
+The talk is available on [YouTube](http://www.youtube.com/watch?v=O9GxapQR5bk). Click on the image to start the playback:
+
+[![Video “PREvant: Composing Microservices into Reviewable and Testable Applications” at Microservices 2019](http://img.youtube.com/vi/O9GxapQR5bk/0.jpg)](http://www.youtube.com/watch?v=O9GxapQR5bk)
