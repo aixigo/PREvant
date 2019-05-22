@@ -35,13 +35,67 @@ use crate::services::{
     images_service::{ImagesService, ImagesServiceError},
     infrastructure::Infrastructure,
 };
+use cached::SizedCache;
 use handlebars::TemplateRenderError;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::convert::From;
 use std::sync::Mutex;
-use url::Url;
+use std::time::Duration;
+use yansi::Paint;
+
+cached_key_result! {
+    WEB_HOST_META: SizedCache<String, WebHostMeta> = SizedCache::with_size(500);
+
+    Key = { format!("{}", service.id()) };
+
+    fn resolve_web_host_meta(
+        service: &Service,
+        request_info: &RequestInfo
+    ) -> Result<WebHostMeta, ()> = {
+        let url = match service.endpoint_url() {
+            None => return Ok(WebHostMeta::empty()),
+            Some(endpoint_url) => endpoint_url.join(".well-known/host-meta.json").unwrap()
+        };
+
+        let get_request = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .unwrap()
+            .get(url)
+            .header(
+                "Forwarded",
+                format!(
+                    "host={};proto={}",
+                    request_info.host(),
+                    request_info.scheme()
+                ),
+            )
+            .header(
+                "X-Forwarded-Prefix",
+                format!("/{}/{}", service.app_name(), service.service_name()),
+            )
+            .header("Accept", "application/json")
+            .header("User-Agent", format!("PREvant/{}", crate_version!()))
+            .send();
+
+        match get_request {
+            Err(err) => {
+                debug!("Cannot acquire host meta for service {} of {}: {}", Paint::magenta(service.service_name()), Paint::magenta(service.app_name()), err);
+                Err(())
+            }
+            Ok(mut response) => match response.json::<WebHostMeta>() {
+                Err(err) => {
+                    error!("Cannot parse host meta for service {} of {}: {}", Paint::magenta(service.service_name()), Paint::magenta(service.app_name()), err);
+                    Ok(WebHostMeta::empty())
+                }
+                Ok(meta) => Ok(meta),
+            },
+        }
+    }
+}
 
 pub struct AppsService {
     config: Config,
@@ -73,49 +127,6 @@ impl AppsService {
         })
     }
 
-    fn resolve_web_host_meta(
-        app_name: &String,
-        service_name: &String,
-        endpoint_url: &Url,
-        request_info: &RequestInfo,
-    ) -> Option<WebHostMeta> {
-        let url = endpoint_url.join(".well-known/host-meta.json").unwrap();
-
-        let get_request = reqwest::Client::builder()
-            .build()
-            .unwrap()
-            .get(url)
-            .header(
-                "Forwarded",
-                format!(
-                    "host={};proto={}",
-                    request_info.host(),
-                    request_info.scheme()
-                ),
-            )
-            .header(
-                "X-Forwarded-Prefix",
-                format!("/{}/{}", app_name, service_name),
-            )
-            .header("Accept", "application/json")
-            .header("User-Agent", format!("PREvant/{}", crate_version!()))
-            .send();
-
-        match get_request {
-            Err(err) => {
-                debug!("Cannot acquire host meta: {}", err);
-                None
-            }
-            Ok(mut response) => match response.json::<WebHostMeta>() {
-                Err(err) => {
-                    error!("Cannot parse host meta: {}", err);
-                    Some(WebHostMeta::empty())
-                }
-                Ok(meta) => Some(meta),
-            },
-        }
-    }
-
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
     pub fn get_apps(
@@ -124,19 +135,14 @@ impl AppsService {
     ) -> Result<MultiMap<String, Service>, AppsServiceError> {
         let mut services = self.infrastructure.get_services()?;
 
-        for (app_name, services) in services.iter_all_mut() {
-            for service in services {
-                service.set_web_host_meta(match service.endpoint_url() {
-                    None => None,
-                    Some(endpoint_url) => AppsService::resolve_web_host_meta(
-                        app_name,
-                        service.service_name(),
-                        &endpoint_url,
-                        request_info,
-                    ),
-                });
-            }
-        }
+        let mut all_services: Vec<&mut Service> = services
+            .iter_all_mut()
+            .flat_map(|(_, services)| services.iter_mut())
+            .collect();
+
+        all_services.par_iter_mut().for_each(|service| {
+            service.set_web_host_meta(resolve_web_host_meta(&service, request_info).ok());
+        });
 
         Ok(services)
     }
@@ -390,6 +396,7 @@ mod tests {
     use crate::services::dummy_infrastructure::DummyInfrastructure;
     use sha2::{Digest, Sha256};
     use std::str::FromStr;
+    use url::Url;
 
     macro_rules! service_configs {
         ( $( $x:expr ),* ) => {

@@ -45,10 +45,11 @@ pub fn apps(
 ) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
     let mut apps = apps_service.get_apps(&request_info)?;
 
-    for (_, services) in apps.iter_all_mut() {
-        for service in services.iter_mut() {
-            service.set_base_url(request_info.get_base_url());
-        }
+    for service in apps
+        .iter_all_mut()
+        .flat_map(|(_, services)| services.iter_mut())
+    {
+        service.set_base_url(request_info.get_base_url());
     }
 
     Ok(Json(apps))

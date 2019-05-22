@@ -554,40 +554,37 @@ impl Infrastructure for DockerInfrastructure {
     fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error> {
         let mut configs = Vec::new();
 
-        for (_, details_vec) in self
+        for container_details in self
             .get_container_details(Some(app_name.clone()))?
             .iter_all()
+            .flat_map(|(_, details)| details.iter())
         {
-            for container_details in details_vec {
-                let service = match Service::try_from(container_details) {
-                    Err(e) => {
-                        warn!(
-                            "Container {} does not provide required information: {}",
-                            container_details.id, e
-                        );
-                        continue;
-                    }
-                    Ok(service) => service,
-                };
-
-                match service.container_type() {
-                    ContainerType::ApplicationCompanion | ContainerType::ServiceCompanion => {
-                        continue
-                    }
-                    _ => {}
-                };
-
-                let image = Image::from_str(&container_details.image).unwrap();
-                let mut service_config = ServiceConfig::new(service.service_name().clone(), image);
-                if let Some(env) = container_details.config.env.clone() {
-                    service_config.set_env(Some(env));
+            let service = match Service::try_from(container_details) {
+                Err(e) => {
+                    warn!(
+                        "Container {} does not provide required information: {}",
+                        container_details.id, e
+                    );
+                    continue;
                 }
-                if let Some(port) = service.port() {
-                    service_config.set_port(port);
-                }
+                Ok(service) => service,
+            };
 
-                configs.push(service_config);
+            match service.container_type() {
+                ContainerType::ApplicationCompanion | ContainerType::ServiceCompanion => continue,
+                _ => {}
+            };
+
+            let image = Image::from_str(&container_details.image).unwrap();
+            let mut service_config = ServiceConfig::new(service.service_name().clone(), image);
+            if let Some(env) = container_details.config.env.clone() {
+                service_config.set_env(Some(env));
             }
+            if let Some(port) = service.port() {
+                service_config.set_port(port);
+            }
+
+            configs.push(service_config);
         }
 
         Ok(configs)
@@ -644,7 +641,12 @@ impl TryFrom<&ContainerDetails> for Service {
             }
         };
 
-        let mut service = Service::new(app_name.clone(), service_name.clone(), container_type);
+        let mut service = Service::new(
+            container_details.id.clone(),
+            app_name.clone(),
+            service_name.clone(),
+            container_type,
+        );
 
         service.set_endpoint(addr, port);
 
@@ -680,6 +682,7 @@ impl TryFrom<&Container> for Service {
         };
 
         Ok(Service::new(
+            c.id.clone(),
             app_name.clone(),
             service_name.clone(),
             container_type,

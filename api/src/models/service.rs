@@ -36,6 +36,8 @@ use url::Url;
 
 #[derive(Clone, Debug)]
 pub struct Service {
+    /// An unique identifier of the service, e.g. the container id
+    id: String,
     app_name: String,
     service_name: String,
     container_type: ContainerType,
@@ -166,8 +168,14 @@ impl ServiceConfig {
 }
 
 impl Service {
-    pub fn new(app_name: String, service_name: String, container_type: ContainerType) -> Service {
+    pub fn new(
+        id: String,
+        app_name: String,
+        service_name: String,
+        container_type: ContainerType,
+    ) -> Service {
         Service {
+            id,
             app_name,
             service_name,
             container_type,
@@ -175,6 +183,10 @@ impl Service {
             endpoint: None,
             web_host_meta: None,
         }
+    }
+
+    pub fn app_name(&self) -> &String {
+        &self.app_name
     }
 
     pub fn set_app_name(&mut self, app_name: &String) {
@@ -194,6 +206,10 @@ impl Service {
             url.join(&format!("/{}/{}/", &self.app_name, &self.service_name))
                 .unwrap()
         })
+    }
+
+    pub fn id(&self) -> &String {
+        &self.id
     }
 
     pub fn service_name(&self) -> &String {
@@ -254,13 +270,15 @@ impl Serialize for Service {
             date_modified: Option<DateTime<Utc>>,
         }
 
-        let software_version = self.web_host_meta.clone().and_then(|meta| meta.version());
         let open_api_url = self.web_host_meta.clone().and_then(|meta| meta.openapi());
-        let git_commit = self.web_host_meta.clone().and_then(|meta| meta.commit());
-        let date_modified = self
-            .web_host_meta
-            .clone()
-            .and_then(|meta| meta.date_modified());
+        let version = match &self.web_host_meta {
+            Some(meta) if !meta.is_empty() => Some(Version {
+                git_commit: meta.commit(),
+                software_version: meta.version(),
+                date_modified: meta.date_modified(),
+            }),
+            _ => None,
+        };
 
         let s = Service {
             name: &self.service_name,
@@ -269,11 +287,7 @@ impl Serialize for Service {
                 Some(_) => self.service_url().map(|url| url.to_string()),
             },
             service_type: self.container_type.to_string(),
-            version: Some(Version {
-                git_commit,
-                software_version,
-                date_modified,
-            }),
+            version,
             open_api_url,
         };
 

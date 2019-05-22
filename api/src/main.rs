@@ -27,6 +27,8 @@
 #![feature(custom_attribute, proc_macro_hygiene, decl_macro)]
 
 #[macro_use]
+extern crate cached;
+#[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate failure;
@@ -42,6 +44,7 @@ use crate::services::apps_service::AppsService;
 use crate::services::config_service::Config;
 use crate::services::docker::DockerInfrastructure;
 use clap::{App, Arg};
+use env_logger::Env;
 use rocket::response::NamedFile;
 use rocket_cache_response::CacheResponse;
 use serde_yaml::{from_reader, to_string, Value};
@@ -103,9 +106,7 @@ fn main() {
         )
         .get_matches();
 
-    if cfg!(not(debug_assertions)) {
-        env_logger::init();
-    }
+    env_logger::from_env(Env::default().default_filter_or("info")).init();
 
     let config = match Config::load(argument_matches.value_of("config").unwrap_or("config.toml")) {
         Ok(config) => config,

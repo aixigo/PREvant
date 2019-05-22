@@ -57,6 +57,7 @@ impl Infrastructure for DummyInfrastructure {
                 s.insert(
                     app.clone(),
                     Service::new(
+                        format!("{}-{}", app.clone(), config.service_name()),
                         app.clone(),
                         config.service_name().clone(),
                         config.container_type().clone(),

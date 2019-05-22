@@ -55,6 +55,10 @@ impl WebHostMeta {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.properties.is_none() && self.links.is_none()
+    }
+
     pub fn version(&self) -> Option<String> {
         match &self.properties {
             None => None,
