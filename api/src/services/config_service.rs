@@ -159,7 +159,7 @@ impl Config {
 
                 for (_, companion) in companions_map
                     .iter()
-                    .filter(|(_, companion)| companion.app_selector.is_match(app_name))
+                    .filter(|(_, companion)| is_full_match(app_name, &companion.app_selector))
                     .filter(|(_, companion)| predicate(*companion))
                 {
                     let mut config = ServiceConfig::try_from(companion)?;
@@ -244,9 +244,16 @@ impl Service {
     }
 }
 
+fn is_full_match(s: &str, r: &Regex) -> bool {
+    match r.captures(s) {
+        None => false,
+        Some(captures) => captures.get(0).map_or("", |m| m.as_str()) == s
+    }
+}
+
 impl Secret {
     pub fn matches(&self, app_name: &str) -> bool {
-        self.app_selector.is_match(app_name)
+        is_full_match(app_name, &self.app_selector)
     }
 
     fn parse_secstr<'de, D>(deserializer: D) -> Result<SecUtf8, D::Error>
@@ -569,6 +576,29 @@ mod tests {
     }
 
     #[test]
+    fn should_set_service_secrets_with_regex_app_selector() {
+        let config = config_from_str!(
+            r#"
+            [services.mariadb]
+            [[services.mariadb.secrets]]
+            name = "user"
+            data = "SGVsbG8="
+            appSelector = "master(-.+)?"
+            "#
+        );
+
+        let mut service_config = service_config!("mariadb");
+        config.add_secrets_to(&mut service_config, &String::from("master-1.x"));
+
+        let secret_file_content = service_config
+            .volumes()
+            .expect("File content is missing")
+            .get("/run/secrets/user")
+            .expect("No file for /run/secrets/user");
+        assert_eq!(secret_file_content, "Hello");
+    }
+
+    #[test]
     fn should_not_set_service_secrets_with_specific_app_selector() {
         let config = config_from_str!(
             r#"
@@ -584,6 +614,24 @@ mod tests {
         config.add_secrets_to(&mut service_config, &String::from("random-app-name"));
 
         assert!(service_config.volumes().is_none());
+    }
+
+    #[test]
+    fn should_not_set_service_secrets_with_partially_specific_app_selector() {
+        let config = config_from_str!(
+            r#"
+            [services.mariadb]
+            [[services.mariadb.secrets]]
+            name = "user"
+            data = "SGVsbG8="
+            appSelector = "master"
+            "#
+        );
+
+        let mut service_config = service_config!("mariadb");
+        config.add_secrets_to(&mut service_config, &String::from("master-1.x"));
+
+        assert_eq!(service_config.volumes(), None);
     }
 
     #[test]

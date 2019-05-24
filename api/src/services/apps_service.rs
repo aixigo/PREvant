@@ -555,4 +555,37 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn should_create_app_for_master_without_secrets_because_of_none_matching_app_selector(
+    ) -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [services.mariadb]
+            [[services.mariadb.secrets]]
+            name = "user"
+            data = "SGVsbG8="
+            appSelector = "master"
+        "#
+        );
+
+        let infrastructure = Box::new(DummyInfrastructure::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &String::from("master-1.x"),
+            None,
+            &service_configs!("mariadb"),
+        )?;
+
+        let configs = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master-1.x"))?;
+        assert_eq!(configs.len(), 1);
+
+        let volumes = configs.get(0).unwrap().volumes();
+        assert_eq!(volumes, None);
+
+        Ok(())
+    }
 }
