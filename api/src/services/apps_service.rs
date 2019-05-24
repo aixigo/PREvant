@@ -24,16 +24,14 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::config::{Config, ConfigError};
+use crate::infrastructure::Infrastructure;
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{ContainerType, Service, ServiceConfig};
 use crate::models::web_host_meta::WebHostMeta;
-use crate::services::config_service::{Config, ConfigError};
+use crate::services::images_service::{ImagesService, ImagesServiceError};
 use crate::services::service_templating::{
     apply_templating_for_application_companion, apply_templating_for_service_companion,
-};
-use crate::services::{
-    images_service::{ImagesService, ImagesServiceError},
-    infrastructure::Infrastructure,
 };
 use cached::SizedCache;
 use handlebars::TemplateRenderError;
@@ -394,8 +392,8 @@ impl From<ImagesServiceError> for AppsServiceError {
 mod tests {
 
     use super::*;
+    use crate::infrastructure::Dummy;
     use crate::models::service::Image;
-    use crate::services::dummy_infrastructure::DummyInfrastructure;
     use sha2::{Digest, Sha256};
     use std::str::FromStr;
     use url::Url;
@@ -444,7 +442,7 @@ mod tests {
     #[test]
     fn should_create_app_for_master() -> Result<(), AppsServiceError> {
         let config = Config::default();
-        let infrastructure = Box::new(DummyInfrastructure::new());
+        let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
@@ -467,7 +465,7 @@ mod tests {
     #[test]
     fn should_replication_from_master() -> Result<(), AppsServiceError> {
         let config = Config::default();
-        let infrastructure = Box::new(DummyInfrastructure::new());
+        let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
@@ -496,7 +494,7 @@ mod tests {
     #[test]
     fn should_override_replicas_from_master() -> Result<(), AppsServiceError> {
         let config = Config::default();
-        let infrastructure = Box::new(DummyInfrastructure::new());
+        let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
@@ -540,7 +538,7 @@ mod tests {
         "#
         );
 
-        let infrastructure = Box::new(DummyInfrastructure::new());
+        let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(&String::from("master"), None, &service_configs!("mariadb"))?;
@@ -569,7 +567,7 @@ mod tests {
         "#
         );
 
-        let infrastructure = Box::new(DummyInfrastructure::new());
+        let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(

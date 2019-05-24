@@ -24,9 +24,9 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::config::ContainerConfig;
+use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Image, Service, ServiceConfig, ServiceError};
-use crate::services::config_service::ContainerConfig;
-use crate::services::infrastructure::Infrastructure;
 use failure::Error;
 use futures::future::join_all;
 use futures::{Future, Stream};

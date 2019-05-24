@@ -39,10 +39,10 @@ extern crate rocket;
 #[macro_use]
 extern crate serde_derive;
 
+use crate::config::Config;
+use crate::infrastructure::Docker;
 use crate::models::request_info::RequestInfo;
 use crate::services::apps_service::AppsService;
-use crate::services::config_service::Config;
-use crate::services::docker::DockerInfrastructure;
 use clap::{App, Arg};
 use env_logger::Env;
 use rocket::response::NamedFile;
@@ -53,6 +53,8 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 mod apps;
+mod config;
+mod infrastructure;
 mod models;
 mod services;
 mod tickets;
@@ -117,8 +119,7 @@ fn main() {
         }
     };
 
-    let apps_service = match AppsService::new(config.clone(), Box::new(DockerInfrastructure::new()))
-    {
+    let apps_service = match AppsService::new(config.clone(), Box::new(Docker::new())) {
         Ok(apps_service) => apps_service,
         Err(e) => {
             error!("Cannot create apps service: {}", e);

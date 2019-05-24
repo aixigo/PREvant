@@ -24,10 +24,10 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::config::Config;
 use crate::models::request_info::RequestInfo;
 use crate::models::ticket_info::TicketInfo;
 use crate::services::apps_service::{AppsService, AppsServiceError};
-use crate::services::config_service::Config;
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
 use http_api_problem::{HttpApiProblem, StatusCode};

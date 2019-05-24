@@ -24,6 +24,12 @@
  * =========================LICENSE_END==================================
  */
 
-pub mod apps_service;
-pub mod images_service;
-pub mod service_templating;
+pub use docker::DockerInfrastructure as Docker;
+#[cfg(test)]
+pub use dummy_infrastructure::DummyInfrastructure as Dummy;
+pub use infrastructure::Infrastructure;
+
+mod docker;
+#[cfg(test)]
+mod dummy_infrastructure;
+mod infrastructure;

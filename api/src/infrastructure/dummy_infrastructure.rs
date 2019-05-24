@@ -24,10 +24,10 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::config::ContainerConfig;
+use crate::infrastructure::Infrastructure;
 use crate::models::service::Service;
 use crate::models::service::ServiceConfig;
-use crate::services::config_service::ContainerConfig;
-use crate::services::infrastructure::Infrastructure;
 use multimap::MultiMap;
 use std::collections::HashSet;
 use std::sync::Mutex;

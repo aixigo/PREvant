@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use super::config_service::ContainerConfig;
+use crate::config::ContainerConfig;
 use crate::models::service::{Service, ServiceConfig};
 use failure::Error;
 use multimap::MultiMap;
