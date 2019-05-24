@@ -38,8 +38,31 @@ use std::str::FromStr;
 use toml::de::Error as TomlError;
 use toml::from_str;
 
-fn default_app_selector() -> Regex {
-    Regex::new(".+").unwrap()
+#[derive(Clone)]
+struct AppSelector(Regex);
+
+impl AppSelector {
+    fn matches(&self, app_name: &str) -> bool {
+        match self.0.captures(app_name) {
+            None => false,
+            Some(captures) => captures.get(0).map_or("", |m| m.as_str()) == app_name,
+        }
+    }
+}
+
+impl Default for AppSelector {
+    fn default() -> Self {
+        AppSelector(Regex::new(".+").unwrap())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AppSelector {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        serde_regex::deserialize(deserializer).map(|r| AppSelector(r))
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -66,8 +89,8 @@ pub struct Companion {
     env: Option<Vec<String>>,
     labels: Option<BTreeMap<String, String>>,
     volumes: Option<BTreeMap<String, String>>,
-    #[serde(with = "serde_regex", default = "default_app_selector")]
-    app_selector: Regex,
+    #[serde(default = "AppSelector::default")]
+    app_selector: AppSelector,
 }
 
 #[derive(Clone, Deserialize, PartialEq)]
@@ -89,8 +112,8 @@ struct Secret {
     name: String,
     #[serde(deserialize_with = "Secret::parse_secstr", rename = "data")]
     secret: SecUtf8,
-    #[serde(with = "serde_regex", default = "default_app_selector")]
-    app_selector: Regex,
+    #[serde(default = "AppSelector::default")]
+    app_selector: AppSelector,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -159,7 +182,7 @@ impl Config {
 
                 for (_, companion) in companions_map
                     .iter()
-                    .filter(|(_, companion)| is_full_match(app_name, &companion.app_selector))
+                    .filter(|(_, companion)| companion.app_selector.matches(app_name))
                     .filter(|(_, companion)| predicate(*companion))
                 {
                     let mut config = ServiceConfig::try_from(companion)?;
@@ -233,7 +256,7 @@ impl ContainerConfig {
 impl Service {
     pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &str) {
         if let Some(secrets) = &self.secrets {
-            for s in secrets.iter().filter(|s| s.matches(app_name)) {
+            for s in secrets.iter().filter(|s| s.app_selector.matches(app_name)) {
                 service_config.add_volume(
                     format!("/run/secrets/{}", s.name),
                     // TODO: use secstr in service_config (see issue #8)
@@ -244,18 +267,7 @@ impl Service {
     }
 }
 
-fn is_full_match(s: &str, r: &Regex) -> bool {
-    match r.captures(s) {
-        None => false,
-        Some(captures) => captures.get(0).map_or("", |m| m.as_str()) == s
-    }
-}
-
 impl Secret {
-    pub fn matches(&self, app_name: &str) -> bool {
-        is_full_match(app_name, &self.app_selector)
-    }
-
     fn parse_secstr<'de, D>(deserializer: D) -> Result<SecUtf8, D::Error>
     where
         D: Deserializer<'de>,
