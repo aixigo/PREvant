@@ -33,6 +33,7 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::str::FromStr;
 use url::Url;
+use core::borrow::Borrow;
 
 #[derive(Clone, Debug)]
 pub struct Service {
@@ -77,6 +78,8 @@ pub struct ServiceConfig {
     container_type: ContainerType,
     #[serde(skip)]
     port: u16,
+    #[serde(skip)]
+    docker_volumes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -102,6 +105,7 @@ impl ServiceConfig {
             labels: None,
             container_type: ContainerType::Instance,
             port: 80,
+            docker_volumes: vec![],
         }
     }
 
@@ -158,6 +162,10 @@ impl ServiceConfig {
         }
     }
 
+    pub fn add_docker_volume(&mut self, volume: String) {
+        self.docker_volumes.push(volume)
+    }
+
     pub fn set_volumes(&mut self, volumes: Option<BTreeMap<String, String>>) {
         self.volumes = volumes;
     }
@@ -167,6 +175,10 @@ impl ServiceConfig {
             None => None,
             Some(volumes) => Some(&volumes),
         }
+    }
+
+    pub fn docker_volumes(&self) -> Vec<&str> {
+        self.docker_volumes.iter().map(|s| s.borrow()).collect()
     }
 
     pub fn set_port(&mut self, port: u16) {

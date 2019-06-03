@@ -234,6 +234,7 @@ impl AppsService {
             }
 
             self.config.add_secrets_to(config, app_name);
+            self.config.add_options_to(config, app_name);
         }
 
         let mut service_companions = Vec::new();

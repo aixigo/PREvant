@@ -102,8 +102,17 @@ enum CompanionType {
 }
 
 #[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContainerOptions {
+    volumes: Option<Vec<String>>,
+    // TODO add remaining other options corresponding to shiplift::builder::ContainerOptionsBuilder
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Service {
     secrets: Option<Vec<Secret>>,
+    container_options: Option<ContainerOptions>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -203,6 +212,15 @@ impl Config {
             }
         }
     }
+
+    // TODO should probably be combined with add_secrets_to
+    pub fn add_options_to(&self, service_config: &mut ServiceConfig, app_name: &str) {
+        if let Some(services) = &self.services {
+            if let Some(service) = services.get(service_config.service_name()) {
+                service.add_options_to(service_config, app_name);
+            }
+        }
+    }
 }
 
 impl JiraConfig {
@@ -262,6 +280,17 @@ impl Service {
                     // TODO: use secstr in service_config (see issue #8)
                     String::from(s.secret.unsecure()),
                 );
+            }
+        }
+    }
+
+    pub fn add_options_to(&self, service_config: &mut ServiceConfig, app_name: &str) {
+        debug!("add_options_to {:?}", service_config);
+        if let Some(container_options) = &self.container_options {
+            for volumes in &container_options.volumes {
+                for volume in volumes {
+                    service_config.add_docker_volume(volume.clone());
+                }
             }
         }
     }

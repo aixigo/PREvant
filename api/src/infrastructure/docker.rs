@@ -257,6 +257,7 @@ impl DockerInfrastructure {
 
         options.labels(&labels);
         options.restart_policy("always", 5);
+        options.volumes(service_config.docker_volumes());
 
         if let Some(memory_limit) = container_config.get_memory_limit() {
             options.memory(memory_limit.clone());
