@@ -17,6 +17,7 @@ failure = "0.1"
 futures = "0.1"
 handlebars = "1.1"
 hyper = "0.10"
+lazy_static = "1.3"
 log = "0.4"
 multimap = "0.4"
 serde = "1.0"
@@ -45,8 +46,8 @@ version = "0.12"
 features = ["with_rocket"]
 
 [dependencies.shiplift]
-git = "https://github.com/schrieveslaach/shiplift.git"
-rev = "5b775124537e78c1db307230c45c1f91e1d8353b"
+git = "https://github.com/softprops/shiplift.git"
+rev = "7d9718b33764dea4a85859e94337e471de091332"
 default-features = false
 features = ["unix-socket"]
 

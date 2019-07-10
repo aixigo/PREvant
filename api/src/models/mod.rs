@@ -24,6 +24,9 @@
  * =========================LICENSE_END==================================
  */
 
+pub use app_name::{AppName, AppNameError};
+
+mod app_name;
 pub mod request_info;
 pub mod service;
 pub mod ticket_info;

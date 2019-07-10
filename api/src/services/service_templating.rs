@@ -115,7 +115,7 @@ fn is_not_companion<'reg, 'rc>(
     r: &'reg Handlebars,
     ctx: &Context,
     rc: &mut RenderContext<'reg>,
-    out: &mut Output,
+    out: &mut dyn Output,
 ) -> HelperResult {
     let s = h
         .param(0)
@@ -143,7 +143,7 @@ fn is_companion<'reg, 'rc>(
     r: &'reg Handlebars,
     ctx: &Context,
     rc: &mut RenderContext<'reg>,
-    out: &mut Output,
+    out: &mut dyn Output,
 ) -> HelperResult {
     let s = h
         .param(0)

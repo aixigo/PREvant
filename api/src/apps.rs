@@ -26,11 +26,11 @@
 
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceConfig};
+use crate::models::{AppName, AppNameError};
 use crate::services::apps_service::AppsService;
 use http_api_problem::HttpApiProblem;
 use multimap::MultiMap;
 use rocket::data::{self, FromDataSimple};
-use rocket::http::RawStr;
 use rocket::http::Status;
 use rocket::request::{Form, Request};
 use rocket::Outcome::{Failure, Success};
@@ -57,11 +57,13 @@ pub fn apps(
 
 #[delete("/apps/<app_name>", format = "application/json")]
 pub fn delete_app(
-    app_name: &RawStr,
+    app_name: Result<AppName, AppNameError>,
     apps_service: State<AppsService>,
     request_info: RequestInfo,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
-    let mut services = apps_service.delete_app(&app_name.to_string())?;
+    let app_name = app_name?;
+
+    let mut services = apps_service.delete_app(&app_name)?;
 
     for service in services.iter_mut() {
         service.set_base_url(request_info.get_base_url());
@@ -76,14 +78,16 @@ pub fn delete_app(
     data = "<service_configs_data>"
 )]
 pub fn create_app(
-    app_name: &RawStr,
+    app_name: Result<AppName, AppNameError>,
     apps_service: State<AppsService>,
     create_app_form: Form<CreateAppOptions>,
     request_info: RequestInfo,
     service_configs_data: ServiceConfigsData,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
+    let app_name = app_name?;
+
     let mut services = apps_service.create_or_update(
-        &app_name.to_string(),
+        &app_name,
         create_app_form.replicate_from().clone(),
         &service_configs_data.service_configs,
     )?;
