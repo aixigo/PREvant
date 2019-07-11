@@ -19,7 +19,7 @@
     "mdn-polyfills": "^5.16.0",
     "moment": "^2.22.2",
     "swagger-ui-dist": "^3.22.0",
-    "v-tooltip": "^2.0.0-rc.33",
+    "v-tooltip": "^2.0.0",
     "vue": "^2.6.10",
     "vue-resource": "^1.5.1",
     "vuex": "^3.0.1"
