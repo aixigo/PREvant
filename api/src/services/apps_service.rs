@@ -29,11 +29,13 @@ use crate::infrastructure::Infrastructure;
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{ContainerType, Service, ServiceConfig};
 use crate::models::web_host_meta::WebHostMeta;
+use crate::models::{AppName, LogChunk};
 use crate::services::images_service::{ImagesService, ImagesServiceError};
 use crate::services::service_templating::{
     apply_templating_for_application_companion, apply_templating_for_service_companion,
 };
 use cached::SizedCache;
+use chrono::{DateTime, FixedOffset};
 use handlebars::TemplateRenderError;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
@@ -322,6 +324,23 @@ impl AppsService {
             Some(_) => Ok(self.infrastructure.stop_services(app_name)?),
         }
     }
+
+    pub fn get_logs(
+        &self,
+        app_name: &AppName,
+        service_name: &String,
+        since: &Option<DateTime<FixedOffset>>,
+        limit: usize,
+    ) -> Result<Option<LogChunk>, AppsServiceError> {
+        match self
+            .infrastructure
+            .get_logs(app_name, service_name, since, limit)?
+        {
+            None => Ok(None),
+            Some(ref logs) if logs.is_empty() => Ok(None),
+            Some(logs) => Ok(Some(LogChunk::from(logs))),
+        }
+    }
 }
 
 /// Defines error cases for the `AppService`
@@ -583,6 +602,42 @@ mod tests {
 
         let volumes = configs.get(0).unwrap().volumes();
         assert_eq!(volumes, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_collect_log_chunk_from_infrastructure() -> Result<(), AppsServiceError> {
+        let config = Config::default();
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        let app_name = AppName::from_str("master").unwrap();
+
+        apps.create_or_update(&app_name, None, &service_configs!("service-a", "service-b"))?;
+
+        let log_chunk = apps
+            .get_logs(&app_name, &String::from("service-a"), &None, 100)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            log_chunk.since(),
+            &DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap()
+        );
+
+        assert_eq!(
+            log_chunk.until(),
+            &DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap()
+        );
+
+        assert_eq!(
+            log_chunk.log_lines(),
+            r#"Log msg 1 of service-a of app master
+Log msg 2 of service-a of app master
+Log msg 3 of service-a of app master
+"#
+        );
 
         Ok(())
     }

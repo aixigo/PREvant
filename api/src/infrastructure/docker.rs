@@ -27,6 +27,7 @@
 use crate::config::ContainerConfig;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Image, Service, ServiceConfig, ServiceError};
+use chrono::{DateTime, FixedOffset};
 use failure::Error;
 use futures::future::join_all;
 use futures::{Future, Stream};
@@ -36,7 +37,7 @@ use shiplift::builder::ContainerOptions;
 use shiplift::errors::Error as ShipLiftError;
 use shiplift::rep::{Container, ContainerCreateInfo, ContainerDetails};
 use shiplift::{
-    ContainerConnectionOptions, ContainerFilter, ContainerListOptions, Docker,
+    ContainerConnectionOptions, ContainerFilter, ContainerListOptions, Docker, LogsOptions,
     NetworkCreateOptions, PullOptions,
 };
 use std::collections::HashMap;
@@ -45,6 +46,7 @@ use std::net::{AddrParseError, IpAddr};
 use std::str::FromStr;
 use std::sync::mpsc;
 use tokio::runtime::Runtime;
+use tokio::util::StreamExt;
 
 static APP_NAME_LABEL: &str = "com.aixigo.preview.servant.app-name";
 static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
@@ -585,6 +587,76 @@ impl Infrastructure for DockerInfrastructure {
         }
 
         Ok(configs)
+    }
+
+    fn get_logs(
+        &self,
+        app_name: &String,
+        service_name: &String,
+        from: &Option<DateTime<FixedOffset>>,
+        limit: usize,
+    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, failure::Error> {
+        match self.get_app_container(app_name, service_name)? {
+            None => Ok(None),
+            Some(container) => {
+                let docker = Docker::new();
+                let mut runtime = Runtime::new()?;
+
+                trace!(
+                    "Acquiring logs of container {} since {:?}",
+                    container.id,
+                    from
+                );
+
+                let log_options = match from {
+                    Some(from) => LogsOptions::builder()
+                        .since(from.timestamp())
+                        .stdout(true)
+                        .stderr(true)
+                        .timestamps(true)
+                        .build(),
+                    None => LogsOptions::builder()
+                        .stdout(true)
+                        .stderr(true)
+                        .timestamps(true)
+                        .build(),
+                };
+
+                let cloned_from = from.clone();
+                let logs = runtime.block_on(
+                    docker
+                        .containers()
+                        .get(&container.id)
+                        .logs(&log_options)
+                        .enumerate()
+                        // Unfortunately, docker API does not support head (cf. https://github.com/moby/moby/issues/13096)
+                        // Until then we have to skip these log messages which is super slow…
+                        .filter(move |(index, _)| index < &limit)
+                        .map(|(_, chunk)| {
+                            let line = chunk.as_string_lossy();
+
+                            let mut iter = line.splitn(2, ' ').into_iter();
+                            let timestamp = iter.next()
+                                .expect("This should never happen: docker should return timestamps, separated by space");
+
+                            let datetime = DateTime::parse_from_rfc3339(&timestamp).expect("Expecting a valid timestamp");
+
+                            let log_line : String = iter
+                                .collect::<Vec<&str>>()
+                                .join(" ");
+                            (datetime, log_line)
+                        })
+                        .filter(move |(timestamp, _)| {
+                            // Due to the fact that docker's REST API supports only unix time (cf. since),
+                            // it is necessary to filter the timestamps as well.
+                            cloned_from.map(|from| timestamp >= &from).unwrap_or_else(|| true)
+                        })
+                        .collect()
+                )?;
+
+                Ok(Some(logs))
+            }
+        }
     }
 }
 

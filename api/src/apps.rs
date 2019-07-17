@@ -26,13 +26,15 @@
 
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceConfig};
-use crate::models::{AppName, AppNameError};
+use crate::models::{AppName, AppNameError, LogChunk};
 use crate::services::apps_service::AppsService;
+use chrono::DateTime;
 use http_api_problem::HttpApiProblem;
 use multimap::MultiMap;
 use rocket::data::{self, FromDataSimple};
 use rocket::http::Status;
 use rocket::request::{Form, Request};
+use rocket::response::{Responder, Response};
 use rocket::Outcome::{Failure, Success};
 use rocket::{Data, State};
 use rocket_contrib::json::Json;
@@ -99,6 +101,50 @@ pub fn create_app(
     Ok(Json(services))
 }
 
+#[get(
+    "/apps/<app_name>/logs/<service_name>?<since>&<limit>",
+    format = "text/plain"
+)]
+pub fn logs(
+    app_name: Result<AppName, AppNameError>,
+    service_name: String,
+    since: Option<String>,
+    limit: Option<usize>,
+    apps_service: State<AppsService>,
+) -> Result<LogsResponse, HttpApiProblem> {
+    let app_name = app_name?;
+
+    let since = match since {
+        None => None,
+        Some(since) => match DateTime::parse_from_rfc3339(&since) {
+            Ok(since) => Some(since),
+            Err(err) => {
+                return Err(HttpApiProblem::with_title_and_type_from_status(
+                    http_api_problem::StatusCode::BAD_REQUEST,
+                )
+                .set_detail(format!("{}", err)));
+            }
+        },
+    };
+    let limit = limit.unwrap_or(20_000);
+
+    let log_chunk = apps_service.get_logs(&app_name, &service_name, &since, limit)?;
+
+    Ok(LogsResponse {
+        log_chunk,
+        app_name,
+        service_name,
+        limit,
+    })
+}
+
+pub struct LogsResponse {
+    log_chunk: Option<LogChunk>,
+    app_name: AppName,
+    service_name: String,
+    limit: usize,
+}
+
 #[derive(FromForm)]
 pub struct CreateAppOptions {
     #[form(field = "replicateFrom")]
@@ -135,5 +181,33 @@ impl FromDataSimple for ServiceConfigsData {
         };
 
         Success(ServiceConfigsData { service_configs })
+    }
+}
+
+impl Responder<'static> for LogsResponse {
+    fn respond_to(self, _request: &Request) -> Result<Response<'static>, Status> {
+        let log_chunk = match self.log_chunk {
+            None => {
+                return Ok(
+                    HttpApiProblem::from(http_api_problem::StatusCode::NOT_FOUND)
+                        .to_rocket_response(),
+                )
+            }
+            Some(log_chunk) => log_chunk,
+        };
+
+        let from = log_chunk.until().clone() + chrono::Duration::milliseconds(1);
+
+        let next_logs_url = format!(
+            "/api/apps/{}/logs/{}/?limit={}&since={}",
+            self.app_name,
+            self.service_name,
+            self.limit,
+            rocket::http::uri::Uri::percent_encode(&from.to_rfc3339()),
+        );
+        Response::build()
+            .raw_header("Link", format!("<{}>;rel=next", next_logs_url))
+            .sized_body(std::io::Cursor::new(log_chunk.log_lines().clone()))
+            .ok()
     }
 }

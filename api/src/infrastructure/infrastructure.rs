@@ -26,6 +26,7 @@
 
 use crate::config::ContainerConfig;
 use crate::models::service::{Service, ServiceConfig};
+use chrono::{DateTime, FixedOffset};
 use failure::Error;
 use multimap::MultiMap;
 
@@ -53,4 +54,13 @@ pub trait Infrastructure: Send + Sync {
     /// Returns the configuration of all services running for the given application name.
     /// It is required that the configurations of the companions are excluded.
     fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error>;
+
+    /// Returns the log lines with a the corresponding timestamps in it.
+    fn get_logs(
+        &self,
+        app_name: &String,
+        service_name: &String,
+        from: &Option<DateTime<FixedOffset>>,
+        limit: usize,
+    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error>;
 }

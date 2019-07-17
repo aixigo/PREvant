@@ -25,7 +25,7 @@
  */
 <template>
    <div ref="dialog" class="modal fade" tabindex="-1" role="dialog">
-      <div class="modal-dialog modal-dialog-centered" role="document">
+      <div class="modal-dialog modal-dialog-centered" :class="{ 'modal-large': large }" role="document">
          <div class="modal-content">
             <div class="modal-header">
                <h5 class="modal-title">{{ title }}</h5>
@@ -48,6 +48,12 @@
    </div>
 </template>
 
+<style>
+   .modal-large {
+      max-width: 90vw !important;
+   }
+</style>
+
 <script>
    export default {
       data() {
@@ -56,7 +62,13 @@
       props: {
          title: {type: String},
          errorStatusText: {type: String},
-         errorStatus: {type: Number}
+         errorStatus: {type: Number},
+         large: {type: Boolean, default: false}
+      },
+      mounted() {
+         $(this.$refs.dialog).on('hide.bs.modal', () => {
+            this.$emit('close');
+         })
       },
       methods: {
          open() {

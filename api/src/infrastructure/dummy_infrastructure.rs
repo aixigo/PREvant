@@ -28,6 +28,7 @@ use crate::config::ContainerConfig;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::Service;
 use crate::models::service::ServiceConfig;
+use chrono::{DateTime, FixedOffset};
 use multimap::MultiMap;
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -105,5 +106,28 @@ impl Infrastructure for DummyInfrastructure {
             None => Ok(vec![]),
             Some(configs) => Ok(configs.clone()),
         }
+    }
+
+    fn get_logs(
+        &self,
+        app_name: &String,
+        service_name: &String,
+        _from: &Option<DateTime<FixedOffset>>,
+        _limit: usize,
+    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, failure::Error> {
+        Ok(Some(vec![
+            (
+                DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(),
+                format!("Log msg 1 of {} of app {}\n", service_name, app_name),
+            ),
+            (
+                DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
+                format!("Log msg 2 of {} of app {}\n", service_name, app_name),
+            ),
+            (
+                DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(),
+                format!("Log msg 3 of {} of app {}\n", service_name, app_name),
+            ),
+        ]))
     }
 }

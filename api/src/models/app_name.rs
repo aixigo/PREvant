@@ -43,6 +43,12 @@ impl Deref for AppName {
     }
 }
 
+impl std::fmt::Display for AppName {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl FromStr for AppName {
     type Err = AppNameError;
 
