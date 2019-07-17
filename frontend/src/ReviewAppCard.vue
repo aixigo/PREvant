@@ -79,10 +79,10 @@
                  class="ra-container">
 
                <div class="ra-container__type"
-                    :class="{ 'is-expanded': isExpandable( container ) && isExpanded( container ) }"
+                    :class="{ 'is-expanded': isExpanded( container ) }"
                     @click="toggleContainer( container )">
 
-                  <template v-if="isExpandable( container )">
+                  <template>
                      <i v-if="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
                      <i v-else="!isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
                   </template>
@@ -108,6 +108,8 @@
                      <div class="ra-build-infos">
                         <a v-if="container.openApiUrl" href="#" @click="currentApiUrl = container.openApiUrl">API
                            Documentation</a>
+
+                        <a href="#" @click="showLogs($event, container.name)">Logs</a>
                      </div>
 
                      <div v-if="container.version && container.version.dateModified" class="ra-build-infos">
@@ -285,16 +287,15 @@
          toggleContainer(container) {
             this.$set(this.expandedContainers, [container.name], !this.isExpanded(container));
          },
-         isExpandable(container) {
-            return container.openApiUrl != null ||
-               (container.version != null && container.version.dateModified != null);
-         },
          isExpanded(container) {
             if (this.expandedContainers[container.name] == undefined) {
                return container.openApiUrl != null;
             }
 
             return this.expandedContainers[container.name] == true;
+         },
+         showLogs(event, service) {
+            this.$emit('showLogs', this.reviewApp.name, service)
          }
       }
    }

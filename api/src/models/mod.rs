@@ -25,8 +25,10 @@
  */
 
 pub use app_name::{AppName, AppNameError};
+pub use logs_chunks::LogChunk;
 
 mod app_name;
+mod logs_chunks;
 pub mod request_info;
 pub mod service;
 pub mod ticket_info;

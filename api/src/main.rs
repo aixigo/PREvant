@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-#![feature(custom_attribute, proc_macro_hygiene, decl_macro)]
+#![feature(custom_attribute, proc_macro_hygiene, decl_macro, option_flattening)]
 
 #[macro_use]
 extern crate cached;
@@ -70,7 +70,7 @@ fn index() -> CacheResponse<Option<NamedFile>> {
     }
 }
 
-#[get("/<path..>")]
+#[get("/<path..>", rank = 100)]
 fn files(path: PathBuf) -> CacheResponse<Option<NamedFile>> {
     CacheResponse::Private {
         responder: NamedFile::open(Path::new("frontend/").join(path)).ok(),
@@ -135,6 +135,7 @@ fn main() {
         .mount("/", routes![index])
         .mount("/openapi.yaml", routes![openapi])
         .mount("/", routes![files])
+        .mount("/api", routes![apps::logs])
         .mount("/api", routes![apps::apps])
         .mount("/api", routes![apps::create_app])
         .mount("/api", routes![apps::delete_app])

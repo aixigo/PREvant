@@ -103,13 +103,7 @@ paths:
     delete:
       summary: Shutdown a review app
       parameters:
-        - in: path
-          name: appName
-          allowEmptyValue: false
-          schema:
-            type: string
-          required: true
-          description: Name of review app to delete
+        - $ref: '#/components/parameters/appName'
       responses:
         '200':
           description: 'List of deleted containers'
@@ -131,6 +125,43 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /apps/{appName}/logs/{serviceName}/:
+    get:
+      summary: Retrieves the logs from stdout/stderr of the specified container.
+      parameters:
+        - $ref: '#/components/parameters/appName'
+        - in: path
+          name: serviceName
+          description: Name of the service
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: since
+          description: >-
+            Date and time since when the logs have to retrieved. By default the logs from the beginning are crawled.
+          schema:
+            type: string
+            format: date-time
+          example: '2019-07-22T08:42:47-00:00'
+        - in: query
+          name: limit
+          description: The number of log lines to retrieve. If not present, 1000 lines will be retrieved.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The available log statements
+          headers:
+            Link:
+              schema:
+                type: string
+              description: The links for pagination
+              example: </apps/master/logs/service-a/?limit=1000&since=2019-07-22T08:42:47-00:00>;rel=next
+          content:
+            text/plain:
+              schema:
+                type: string
   /webhooks/:
     post:
       summary: Cleans up apps when webhook triggers this resource.
@@ -169,6 +200,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
 components:
+  parameters:
+    appName:
+      in: path
+      name: appName
+      allowEmptyValue: false
+      schema:
+        type: string
+      required: true
+      description: Name of the application
   schemas:
     Service:
       type: object

@@ -33,6 +33,7 @@
             v-for="reviewApp in appsWithoutTicket(reviewApps)"
             :key="reviewApp.name"
             :review-app="reviewApp"
+            v-on:showLogs="showServiceLogs"
             class="list-complete-item"/>
       </transition-group>
 
@@ -42,8 +43,11 @@
             v-for="reviewApp in appsWithTicket(reviewApps)"
             :key="reviewApp.name"
             :review-app="reviewApp"
+            v-on:showLogs="showServiceLogs"
             class="list-complete-item"/>
       </transition-group>
+
+      <logs-dialog ref="logsDialog" :app-name="selectLogs.appName" :service-name="selectLogs.serviceName"/>
    </div>
 </template>
 
@@ -66,14 +70,21 @@
 
 <script>
    import { mapGetters } from 'vuex';
+   import LogsDialog from './LogsDialog.vue';
    import ReviewAppCard from './ReviewAppCard.vue';
 
    export default {
       data() {
-         return {};
+         return {
+            selectLogs: {
+               appName: null,
+               serviceName: null,
+            }
+         };
       },
       components: {
-         'review-app-card': ReviewAppCard
+         'review-app-card': ReviewAppCard,
+         'logs-dialog': LogsDialog
       },
       computed: {
          ...mapGetters( [ 'reviewApps' ] )
@@ -87,6 +98,12 @@
          appsWithoutTicket( apps ) {
             const self = this;
             return apps.filter( app => self.$store.state.tickets[ app.name ] === undefined );
+         },
+
+         showServiceLogs( appName, serviceName ) {
+            this.selectLogs.appName = appName;
+            this.selectLogs.serviceName = serviceName;
+            this.$refs.logsDialog.open();
          }
       }
    };
