@@ -38,6 +38,15 @@ module.exports = {
     module: {
         rules: [
             {
+                test: /.vue$/,
+                loader: 'vue-loader'
+            },
+            {
+                test: /\.js$/,
+                loader: 'babel-loader',
+                include: [path.join(__dirname, 'src'), path.join(__dirname, 'node_modules')]
+            },
+            {
                 test: /\.s?css$/,
                 use: [
                     devMode ? 'style-loader' : MiniCssExtractPlugin.loader,
@@ -52,25 +61,11 @@ module.exports = {
                 ]
             },
             {
-                test: /\.m?js$/,
-                loader: 'babel-loader',
-                exclude: /node_modules/,
-                options: {
-                    presets: [
-                        '@babel/preset-env'
-                    ]
-                }
-            },
-            {
                 test: /\.(gif|jpe?g|png|ttf|woff2?|svg|eot|otf)(\?.*)?$/,
                 loader: 'file-loader',
                 options: {
                     name: '[name].[ext]?[hash]'
                 }
-            },
-            {
-                test: /.vue$/,
-                loader: 'vue-loader'
             }
         ]
     },

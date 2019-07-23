@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
+import 'intersection-observer';
 import 'mdn-polyfills/Object.assign';
 import 'mdn-polyfills/Object.entries';
 import 'mdn-polyfills/String.prototype.endsWith';
