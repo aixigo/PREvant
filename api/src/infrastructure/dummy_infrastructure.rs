@@ -62,6 +62,7 @@ impl Infrastructure for DummyInfrastructure {
                         app.clone(),
                         config.service_name().clone(),
                         config.container_type().clone(),
+                        DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
                     ),
                 );
             }

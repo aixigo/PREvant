@@ -29,6 +29,12 @@ use chrono::{DateTime, Utc};
 pub struct WebHostMeta {
     properties: Option<Properties>,
     links: Option<Vec<Link>>,
+    #[serde(default = "valid_web_host")]
+    valid: bool,
+}
+
+fn valid_web_host() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -52,7 +58,20 @@ impl WebHostMeta {
         WebHostMeta {
             properties: None,
             links: None,
+            valid: true,
         }
+    }
+
+    pub fn invalid() -> Self {
+        WebHostMeta {
+            properties: None,
+            links: None,
+            valid: false,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.valid
     }
 
     pub fn is_empty(&self) -> bool {
