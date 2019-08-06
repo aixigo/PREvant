@@ -25,7 +25,7 @@
  */
 
 use crate::models::web_host_meta::WebHostMeta;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use regex::Regex;
 use serde::ser::{Serialize, Serializer};
 use serde::{de, Deserialize, Deserializer};
@@ -44,6 +44,7 @@ pub struct Service {
     base_url: Option<Url>,
     endpoint: Option<ServiceEndpoint>,
     web_host_meta: Option<WebHostMeta>,
+    started_at: DateTime<FixedOffset>,
 }
 
 #[derive(Clone, Debug)]
@@ -184,6 +185,7 @@ impl Service {
         app_name: String,
         service_name: String,
         container_type: ContainerType,
+        started_at: DateTime<FixedOffset>,
     ) -> Service {
         Service {
             id,
@@ -193,6 +195,7 @@ impl Service {
             base_url: None,
             endpoint: None,
             web_host_meta: None,
+            started_at,
         }
     }
 
@@ -255,6 +258,10 @@ impl Service {
     pub fn set_web_host_meta(&mut self, meta: Option<WebHostMeta>) {
         self.web_host_meta = meta;
     }
+
+    pub fn started_at(&self) -> &DateTime<FixedOffset> {
+        &self.started_at
+    }
 }
 
 impl Serialize for Service {
@@ -294,8 +301,8 @@ impl Serialize for Service {
         let s = Service {
             name: &self.service_name,
             url: match self.web_host_meta {
-                None => None,
-                Some(_) => self.service_url().map(|url| url.to_string()),
+                Some(ref meta) if meta.is_valid() => self.service_url().map(|url| url.to_string()),
+                _ => None,
             },
             service_type: self.container_type.to_string(),
             version,

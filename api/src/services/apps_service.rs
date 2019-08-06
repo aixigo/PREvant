@@ -35,7 +35,7 @@ use crate::services::service_templating::{
     apply_templating_for_application_companion, apply_templating_for_service_companion,
 };
 use cached::SizedCache;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 use handlebars::TemplateRenderError;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
@@ -84,7 +84,15 @@ cached_key_result! {
         match get_request {
             Err(err) => {
                 debug!("Cannot acquire host meta for service {} of {}: {}", Paint::magenta(service.service_name()), Paint::magenta(service.app_name()), err);
-                Err(())
+
+                let duration = Utc::now().signed_duration_since(service.started_at().clone());
+                match duration {
+                    duration if duration >= chrono::Duration::minutes(5) => {
+                        trace!("Service {} is running for {}, therefore, it will be assumed that host-meta.json is not available.", service.service_name(), duration);
+                        Ok(WebHostMeta::invalid())
+                    },
+                    _ => Err(())
+                }
             }
             Ok(mut response) => match response.json::<WebHostMeta>() {
                 Err(err) => {

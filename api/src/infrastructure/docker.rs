@@ -284,8 +284,9 @@ impl DockerInfrastructure {
             container_info.id, network_id
         );
 
-        let mut service =
-            Service::try_from(&self.get_app_container_by_id(&container_info.id)?.unwrap())?;
+        let container_details = runtime.block_on(containers.get(&container_info.id).inspect())?;
+
+        let mut service = Service::try_from(&container_details)?;
         service.set_container_type(service_config.container_type().clone());
 
         if let Some(image) = image_to_delete {
@@ -383,24 +384,6 @@ impl DockerInfrastructure {
                 None => false,
                 Some(service) => service == service_name,
             })
-            .map(|c| c.to_owned())
-            .next())
-    }
-
-    fn get_app_container_by_id(
-        &self,
-        container_id: &String,
-    ) -> Result<Option<Container>, ShipLiftError> {
-        let docker = Docker::new();
-        let containers = docker.containers();
-        let mut runtime = Runtime::new()?;
-
-        let list_options = ContainerListOptions::builder().build();
-
-        Ok(runtime
-            .block_on(containers.list(&list_options))?
-            .iter()
-            .filter(|c| container_id == &c.id)
             .map(|c| c.to_owned())
             .next())
     }
@@ -710,52 +693,20 @@ impl TryFrom<&ContainerDetails> for Service {
             }
         };
 
+        let started_at = chrono::DateTime::parse_from_rfc3339(&container_details.state.started_at)
+            .expect("Docker did not respond with valid RFC3387 date time");
+
         let mut service = Service::new(
             container_details.id.clone(),
             app_name.clone(),
             service_name.clone(),
             container_type,
+            started_at,
         );
 
         service.set_endpoint(addr, port);
 
         Ok(service)
-    }
-}
-
-impl TryFrom<&Container> for Service {
-    type Error = DockerInfrastructureError;
-
-    fn try_from(c: &Container) -> Result<Service, DockerInfrastructureError> {
-        let service_name = match c.labels.get(SERVICE_NAME_LABEL) {
-            Some(name) => name,
-            None => {
-                return Err(DockerInfrastructureError::MissingServiceNameLabel {
-                    container_id: c.id.clone(),
-                });
-            }
-        };
-
-        let app_name = match c.labels.get(APP_NAME_LABEL) {
-            Some(name) => name,
-            None => {
-                return Err(DockerInfrastructureError::MissingAppNameLabel {
-                    container_id: c.id.clone(),
-                });
-            }
-        };
-
-        let container_type = match c.labels.get(CONTAINER_TYPE_LABEL) {
-            None => ContainerType::Instance,
-            Some(lb) => lb.parse::<ContainerType>()?,
-        };
-
-        Ok(Service::new(
-            c.id.clone(),
-            app_name.clone(),
-            service_name.clone(),
-            container_type,
-        ))
     }
 }
 
