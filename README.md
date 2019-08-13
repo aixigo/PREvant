@@ -1,4 +1,5 @@
-[![](https://images.microbadger.com/badges/image/aixigo/prevant.svg)](https://microbadger.com/images/aixigo/prevant)
+[![Docker Image](https://images.microbadger.com/badges/image/aixigo/prevant.svg)](https://microbadger.com/images/aixigo/prevant)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 # PREvant In a Nutshell
 
