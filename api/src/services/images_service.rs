@@ -26,7 +26,6 @@
 
 use crate::models::service::{Image, ServiceConfig};
 use dkregistry::errors::Error as DKRegistryError;
-use dkregistry::reference;
 use futures::Future;
 use regex::Regex;
 use std::collections::HashMap;
@@ -52,18 +51,20 @@ impl ImagesService {
         let mut port_mappings = HashMap::new();
 
         for config in configs.iter() {
-            if let Image::Digest { hash: _ } = config.image() {
+            let image = config.image();
+
+            if let Image::Digest { hash: _ } = image {
                 break;
             }
 
-            let reference = reference::Reference::from_str(&config.image().to_string())?;
+            debug!("Resolve image manifest for {}", config.image().to_string());
+
+            let client = dkregistry::v2::Client::configure()
+                .registry(&image.registry().unwrap())
+                .build()?;
 
             let image = config.image().name().unwrap();
             let tag = config.image().tag().unwrap();
-
-            let client = dkregistry::v2::Client::configure(&core.handle())
-                .registry(&reference.registry())
-                .build()?;
 
             let futures = futures::future::ok::<_, DKRegistryError>(client)
                 .and_then(|dclient| Ok(dclient))
