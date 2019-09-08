@@ -240,7 +240,7 @@ impl DockerInfrastructure {
         // PathPrefixStrip so that the request to the service contains the X-Forwarded-Prefix header
         // which can be used by the service to generate dynamic links.
         let traefik_frontend = format!(
-            "ReplacePathRegex: ^/{app_name}/{service_name}/(.*) /$1;PathPrefix:/{app_name}/{service_name}/;",
+            "PathPrefixStrip: /{app_name}/{service_name}/;",
             app_name = app_name,
             service_name = service_config.service_name()
         );
