@@ -28,7 +28,7 @@ use crate::config::ContainerConfig;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::Service;
 use crate::models::service::ServiceConfig;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 use multimap::MultiMap;
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -62,7 +62,9 @@ impl Infrastructure for DummyInfrastructure {
                         app.clone(),
                         config.service_name().clone(),
                         config.container_type().clone(),
-                        DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
+                        DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
+                            .unwrap()
+                            .with_timezone(&Utc),
                     ),
                 );
             }

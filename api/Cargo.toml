@@ -50,9 +50,9 @@ features = ["with_rocket"]
 
 [dependencies.shiplift]
 git = "https://github.com/softprops/shiplift.git"
-rev = "7d9718b33764dea4a85859e94337e471de091332"
+rev = "f10534b3179dcbc2667b1c6aed3039a5f3a40f0f"
 default-features = false
-features = ["unix-socket"]
+features = ["unix-socket", "chrono"]
 
 [dependencies.goji]
 git = "https://github.com/softprops/goji.git"

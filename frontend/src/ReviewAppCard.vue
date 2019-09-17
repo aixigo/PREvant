@@ -125,8 +125,8 @@
                         v-tooltip="tooltip( container.type )">{{ container.type }}</span>
                   <span v-if="container.version && container.version.gitCommit"
                         class="ra-build-infos ra-build-infos__hash text-right"
-                        :title="container.version.gitCommit">
-                     {{ container.version.gitCommit.slice( 0, 7 ) }}…
+                        :title="container.version | version">
+                     {{ container.version | slicedVersion }}
                      <!-- only for layout -->
                      <!-- c63ae57… -->
                   </span>
@@ -196,6 +196,12 @@
                return date.toDate().toLocaleTimeString()
             }
             return buildDateTime;
+         },
+         version(v) {
+            return formatVersion(v);
+         },
+         slicedVersion(v) {
+            return formatSlicedVersion(v);
          }
       },
       props: {
@@ -221,7 +227,7 @@
                this.reviewApp.containers
                   .filter(container => !!container.version)
                   .forEach(container => {
-                     res[container.name] = container.version.gitCommit;
+                     res[container.name] = formatVersion(container.version);
                   });
             }
 
@@ -307,4 +313,32 @@
          .map(({version}) => version.dateModified)
          .reduce(max, 0);
    };
+
+   function formatVersion(version) {
+      if (version.softwareVersion != null) {
+         if (version.gitCommit != null) {
+            return `${version.softwareVersion} (Commit: ${version.gitCommit})`;
+         } else {
+            return version.softwareVersion;
+         }
+      }
+
+      if (version.gitCommit != null) {
+         return version.gitCommit;
+      }
+
+      return '';
+   }
+
+   function formatSlicedVersion(version) {
+      if (version.softwareVersion != null) {
+         return version.softwareVersion.slice(0, 16);
+      }
+
+      if (version.gitCommit != null) {
+         return version.gitCommit.slice(0, 7);
+      }
+
+      return '';
+   }
 </script>

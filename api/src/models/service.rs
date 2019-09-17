@@ -25,7 +25,7 @@
  */
 
 use crate::models::web_host_meta::WebHostMeta;
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::ser::{Serialize, Serializer};
 use serde::{de, Deserialize, Deserializer};
@@ -44,7 +44,7 @@ pub struct Service {
     base_url: Option<Url>,
     endpoint: Option<ServiceEndpoint>,
     web_host_meta: Option<WebHostMeta>,
-    started_at: DateTime<FixedOffset>,
+    started_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug)]
@@ -185,7 +185,7 @@ impl Service {
         app_name: String,
         service_name: String,
         container_type: ContainerType,
-        started_at: DateTime<FixedOffset>,
+        started_at: DateTime<Utc>,
     ) -> Service {
         Service {
             id,
@@ -259,7 +259,7 @@ impl Service {
         self.web_host_meta = meta;
     }
 
-    pub fn started_at(&self) -> &DateTime<FixedOffset> {
+    pub fn started_at(&self) -> &DateTime<Utc> {
         &self.started_at
     }
 }

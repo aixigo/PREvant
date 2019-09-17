@@ -593,7 +593,7 @@ impl Infrastructure for DockerInfrastructure {
 
                 let log_options = match from {
                     Some(from) => LogsOptions::builder()
-                        .since(from.timestamp())
+                        .since(from)
                         .stdout(true)
                         .stderr(true)
                         .timestamps(true)
@@ -693,8 +693,7 @@ impl TryFrom<&ContainerDetails> for Service {
             }
         };
 
-        let started_at = chrono::DateTime::parse_from_rfc3339(&container_details.state.started_at)
-            .expect("Docker did not respond with valid RFC3387 date time");
+        let started_at = container_details.state.started_at.clone();
 
         let mut service = Service::new(
             container_details.id.clone(),
