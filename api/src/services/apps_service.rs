@@ -261,8 +261,14 @@ impl AppsService {
             );
         }
 
-        configs.extend(service_companions);
-        configs.extend(self.get_application_companion_configs(app_name, &configs)?);
+        configs.extend(AppsService::filter_companions_by_service_name(
+            service_companions,
+            &configs,
+        ));
+        configs.extend(AppsService::filter_companions_by_service_name(
+            self.get_application_companion_configs(app_name, &configs)?,
+            &configs,
+        ));
 
         configs.sort_unstable_by(|a, b| {
             let index1 = AppsService::container_type_index(a.container_type());
@@ -277,6 +283,21 @@ impl AppsService {
         )?;
 
         Ok(services)
+    }
+
+    fn filter_companions_by_service_name(
+        companions: Vec<ServiceConfig>,
+        service_configs: &Vec<ServiceConfig>,
+    ) -> Vec<ServiceConfig> {
+        companions
+            .into_iter()
+            .filter(|companion| {
+                service_configs
+                    .iter()
+                    .find(|c| companion.service_name() == c.service_name())
+                    .is_none()
+            })
+            .collect()
     }
 
     fn get_application_companion_configs(
@@ -646,6 +667,72 @@ Log msg 2 of service-a of app master
 Log msg 3 of service-a of app master
 "#
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_deploy_companions() -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+
+            [companions.db]
+            serviceName = 'db'
+            type = 'service'
+            image = 'private.example.com/library/db:latest'
+        "#
+        );
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        let app_name = AppName::from_str("master").unwrap();
+        apps.create_or_update(&app_name, None, &service_configs!("service-a"))?;
+
+        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
+        let deployed_apps = apps.get_apps(&info)?;
+
+        let services = deployed_apps.get_vec("master").unwrap();
+        assert_eq!(services.len(), 3);
+        assert_contains_service!(services, "openid", ContainerType::ApplicationCompanion);
+        assert_contains_service!(services, "db", ContainerType::ServiceCompanion);
+        assert_contains_service!(services, "service-a", ContainerType::Instance);
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_filter_companions_if_services_to_deploy_contain_same_service_name(
+    ) -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+
+            [companions.db]
+            serviceName = 'db'
+            type = 'service'
+            image = 'private.example.com/library/db:latest'
+        "#
+        );
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        let app_name = AppName::from_str("master").unwrap();
+        apps.create_or_update(&app_name, None, &service_configs!("openid", "db"))?;
+
+        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
+        let deployed_apps = apps.get_apps(&info)?;
+
+        let services = deployed_apps.get_vec("master").unwrap();
+        assert_eq!(services.len(), 2);
+        assert_contains_service!(services, "openid", ContainerType::Instance);
+        assert_contains_service!(services, "db", ContainerType::Instance);
 
         Ok(())
     }
