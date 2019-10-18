@@ -41,10 +41,10 @@ extern crate rocket;
 #[macro_use]
 extern crate serde_derive;
 
+use crate::apps::Apps;
 use crate::config::Config;
 use crate::infrastructure::Docker;
 use crate::models::request_info::RequestInfo;
-use crate::services::apps_service::AppsService;
 use clap::{App, Arg};
 use env_logger::Env;
 use rocket::response::NamedFile;
@@ -121,7 +121,7 @@ fn main() {
         }
     };
 
-    let apps_service = match AppsService::new(config.clone(), Box::new(Docker::new())) {
+    let apps = match Apps::new(config.clone(), Box::new(Docker::new())) {
         Ok(apps_service) => apps_service,
         Err(e) => {
             error!("Cannot create apps service: {}", e);
@@ -131,14 +131,11 @@ fn main() {
 
     rocket::ignite()
         .manage(config)
-        .manage(apps_service)
+        .manage(apps)
         .mount("/", routes![index])
         .mount("/openapi.yaml", routes![openapi])
         .mount("/", routes![files])
-        .mount("/api", routes![apps::logs])
-        .mount("/api", routes![apps::apps])
-        .mount("/api", routes![apps::create_app])
-        .mount("/api", routes![apps::delete_app])
+        .mount("/api/apps", crate::apps::routes())
         .mount("/api", routes![tickets::tickets])
         .mount("/api", routes![webhooks::webhooks])
         .launch();

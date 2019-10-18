@@ -26,7 +26,7 @@
 
 <template>
    <div>
-      <div class="card" :class="backgroundClass" :id="reviewApp.name">
+      <div class="card">
          <div class="card-header">
             <div class="d-flex justify-content-between">
                <h4 v-if="reviewApp.ticket !== undefined"
@@ -76,7 +76,8 @@
          <div class="card-body">
             <div v-for="container in reviewApp.containers"
                  :key="container.name"
-                 class="ra-container">
+                 class="ra-container"
+                 :class="{ 'ra-container__paused': container.status !== 'running' }">
 
                <div class="ra-container__type"
                     :class="{ 'is-expanded': isExpanded( container ) }"
@@ -101,6 +102,15 @@
                   <h5>
                      <a v-if="container.url" :href='container.url' target="_blank">{{ container.name }}</a>
                      <span v-else>{{ container.name }}</span>
+
+                     <button type="button" class="btn btn-dark ra-container__change-status" @click="changeState($event, container.name)">
+                        <template v-if="container.status === 'running'">
+                           <i class="ra-icons  material-icons">pause_circle_outline</i>
+                        </template>
+                        <template v-else>
+                           <i class="ra-icons  material-icons">play_circle_outline</i>
+                        </template>
+                     </button>
                   </h5>
 
                   <div class="ra-build-infos__wrapper"
@@ -238,13 +248,6 @@
                Object.entries(this.containerVersions).map(([k, v]) => `${k}=${v}`).join(', ');
             return `[${this.reviewApp.name}@${latestBuildTime(this.reviewApp)}; ${versions}]`;
          },
-         backgroundClass() {
-            if (this.currentAppName === this.reviewApp.name) {
-               return 'bg-emphasize'
-            }
-
-            return '';
-         }
       },
       methods: {
          duplicateApp() {
@@ -301,7 +304,10 @@
             return this.expandedContainers[container.name] == true;
          },
          showLogs(event, service) {
-            this.$emit('showLogs', this.reviewApp.name, service)
+            this.$emit('showLogs', this.reviewApp.name, service);
+         },
+         changeState(event, service) {
+            this.$emit('changeState', this.reviewApp.name, service);
          }
       }
    }

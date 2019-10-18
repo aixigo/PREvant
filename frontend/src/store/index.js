@@ -40,7 +40,7 @@ function timeout(ms, promise) {
     return new Promise(function(resolve, reject) {
         setTimeout(function() {
             reject(new Error("timeout"))
-        }, ms)
+        }, ms);
         promise.then(resolve, reject)
     })
 }
@@ -81,9 +81,9 @@ export default new Vuex.Store( {
 
             const containers = [
                ...appContainers
-                  .map( ( { name, url, openApiUrl, version, type } ) => {
+                  .map( ( { name, url, openApiUrl, version, type, state } ) => {
                      return {
-                         name, url, openApiUrl, version, type
+                         name, url, openApiUrl, version, type, status: state.status
                      };
                   } )
             ];
@@ -123,6 +123,11 @@ export default new Vuex.Store( {
          } );
       },
 
+      updateServiceStatus( state, { appName, serviceName, serviceStatus } ) {
+         const service = state.apps[appName].find(service => service.name == serviceName);
+         service.state.status = serviceStatus;
+      },
+
       filterByAppName( state, appNameFilter ) {
          state.appNameFilter = appNameFilter.toLocaleLowerCase();
       }
@@ -147,6 +152,29 @@ export default new Vuex.Store( {
          ]).then((values) => {
             context.commit( "storeTickets", values[1] );
             context.commit( "storeApps", values[0] );
+         });
+      },
+
+      changeServiceState( context, { appName, serviceName } ) {
+         const service = context.state.apps[ appName ].find( service => service.name === serviceName );
+         let newStatus;
+         if( service.state.status === 'running' ) {
+            newStatus = 'paused';
+         } else {
+            newStatus = 'running';
+         }
+
+         fetch(`/api/apps/${appName}/states/${serviceName}`, {
+            method: 'PUT',
+            headers: {
+               'Content-Type': 'application/json',
+               'Accept': 'application/json',
+            },
+            body: JSON.stringify( { status: newStatus } )
+         }).then(response => {
+            if( response.status === 202 ) {
+               context.commit( "updateServiceStatus", { appName, serviceName, serviceStatus: newStatus } );
+            }
          });
       }
    }

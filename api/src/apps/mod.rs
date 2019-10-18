@@ -23,31 +23,10 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+mod apps;
+mod routes;
 
-use crate::apps::delete_app;
-use crate::apps::Apps;
-use crate::models::request_info::RequestInfo;
-use crate::models::service::Service;
-use crate::models::web_hook_info::WebHookInfo;
-use crate::models::AppName;
-use http_api_problem::HttpApiProblem;
-use rocket::State;
-use rocket_contrib::json::Json;
-use std::str::FromStr;
-
-#[post("/webhooks", format = "application/json", data = "<web_hook_info>")]
-pub fn webhooks(
-    apps: State<Apps>,
-    web_hook_info: WebHookInfo,
-    request_info: RequestInfo,
-) -> Result<Json<Vec<Service>>, HttpApiProblem> {
-    info!(
-        "Deleting app {:?} through web hook {:?} with event {:?}",
-        web_hook_info.get_app_name(),
-        web_hook_info.get_title(),
-        web_hook_info.get_event_key()
-    );
-
-    let app_name = AppName::from_str(&web_hook_info.get_app_name());
-    delete_app(app_name, apps, request_info)
-}
+pub use apps::AppsService as Apps;
+pub use apps::AppsServiceError as AppsError;
+pub use routes::delete_app;
+pub use routes::routes;

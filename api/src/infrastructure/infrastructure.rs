@@ -25,7 +25,7 @@
  */
 
 use crate::config::ContainerConfig;
-use crate::models::service::{Service, ServiceConfig};
+use crate::models::service::{Service, ServiceConfig, ServiceStatus};
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
 use multimap::MultiMap;
@@ -63,4 +63,12 @@ pub trait Infrastructure: Send + Sync {
         from: &Option<DateTime<FixedOffset>>,
         limit: usize,
     ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error>;
+
+    /// Changes the status of a service, for example, the service might me stopped or started.
+    fn change_status(
+        &self,
+        app_name: &String,
+        service_name: &String,
+        status: ServiceStatus,
+    ) -> Result<Option<Service>, Error>;
 }

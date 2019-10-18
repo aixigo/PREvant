@@ -27,14 +27,14 @@
 use crate::config::{Config, ConfigError};
 use crate::infrastructure::Infrastructure;
 use crate::models::request_info::RequestInfo;
-use crate::models::service::{ContainerType, Service, ServiceConfig};
+use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceStatus};
 use crate::models::web_host_meta::WebHostMeta;
 use crate::models::{AppName, LogChunk};
 use crate::services::images_service::{ImagesService, ImagesServiceError};
 use crate::services::service_templating::{
     apply_templating_for_application_companion, apply_templating_for_service_companion,
 };
-use cached::SizedCache;
+use cached::{Cached, SizedCache};
 use chrono::{DateTime, FixedOffset, Utc};
 use handlebars::TemplateRenderError;
 use http_api_problem::{HttpApiProblem, StatusCode};
@@ -368,6 +368,25 @@ impl AppsService {
             None => Ok(None),
             Some(ref logs) if logs.is_empty() => Ok(None),
             Some(logs) => Ok(Some(LogChunk::from(logs))),
+        }
+    }
+
+    pub fn change_status(
+        &self,
+        app_name: &String,
+        service_name: &String,
+        status: ServiceStatus,
+    ) -> Result<Option<Service>, AppsServiceError> {
+        match self
+            .infrastructure
+            .change_status(app_name, service_name, status)?
+        {
+            Some(service) => {
+                let mut cache = WEB_HOST_META.lock().unwrap();
+                (*cache).cache_remove(service.id());
+                Ok(Some(service))
+            }
+            None => Ok(None),
         }
     }
 }
