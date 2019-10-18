@@ -24,10 +24,10 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::apps::Apps;
 use crate::models::request_info::RequestInfo;
-use crate::models::service::{Service, ServiceConfig};
+use crate::models::service::{Service, ServiceConfig, ServiceStatus};
 use crate::models::{AppName, AppNameError, LogChunk};
-use crate::services::apps_service::AppsService;
 use chrono::DateTime;
 use http_api_problem::HttpApiProblem;
 use multimap::MultiMap;
@@ -40,12 +40,16 @@ use rocket::{Data, State};
 use rocket_contrib::json::Json;
 use std::io::Read;
 
-#[get("/apps", format = "application/json")]
-pub fn apps(
-    apps_service: State<AppsService>,
+pub fn routes() -> Vec<rocket::Route> {
+    rocket::routes![apps, delete_app, create_app, logs, change_status]
+}
+
+#[get("/", format = "application/json")]
+fn apps(
+    apps: State<Apps>,
     request_info: RequestInfo,
 ) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
-    let mut apps = apps_service.get_apps(&request_info)?;
+    let mut apps = apps.get_apps(&request_info)?;
 
     for service in apps
         .iter_all_mut()
@@ -57,15 +61,15 @@ pub fn apps(
     Ok(Json(apps))
 }
 
-#[delete("/apps/<app_name>", format = "application/json")]
+#[delete("/<app_name>", format = "application/json")]
 pub fn delete_app(
     app_name: Result<AppName, AppNameError>,
-    apps_service: State<AppsService>,
+    apps: State<Apps>,
     request_info: RequestInfo,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
     let app_name = app_name?;
 
-    let mut services = apps_service.delete_app(&app_name)?;
+    let mut services = apps.delete_app(&app_name)?;
 
     for service in services.iter_mut() {
         service.set_base_url(request_info.get_base_url());
@@ -75,20 +79,20 @@ pub fn delete_app(
 }
 
 #[post(
-    "/apps/<app_name>?<create_app_form..>",
+    "/<app_name>?<create_app_form..>",
     format = "application/json",
     data = "<service_configs_data>"
 )]
-pub fn create_app(
+fn create_app(
     app_name: Result<AppName, AppNameError>,
-    apps_service: State<AppsService>,
+    apps: State<Apps>,
     create_app_form: Form<CreateAppOptions>,
     request_info: RequestInfo,
     service_configs_data: ServiceConfigsData,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
     let app_name = app_name?;
 
-    let mut services = apps_service.create_or_update(
+    let mut services = apps.create_or_update(
         &app_name,
         create_app_form.replicate_from().clone(),
         &service_configs_data.service_configs,
@@ -101,16 +105,35 @@ pub fn create_app(
     Ok(Json(services))
 }
 
+#[put(
+    "/<app_name>/states/<service_name>",
+    format = "application/json",
+    data = "<status_data>"
+)]
+fn change_status(
+    app_name: Result<AppName, AppNameError>,
+    service_name: String,
+    apps: State<Apps>,
+    status_data: Json<ServiceStatusData>,
+) -> Result<ServiceStatusResponse, HttpApiProblem> {
+    let app_name = app_name?;
+    let status = status_data.status.clone();
+
+    Ok(ServiceStatusResponse {
+        service: apps.change_status(&app_name, &service_name, status)?,
+    })
+}
+
 #[get(
-    "/apps/<app_name>/logs/<service_name>?<since>&<limit>",
+    "/<app_name>/logs/<service_name>?<since>&<limit>",
     format = "text/plain"
 )]
-pub fn logs(
+fn logs(
     app_name: Result<AppName, AppNameError>,
     service_name: String,
     since: Option<String>,
     limit: Option<usize>,
-    apps_service: State<AppsService>,
+    apps: State<Apps>,
 ) -> Result<LogsResponse, HttpApiProblem> {
     let app_name = app_name?;
 
@@ -128,7 +151,7 @@ pub fn logs(
     };
     let limit = limit.unwrap_or(20_000);
 
-    let log_chunk = apps_service.get_logs(&app_name, &service_name, &since, limit)?;
+    let log_chunk = apps.get_logs(&app_name, &service_name, &since, limit)?;
 
     Ok(LogsResponse {
         log_chunk,
@@ -209,5 +232,23 @@ impl Responder<'static> for LogsResponse {
             .raw_header("Link", format!("<{}>;rel=next", next_logs_url))
             .sized_body(std::io::Cursor::new(log_chunk.log_lines().clone()))
             .ok()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ServiceStatusData {
+    status: ServiceStatus,
+}
+
+pub struct ServiceStatusResponse {
+    service: Option<Service>,
+}
+
+impl Responder<'static> for ServiceStatusResponse {
+    fn respond_to(self, _request: &Request) -> Result<Response<'static>, Status> {
+        match self.service {
+            Some(_service) => Response::build().status(Status::Accepted).ok(),
+            None => Response::build().status(Status::NotFound).ok(),
+        }
     }
 }

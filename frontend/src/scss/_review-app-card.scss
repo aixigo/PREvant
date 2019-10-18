@@ -86,6 +86,16 @@
    }
 }
 
+.ra-container__paused {
+   opacity: 0.3;
+}
+
+.ra-container__change-status {
+   padding: 0;
+   margin: 0;
+   height: 20px;
+}
+
 .ra-icons {
    font-size: 1.5rem;
 

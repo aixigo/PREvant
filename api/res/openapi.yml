@@ -125,17 +125,40 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /apps/{appName}/states/{serviceName}/:
+    put:
+      summary: Changes the state of a service
+      parameters:
+        - $ref: '#/components/parameters/appName'
+        - $ref: '#/components/parameters/serviceName'
+      requestBody:
+        description: The new state of the service
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/State'
+      responses:
+        '202':
+          description: The state change has been accepted
+        '404':
+          description: Cannot find app or cannot find service.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '500':
+          description: Server error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
   /apps/{appName}/logs/{serviceName}/:
     get:
       summary: Retrieves the logs from stdout/stderr of the specified container.
       parameters:
         - $ref: '#/components/parameters/appName'
-        - in: path
-          name: serviceName
-          description: Name of the service
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/serviceName'
         - in: query
           name: since
           description: >-
@@ -209,6 +232,13 @@ components:
         type: string
       required: true
       description: Name of the application
+    serviceName:
+      in: path
+      name: serviceName
+      description: Name of the service
+      required: true
+      schema:
+        type: string
   schemas:
     Service:
       type: object
@@ -224,6 +254,8 @@ components:
             - app-companion
             - service-companion
           example: instance
+        state:
+          $ref: '#/components/schemas/State'
         version:
           $ref: '#/components/schemas/Version'
         url:
@@ -254,6 +286,15 @@ components:
           type: string
           description: The human-readable version string, see [softwareVersion](https://schema.org/softwareVersion).
           example: '1.2.3'
+    State:
+      type: object
+      properties:
+        status:
+          description: Indicate wether the service is running, paused, etc.
+          type: string
+          enum:
+            - running
+            - paused
     ServiceConfiguration:
       type: object
       properties:
@@ -276,10 +317,17 @@ components:
             - MYSQL_USER=admin
             - MYSQL_DATABASE=dbname
         volumes:
-          type: array
-          items:
-            type: string
-          description: Volumes to mount
+          type: object
+          description: >-
+            Files to be created in the the container.
+            <p>
+            The keys of this object are the paths in the container and the values contain the actual file content.
+          example:
+            "/etc/mysql/my.cnf": |
+              [client-server]
+              # Uncomment these if you want to use a nonstandard connection to MariaDB
+              #socket=/tmp/mysql.sock
+              #port=3306
       required:
         - serviceName
         - registry

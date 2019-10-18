@@ -24,10 +24,10 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::apps::{Apps, AppsError};
 use crate::config::Config;
 use crate::models::request_info::RequestInfo;
 use crate::models::ticket_info::TicketInfo;
-use crate::services::apps_service::{AppsService, AppsServiceError};
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
 use http_api_problem::{HttpApiProblem, StatusCode};
@@ -41,7 +41,7 @@ use std::convert::From;
 #[get("/apps/tickets", format = "application/json")]
 pub fn tickets(
     config_state: State<Config>,
-    apps_service: State<AppsService>,
+    apps_service: State<Apps>,
     request_info: RequestInfo,
 ) -> Result<Json<HashMap<String, TicketInfo>>, HttpApiProblem> {
     let mut tickets: HashMap<String, TicketInfo> = HashMap::new();
@@ -110,7 +110,7 @@ pub enum ListTicketsError {
     )]
     UnexpectedError { internal_message: String },
     #[fail(display = "Cannot resolve apps: {}", error)]
-    CannotResolveApps { error: AppsServiceError },
+    CannotResolveApps { error: AppsError },
 }
 
 impl From<ListTicketsError> for HttpApiProblem {

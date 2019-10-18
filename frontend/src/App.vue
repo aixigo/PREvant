@@ -34,6 +34,7 @@
             :key="reviewApp.name"
             :review-app="reviewApp"
             v-on:showLogs="showServiceLogs"
+            v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
 
@@ -44,6 +45,7 @@
             :key="reviewApp.name"
             :review-app="reviewApp"
             v-on:showLogs="showServiceLogs"
+            v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
 
@@ -104,6 +106,10 @@
             this.selectLogs.appName = appName;
             this.selectLogs.serviceName = serviceName;
             this.$refs.logsDialog.open();
+         },
+
+         changeServiceState( appName, serviceName ) {
+            this.$store.dispatch( 'changeServiceState', { appName, serviceName } );
          }
       }
    };

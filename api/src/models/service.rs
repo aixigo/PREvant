@@ -44,7 +44,7 @@ pub struct Service {
     base_url: Option<Url>,
     endpoint: Option<ServiceEndpoint>,
     web_host_meta: Option<WebHostMeta>,
-    started_at: DateTime<Utc>,
+    state: State,
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +91,21 @@ pub enum Image {
     Digest {
         hash: String,
     },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct State {
+    status: ServiceStatus,
+    #[serde(skip)]
+    started_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServiceStatus {
+    Running,
+    Paused,
 }
 
 impl ServiceConfig {
@@ -185,6 +200,7 @@ impl Service {
         app_name: String,
         service_name: String,
         container_type: ContainerType,
+        status: ServiceStatus,
         started_at: DateTime<Utc>,
     ) -> Service {
         Service {
@@ -195,7 +211,7 @@ impl Service {
             base_url: None,
             endpoint: None,
             web_host_meta: None,
-            started_at,
+            state: State { status, started_at },
         }
     }
 
@@ -260,7 +276,7 @@ impl Service {
     }
 
     pub fn started_at(&self) -> &DateTime<Utc> {
-        &self.started_at
+        &self.state.started_at
     }
 }
 
@@ -278,6 +294,7 @@ impl Serialize for Service {
             service_type: String,
             version: Option<Version>,
             open_api_url: Option<String>,
+            state: &'a State,
         }
 
         #[derive(Serialize)]
@@ -307,6 +324,7 @@ impl Serialize for Service {
             service_type: self.container_type.to_string(),
             version,
             open_api_url,
+            state: &self.state,
         };
 
         Ok(s.serialize(serializer)?)

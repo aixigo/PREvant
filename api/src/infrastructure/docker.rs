@@ -26,7 +26,9 @@
 
 use crate::config::ContainerConfig;
 use crate::infrastructure::Infrastructure;
-use crate::models::service::{ContainerType, Image, Service, ServiceConfig, ServiceError};
+use crate::models::service::{
+    ContainerType, Image, Service, ServiceConfig, ServiceError, ServiceStatus,
+};
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
 use futures::future::join_all;
@@ -371,11 +373,11 @@ impl DockerInfrastructure {
         let containers = docker.containers();
         let mut runtime = Runtime::new()?;
 
-        let list_options = ContainerListOptions::builder().build();
+        let list_options = ContainerListOptions::builder().all().build();
 
         Ok(runtime
             .block_on(containers.list(&list_options))?
-            .iter()
+            .into_iter()
             .filter(|c| match c.labels.get(APP_NAME_LABEL) {
                 None => false,
                 Some(app) => app == app_name,
@@ -384,7 +386,6 @@ impl DockerInfrastructure {
                 None => false,
                 Some(service) => service == service_name,
             })
-            .map(|c| c.to_owned())
             .next())
     }
 
@@ -400,7 +401,10 @@ impl DockerInfrastructure {
             None => ContainerFilter::LabelName(String::from(APP_NAME_LABEL)),
             Some(app_name) => ContainerFilter::Label(String::from(APP_NAME_LABEL), app_name),
         };
-        let list_options = &ContainerListOptions::builder().filter(vec![f]).build();
+        let list_options = &ContainerListOptions::builder()
+            .all()
+            .filter(vec![f])
+            .build();
 
         let mut futures = Vec::new();
         for container in runtime.block_on(containers.list(&list_options))? {
@@ -641,6 +645,60 @@ impl Infrastructure for DockerInfrastructure {
             }
         }
     }
+
+    fn change_status(
+        &self,
+        app_name: &String,
+        service_name: &String,
+        status: ServiceStatus,
+    ) -> Result<Option<Service>, failure::Error> {
+        match self.get_app_container(app_name, service_name)? {
+            Some(container) => {
+                let docker = Docker::new();
+                let containers = docker.containers();
+                let c = containers.get(&container.id);
+
+                let mut runtime = Runtime::new()?;
+                let details = runtime.block_on(c.inspect())?;
+
+                macro_rules! run_future_and_map_err {
+                    ( $future:expr, $log_format:expr ) => {
+                        if let Err(err) = runtime.block_on($future) {
+                            match err {
+                                ShipLiftError::Fault { code, message } if code.as_u16() == 304 => {
+                                    trace!(
+                                        "Container {} already in desired state: {}",
+                                        details.id,
+                                        message
+                                    );
+                                }
+                                err => {
+                                    error!($log_format, err);
+                                    return Err(failure::Error::from(err));
+                                }
+                            };
+                        }
+                    };
+                }
+
+                match status {
+                    ServiceStatus::Running => {
+                        if !details.state.running {
+                            run_future_and_map_err!(c.start(), "Could not start container: {}");
+                        }
+                    }
+                    ServiceStatus::Paused => {
+                        if details.state.running {
+                            run_future_and_map_err!(c.stop(None), "Could not pause container: {}");
+                        }
+                    }
+                }
+
+                Ok(Some(Service::try_from(&details)?))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 impl TryFrom<&ContainerDetails> for Service {
@@ -678,32 +736,40 @@ impl TryFrom<&ContainerDetails> for Service {
             Some(lb) => lb.parse::<ContainerType>()?,
         };
 
-        let addr = IpAddr::from_str(&container_details.network_settings.ip_address)?;
-        let port = match &container_details.network_settings.ports {
-            None => 80u16,
-            Some(ports) => {
-                let ports_regex = Regex::new(r#"^(?P<port>\d+).*"#).unwrap();
-                ports
-                    .keys()
-                    .filter_map(|port| ports_regex.captures(port))
-                    .map(|captures| String::from(captures.name("port").unwrap().as_str()))
-                    .filter_map(|port| port.parse::<u16>().ok())
-                    .min()
-                    .unwrap_or(80u16)
-            }
-        };
-
         let started_at = container_details.state.started_at.clone();
+        let status = if container_details.state.running {
+            ServiceStatus::Running
+        } else {
+            ServiceStatus::Paused
+        };
 
         let mut service = Service::new(
             container_details.id.clone(),
             app_name.clone(),
             service_name.clone(),
             container_type,
+            status,
             started_at,
         );
 
-        service.set_endpoint(addr, port);
+        if !container_details.network_settings.ip_address.is_empty() {
+            let addr = IpAddr::from_str(&container_details.network_settings.ip_address)?;
+            let port = match &container_details.network_settings.ports {
+                None => 80u16,
+                Some(ports) => {
+                    let ports_regex = Regex::new(r#"^(?P<port>\d+).*"#).unwrap();
+                    ports
+                        .keys()
+                        .filter_map(|port| ports_regex.captures(port))
+                        .map(|captures| String::from(captures.name("port").unwrap().as_str()))
+                        .filter_map(|port| port.parse::<u16>().ok())
+                        .min()
+                        .unwrap_or(80u16)
+                }
+            };
+
+            service.set_endpoint(addr, port);
+        }
 
         Ok(service)
     }

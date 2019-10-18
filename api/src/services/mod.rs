@@ -24,6 +24,5 @@
  * =========================LICENSE_END==================================
  */
 
-pub mod apps_service;
 pub mod images_service;
 pub mod service_templating;
