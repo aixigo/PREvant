@@ -509,26 +509,29 @@ impl Infrastructure for DockerInfrastructure {
         let containers = docker.containers();
 
         let f1 = ContainerFilter::Label(APP_NAME_LABEL.to_owned(), app_name.clone());
-        let list_options = ContainerListOptions::builder().filter(vec![f1]).build();
-
-        let future = containers
-            .list(&list_options)
-            .map(|containers| containers.iter().map(|c| c.id.clone()).collect());
+        let list_options = ContainerListOptions::builder()
+            .all()
+            .filter(vec![f1])
+            .build();
 
         let mut runtime = Runtime::new()?;
-        let container_ids: Vec<String> = runtime.block_on(future)?;
+        let service_containers = runtime.block_on(containers.list(&list_options))?;
 
         let mut stop_futures = Vec::new();
-        for id in &container_ids {
-            let future = containers.get(&id).stop(None);
+        for container in &service_containers {
+            let details = runtime.block_on(containers.get(&container.id).inspect())?;
+            if !details.state.running {
+                continue;
+            }
 
+            let future = containers.get(&container.id).stop(None);
             stop_futures.push(future);
         }
         runtime.block_on(join_all(stop_futures))?;
 
         let mut delete_futures = Vec::new();
-        for id in &container_ids {
-            let future = containers.get(&id).delete();
+        for container in &service_containers {
+            let future = containers.get(&container.id).delete();
 
             delete_futures.push(future);
         }

@@ -27,7 +27,7 @@
 <template>
    <div class="container" id="app">
 
-      <h1 class="ra-container__title--preview">Previews</h1>
+      <h1 class="ra-container__title--preview" v-if="appsWithoutTicket(reviewApps).length > 0">Previews</h1>
       <transition-group tag="div" name="list-complete" class="ra-container__apps--preview ra-apps ">
          <review-app-card
             v-for="reviewApp in appsWithoutTicket(reviewApps)"
@@ -38,7 +38,7 @@
             class="list-complete-item"/>
       </transition-group>
 
-      <h1 class="ra-container__title--feature">Features</h1>
+      <h1 class="ra-container__title--feature" v-if="appsWithTicket(reviewApps).length > 0">Features</h1>
       <transition-group tag="div" name="list-complete" class="ra-container__apps--feature ra-apps">
          <review-app-card
             v-for="reviewApp in appsWithTicket(reviewApps)"
