@@ -53,6 +53,7 @@ use tokio::util::StreamExt;
 static APP_NAME_LABEL: &str = "com.aixigo.preview.servant.app-name";
 static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
 static CONTAINER_TYPE_LABEL: &str = "com.aixigo.preview.servant.container-type";
+static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
 pub struct DockerInfrastructure {}
 
@@ -242,7 +243,7 @@ impl DockerInfrastructure {
         // PathPrefixStrip so that the request to the service contains the X-Forwarded-Prefix header
         // which can be used by the service to generate dynamic links.
         let traefik_frontend = format!(
-            "PathPrefixStrip: /{app_name}/{service_name}/;",
+            "PathPrefixStrip: /{app_name}/{service_name}/; PathPrefix:/{app_name}/{service_name}/;",
             app_name = app_name,
             service_name = service_config.service_name()
         );
@@ -704,6 +705,39 @@ impl Infrastructure for DockerInfrastructure {
     }
 }
 
+fn find_port(
+    container_details: &ContainerDetails,
+    labels: HashMap<String, String>,
+) -> Result<u16, DockerInfrastructureError> {
+    if let Some(port) = labels.get(CONTAINER_PORT_LABEL) {
+        match port.parse::<u16>() {
+            Ok(port) => Ok(port),
+            Err(err) => {
+                return Err(DockerInfrastructureError::UnexpectedError {
+                    internal_message: format!(
+                        "Cannot parse traefik port label into port number: {}",
+                        err
+                    ),
+                })
+            }
+        }
+    } else {
+        Ok(match &container_details.network_settings.ports {
+            None => 80u16,
+            Some(ports) => {
+                let ports_regex = Regex::new(r#"^(?P<port>\d+).*"#).unwrap();
+                ports
+                    .keys()
+                    .filter_map(|port| ports_regex.captures(port))
+                    .map(|captures| String::from(captures.name("port").unwrap().as_str()))
+                    .filter_map(|port| port.parse::<u16>().ok())
+                    .min()
+                    .unwrap_or(80u16)
+            }
+        })
+    }
+}
+
 impl TryFrom<&ContainerDetails> for Service {
     type Error = DockerInfrastructureError;
 
@@ -757,20 +791,7 @@ impl TryFrom<&ContainerDetails> for Service {
 
         if !container_details.network_settings.ip_address.is_empty() {
             let addr = IpAddr::from_str(&container_details.network_settings.ip_address)?;
-            let port = match &container_details.network_settings.ports {
-                None => 80u16,
-                Some(ports) => {
-                    let ports_regex = Regex::new(r#"^(?P<port>\d+).*"#).unwrap();
-                    ports
-                        .keys()
-                        .filter_map(|port| ports_regex.captures(port))
-                        .map(|captures| String::from(captures.name("port").unwrap().as_str()))
-                        .filter_map(|port| port.parse::<u16>().ok())
-                        .min()
-                        .unwrap_or(80u16)
-                }
-            };
-
+            let port = find_port(container_details, labels)?;
             service.set_endpoint(addr, port);
         }
 
