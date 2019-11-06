@@ -23,19 +23,10 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+pub use config::{Config, ConfigError};
+pub use container::ContainerConfig;
+pub use runtime::Runtime;
 
-pub use docker::DockerInfrastructure as Docker;
-#[cfg(test)]
-pub use dummy_infrastructure::DummyInfrastructure as Dummy;
-pub use infrastructure::Infrastructure;
-pub use kubernetes::KubernetesInfrastructure as Kubernetes;
-
-mod docker;
-#[cfg(test)]
-mod dummy_infrastructure;
-mod infrastructure;
-mod kubernetes;
-
-static APP_NAME_LABEL: &str = "com.aixigo.preview.servant.app-name";
-static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
-static CONTAINER_TYPE_LABEL: &str = "com.aixigo.preview.servant.container-type";
+mod config;
+mod container;
+mod runtime;

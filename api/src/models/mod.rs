@@ -25,13 +25,18 @@
  */
 
 pub use app_name::{AppName, AppNameError};
+pub use image::Image;
 pub use logs_chunks::LogChunk;
+pub use service::{ServiceBuilder, ServiceBuilderError};
+pub use service_config::{Environment, EnvironmentVariable, Router, ServiceConfig};
 
 mod app_name;
+mod image;
 mod logs_chunks;
 pub mod request_info;
 #[cfg_attr(test, macro_use)]
 pub mod service;
+mod service_config;
 pub mod ticket_info;
 pub mod web_hook_info;
 pub mod web_host_meta;

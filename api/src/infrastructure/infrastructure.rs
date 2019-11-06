@@ -25,7 +25,8 @@
  */
 
 use crate::config::ContainerConfig;
-use crate::models::service::{Service, ServiceConfig, ServiceStatus};
+use crate::models::service::{Service, ServiceStatus};
+use crate::models::ServiceConfig;
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
 use multimap::MultiMap;
@@ -34,7 +35,7 @@ pub trait Infrastructure: Send + Sync {
     /// Returns a `MultiMap` of `app-name` and the running services for this app.
     fn get_services(&self) -> Result<MultiMap<String, Service>, Error>;
 
-    /// Starts the services of the given set of `ServiceConfig`.
+    /// Deploys the services of the given set of `ServiceConfig`.
     ///
     /// The implementation must ensure that:
     /// - the services are able to communicate with each other with the service name. For example,
@@ -42,7 +43,7 @@ pub trait Infrastructure: Send + Sync {
     /// - the services must be deployed once. If a service is already running, it must be redeployed.
     /// - the services must be discoverable for further calls. For example, `self.stop_services(...)`
     ///   must be able to find the corresponding services.
-    fn start_services(
+    fn deploy_services(
         &self,
         app_name: &String,
         configs: &Vec<ServiceConfig>,

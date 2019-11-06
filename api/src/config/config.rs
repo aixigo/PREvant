@@ -24,16 +24,20 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::service::{ContainerType, Image, ServiceConfig};
+use crate::config::{ContainerConfig, Runtime};
+use crate::models::service::ContainerType;
+use crate::models::{Environment, Image, Router, ServiceConfig};
 use base64::decode;
 use regex::Regex;
 use secstr::SecUtf8;
 use serde::{de, Deserialize, Deserializer};
+use serde_value::Value;
 use std::collections::BTreeMap;
 use std::convert::{From, TryFrom};
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::Error as IOError;
+use std::path::PathBuf;
 use std::str::FromStr;
 use toml::de::Error as TomlError;
 use toml::from_str;
@@ -66,12 +70,6 @@ impl<'de> serde::Deserialize<'de> for AppSelector {
 }
 
 #[derive(Clone, Deserialize)]
-pub struct ContainerConfig {
-    #[serde(deserialize_with = "ContainerConfig::parse_from_memory_string")]
-    memory_limit: Option<u64>,
-}
-
-#[derive(Clone, Deserialize)]
 pub struct JiraConfig {
     host: String,
     user: String,
@@ -86,11 +84,13 @@ pub struct Companion {
     #[serde(rename = "type")]
     companion_type: CompanionType,
     image: String,
-    env: Option<Vec<String>>,
+    env: Option<Environment>,
     labels: Option<BTreeMap<String, String>>,
-    volumes: Option<BTreeMap<String, String>>,
+    volumes: Option<BTreeMap<PathBuf, String>>,
     #[serde(default = "AppSelector::default")]
     app_selector: AppSelector,
+    router: Option<Router>,
+    middlewares: Option<BTreeMap<String, Value>>,
 }
 
 #[derive(Clone, Deserialize, PartialEq)]
@@ -118,6 +118,7 @@ struct Secret {
 
 #[derive(Clone, Default, Deserialize)]
 pub struct Config {
+    runtime: Option<Runtime>,
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
     companions: Option<BTreeMap<String, Companion>>,
@@ -135,39 +136,46 @@ impl Config {
         Ok(config)
     }
 
-    pub fn get_container_config(&self) -> ContainerConfig {
-        match &self.containers {
-            Some(containers) => containers.clone(),
-            None => ContainerConfig { memory_limit: None },
+    pub fn runtime_config(&self) -> Runtime {
+        match &self.runtime {
+            Some(runtime) => runtime.clone(),
+            None => Runtime::default(),
         }
     }
 
-    pub fn get_jira_config(&self) -> Option<JiraConfig> {
+    pub fn container_config(&self) -> ContainerConfig {
+        match &self.containers {
+            Some(containers) => containers.clone(),
+            None => ContainerConfig::default(),
+        }
+    }
+
+    pub fn jira_config(&self) -> Option<JiraConfig> {
         match &self.jira {
             None => None,
             Some(j) => Some(j.clone()),
         }
     }
 
-    pub fn get_service_companion_configs(
+    pub fn service_companion_configs(
         &self,
         app_name: &str,
     ) -> Result<Vec<ServiceConfig>, ConfigError> {
-        Ok(self.get_companion_configs(app_name, |companion| {
+        Ok(self.companion_configs(app_name, |companion| {
             companion.companion_type == CompanionType::Service
         })?)
     }
 
-    pub fn get_application_companion_configs(
+    pub fn application_companion_configs(
         &self,
         app_name: &str,
     ) -> Result<Vec<ServiceConfig>, ConfigError> {
-        Ok(self.get_companion_configs(app_name, |companion| {
+        Ok(self.companion_configs(app_name, |companion| {
             companion.companion_type == CompanionType::Application
         })?)
     }
 
-    fn get_companion_configs<P>(
+    fn companion_configs<P>(
         &self,
         app_name: &str,
         predicate: P,
@@ -225,40 +233,12 @@ impl JiraConfig {
     }
 }
 
-impl ContainerConfig {
-    fn parse_from_memory_string<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let container_limit = String::deserialize(deserializer)?;
-
-        let (size, unit) = container_limit.split_at(container_limit.len() - 1);
-        let limit = size.parse::<u64>().map_err(de::Error::custom)?;
-
-        let exp = match unit.to_lowercase().as_str() {
-            "k" => 1,
-            "m" => 2,
-            "g" => 3,
-            _ => 0,
-        };
-
-        Ok(Some(limit * 1024_u64.pow(exp)))
-    }
-
-    pub fn get_memory_limit(&self) -> Option<u64> {
-        match self.memory_limit {
-            None => None,
-            Some(limit) => Some(limit.clone()),
-        }
-    }
-}
-
 impl Service {
     pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &str) {
         if let Some(secrets) = &self.secrets {
             for s in secrets.iter().filter(|s| s.app_selector.matches(app_name)) {
                 service_config.add_volume(
-                    format!("/run/secrets/{}", s.name),
+                    PathBuf::from(format!("/run/secrets/{}", s.name)),
                     // TODO: use secstr in service_config (see issue #8)
                     String::from(s.secret.unsecure()),
                 );
@@ -321,6 +301,14 @@ impl TryFrom<&Companion> for ServiceConfig {
             config.set_volumes(Some(volumes.clone()));
         }
 
+        if let Some(router) = &companion.router {
+            config.set_router(router.clone());
+        }
+
+        if let Some(middlewares) = &companion.middlewares {
+            config.set_middlewares(middlewares.clone());
+        }
+
         Ok(config)
     }
 }
@@ -373,7 +361,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.get_application_companion_configs("master").unwrap();
+        let companion_configs = config.application_companion_configs("master").unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -408,7 +396,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.get_service_companion_configs("master").unwrap();
+        let companion_configs = config.service_companion_configs("master").unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -438,7 +426,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.get_application_companion_configs("master").unwrap();
+        let companion_configs = config.application_companion_configs("master").unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -460,7 +448,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.get_application_companion_configs("master").unwrap();
+        let companion_configs = config.application_companion_configs("master").unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -483,7 +471,7 @@ mod tests {
             "#
         );
 
-        let result = config.get_application_companion_configs("master");
+        let result = config.application_companion_configs("master");
 
         assert_eq!(result.is_err(), true);
         match result.err().unwrap() {
@@ -505,7 +493,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.get_application_companion_configs("master").unwrap();
+        let companion_configs = config.application_companion_configs("master").unwrap();
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -535,9 +523,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config
-            .get_application_companion_configs("random-name")
-            .unwrap();
+        let companion_configs = config.application_companion_configs("random-name").unwrap();
 
         assert_eq!(companion_configs.len(), 0);
     }
@@ -559,7 +545,7 @@ mod tests {
         let secret_file_content = service_config
             .volumes()
             .expect("File content is missing")
-            .get("/run/secrets/user")
+            .get(&PathBuf::from("/run/secrets/user"))
             .expect("No file for /run/secrets/user");
         assert_eq!(secret_file_content, "Hello");
     }
@@ -582,7 +568,7 @@ mod tests {
         let secret_file_content = service_config
             .volumes()
             .expect("File content is missing")
-            .get("/run/secrets/user")
+            .get(&PathBuf::from("/run/secrets/user"))
             .expect("No file for /run/secrets/user");
         assert_eq!(secret_file_content, "Hello");
     }
@@ -605,7 +591,7 @@ mod tests {
         let secret_file_content = service_config
             .volumes()
             .expect("File content is missing")
-            .get("/run/secrets/user")
+            .get(&PathBuf::from("/run/secrets/user"))
             .expect("No file for /run/secrets/user");
         assert_eq!(secret_file_content, "Hello");
     }
@@ -657,5 +643,15 @@ mod tests {
 
         let config_result = from_str::<Config>(config_str);
         assert!(config_result.is_err(), "should not parse config");
+    }
+
+    #[test]
+    fn should_parse_config_with_default_container_runtime() {
+        let config_str = "";
+
+        let config = from_str::<Config>(config_str).unwrap();
+
+        let runtime = config.runtime_config();
+        assert_eq!(runtime, Runtime::Docker);
     }
 }

@@ -42,15 +42,17 @@ extern crate rocket;
 extern crate serde_derive;
 
 use crate::apps::Apps;
-use crate::config::Config;
-use crate::infrastructure::Docker;
+use crate::config::{Config, Runtime};
+use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
 use clap::{App, Arg};
 use env_logger::Env;
+use reqwest::Certificate;
 use rocket::response::NamedFile;
 use rocket_cache_response::CacheResponse;
 use serde_yaml::{from_reader, to_string, Value};
 use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -97,7 +99,76 @@ fn openapi(request_info: RequestInfo) -> Option<String> {
     Some(to_string(&v).unwrap())
 }
 
-fn main() {
+fn create_infrastructure(config: &Config) -> Result<Box<dyn Infrastructure>, StartUpError> {
+    match config.runtime_config() {
+        Runtime::Docker => Ok(Box::new(Docker::new())),
+        Runtime::Kubernetes(kubernetes_config) => {
+            let cluster_endpoint = match kubernetes_config.endpoint() {
+                Some(endpoint) => endpoint.clone(),
+                None => unimplemented!(),
+            };
+
+            let cluster_ca = match kubernetes_config.cert_auth_file_path() {
+                Some(path) => Some(read_ca_file(path)?),
+                None => {
+                    let container_secret =
+                        Path::new("/run/secrets/kubernetes.io/serviceaccount/ca.crt");
+                    if container_secret.exists() {
+                        Some(read_ca_file(&PathBuf::from(container_secret))?)
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            let cluster_token = match kubernetes_config.token() {
+                Some(token) => Some(token.clone()),
+                None => unimplemented!(),
+            };
+
+            Ok(Box::new(Kubernetes::new(
+                cluster_endpoint,
+                cluster_ca,
+                cluster_token,
+            )))
+        }
+    }
+}
+
+fn read_ca_file(path: &PathBuf) -> Result<Certificate, StartUpError> {
+    debug!(
+        "Reading certificate authority from {}.",
+        path.to_str().unwrap()
+    );
+
+    let mut f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(StartUpError::CannotReadCertificateAuthority {
+                path: String::from(path.to_str().unwrap()),
+                err: format!("{}", e),
+            });
+        }
+    };
+
+    let mut buf = Vec::new();
+    if let Err(e) = f.read_to_end(&mut buf) {
+        return Err(StartUpError::CannotReadCertificateAuthority {
+            path: String::from(path.to_str().unwrap()),
+            err: format!("{}", e),
+        });
+    }
+
+    match Certificate::from_pem(&buf) {
+        Ok(cert) => Ok(cert),
+        Err(e) => Err(StartUpError::CannotReadCertificateAuthority {
+            path: String::from(path.to_str().unwrap()),
+            err: format!("{}", e),
+        }),
+    }
+}
+
+fn main() -> Result<(), StartUpError> {
     let argument_matches = App::new(crate_name!())
         .version(crate_version!())
         .author(crate_authors!())
@@ -121,7 +192,8 @@ fn main() {
         }
     };
 
-    let apps = match Apps::new(config.clone(), Box::new(Docker::new())) {
+    let infrastructure = create_infrastructure(&config)?;
+    let apps = match Apps::new(config.clone(), infrastructure) {
         Ok(apps_service) => apps_service,
         Err(e) => {
             error!("Cannot create apps service: {}", e);
@@ -139,4 +211,12 @@ fn main() {
         .mount("/api", routes![tickets::tickets])
         .mount("/api", routes![webhooks::webhooks])
         .launch();
+
+    Ok(())
+}
+
+#[derive(Debug, Fail)]
+enum StartUpError {
+    #[fail(display = "Cannot read certificate authority from {}: {}", path, err)]
+    CannotReadCertificateAuthority { path: String, err: String },
 }
