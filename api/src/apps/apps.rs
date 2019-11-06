@@ -27,8 +27,9 @@
 use crate::config::{Config, ConfigError};
 use crate::infrastructure::Infrastructure;
 use crate::models::request_info::RequestInfo;
-use crate::models::service::{ContainerType, Service, ServiceConfig, ServiceStatus};
+use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::web_host_meta::WebHostMeta;
+use crate::models::ServiceConfig;
 use crate::models::{AppName, LogChunk};
 use crate::services::images_service::{ImagesService, ImagesServiceError};
 use crate::services::service_templating::{
@@ -236,19 +237,13 @@ impl AppsService {
             )?);
         }
 
-        let images_service = ImagesService::new();
-        let mappings = images_service.resolve_image_ports(&configs)?;
         for config in configs.iter_mut() {
-            if let Some(port) = mappings.get(config) {
-                config.set_port(port.clone());
-            }
-
             self.config.add_secrets_to(config, app_name);
         }
 
         let mut service_companions = Vec::new();
         for config in &configs {
-            let companions = self.config.get_service_companion_configs(app_name)?;
+            let companions = self.config.service_companion_configs(app_name)?;
 
             service_companions.extend(
                 companions
@@ -267,16 +262,24 @@ impl AppsService {
             &mut configs,
         );
 
+        let images_service = ImagesService::new();
+        let mappings = images_service.resolve_image_ports(&configs)?;
+        for config in configs.iter_mut() {
+            if let Some(port) = mappings.get(config) {
+                config.set_port(port.clone());
+            }
+        }
+
         configs.sort_unstable_by(|a, b| {
             let index1 = AppsService::container_type_index(a.container_type());
             let index2 = AppsService::container_type_index(b.container_type());
             index1.cmp(&index2)
         });
 
-        let services = self.infrastructure.start_services(
+        let services = self.infrastructure.deploy_services(
             app_name,
             &configs,
-            &self.config.get_container_config(),
+            &self.config.container_config(),
         )?;
 
         Ok(services)
@@ -342,7 +345,7 @@ impl AppsService {
         }
 
         let mut companion_configs = Vec::new();
-        for app_companion_config in self.config.get_application_companion_configs(app_name)? {
+        for app_companion_config in self.config.application_companion_configs(app_name)? {
             let c = apply_templating_for_application_companion(
                 &app_companion_config,
                 app_name,
@@ -480,8 +483,9 @@ mod tests {
     use super::super::super::sc;
     use super::*;
     use crate::infrastructure::Dummy;
-    use crate::models::service::Image;
+    use crate::models::{EnvironmentVariable, Image};
     use sha2::{Digest, Sha256};
+    use std::path::PathBuf;
     use std::str::FromStr;
     use url::Url;
 
@@ -636,7 +640,10 @@ mod tests {
         assert_eq!(configs.len(), 1);
 
         let volumes = configs.get(0).unwrap().volumes().unwrap();
-        assert_eq!(volumes.get("/run/secrets/user").unwrap(), "Hello");
+        assert_eq!(
+            volumes.get(&PathBuf::from("/run/secrets/user")).unwrap(),
+            "Hello"
+        );
 
         Ok(())
     }
@@ -810,7 +817,7 @@ Log msg 3 of service-a of app master
         let configs = vec![sc!(
             "openid",
             labels = (),
-            env = ("VAR_1=efg"),
+            env = ("VAR_1" => "efg"),
             volumes = ()
         )];
 
@@ -831,15 +838,21 @@ Log msg 3 of service-a of app master
             .collect();
         assert_eq!(openid_configs.len(), 1);
 
-        let mut openid_env = openid_configs[0].env().unwrap().clone();
-        openid_env.reverse();
+        use secstr::SecUtf8;
+        let openid_env = openid_configs[0].env().unwrap();
         assert_eq!(
-            openid_env.iter().find(|env| env.starts_with("VAR_1=")),
-            Some(&String::from("VAR_1=efg"))
+            openid_env.variable("VAR_1"),
+            Some(&EnvironmentVariable::new(
+                String::from("VAR_1"),
+                SecUtf8::from("efg")
+            ))
         );
         assert_eq!(
-            openid_env.iter().find(|env| env.starts_with("VAR_2=")),
-            Some(&String::from("VAR_2=1234"))
+            openid_env.variable("VAR_2"),
+            Some(&EnvironmentVariable::new(
+                String::from("VAR_2"),
+                SecUtf8::from("1234")
+            ))
         );
 
         Ok(())

@@ -46,7 +46,7 @@ pub fn tickets(
 ) -> Result<Json<HashMap<String, TicketInfo>>, HttpApiProblem> {
     let mut tickets: HashMap<String, TicketInfo> = HashMap::new();
 
-    match config_state.get_jira_config() {
+    match config_state.jira_config() {
         None => {
             return Err(HttpApiProblem::from(
                 ListTicketsError::MissingIssueTrackingConfiguration,

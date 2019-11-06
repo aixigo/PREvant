@@ -24,7 +24,8 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::service::{Image, ServiceConfig};
+use crate::models::Image;
+use crate::models::ServiceConfig;
 use dkregistry::errors::Error as DKRegistryError;
 use futures::Future;
 use regex::Regex;

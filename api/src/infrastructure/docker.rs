@@ -26,9 +26,8 @@
 
 use crate::config::ContainerConfig;
 use crate::infrastructure::Infrastructure;
-use crate::models::service::{
-    ContainerType, Image, Service, ServiceConfig, ServiceError, ServiceStatus,
-};
+use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
+use crate::models::{Image, ServiceConfig};
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
 use futures::future::join_all;
@@ -50,9 +49,6 @@ use std::sync::mpsc;
 use tokio::runtime::Runtime;
 use tokio::util::StreamExt;
 
-static APP_NAME_LABEL: &str = "com.aixigo.preview.servant.app-name";
-static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
-static CONTAINER_TYPE_LABEL: &str = "com.aixigo.preview.servant.container-type";
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
 pub struct DockerInfrastructure {}
@@ -238,8 +234,13 @@ impl DockerInfrastructure {
         );
 
         let mut options = ContainerOptions::builder(&image);
-        if let Some(ref env) = service_config.env() {
-            options.env(env.iter().map(|e| e.as_str()).collect());
+        if let Some(env) = service_config.env() {
+            let variables = env
+                .iter()
+                .map(|e| format!("{}={}", e.key(), e.value().unsecure()))
+                .collect::<Vec<String>>();
+
+            options.env(variables.iter().map(|s| s.as_str()).collect::<Vec<&str>>());
         }
 
         // TODO: this combination of ReplacePathRegex and PathPrefix should be replaced by
@@ -259,14 +260,14 @@ impl DockerInfrastructure {
             }
         }
 
-        labels.insert(APP_NAME_LABEL, app_name);
-        labels.insert(SERVICE_NAME_LABEL, &service_config.service_name());
-        labels.insert(CONTAINER_TYPE_LABEL, &container_type_name);
+        labels.insert(super::APP_NAME_LABEL, app_name);
+        labels.insert(super::SERVICE_NAME_LABEL, &service_config.service_name());
+        labels.insert(super::CONTAINER_TYPE_LABEL, &container_type_name);
 
         options.labels(&labels);
         options.restart_policy("always", 5);
 
-        if let Some(memory_limit) = container_config.get_memory_limit() {
+        if let Some(memory_limit) = container_config.memory_limit() {
             options.memory(memory_limit.clone());
         }
 
@@ -382,11 +383,11 @@ impl DockerInfrastructure {
         Ok(runtime
             .block_on(containers.list(&list_options))?
             .into_iter()
-            .filter(|c| match c.labels.get(APP_NAME_LABEL) {
+            .filter(|c| match c.labels.get(super::APP_NAME_LABEL) {
                 None => false,
                 Some(app) => app == app_name,
             })
-            .filter(|c| match c.labels.get(SERVICE_NAME_LABEL) {
+            .filter(|c| match c.labels.get(super::SERVICE_NAME_LABEL) {
                 None => false,
                 Some(service) => service == service_name,
             })
@@ -402,8 +403,8 @@ impl DockerInfrastructure {
         let mut runtime = Runtime::new()?;
 
         let f = match app_name {
-            None => ContainerFilter::LabelName(String::from(APP_NAME_LABEL)),
-            Some(app_name) => ContainerFilter::Label(String::from(APP_NAME_LABEL), app_name),
+            None => ContainerFilter::LabelName(String::from(super::APP_NAME_LABEL)),
+            Some(app_name) => ContainerFilter::Label(String::from(super::APP_NAME_LABEL), app_name),
         };
         let list_options = &ContainerListOptions::builder()
             .all()
@@ -422,7 +423,7 @@ impl DockerInfrastructure {
                             .labels
                             .clone()
                             .unwrap()
-                            .get(APP_NAME_LABEL)
+                            .get(super::APP_NAME_LABEL)
                             .unwrap()
                             .clone();
 
@@ -462,7 +463,7 @@ impl Infrastructure for DockerInfrastructure {
         Ok(apps)
     }
 
-    fn start_services(
+    fn deploy_services(
         &self,
         app_name: &String,
         configs: &Vec<ServiceConfig>,
@@ -512,7 +513,7 @@ impl Infrastructure for DockerInfrastructure {
         let docker = Docker::new();
         let containers = docker.containers();
 
-        let f1 = ContainerFilter::Label(APP_NAME_LABEL.to_owned(), app_name.clone());
+        let f1 = ContainerFilter::Label(super::APP_NAME_LABEL.to_owned(), app_name.clone());
         let list_options = ContainerListOptions::builder()
             .all()
             .filter(vec![f1])
@@ -753,7 +754,7 @@ impl TryFrom<&ContainerDetails> for Service {
             .clone()
             .unwrap_or(HashMap::new());
 
-        let service_name = match labels.get(SERVICE_NAME_LABEL) {
+        let service_name = match labels.get(super::SERVICE_NAME_LABEL) {
             Some(name) => name,
             None => {
                 return Err(DockerInfrastructureError::MissingServiceNameLabel {
@@ -762,7 +763,7 @@ impl TryFrom<&ContainerDetails> for Service {
             }
         };
 
-        let app_name = match labels.get(APP_NAME_LABEL) {
+        let app_name = match labels.get(super::APP_NAME_LABEL) {
             Some(name) => name,
             None => {
                 return Err(DockerInfrastructureError::MissingAppNameLabel {
@@ -771,7 +772,7 @@ impl TryFrom<&ContainerDetails> for Service {
             }
         };
 
-        let container_type = match labels.get(CONTAINER_TYPE_LABEL) {
+        let container_type = match labels.get(super::CONTAINER_TYPE_LABEL) {
             None => ContainerType::Instance,
             Some(lb) => lb.parse::<ContainerType>()?,
         };

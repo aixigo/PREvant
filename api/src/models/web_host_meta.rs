@@ -25,7 +25,7 @@
  */
 use chrono::{DateTime, Utc};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct WebHostMeta {
     properties: Option<Properties>,
     links: Option<Vec<Link>>,
@@ -37,7 +37,7 @@ fn valid_web_host() -> bool {
     true
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 struct Properties {
     #[serde(rename = "https://schema.org/softwareVersion")]
     version: Option<String>,
@@ -47,7 +47,7 @@ struct Properties {
     date_modified: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 struct Link {
     rel: String,
     href: String,

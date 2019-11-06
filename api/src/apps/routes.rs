@@ -26,7 +26,8 @@
 
 use crate::apps::Apps;
 use crate::models::request_info::RequestInfo;
-use crate::models::service::{Service, ServiceConfig, ServiceStatus};
+use crate::models::service::{Service, ServiceStatus};
+use crate::models::ServiceConfig;
 use crate::models::{AppName, AppNameError, LogChunk};
 use chrono::DateTime;
 use http_api_problem::HttpApiProblem;

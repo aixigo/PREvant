@@ -26,7 +26,8 @@
 
 use crate::config::ContainerConfig;
 use crate::infrastructure::Infrastructure;
-use crate::models::service::{Service, ServiceConfig, ServiceStatus};
+use crate::models::service::{Service, ServiceStatus};
+use crate::models::ServiceConfig;
 use chrono::{DateTime, FixedOffset, Utc};
 use multimap::MultiMap;
 use std::collections::HashSet;
@@ -73,7 +74,7 @@ impl Infrastructure for DummyInfrastructure {
         Ok(s)
     }
 
-    fn start_services(
+    fn deploy_services(
         &self,
         app_name: &String,
         configs: &Vec<ServiceConfig>,

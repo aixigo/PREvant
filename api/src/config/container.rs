@@ -23,19 +23,38 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+use serde::{de, Deserialize, Deserializer};
 
-pub use docker::DockerInfrastructure as Docker;
-#[cfg(test)]
-pub use dummy_infrastructure::DummyInfrastructure as Dummy;
-pub use infrastructure::Infrastructure;
-pub use kubernetes::KubernetesInfrastructure as Kubernetes;
+#[derive(Clone, Default, Deserialize)]
+pub struct ContainerConfig {
+    #[serde(deserialize_with = "ContainerConfig::parse_from_memory_string")]
+    memory_limit: Option<u64>,
+}
 
-mod docker;
-#[cfg(test)]
-mod dummy_infrastructure;
-mod infrastructure;
-mod kubernetes;
+impl ContainerConfig {
+    fn parse_from_memory_string<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let container_limit = String::deserialize(deserializer)?;
 
-static APP_NAME_LABEL: &str = "com.aixigo.preview.servant.app-name";
-static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
-static CONTAINER_TYPE_LABEL: &str = "com.aixigo.preview.servant.container-type";
+        let (size, unit) = container_limit.split_at(container_limit.len() - 1);
+        let limit = size.parse::<u64>().map_err(de::Error::custom)?;
+
+        let exp = match unit.to_lowercase().as_str() {
+            "k" => 1,
+            "m" => 2,
+            "g" => 3,
+            _ => 0,
+        };
+
+        Ok(Some(limit * 1024_u64.pow(exp)))
+    }
+
+    pub fn memory_limit(&self) -> Option<u64> {
+        match self.memory_limit {
+            None => None,
+            Some(limit) => Some(limit.clone()),
+        }
+    }
+}

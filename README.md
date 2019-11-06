@@ -4,7 +4,7 @@
 
 # PREvant In a Nutshell
 
-PREvant is a small set of docker containers that serves as an abstraction layer between continuous integration pipelines and some container orchestration platform. This abstraction serves as a reviewing platform to ensure that developers have built the features that domain expert requested. 
+PREvant a Docker container that serves as an abstraction layer between continuous integration pipelines and a container orchestration platform. This abstraction serves as a reviewing platform to ensure that developers have built the features that domain expert requested. 
 
 PREvant's name originates from this requirement: _Preview servant (PREvant, `prɪˈvɛnt`, it's pronounced like prevent)_ __serves__ developers to deploy previews of their application as simple as possible when their application consists of multiple microservices distributed across multiple source code repositories. These previews should __PREvant__ to do mistakes in feature development because domain experts can review changes as soon as possible.
 
@@ -16,13 +16,10 @@ Through PREvant's web interface domain experts, managers, developers, and sales 
 
 # Usage
 
-Have a look at [docker-compose.yml](docker-compose.yml) and use following command to start PREvant.
+Have a look at the examples directory. There you can find examples that deploy PREvant in different container environments:
 
-```
-docker-compose up -d
-```
-
-Now, PREvant is running at [`http://localhost`](http://localhost).
+- [Docker](examples/Docker/README.md)
+- [Kubernetes](examples/Kubernetes/README.md) 
 
 If you want to customize PREvant's behaviour, you can mount a TOML file into the container at the path `/app/config.toml`. You will find more information about the configuration [here](api/README.md).
 

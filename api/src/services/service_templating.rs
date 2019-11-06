@@ -24,12 +24,16 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::service::{ContainerType, ServiceConfig};
+use crate::models::service::ContainerType;
+use crate::models::{Environment, EnvironmentVariable, ServiceConfig};
 use handlebars::{
     Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderError, Renderable,
     TemplateRenderError,
 };
+use secstr::SecUtf8;
+use serde_value::Value;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 pub fn apply_templating_for_service_companion(
@@ -92,11 +96,15 @@ fn apply_template(
     if let Some(env) = comapnion_config.env() {
         let mut templated_env = Vec::new();
 
-        for e in env {
-            templated_env.push(reg.render_template(&e, &parameters)?);
+        for e in env.iter() {
+            let v = EnvironmentVariable::new(
+                e.key().clone(),
+                SecUtf8::from(reg.render_template(&e.value().unsecure(), &parameters)?),
+            );
+            templated_env.push(v);
         }
 
-        templated_config.set_env(Some(templated_env));
+        templated_config.set_env(Some(Environment::new(templated_env)));
     }
 
     if let Some(volumes) = comapnion_config.volumes() {
@@ -105,6 +113,19 @@ fn apply_template(
 
     if let Some(labels) = comapnion_config.labels() {
         templated_config.set_labels(Some(apply_templates(&reg, &parameters, labels)?));
+    }
+
+    if let Some(router) = comapnion_config.router() {
+        let rule = reg.render_template(router.rule(), &parameters)?;
+        templated_config.set_router(router.with_rule(rule));
+    }
+
+    if let Some(middlewares) = comapnion_config.middlewares() {
+        templated_config.set_middlewares(apply_templating_to_middlewares(
+            &reg,
+            &parameters,
+            middlewares,
+        )?);
     }
 
     Ok(templated_config)
@@ -166,11 +187,14 @@ fn is_companion<'reg, 'rc>(
     }
 }
 
-fn apply_templates(
+fn apply_templates<K>(
     reg: &Handlebars,
     parameters: &TemplateParameters,
-    original_values: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, TemplateRenderError> {
+    original_values: &BTreeMap<K, String>,
+) -> Result<BTreeMap<K, String>, TemplateRenderError>
+where
+    K: Clone + std::cmp::Ord,
+{
     let mut templated_values = BTreeMap::new();
 
     for (k, v) in original_values {
@@ -178,6 +202,51 @@ fn apply_templates(
     }
 
     Ok(templated_values)
+}
+
+fn apply_templating_to_middlewares(
+    reg: &Handlebars,
+    parameters: &TemplateParameters,
+    original_values: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>, TemplateRenderError> {
+    let mut templated_values = BTreeMap::new();
+
+    for (k, v) in original_values {
+        templated_values.insert(
+            k.clone(),
+            apply_templating_to_middleware_value(reg, parameters, v)?,
+        );
+    }
+
+    Ok(templated_values)
+}
+
+fn apply_templating_to_middleware_value(
+    reg: &Handlebars,
+    parameters: &TemplateParameters,
+    value: &Value,
+) -> Result<Value, TemplateRenderError> {
+    match value {
+        Value::String(v) => Ok(Value::String(reg.render_template(v, &parameters)?)),
+        Value::Seq(values) => {
+            let mut templated_values = Vec::with_capacity(values.len());
+            for v in values.iter() {
+                templated_values.push(apply_templating_to_middleware_value(reg, parameters, v)?);
+            }
+            Ok(Value::Seq(templated_values))
+        }
+        Value::Map(map) => {
+            let mut templated_map = BTreeMap::new();
+            for (k, v) in map.iter() {
+                templated_map.insert(
+                    k.clone(),
+                    apply_templating_to_middleware_value(reg, parameters, v)?,
+                );
+            }
+            Ok(Value::Map(templated_map))
+        }
+        v => Ok(v.clone()),
+    }
 }
 
 #[derive(Serialize)]
@@ -204,23 +273,23 @@ struct ServiceTemplateParameter {
 mod tests {
 
     use super::*;
-    use crate::models::service::Image;
+    use crate::models::Image;
+    use crate::models::Router;
+    use std::alloc::handle_alloc_error;
     use std::str::FromStr;
 
     #[test]
     fn should_apply_app_companion_templating_with_service_name() {
-        let env = vec![];
         let mut config = ServiceConfig::new(
             String::from("postgres-{{application.name}}"),
             Image::from_str("postgres").unwrap(),
         );
-        config.set_env(Some(env));
+        config.set_env(Some(Environment::new(Vec::new())));
 
-        let service_configs = vec![];
         let templated_config = apply_templating_for_application_companion(
             &config,
             &String::from("master"),
-            &service_configs,
+            &Vec::new(),
         )
         .unwrap();
 
@@ -229,18 +298,18 @@ mod tests {
 
     #[test]
     fn should_apply_app_companion_templating_with_envs() {
-        let env = vec![String::from(
-            r#"DATABASE_SCHEMAS=
-                {{~#each services~}}
-                    {{~name~}},
-                {{~/each~}}"#,
-        )];
-
         let mut config = ServiceConfig::new(
             String::from("postgres-db"),
             Image::from_str("postgres").unwrap(),
         );
-        config.set_env(Some(env));
+        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
+            "DATABASE_SCHEMAS".to_string(),
+            SecUtf8::from(
+                r#"{{~#each services~}}
+                    {{~name~}},
+                {{~/each~}}"#,
+            ),
+        )])));
 
         let service_configs = vec![
             ServiceConfig::new(
@@ -259,10 +328,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            templated_config.env().unwrap().get(0).unwrap(),
-            "DATABASE_SCHEMAS=service-a,service-b,"
-        );
+        let env = templated_config.env().unwrap().get(0).unwrap();
+        assert_eq!(env.key(), "DATABASE_SCHEMAS");
+        assert_eq!(env.value().unsecure(), "service-a,service-b,");
     }
 
     #[test]
@@ -304,18 +372,18 @@ mod tests {
 
     #[test]
     fn should_not_apply_app_companion_templating_with_invalid_envs() {
-        let env = vec![String::from(
-            r#"DATABASE_SCHEMAS=
-                {{~each services~}}
-                    {{~name~}},
-                {{~/each~}}"#,
-        )];
-
         let mut config = ServiceConfig::new(
             String::from("postgres-db"),
             Image::from_str("postgres").unwrap(),
         );
-        config.set_env(Some(env));
+        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
+            "DATABASE_SCHEMAS".to_string(),
+            SecUtf8::from(
+                r#"{~each services~}}
+                    {{~name~}},
+                {{~/each~}}"#,
+            ),
+        )])));
 
         let templated_config =
             apply_templating_for_application_companion(&config, &String::from("master"), &vec![]);
@@ -330,7 +398,7 @@ mod tests {
             Image::from_str("nginx").unwrap(),
         );
 
-        let mount_path = String::from("/etc/ningx/conf.d/default.conf");
+        let mount_path = PathBuf::from("/etc/ningx/conf.d/default.conf");
         let mut volumes = BTreeMap::new();
         volumes.insert(
             mount_path.clone(),
@@ -408,7 +476,7 @@ location /service-b {
             String::from("nginx-proxy"),
             Image::from_str("nginx").unwrap(),
         );
-        let mount_path = String::from("/etc/ningx/conf.d/default.conf");
+        let mount_path = PathBuf::from("/etc/ningx/conf.d/default.conf");
         let mut volumes = BTreeMap::new();
         volumes.insert(
             mount_path.clone(),
@@ -476,7 +544,7 @@ location /service-b {
             String::from("nginx-proxy"),
             Image::from_str("nginx").unwrap(),
         );
-        let mount_path = String::from("/etc/ningx/conf.d/default.conf");
+        let mount_path = PathBuf::from("/etc/ningx/conf.d/default.conf");
         let mut volumes = BTreeMap::new();
         volumes.insert(
             mount_path.clone(),
@@ -513,5 +581,118 @@ location /service-d {
     proxy_pass http://service-d;
 }"#
         );
+    }
+
+    #[test]
+    fn should_apply_templating_for_router() {
+        let mut config = ServiceConfig::new(
+            String::from("api-gateway"),
+            Image::from_str("api-gateway").unwrap(),
+        );
+        config.set_router(Router::new(
+            "PathPrefix(`/{{application.name}}/`)".to_string(),
+            None,
+        ));
+
+        let templated_config = apply_templating_for_application_companion(
+            &config,
+            &String::from("master"),
+            &Vec::new(),
+        )
+        .unwrap();
+
+        let router = templated_config.router().unwrap();
+        assert_eq!(router.rule(), &"PathPrefix(`/master/`)".to_string())
+    }
+
+    #[test]
+    fn should_apply_templating_for_middlewares_with_array_structure() {
+        let mut config = ServiceConfig::new(
+            String::from("api-gateway"),
+            Image::from_str("api-gateway").unwrap(),
+        );
+
+        let headers = serde_value::to_value(serde_json::json!({
+            "customRequestHeaders": [
+                "/{{application.name}}"
+            ]
+        }))
+        .unwrap();
+        let mut middlewares = BTreeMap::new();
+        middlewares.insert("headers".to_string(), headers);
+        config.set_middlewares(middlewares);
+
+        let templated_config = apply_templating_for_application_companion(
+            &config,
+            &String::from("master"),
+            &Vec::new(),
+        )
+        .unwrap();
+
+        let middlewares = templated_config.middlewares().unwrap();
+        match middlewares.get("headers").unwrap() {
+            Value::Map(headers) => {
+                match headers
+                    .get(&Value::String("customRequestHeaders".to_string()))
+                    .unwrap()
+                {
+                    Value::Seq(custom_request_headers) => {
+                        match custom_request_headers.get(0).unwrap() {
+                            Value::String(value) => assert_eq!(value, "/master"),
+                            _ => panic!("Should be a string value"),
+                        }
+                    }
+                    _ => panic!("should be a array"),
+                }
+            }
+            _ => panic!("should be a map"),
+        }
+    }
+
+    #[test]
+    fn should_apply_templating_for_middlewares_with_map_structure() {
+        let mut config = ServiceConfig::new(
+            String::from("api-gateway"),
+            Image::from_str("api-gateway").unwrap(),
+        );
+
+        let headers = serde_value::to_value(serde_json::json!({
+            "customRequestHeaders": {
+                "X-Forwarded-Path": "/{{application.name}}"
+            }
+        }))
+        .unwrap();
+        let mut middlewares = BTreeMap::new();
+        middlewares.insert("headers".to_string(), headers);
+        config.set_middlewares(middlewares);
+
+        let templated_config = apply_templating_for_application_companion(
+            &config,
+            &String::from("master"),
+            &Vec::new(),
+        )
+        .unwrap();
+
+        let middlewares = templated_config.middlewares().unwrap();
+        match middlewares.get("headers").unwrap() {
+            Value::Map(headers) => {
+                match headers
+                    .get(&Value::String("customRequestHeaders".to_string()))
+                    .unwrap()
+                {
+                    Value::Map(custom_request_headers) => {
+                        match custom_request_headers
+                            .get(&Value::String("X-Forwarded-Path".to_string()))
+                            .unwrap()
+                        {
+                            Value::String(path) => assert_eq!(path, "/master"),
+                            _ => panic!("Should be string"),
+                        }
+                    }
+                    _ => panic!("should be a map"),
+                }
+            }
+            _ => panic!("should be a map"),
+        }
     }
 }
