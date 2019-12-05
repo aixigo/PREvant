@@ -192,6 +192,51 @@ impl ServiceConfig {
     pub fn port(&self) -> u16 {
         self.port
     }
+
+    /// Copy labels, envs and volumes from other into self.
+    /// If something is defined in self and other, self has precedence.
+    pub fn merge_with(&mut self, other: &Self) {
+        // We parse env-strings of the form A=B. If a string is unparseable,
+        // it is kept as is.
+        let mut new_envs = vec![];
+        let mut own_envs_map = BTreeMap::new();
+        for env in self.env().into_iter().flatten() {
+            let parts = env.splitn(2, "=").collect::<Vec<&str>>();
+            if parts.len() == 2 {
+                own_envs_map.insert(parts[0], parts[1]);
+            } else {
+                new_envs.push(env.to_owned());
+            }
+        }
+        for env in other.env().into_iter().flatten() {
+            let parts = env.splitn(2, "=").collect::<Vec<&str>>();
+            if parts.len() == 2 {
+                let own_value = own_envs_map.remove(parts[0]);
+                new_envs.push(format!(
+                    "{}={}",
+                    parts[0],
+                    String::from(own_value.unwrap_or(parts[1]))
+                ));
+            } else {
+                new_envs.push(env.to_owned());
+            }
+        }
+        for (key, value) in own_envs_map.iter() {
+            new_envs.push(format!("{}={}", key, value));
+        }
+        // Reverse the envs-array to ensure that unparseable strings from self
+        // are added after unparseable strings from other
+        new_envs.reverse();
+        self.set_env(Some(new_envs));
+
+        let mut volumes = other.volumes().unwrap_or(&BTreeMap::new()).clone();
+        volumes.extend(self.volumes().unwrap_or(&BTreeMap::new()).clone());
+        self.set_volumes(Some(volumes));
+
+        let mut labels = other.labels().unwrap_or(&BTreeMap::new()).clone();
+        labels.extend(self.labels().unwrap_or(&BTreeMap::new()).clone());
+        self.set_labels(Some(labels));
+    }
 }
 
 impl Service {
@@ -523,6 +568,29 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
+    fn get_service_config(
+        env: Option<Vec<String>>,
+        labels: Option<BTreeMap<String, String>>,
+        volumes: Option<BTreeMap<String, String>>,
+    ) -> ServiceConfig {
+        let mut config = ServiceConfig::new(
+            String::from("some_name"),
+            Image::from_str(&String::from(
+                "registry.example.com/organization/some_name:latest",
+            ))
+            .unwrap(),
+        );
+        config.set_labels(labels);
+        config.set_volumes(volumes);
+        config.set_env(env);
+        config
+    }
+
+    fn sort_vec<T: Ord>(mut vec: Vec<T>) -> Vec<T> {
+        vec.sort();
+        vec
+    }
+
     #[test]
     fn should_parse_image_id_with_sha_prefix() {
         let image = Image::from_str(
@@ -609,6 +677,83 @@ mod tests {
                 String::from("MYSQL_USER=admin"),
                 String::from("MYSQL_DATABASE=dbname")
             ])
+        );
+    }
+
+    #[test]
+    fn should_merge_service_configs_correctly() {
+        let mut config = get_service_config(
+            Some(vec![String::from("VAR_1=abcd"), String::from("VAR_2=1234")]),
+            Some(btreemap! {
+                String::from("priority") => String::from("1000"),
+                String::from("rule") => String::from("some_string")
+            }),
+            Some(btreemap! {
+                String::from("/etc/mysql/my.cnf") => String::from("ABCD"),
+                String::from("/etc/folder/abcd.conf") => String::from("1234")
+            }),
+        );
+        let config2 = get_service_config(
+            Some(vec![String::from("VAR_1=efgh"), String::from("VAR_3=1234")]),
+            Some(btreemap! {
+                String::from("priority") => String::from("2000"),
+                String::from("test_label") => String::from("other_string")
+            }),
+            Some(btreemap! {
+                String::from("/etc/mysql/my.cnf") => String::from("EFGH"),
+                String::from("/etc/test.conf") => String::from("5678")
+            }),
+        );
+
+        config.merge_with(&config2);
+
+        assert_eq!(
+            sort_vec(config.env().unwrap().clone()),
+            vec![
+                String::from("VAR_1=abcd"),
+                String::from("VAR_2=1234"),
+                String::from("VAR_3=1234")
+            ]
+        );
+        assert_eq!(
+            config.labels().unwrap(),
+            &btreemap! {
+                String::from("priority") => String::from("1000"),
+                String::from("rule") => String::from("some_string"),
+                String::from("test_label") => String::from("other_string")
+            }
+        );
+        assert_eq!(
+            config.volumes().unwrap(),
+            &btreemap! {
+                String::from("/etc/mysql/my.cnf") => String::from("ABCD"),
+                String::from("/etc/folder/abcd.conf") => String::from("1234"),
+                String::from("/etc/test.conf") => String::from("5678")
+            }
+        );
+    }
+
+    #[test]
+    fn should_handle_invalid_env_when_merging_service_config() {
+        let mut config = get_service_config(
+            Some(vec![String::from("abcd"), String::from("VAR=1")]),
+            None,
+            None,
+        );
+        let config2 = get_service_config(
+            Some(vec![String::from("VAR=e"), String::from("invalid_env")]),
+            None,
+            None,
+        );
+
+        config.merge_with(&config2);
+        assert_eq!(
+            sort_vec(config.env().unwrap().clone()),
+            vec![
+                String::from("VAR=1"),
+                String::from("abcd"),
+                String::from("invalid_env")
+            ]
         );
     }
 }

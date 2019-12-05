@@ -40,6 +40,7 @@ use handlebars::TemplateRenderError;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
 use rayon::prelude::*;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::convert::From;
 use std::sync::Mutex;
@@ -201,7 +202,7 @@ impl AppsService {
             .collect::<Vec<ServiceConfig>>())
     }
 
-    /// Creates or updates a app to review with the given service configurations.
+    /// Creates or updates an app to review with the given service configurations.
     ///
     /// The list of given services will be extended with:
     /// - the replications from the running template application (e.g. master)
@@ -261,14 +262,11 @@ impl AppsService {
             );
         }
 
-        configs.extend(AppsService::filter_companions_by_service_name(
-            service_companions,
-            &configs,
-        ));
-        configs.extend(AppsService::filter_companions_by_service_name(
+        AppsService::merge_companions_by_service_name(service_companions, &mut configs);
+        AppsService::merge_companions_by_service_name(
             self.get_application_companion_configs(app_name, &configs)?,
-            &configs,
-        ));
+            &mut configs,
+        );
 
         configs.sort_unstable_by(|a, b| {
             let index1 = AppsService::container_type_index(a.container_type());
@@ -283,6 +281,28 @@ impl AppsService {
         )?;
 
         Ok(services)
+    }
+
+    /// Adds all companions to service_configs that are not yet present. Also updates
+    /// service configs if there is a corresponding companion config.
+    fn merge_companions_by_service_name(
+        companions: Vec<ServiceConfig>,
+        service_configs: &mut Vec<ServiceConfig>,
+    ) {
+        for service in service_configs.iter_mut() {
+            let matching_companion = companions
+                .iter()
+                .find(|companion| companion.service_name() == service.service_name());
+
+            if matching_companion.is_some() {
+                service.merge_with(matching_companion.unwrap());
+            }
+        }
+
+        service_configs.extend(AppsService::filter_companions_by_service_name(
+            companions,
+            service_configs,
+        ));
     }
 
     fn filter_companions_by_service_name(
@@ -743,7 +763,8 @@ Log msg 3 of service-a of app master
         let apps = AppsService::new(config, infrastructure)?;
 
         let app_name = AppName::from_str("master").unwrap();
-        apps.create_or_update(&app_name, None, &service_configs!("openid", "db"))?;
+        let configs = service_configs!("openid", "db");
+        apps.create_or_update(&app_name, None, &configs)?;
 
         let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
         let deployed_apps = apps.get_apps(&info)?;
@@ -752,6 +773,82 @@ Log msg 3 of service-a of app master
         assert_eq!(services.len(), 2);
         assert_contains_service!(services, "openid", ContainerType::Instance);
         assert_contains_service!(services, "db", ContainerType::Instance);
+
+        let openid_configs: Vec<ServiceConfig> = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master"))?
+            .into_iter()
+            .filter(|config| config.service_name() == "openid")
+            .collect();
+        assert_eq!(openid_configs.len(), 1);
+        assert_eq!(openid_configs[0].image(), configs[0].image());
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_merge_with_companion_config_if_services_to_deploy_contain_same_service_name(
+    ) -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+            env = [ "VAR_1=abcd", "VAR_2=1234" ]
+
+            [companions.openid.labels]
+            'traefik.frontend.rule' = 'PathPrefix:/example.com/openid/;'
+            'traefik.frontend.priority' = '20000'
+        "#
+        );
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        let app_name = AppName::from_str("master").unwrap();
+
+        let mut configs = service_configs!("openid");
+        configs[0].set_env(Some(vec![String::from("VAR_1=efg")]));
+        let mut config_labels = BTreeMap::new();
+        config_labels.insert(String::from("traefik.frontend.priority"), String::from("1"));
+        configs[0].set_labels(Some(config_labels));
+        apps.create_or_update(&app_name, None, &configs)?;
+
+        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
+        let deployed_apps = apps.get_apps(&info)?;
+
+        let services = deployed_apps.get_vec("master").unwrap();
+        assert_eq!(services.len(), 1);
+        assert_contains_service!(services, "openid", ContainerType::Instance);
+
+        let openid_configs: Vec<ServiceConfig> = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master"))?
+            .into_iter()
+            .filter(|config| config.service_name() == "openid")
+            .collect();
+        assert_eq!(openid_configs.len(), 1);
+
+        let mut openid_env = openid_configs[0].env().unwrap().clone();
+        openid_env.reverse();
+        assert_eq!(
+            openid_env.iter().find(|env| env.starts_with("VAR_1=")),
+            Some(&String::from("VAR_1=efg"))
+        );
+        assert_eq!(
+            openid_env.iter().find(|env| env.starts_with("VAR_2=")),
+            Some(&String::from("VAR_2=1234"))
+        );
+
+        let openid_labels = openid_configs[0].labels().unwrap().clone();
+        assert_eq!(
+            openid_labels.get("traefik.frontend.rule"),
+            Some(&String::from("PathPrefix:/example.com/openid/;"))
+        );
+        assert_eq!(
+            openid_labels.get("traefik.frontend.priority"),
+            Some(&String::from("1"))
+        );
 
         Ok(())
     }
