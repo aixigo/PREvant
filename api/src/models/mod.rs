@@ -30,6 +30,7 @@ pub use logs_chunks::LogChunk;
 mod app_name;
 mod logs_chunks;
 pub mod request_info;
+#[cfg_attr(test, macro_use)]
 pub mod service;
 pub mod ticket_info;
 pub mod web_hook_info;

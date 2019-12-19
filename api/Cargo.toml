@@ -18,7 +18,6 @@ handlebars = "1.1"
 hyper = "0.10"
 lazy_static = "1.3"
 log = "0.4"
-maplit = "1.0"
 multimap = "0.4"
 serde = "1.0"
 serde_derive = "1.0"
@@ -44,14 +43,14 @@ features = [ "serde" ]
 
 [dependencies.dkregistry]
 git = "https://github.com/camallo/dkregistry-rs.git"
+rev = "201f587c4720cf8977fdea32884de565be5efb37"
 
 [dependencies.http-api-problem]
 version = "0.12"
 features = ["with_rocket"]
 
 [dependencies.shiplift]
-git = "https://github.com/softprops/shiplift.git"
-rev = "f10534b3179dcbc2667b1c6aed3039a5f3a40f0f"
+version = "0.6"
 default-features = false
 features = ["unix-socket", "chrono"]
 

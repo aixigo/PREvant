@@ -564,27 +564,73 @@ impl std::string::ToString for Image {
 }
 
 #[cfg(test)]
+#[macro_export]
+macro_rules! sc {
+    ( $name:expr ) => {{
+        let mut hasher = Sha256::new();
+        hasher.input($name);
+        let img_hash = &format!("sha256:{:x}", hasher.result_reset());
+
+        sc!($name, img_hash)
+    }};
+
+    ( $name:expr, $img:expr ) => {{
+        ServiceConfig::new(String::from($name), Image::from_str($img).unwrap())
+    }};
+
+    ( $name:expr, labels = ($($l_key:expr => $l_value:expr),*),
+        env = ($($env:expr),*),
+        volumes = ($($v_key:expr => $v_value:expr),*) ) => {{
+
+        let mut hasher = Sha256::new();
+        hasher.input($name);
+        let img_hash = &format!("sha256:{:x}", hasher.result_reset());
+
+        let mut config =
+            ServiceConfig::new(String::from($name), Image::from_str(img_hash).unwrap());
+
+        let mut _labels = std::collections::BTreeMap::new();
+        $( _labels.insert(String::from($l_key), String::from($l_value)); )*
+        config.set_labels(Some(_labels));
+
+        let mut _volumes = std::collections::BTreeMap::new();
+        $( _volumes.insert(String::from($v_key), String::from($v_value)); )*
+        config.set_volumes(Some(_volumes));
+
+        let mut _env = Vec::new();
+        $( _env.push(String::from($env)); )*
+        config.set_env(Some(_env));
+
+        config
+    }};
+
+    ( $name:expr, $img:expr,
+        labels = ($($l_key:expr => $l_value:expr),*),
+        env = ($($env:expr),*),
+        volumes = ($($v_key:expr => $v_value:expr),*) ) => {{
+        let mut config =
+            ServiceConfig::new(String::from($name), Image::from_str($img).unwrap());
+
+        let mut _labels = std::collections::BTreeMap::new();
+        $( _labels.insert(String::from($l_key), String::from($l_value)); )*
+        config.set_labels(Some(_labels));
+
+        let mut _volumes = std::collections::BTreeMap::new();
+        $( _volumes.insert(String::from($v_key), String::from($v_value)); )*
+        config.set_volumes(Some(_volumes));
+
+        let mut _env = Vec::new();
+        $( _env.push(String::from($env)); )*
+        config.set_env(Some(_env));
+
+        config
+    }};
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::str::FromStr;
-
-    fn get_service_config(
-        env: Option<Vec<String>>,
-        labels: Option<BTreeMap<String, String>>,
-        volumes: Option<BTreeMap<String, String>>,
-    ) -> ServiceConfig {
-        let mut config = ServiceConfig::new(
-            String::from("some_name"),
-            Image::from_str(&String::from(
-                "registry.example.com/organization/some_name:latest",
-            ))
-            .unwrap(),
-        );
-        config.set_labels(labels);
-        config.set_volumes(volumes);
-        config.set_env(env);
-        config
-    }
 
     fn sort_vec<T: Ord>(mut vec: Vec<T>) -> Vec<T> {
         vec.sort();
@@ -659,13 +705,13 @@ mod tests {
     #[test]
     fn should_parse_service_config_json() {
         let json = r#"{
-    "serviceName": "mariadb",
-    "image": "mariadb:10.3",
-    "env": [
-      "MYSQL_USER=admin",
-      "MYSQL_DATABASE=dbname"
-    ]
-  }"#;
+            "serviceName": "mariadb",
+            "image": "mariadb:10.3",
+            "env": [
+              "MYSQL_USER=admin",
+              "MYSQL_DATABASE=dbname"
+            ]
+          }"#;
 
         let config = serde_json::from_str::<ServiceConfig>(json).unwrap();
 
@@ -681,32 +727,60 @@ mod tests {
     }
 
     #[test]
-    fn should_merge_service_configs_correctly() {
-        let mut config = get_service_config(
-            Some(vec![String::from("VAR_1=abcd"), String::from("VAR_2=1234")]),
-            Some(btreemap! {
-                String::from("priority") => String::from("1000"),
-                String::from("rule") => String::from("some_string")
-            }),
-            Some(btreemap! {
-                String::from("/etc/mysql/my.cnf") => String::from("ABCD"),
-                String::from("/etc/folder/abcd.conf") => String::from("1234")
-            }),
+    fn should_merge_service_configs_labels() {
+        let mut config = sc!(
+            "proxy",
+            "nginx",
+            labels = ("priority" => "1000", "rule" => "some_string"),
+            env = (),
+            volumes = ()
         );
-        let config2 = get_service_config(
-            Some(vec![String::from("VAR_1=efgh"), String::from("VAR_3=1234")]),
-            Some(btreemap! {
-                String::from("priority") => String::from("2000"),
-                String::from("test_label") => String::from("other_string")
-            }),
-            Some(btreemap! {
-                String::from("/etc/mysql/my.cnf") => String::from("EFGH"),
-                String::from("/etc/test.conf") => String::from("5678")
-            }),
+        let config2 = sc!(
+            "proxy",
+            "nginx",
+            labels = ("priority" => "1000", "test_label" => "other_string"),
+            env = (),
+            volumes = ()
         );
 
         config.merge_with(&config2);
 
+        assert_eq!(config.labels().unwrap().len(), 3);
+        assert_eq!(
+            config.labels().unwrap().get("priority"),
+            Some(&String::from("1000"))
+        );
+        assert_eq!(
+            config.labels().unwrap().get("rule"),
+            Some(&String::from("some_string"))
+        );
+        assert_eq!(
+            config.labels().unwrap().get("test_label"),
+            Some(&String::from("other_string"))
+        );
+    }
+
+    #[test]
+    fn should_merge_service_configs_envs() {
+        let mut config = sc!(
+            "proxy",
+            "nginx",
+            labels = (),
+            env = ("VAR_1=abcd", "VAR_2=1234"),
+            volumes = ()
+        );
+
+        let config2 = sc!(
+            "proxy",
+            "nginx",
+            labels = (),
+            env = ("VAR_1=efgh", "VAR_3=1234"),
+            volumes = ()
+        );
+
+        config.merge_with(&config2);
+
+        assert_eq!(config.env().unwrap().len(), 3);
         assert_eq!(
             sort_vec(config.env().unwrap().clone()),
             vec![
@@ -715,35 +789,58 @@ mod tests {
                 String::from("VAR_3=1234")
             ]
         );
+    }
+
+    #[test]
+    fn should_merge_service_configs_volumes() {
+        let mut config = sc!(
+            "proxy",
+            "nginx",
+            labels = (),
+            env = (),
+            volumes = ("/etc/mysql/my.cnf" => "ABCD", "/etc/folder/abcd.conf" => "1234")
+        );
+        let config2 = sc!(
+            "proxy",
+            "nginx",
+            labels = (),
+            env = (),
+            volumes = ("/etc/mysql/my.cnf" => "EFGH", "/etc/test.conf" => "5678")
+        );
+
+        config.merge_with(&config2);
+
+        assert_eq!(config.volumes().unwrap().len(), 3);
         assert_eq!(
-            config.labels().unwrap(),
-            &btreemap! {
-                String::from("priority") => String::from("1000"),
-                String::from("rule") => String::from("some_string"),
-                String::from("test_label") => String::from("other_string")
-            }
+            config.volumes().unwrap().get("/etc/mysql/my.cnf"),
+            Some(&String::from("ABCD"))
         );
         assert_eq!(
-            config.volumes().unwrap(),
-            &btreemap! {
-                String::from("/etc/mysql/my.cnf") => String::from("ABCD"),
-                String::from("/etc/folder/abcd.conf") => String::from("1234"),
-                String::from("/etc/test.conf") => String::from("5678")
-            }
+            config.volumes().unwrap().get("/etc/folder/abcd.conf"),
+            Some(&String::from("1234"))
+        );
+        assert_eq!(
+            config.volumes().unwrap().get("/etc/test.conf"),
+            Some(&String::from("5678"))
         );
     }
 
     #[test]
     fn should_handle_invalid_env_when_merging_service_config() {
-        let mut config = get_service_config(
-            Some(vec![String::from("abcd"), String::from("VAR=1")]),
-            None,
-            None,
+        let mut config = sc!(
+            "proxy",
+            "nginx",
+            labels = (),
+            env = ("abcd", "VAR=1"),
+            volumes = ()
         );
-        let config2 = get_service_config(
-            Some(vec![String::from("VAR=e"), String::from("invalid_env")]),
-            None,
-            None,
+
+        let config2 = sc!(
+            "proxy",
+            "nginx",
+            labels = (),
+            env = ("VAR=e", "invalid_env"),
+            volumes = ()
         );
 
         config.merge_with(&config2);

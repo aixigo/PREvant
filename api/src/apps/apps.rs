@@ -40,7 +40,6 @@ use handlebars::TemplateRenderError;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
 use rayon::prelude::*;
-use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::convert::From;
 use std::sync::Mutex;
@@ -294,8 +293,8 @@ impl AppsService {
                 .iter()
                 .find(|companion| companion.service_name() == service.service_name());
 
-            if matching_companion.is_some() {
-                service.merge_with(matching_companion.unwrap());
+            if let Some(matching_companion) = matching_companion {
+                service.merge_with(matching_companion);
             }
         }
 
@@ -478,6 +477,7 @@ impl From<ImagesServiceError> for AppsServiceError {
 #[cfg(test)]
 mod tests {
 
+    use super::super::super::sc;
     use super::*;
     use crate::infrastructure::Dummy;
     use crate::models::service::Image;
@@ -807,11 +807,13 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::from_str("master").unwrap();
 
-        let mut configs = service_configs!("openid");
-        configs[0].set_env(Some(vec![String::from("VAR_1=efg")]));
-        let mut config_labels = BTreeMap::new();
-        config_labels.insert(String::from("traefik.frontend.priority"), String::from("1"));
-        configs[0].set_labels(Some(config_labels));
+        let configs = vec![sc!(
+            "openid",
+            labels = (),
+            env = ("VAR_1=efg"),
+            volumes = ()
+        )];
+
         apps.create_or_update(&app_name, None, &configs)?;
 
         let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
@@ -838,16 +840,6 @@ Log msg 3 of service-a of app master
         assert_eq!(
             openid_env.iter().find(|env| env.starts_with("VAR_2=")),
             Some(&String::from("VAR_2=1234"))
-        );
-
-        let openid_labels = openid_configs[0].labels().unwrap().clone();
-        assert_eq!(
-            openid_labels.get("traefik.frontend.rule"),
-            Some(&String::from("PathPrefix:/example.com/openid/;"))
-        );
-        assert_eq!(
-            openid_labels.get("traefik.frontend.priority"),
-            Some(&String::from("1"))
         );
 
         Ok(())

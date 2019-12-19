@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-#![feature(custom_attribute, proc_macro_hygiene, decl_macro, option_flattening)]
+#![feature(proc_macro_hygiene, decl_macro)]
 
 #[macro_use]
 extern crate cached;
@@ -36,8 +36,6 @@ extern crate failure;
 extern crate lazy_static;
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate maplit;
 #[macro_use]
 extern crate rocket;
 #[macro_use]
