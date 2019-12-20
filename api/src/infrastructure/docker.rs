@@ -211,16 +211,19 @@ impl DockerInfrastructure {
             self.get_app_container(app_name, service_config.service_name())?
         {
             let container = containers.get(&container_info.id);
-            let container_image_id = runtime.block_on(container.inspect())?.image.clone();
+            let container_details = runtime.block_on(container.inspect())?;
 
             info!(
                 "Removing container {:?} of review app {:?}",
                 container_info, app_name
             );
-            runtime.block_on(container.stop(Some(core::time::Duration::from_secs(10))))?;
+
+            if container_details.state.running {
+                runtime.block_on(container.stop(Some(core::time::Duration::from_secs(10))))?;
+            }
             runtime.block_on(container.delete())?;
 
-            image_to_delete = Some(container_image_id.clone());
+            image_to_delete = Some(container_details.image);
         }
 
         let container_type_name = service_config.container_type().to_string();

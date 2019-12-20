@@ -738,7 +738,7 @@ mod tests {
         let config2 = sc!(
             "proxy",
             "nginx",
-            labels = ("priority" => "1000", "test_label" => "other_string"),
+            labels = ("priority" => "2000", "test_label" => "other_string"),
             env = (),
             volumes = ()
         );
