@@ -33,7 +33,6 @@ use handlebars::{
 use secstr::SecUtf8;
 use serde_value::Value;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::str::FromStr;
 
 pub fn apply_templating_for_service_companion(
@@ -275,7 +274,7 @@ mod tests {
     use super::*;
     use crate::models::Image;
     use crate::models::Router;
-    use std::alloc::handle_alloc_error;
+    use std::path::PathBuf;
     use std::str::FromStr;
 
     #[test]

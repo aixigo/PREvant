@@ -27,6 +27,7 @@
 use crate::models::Image;
 use crate::models::ServiceConfig;
 use dkregistry::errors::Error as DKRegistryError;
+use dkregistry::v2::manifest::Manifest;
 use futures::Future;
 use regex::Regex;
 use std::collections::HashMap;
@@ -67,49 +68,42 @@ impl ImagesService {
             let image = config.image().name().unwrap();
             let tag = config.image().tag().unwrap();
 
-            let futures = futures::future::ok::<_, DKRegistryError>(client)
+            let future = futures::future::ok::<_, DKRegistryError>(client)
                 .and_then(|dclient| Ok(dclient))
                 .and_then(|dclient| {
-                    dclient
-                        .has_manifest(&image, &tag, None)
-                        .and_then(move |manifest_option| Ok((dclient, manifest_option)))
-                        .and_then(|(dclient, manifest_option)| match manifest_option {
-                            None => {
-                                Err(format!("{}:{} doesn't have a manifest", &image, &tag).into())
-                            }
-
-                            Some(manifest_kind) => Ok((dclient, manifest_kind)),
-                        })
-                })
-                .and_then(|(dclient, manifest_kind)| {
                     let img = image.clone();
                     dclient
                         .get_manifest(&img, &tag)
-                        .and_then(move |manifest_body| match manifest_kind {
-                            dkregistry::mediatypes::MediaTypes::ManifestV2S2 => {
-                                let m: dkregistry::v2::manifest::ManifestSchema2 =
-                                    match serde_json::from_slice(manifest_body.as_slice()) {
-                                        Ok(json) => json,
-                                        Err(e) => return Err(e.into()),
-                                    };
-                                Ok((dclient, m.config()))
+                        .and_then(move |manifest| match manifest {
+                            Manifest::S2(schema) => {
+                                Ok((dclient, schema.manifest_spec.config().digest.clone()))
                             }
                             _ => Err("unknown format".into()),
                         })
                 })
-                .and_then(|(dclient, config_layer)| {
+                .and_then(|(dclient, digest)| {
                     let img = image.clone();
 
-                    let get_blob_future = dclient.get_blob(&img, &config_layer);
+                    let get_blob_future = dclient.get_blob(&img, &digest);
                     get_blob_future.map(move |blob| {
                         serde_json::from_str::<ImageBlob>(&String::from_utf8(blob).unwrap())
                     })
                 });
 
-            let blob = core.run(futures)??;
-
-            if let Some(port) = blob.get_exposed_port() {
-                port_mappings.insert(config.clone(), port);
+            match core.run(future) {
+                Ok(blob) => match blob {
+                    Ok(blob) => {
+                        if let Some(port) = blob.get_exposed_port() {
+                            port_mappings.insert(config.clone(), port);
+                        }
+                    }
+                    Err(err) => {
+                        warn!("Cannot resolve manifest for {}: {}", image, err);
+                    }
+                },
+                Err(err) => {
+                    warn!("Cannot resolve manifest for {}: {}", image, err);
+                }
             }
         }
 
@@ -189,7 +183,6 @@ impl From<serde_json::Error> for ImagesServiceError {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
     #[test]
