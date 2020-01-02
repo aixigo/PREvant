@@ -28,13 +28,11 @@ use crate::models::Image;
 use crate::models::ServiceConfig;
 use dkregistry::errors::Error as DKRegistryError;
 use dkregistry::v2::manifest::Manifest;
-use futures::Future;
 use regex::Regex;
 use std::collections::HashMap;
 use std::convert::From;
 use std::io::Error as IOError;
 use std::str::FromStr;
-use tokio_core::reactor::Core;
 
 pub struct ImagesService {}
 
@@ -45,11 +43,10 @@ impl ImagesService {
 
     /// Inspects all remote images through the docker registry and resolves the exposed ports of
     /// the docker images.
-    pub fn resolve_image_ports(
+    pub async fn resolve_image_ports(
         &self,
         configs: &Vec<ServiceConfig>,
     ) -> Result<HashMap<ServiceConfig, u16>, ImagesServiceError> {
-        let mut core = Core::new()?;
         let mut port_mappings = HashMap::new();
 
         for config in configs.iter() {
@@ -68,39 +65,18 @@ impl ImagesService {
             let image = config.image().name().unwrap();
             let tag = config.image().tag().unwrap();
 
-            let future = futures::future::ok::<_, DKRegistryError>(client)
-                .and_then(|dclient| Ok(dclient))
-                .and_then(|dclient| {
-                    let img = image.clone();
-                    dclient
-                        .get_manifest(&img, &tag)
-                        .and_then(move |manifest| match manifest {
-                            Manifest::S2(schema) => {
-                                Ok((dclient, schema.manifest_spec.config().digest.clone()))
-                            }
-                            _ => Err("unknown format".into()),
-                        })
-                })
-                .and_then(|(dclient, digest)| {
-                    let img = image.clone();
+            let digest = match client.get_manifest(&image, &tag).await? {
+                Manifest::S2(schema) => schema.manifest_spec.config().digest.clone(),
+                _ => return Err(ImagesServiceError::UnknownManifestFormat { image }),
+            };
 
-                    let get_blob_future = dclient.get_blob(&img, &digest);
-                    get_blob_future.map(move |blob| {
-                        serde_json::from_str::<ImageBlob>(&String::from_utf8(blob).unwrap())
-                    })
-                });
-
-            match core.run(future) {
-                Ok(blob) => match blob {
-                    Ok(blob) => {
-                        if let Some(port) = blob.get_exposed_port() {
-                            port_mappings.insert(config.clone(), port);
-                        }
+            let raw_blob = client.get_blob(&image, &digest).await?;
+            match serde_json::from_str::<ImageBlob>(&String::from_utf8(raw_blob).unwrap()) {
+                Ok(blob) => {
+                    if let Some(port) = blob.get_exposed_port() {
+                        port_mappings.insert(config.clone(), port);
                     }
-                    Err(err) => {
-                        warn!("Cannot resolve manifest for {}: {}", image, err);
-                    }
-                },
+                }
                 Err(err) => {
                     warn!("Cannot resolve manifest for {}: {}", image, err);
                 }
@@ -149,6 +125,8 @@ impl ImageConfig {
 
 #[derive(Debug, Fail)]
 pub enum ImagesServiceError {
+    #[fail(display = "Unknown manifest format for {}", image)]
+    UnknownManifestFormat { image: String },
     #[fail(display = "Could not find image: {}", internal_message)]
     ImageNotFound { internal_message: String },
     #[fail(display = "Unexpected docker registry error: {}", internal_message)]
