@@ -32,6 +32,7 @@ use crate::config::ContainerConfig;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{ServiceBuilder, ServiceBuilderError, ServiceConfig};
+use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use failure::Error;
 use k8s_openapi::api::apps::v1::{DeploymentSpec, DeploymentStatus};
@@ -222,8 +223,9 @@ impl KubernetesInfrastructure {
     }
 }
 
+#[async_trait]
 impl Infrastructure for KubernetesInfrastructure {
-    fn get_services(&self) -> Result<MultiMap<String, Service>, Error> {
+    async fn get_services(&self) -> Result<MultiMap<String, Service>, Error> {
         let mut p = ListParams::default();
         p.label_selector = Some(format!("{},{}", APP_NAME_LABEL, SERVICE_NAME_LABEL));
 
@@ -243,7 +245,7 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(apps)
     }
 
-    fn deploy_services(
+    async fn deploy_services(
         &self,
         app_name: &String,
         configs: &Vec<ServiceConfig>,
@@ -325,7 +327,7 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(self.get_services_of_app(app_name)?)
     }
 
-    fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, Error> {
+    async fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, Error> {
         let services = self.get_services_of_app(app_name)?;
 
         for service in &services {
@@ -367,11 +369,11 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(services)
     }
 
-    fn get_configs_of_app(&self, _app_name: &String) -> Result<Vec<ServiceConfig>, Error> {
+    async fn get_configs_of_app(&self, _app_name: &String) -> Result<Vec<ServiceConfig>, Error> {
         Ok(vec![])
     }
 
-    fn get_logs(
+    async fn get_logs(
         &self,
         app_name: &String,
         service_name: &String,
@@ -412,7 +414,7 @@ impl Infrastructure for KubernetesInfrastructure {
         ))
     }
 
-    fn change_status(
+    async fn change_status(
         &self,
         _app_name: &String,
         _service_name: &String,

@@ -45,6 +45,7 @@ use std::collections::HashSet;
 use std::convert::From;
 use std::sync::Mutex;
 use std::time::Duration;
+use tokio::runtime::Runtime;
 use yansi::Paint;
 
 cached_key_result! {
@@ -142,7 +143,9 @@ impl AppsService {
         &self,
         request_info: &RequestInfo,
     ) -> Result<MultiMap<String, Service>, AppsServiceError> {
-        let mut services = self.infrastructure.get_services()?;
+        let mut runtime = Runtime::new().expect("Should create runtime");
+
+        let mut services = runtime.block_on(self.infrastructure.get_services())?;
 
         let mut all_services: Vec<&mut Service> = services
             .iter_all_mut()
@@ -170,13 +173,13 @@ impl AppsService {
         }
     }
 
-    fn configs_to_replicate(
+    async fn configs_to_replicate(
         &self,
         services_to_deploy: &Vec<ServiceConfig>,
         app_name: &String,
         replicate_from_app_name: &String,
     ) -> Result<Vec<ServiceConfig>, AppsServiceError> {
-        let running_services = self.infrastructure.get_configs_of_app(&app_name)?;
+        let running_services = self.infrastructure.get_configs_of_app(&app_name).await?;
         let running_service_names = running_services
             .iter()
             .filter(|c| c.container_type() == &ContainerType::Instance)
@@ -190,7 +193,8 @@ impl AppsService {
 
         Ok(self
             .infrastructure
-            .get_configs_of_app(&replicate_from_app_name)?
+            .get_configs_of_app(&replicate_from_app_name)
+            .await?
             .into_iter()
             .filter(|config| !service_names.contains(config.service_name()))
             .filter(|config| !running_service_names.contains(config.service_name()))
@@ -226,15 +230,16 @@ impl AppsService {
             Some(guard) => guard,
         };
 
+        let mut runtime = Runtime::new().expect("Should create runtime");
         let mut configs: Vec<ServiceConfig> = service_configs.clone();
 
         let replicate_from_app_name = replicate_from.unwrap_or_else(|| String::from("master"));
         if &replicate_from_app_name != app_name {
-            configs.extend(self.configs_to_replicate(
+            configs.extend(runtime.block_on(self.configs_to_replicate(
                 service_configs,
                 app_name,
                 &replicate_from_app_name,
-            )?);
+            ))?);
         }
 
         for config in configs.iter_mut() {
@@ -258,12 +263,12 @@ impl AppsService {
 
         AppsService::merge_companions_by_service_name(service_companions, &mut configs);
         AppsService::merge_companions_by_service_name(
-            self.get_application_companion_configs(app_name, &configs)?,
+            runtime.block_on(self.get_application_companion_configs(app_name, &configs))?,
             &mut configs,
         );
 
         let images_service = ImagesService::new();
-        let mappings = images_service.resolve_image_ports(&configs)?;
+        let mappings = runtime.block_on(images_service.resolve_image_ports(&configs))?;
         for config in configs.iter_mut() {
             if let Some(port) = mappings.get(config) {
                 config.set_port(port.clone());
@@ -276,11 +281,11 @@ impl AppsService {
             index1.cmp(&index2)
         });
 
-        let services = self.infrastructure.deploy_services(
+        let services = runtime.block_on(self.infrastructure.deploy_services(
             app_name,
             &configs,
             &self.config.container_config(),
-        )?;
+        ))?;
 
         Ok(services)
     }
@@ -322,7 +327,7 @@ impl AppsService {
             .collect()
     }
 
-    fn get_application_companion_configs(
+    async fn get_application_companion_configs(
         &self,
         app_name: &String,
         service_configs: &Vec<ServiceConfig>,
@@ -332,7 +337,8 @@ impl AppsService {
         // TODO: make sure that service companions are included!
         for config in self
             .infrastructure
-            .get_configs_of_app(app_name)?
+            .get_configs_of_app(app_name)
+            .await?
             .into_iter()
             .filter(|config| {
                 service_configs
@@ -368,11 +374,15 @@ impl AppsService {
 
     /// Deletes all services for the given `app_name`.
     pub fn delete_app(&self, app_name: &String) -> Result<Vec<Service>, AppsServiceError> {
-        match self.infrastructure.get_services()?.get_vec(app_name) {
+        let mut runtime = Runtime::new().expect("Should create runtime");
+        match runtime
+            .block_on(self.infrastructure.get_services())?
+            .get_vec(app_name)
+        {
             None => Err(AppsServiceError::AppNotFound {
                 app_name: app_name.clone(),
             }),
-            Some(_) => Ok(self.infrastructure.stop_services(app_name)?),
+            Some(_) => Ok(runtime.block_on(self.infrastructure.stop_services(app_name))?),
         }
     }
 
@@ -383,10 +393,13 @@ impl AppsService {
         since: &Option<DateTime<FixedOffset>>,
         limit: usize,
     ) -> Result<Option<LogChunk>, AppsServiceError> {
-        match self
-            .infrastructure
-            .get_logs(app_name, service_name, since, limit)?
-        {
+        let mut runtime = Runtime::new().expect("Should create runtime");
+        match runtime.block_on(self.infrastructure.get_logs(
+            app_name,
+            service_name,
+            since,
+            limit,
+        ))? {
             None => Ok(None),
             Some(ref logs) if logs.is_empty() => Ok(None),
             Some(logs) => Ok(Some(LogChunk::from(logs))),
@@ -399,10 +412,11 @@ impl AppsService {
         service_name: &String,
         status: ServiceStatus,
     ) -> Result<Option<Service>, AppsServiceError> {
-        match self
-            .infrastructure
-            .change_status(app_name, service_name, status)?
-        {
+        let mut runtime = Runtime::new().expect("Should create runtime");
+        match runtime.block_on(
+            self.infrastructure
+                .change_status(app_name, service_name, status),
+        )? {
             Some(service) => {
                 let mut cache = WEB_HOST_META.lock().unwrap();
                 (*cache).cache_remove(service.id());
@@ -634,9 +648,11 @@ mod tests {
 
         apps.create_or_update(&String::from("master"), None, &service_configs!("mariadb"))?;
 
-        let configs = apps
-            .infrastructure
-            .get_configs_of_app(&String::from("master"))?;
+        let mut runtime = Runtime::new().expect("Should create runtime");
+        let configs = runtime.block_on(
+            apps.infrastructure
+                .get_configs_of_app(&String::from("master")),
+        )?;
         assert_eq!(configs.len(), 1);
 
         let volumes = configs.get(0).unwrap().volumes().unwrap();
@@ -670,9 +686,11 @@ mod tests {
             &service_configs!("mariadb"),
         )?;
 
-        let configs = apps
-            .infrastructure
-            .get_configs_of_app(&String::from("master-1.x"))?;
+        let mut runtime = Runtime::new().expect("Should create runtime");
+        let configs = runtime.block_on(
+            apps.infrastructure
+                .get_configs_of_app(&String::from("master-1.x")),
+        )?;
         assert_eq!(configs.len(), 1);
 
         let volumes = configs.get(0).unwrap().volumes();
@@ -781,9 +799,12 @@ Log msg 3 of service-a of app master
         assert_contains_service!(services, "openid", ContainerType::Instance);
         assert_contains_service!(services, "db", ContainerType::Instance);
 
-        let openid_configs: Vec<ServiceConfig> = apps
-            .infrastructure
-            .get_configs_of_app(&String::from("master"))?
+        let mut runtime = Runtime::new().expect("Should create runtime");
+        let openid_configs: Vec<ServiceConfig> = runtime
+            .block_on(
+                apps.infrastructure
+                    .get_configs_of_app(&String::from("master")),
+            )?
             .into_iter()
             .filter(|config| config.service_name() == "openid")
             .collect();
@@ -830,9 +851,12 @@ Log msg 3 of service-a of app master
         assert_eq!(services.len(), 1);
         assert_contains_service!(services, "openid", ContainerType::Instance);
 
-        let openid_configs: Vec<ServiceConfig> = apps
-            .infrastructure
-            .get_configs_of_app(&String::from("master"))?
+        let mut runtime = Runtime::new().expect("Should create runtime");
+        let openid_configs: Vec<ServiceConfig> = runtime
+            .block_on(
+                apps.infrastructure
+                    .get_configs_of_app(&String::from("master")),
+            )?
             .into_iter()
             .filter(|config| config.service_name() == "openid")
             .collect();

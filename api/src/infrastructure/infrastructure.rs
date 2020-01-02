@@ -27,13 +27,15 @@
 use crate::config::ContainerConfig;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::ServiceConfig;
+use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
 use multimap::MultiMap;
 
+#[async_trait]
 pub trait Infrastructure: Send + Sync {
     /// Returns a `MultiMap` of `app-name` and the running services for this app.
-    fn get_services(&self) -> Result<MultiMap<String, Service>, Error>;
+    async fn get_services(&self) -> Result<MultiMap<String, Service>, Error>;
 
     /// Deploys the services of the given set of `ServiceConfig`.
     ///
@@ -43,21 +45,21 @@ pub trait Infrastructure: Send + Sync {
     /// - the services must be deployed once. If a service is already running, it must be redeployed.
     /// - the services must be discoverable for further calls. For example, `self.stop_services(...)`
     ///   must be able to find the corresponding services.
-    fn deploy_services(
+    async fn deploy_services(
         &self,
         app_name: &String,
         configs: &Vec<ServiceConfig>,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error>;
 
-    fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, Error>;
+    async fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, Error>;
 
     /// Returns the configuration of all services running for the given application name.
     /// It is required that the configurations of the companions are excluded.
-    fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error>;
+    async fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error>;
 
     /// Returns the log lines with a the corresponding timestamps in it.
-    fn get_logs(
+    async fn get_logs(
         &self,
         app_name: &String,
         service_name: &String,
@@ -66,7 +68,7 @@ pub trait Infrastructure: Send + Sync {
     ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error>;
 
     /// Changes the status of a service, for example, the service might me stopped or started.
-    fn change_status(
+    async fn change_status(
         &self,
         app_name: &String,
         service_name: &String,

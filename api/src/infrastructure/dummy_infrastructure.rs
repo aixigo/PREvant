@@ -28,6 +28,7 @@ use crate::config::ContainerConfig;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::ServiceConfig;
+use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use multimap::MultiMap;
 use std::collections::HashSet;
@@ -48,8 +49,9 @@ impl DummyInfrastructure {
 }
 
 #[cfg(test)]
+#[async_trait]
 impl Infrastructure for DummyInfrastructure {
-    fn get_services(&self) -> Result<MultiMap<String, Service>, failure::Error> {
+    async fn get_services(&self) -> Result<MultiMap<String, Service>, failure::Error> {
         let mut s = MultiMap::new();
 
         let services = self.services.lock().unwrap();
@@ -74,7 +76,7 @@ impl Infrastructure for DummyInfrastructure {
         Ok(s)
     }
 
-    fn deploy_services(
+    async fn deploy_services(
         &self,
         app_name: &String,
         configs: &Vec<ServiceConfig>,
@@ -98,13 +100,16 @@ impl Infrastructure for DummyInfrastructure {
         Ok(vec![])
     }
 
-    fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, failure::Error> {
+    async fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, failure::Error> {
         let mut services = self.services.lock().unwrap();
         services.remove(app_name);
         Ok(vec![])
     }
 
-    fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, failure::Error> {
+    async fn get_configs_of_app(
+        &self,
+        app_name: &String,
+    ) -> Result<Vec<ServiceConfig>, failure::Error> {
         let services = self.services.lock().unwrap();
         match services.get_vec(app_name) {
             None => Ok(vec![]),
@@ -112,7 +117,7 @@ impl Infrastructure for DummyInfrastructure {
         }
     }
 
-    fn get_logs(
+    async fn get_logs(
         &self,
         app_name: &String,
         service_name: &String,
@@ -135,7 +140,7 @@ impl Infrastructure for DummyInfrastructure {
         ]))
     }
 
-    fn change_status(
+    async fn change_status(
         &self,
         _app_name: &String,
         _service_name: &String,
