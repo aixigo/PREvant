@@ -211,15 +211,30 @@ impl ServiceConfig {
         }
 
         let mut volumes = other
-            .volumes()
+            .volumes
+            .as_ref()
             .map(|v| v.clone())
             .unwrap_or(BTreeMap::new());
-        volumes.extend(self.volumes().map(|v| v.clone()).unwrap_or(BTreeMap::new()));
-        self.set_volumes(Some(volumes));
+        volumes.extend(
+            self.volumes
+                .as_ref()
+                .map(|v| v.clone())
+                .unwrap_or(BTreeMap::new()),
+        );
+        self.volumes = Some(volumes);
 
-        let mut labels = other.labels().map(|v| v.clone()).unwrap_or(BTreeMap::new());
-        labels.extend(self.labels().map(|v| v.clone()).unwrap_or(BTreeMap::new()));
-        self.set_labels(Some(labels));
+        let mut labels = other
+            .labels
+            .as_ref()
+            .map(|v| v.clone())
+            .unwrap_or(BTreeMap::new());
+        labels.extend(
+            self.labels
+                .as_ref()
+                .map(|v| v.clone())
+                .unwrap_or(BTreeMap::new()),
+        );
+        self.labels = Some(labels);
     }
 }
 

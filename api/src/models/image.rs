@@ -92,7 +92,7 @@ impl Image {
                 registry,
                 image_user: _,
                 image_tag: _,
-            } => registry.clone(),
+            } => Some(registry.clone().unwrap_or(String::from("docker.io"))),
         }
     }
 }

@@ -12,13 +12,12 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = "2.33"
 crossbeam = "0.7"
 crossbeam-utils = "0.6"
-dkregistry = { git = "https://github.com/camallo/dkregistry-rs.git", rev = "a4935c3f9be0a82ecee4c7241e30a56edaf33866" }
+dkregistry = "0.3"
 env_logger = "0.6"
 failure = "0.1"
 futures = "0.1"
 handlebars = "1.1"
 http-api-problem = { version = "0.12", features = ["with_rocket"] }
-hyper = "0.10"
 kube = { version = "0.17", features = ["openapi"] }
 k8s-openapi = { version = "0.6", default-features = false, features = ["v1_15"] }
 lazy_static = "1.3"
