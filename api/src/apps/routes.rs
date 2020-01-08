@@ -50,33 +50,17 @@ fn apps(
     apps: State<Apps>,
     request_info: RequestInfo,
 ) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
-    let mut apps = apps.get_apps(&request_info)?;
-
-    for service in apps
-        .iter_all_mut()
-        .flat_map(|(_, services)| services.iter_mut())
-    {
-        service.set_base_url(request_info.get_base_url());
-    }
-
-    Ok(Json(apps))
+    Ok(Json(apps.get_apps(&request_info)?))
 }
 
 #[delete("/<app_name>", format = "application/json")]
 pub fn delete_app(
     app_name: Result<AppName, AppNameError>,
     apps: State<Apps>,
-    request_info: RequestInfo,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
     let app_name = app_name?;
 
-    let mut services = apps.delete_app(&app_name)?;
-
-    for service in services.iter_mut() {
-        service.set_base_url(request_info.get_base_url());
-    }
-
-    Ok(Json(services))
+    Ok(Json(apps.delete_app(&app_name)?))
 }
 
 #[post(
@@ -88,20 +72,15 @@ fn create_app(
     app_name: Result<AppName, AppNameError>,
     apps: State<Apps>,
     create_app_form: Form<CreateAppOptions>,
-    request_info: RequestInfo,
     service_configs_data: ServiceConfigsData,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
     let app_name = app_name?;
 
-    let mut services = apps.create_or_update(
+    let services = apps.create_or_update(
         &app_name,
         create_app_form.replicate_from().clone(),
         &service_configs_data.service_configs,
     )?;
-
-    for service in services.iter_mut() {
-        service.set_base_url(request_info.get_base_url());
-    }
 
     Ok(Json(services))
 }

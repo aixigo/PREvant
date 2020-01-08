@@ -28,6 +28,7 @@ use crate::models::Image;
 use crate::models::ServiceConfig;
 use dkregistry::errors::Error as DKRegistryError;
 use dkregistry::v2::manifest::Manifest;
+use futures::future::join_all;
 use regex::Regex;
 use std::collections::HashMap;
 use std::convert::From;
@@ -47,43 +48,61 @@ impl ImagesService {
         &self,
         configs: &Vec<ServiceConfig>,
     ) -> Result<HashMap<ServiceConfig, u16>, ImagesServiceError> {
+        let futures = configs
+            .iter()
+            .filter_map(|config| match config.image() {
+                Image::Named { .. } => Some((config, config.image())),
+                Image::Digest { .. } => None,
+            })
+            .map(|(config, image)| ImagesService::resolve_image_blob(config, &image))
+            .collect::<Vec<_>>();
+        let blobs = join_all(futures).await;
+
         let mut port_mappings = HashMap::new();
-
-        for config in configs.iter() {
-            let image = config.image();
-
-            if let Image::Digest { hash: _ } = image {
-                break;
-            }
-
-            debug!("Resolve image manifest for {}", config.image().to_string());
-
-            let client = dkregistry::v2::Client::configure()
-                .registry(&image.registry().unwrap())
-                .build()?;
-
-            let image = config.image().name().unwrap();
-            let tag = config.image().tag().unwrap();
-
-            let digest = match client.get_manifest(&image, &tag).await? {
-                Manifest::S2(schema) => schema.manifest_spec.config().digest.clone(),
-                _ => return Err(ImagesServiceError::UnknownManifestFormat { image }),
+        for blob_result in blobs {
+            let blob = match blob_result {
+                Ok(blob) => blob,
+                Err(err) => {
+                    warn!("Cannot resolve manifest of image: {}", err);
+                    continue;
+                }
             };
 
-            let raw_blob = client.get_blob(&image, &digest).await?;
-            match serde_json::from_str::<ImageBlob>(&String::from_utf8(raw_blob).unwrap()) {
-                Ok(blob) => {
-                    if let Some(port) = blob.get_exposed_port() {
-                        port_mappings.insert(config.clone(), port);
-                    }
-                }
-                Err(err) => {
-                    warn!("Cannot resolve manifest for {}: {}", image, err);
+            if let Some((config, blob)) = blob {
+                if let Some(port) = blob.get_exposed_port() {
+                    port_mappings.insert(config.clone(), port);
                 }
             }
         }
 
         Ok(port_mappings)
+    }
+
+    async fn resolve_image_blob<'a>(
+        config: &'a ServiceConfig,
+        image: &Image,
+    ) -> Result<Option<(&'a ServiceConfig, ImageBlob)>, ImagesServiceError> {
+        debug!("Resolve image manifest for {}", config.image().to_string());
+
+        let client = dkregistry::v2::Client::configure()
+            .registry(&image.registry().unwrap())
+            .build()?;
+
+        let (image, tag) = (image.name().unwrap(), image.tag().unwrap());
+
+        let digest = match client.get_manifest(&image, &tag).await? {
+            Manifest::S2(schema) => schema.manifest_spec.config().digest.clone(),
+            _ => return Err(ImagesServiceError::UnknownManifestFormat { image }),
+        };
+
+        let raw_blob = client.get_blob(&image, &digest).await?;
+        match serde_json::from_str::<ImageBlob>(&String::from_utf8(raw_blob).unwrap()) {
+            Ok(blob) => Ok(Some((config, blob))),
+            Err(err) => {
+                warn!("Cannot resolve manifest for {}: {}", image, err);
+                Ok(None)
+            }
+        }
     }
 }
 

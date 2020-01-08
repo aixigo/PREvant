@@ -23,7 +23,9 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use super::super::{APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL};
+use super::super::{APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, SERVICE_NAME_LABEL};
+use crate::config::ContainerConfig;
+use crate::models::service::Service;
 use crate::models::ServiceConfig;
 use base64::encode;
 use chrono::Utc;
@@ -60,7 +62,11 @@ pub fn namespace_payload(app_name: &String) -> String {
 }
 
 /// Creates a JSON payload suitable for [Kubernetes' Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
-pub fn deployment_payload(app_name: &String, service_config: &ServiceConfig) -> String {
+pub fn deployment_payload(
+    app_name: &String,
+    service_config: &ServiceConfig,
+    container_config: &ContainerConfig,
+) -> String {
     let env = service_config.env().map_or(Vec::new(), |env| {
         env.iter()
             .map(|env| {
@@ -102,6 +108,11 @@ pub fn deployment_payload(app_name: &String, service_config: &ServiceConfig) -> 
             .collect()
     });
 
+    let resources = container_config
+        .memory_limit()
+        .map(|mem_limit| serde_json::json!({ "limits": {"memory": mem_limit }}))
+        .unwrap_or(serde_json::json!(null));
+
     serde_json::json!({
       "apiVersion": "apps/v1",
       "kind": "Deployment",
@@ -111,7 +122,10 @@ pub fn deployment_payload(app_name: &String, service_config: &ServiceConfig) -> 
         "labels": {
           APP_NAME_LABEL: app_name,
           SERVICE_NAME_LABEL: service_config.service_name(),
-          CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
+          CONTAINER_TYPE_LABEL: service_config.container_type().to_string(),
+        },
+        "annotations": {
+          IMAGE_LABEL: service_config.image().to_string(),
         }
       },
       "spec": {
@@ -146,10 +160,38 @@ pub fn deployment_payload(app_name: &String, service_config: &ServiceConfig) -> 
                   {
                     "containerPort": service_config.port()
                   }
-                ]
+                ],
+                "resources": resources
               }
             ],
             "volumes": volumes
+          }
+        }
+      }
+    })
+    .to_string()
+}
+
+pub fn deployment_replicas_payload(app_name: &String, service: &Service, replicas: u32) -> String {
+    serde_json::json!({
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": format!("{}-{}-deployment", app_name, service.service_name()),
+        "namespace": app_name,
+        "labels": {
+          APP_NAME_LABEL: app_name,
+          SERVICE_NAME_LABEL: service.service_name(),
+          CONTAINER_TYPE_LABEL: service.container_type().to_string()
+        }
+      },
+      "spec": {
+        "replicas": replicas,
+        "selector": {
+          "matchLabels": {
+            APP_NAME_LABEL: app_name,
+            SERVICE_NAME_LABEL: service.service_name(),
+            CONTAINER_TYPE_LABEL: service.container_type().to_string()
           }
         }
       }
