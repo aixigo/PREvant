@@ -27,8 +27,6 @@
 #![feature(proc_macro_hygiene, decl_macro)]
 
 #[macro_use]
-extern crate cached;
-#[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate failure;
@@ -50,11 +48,14 @@ use env_logger::Env;
 use reqwest::Certificate;
 use rocket::response::NamedFile;
 use rocket_cache_response::CacheResponse;
+use secstr::SecUtf8;
 use serde_yaml::{from_reader, to_string, Value};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::str::FromStr;
+use url::Url;
 
 mod apps;
 mod config;
@@ -105,7 +106,12 @@ fn create_infrastructure(config: &Config) -> Result<Box<dyn Infrastructure>, Sta
         Runtime::Kubernetes(kubernetes_config) => {
             let cluster_endpoint = match kubernetes_config.endpoint() {
                 Some(endpoint) => endpoint.clone(),
-                None => unimplemented!(),
+                None => Url::from_str(&format!(
+                    "https://{}:{}",
+                    std::env::var("KUBERNETES_SERVICE_HOST").unwrap(),
+                    std::env::var("KUBERNETES_SERVICE_PORT").unwrap()
+                ))
+                .unwrap(),
             };
 
             let cluster_ca = match kubernetes_config.cert_auth_file_path() {
@@ -123,7 +129,15 @@ fn create_infrastructure(config: &Config) -> Result<Box<dyn Infrastructure>, Sta
 
             let cluster_token = match kubernetes_config.token() {
                 Some(token) => Some(token.clone()),
-                None => unimplemented!(),
+                None => {
+                    let container_secret =
+                        Path::new("/run/secrets/kubernetes.io/serviceaccount/token");
+                    if container_secret.exists() {
+                        Some(read_token_file(&PathBuf::from(container_secret))?)
+                    } else {
+                        None
+                    }
+                }
             };
 
             Ok(Box::new(Kubernetes::new(
@@ -133,6 +147,30 @@ fn create_infrastructure(config: &Config) -> Result<Box<dyn Infrastructure>, Sta
             )))
         }
     }
+}
+
+fn read_token_file(path: &PathBuf) -> Result<SecUtf8, StartUpError> {
+    debug!("Reading token from {}.", path.to_str().unwrap());
+
+    let mut f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(StartUpError::CannotReadToken {
+                path: String::from(path.to_str().unwrap()),
+                err: format!("{}", e),
+            });
+        }
+    };
+
+    let mut token = String::new();
+    if let Err(e) = f.read_to_string(&mut token) {
+        return Err(StartUpError::CannotReadToken {
+            path: String::from(path.to_str().unwrap()),
+            err: format!("{}", e),
+        });
+    }
+
+    Ok(SecUtf8::from(token))
 }
 
 fn read_ca_file(path: &PathBuf) -> Result<Certificate, StartUpError> {
@@ -219,4 +257,6 @@ fn main() -> Result<(), StartUpError> {
 enum StartUpError {
     #[fail(display = "Cannot read certificate authority from {}: {}", path, err)]
     CannotReadCertificateAuthority { path: String, err: String },
+    #[fail(display = "Cannot read API token from {}: {}", path, err)]
+    CannotReadToken { path: String, err: String },
 }

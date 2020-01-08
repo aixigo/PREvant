@@ -26,7 +26,6 @@
 
 use crate::apps::delete_app;
 use crate::apps::Apps;
-use crate::models::request_info::RequestInfo;
 use crate::models::service::Service;
 use crate::models::web_hook_info::WebHookInfo;
 use crate::models::AppName;
@@ -39,7 +38,6 @@ use std::str::FromStr;
 pub fn webhooks(
     apps: State<Apps>,
     web_hook_info: WebHookInfo,
-    request_info: RequestInfo,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
     info!(
         "Deleting app {:?} through web hook {:?} with event {:?}",
@@ -49,5 +47,5 @@ pub fn webhooks(
     );
 
     let app_name = AppName::from_str(&web_hook_info.get_app_name());
-    delete_app(app_name, apps, request_info)
+    delete_app(app_name, apps)
 }

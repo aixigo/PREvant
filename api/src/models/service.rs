@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::web_host_meta::WebHostMeta;
+use crate::models::{web_host_meta::WebHostMeta, Image};
 use chrono::{DateTime, Utc};
 use serde::ser::{Serialize, Serializer};
 use serde::Deserialize;
@@ -42,6 +42,7 @@ pub struct Service {
     base_url: Option<Url>,
     endpoint: Option<ServiceEndpoint>,
     web_host_meta: Option<WebHostMeta>,
+    image: Option<Image>,
     state: State,
 }
 
@@ -95,21 +96,12 @@ impl Service {
             endpoint: None,
             web_host_meta: None,
             state: State { status, started_at },
+            image: None,
         }
     }
 
     pub fn app_name(&self) -> &String {
         &self.app_name
-    }
-
-    #[deprecated]
-    pub fn set_app_name(&mut self, app_name: &String) {
-        self.app_name = app_name.clone();
-    }
-
-    #[deprecated]
-    pub fn set_base_url(&mut self, base_url: &Url) {
-        self.base_url = Some(base_url.clone());
     }
 
     pub fn set_container_type(&mut self, container_type: ContainerType) {
@@ -121,11 +113,6 @@ impl Service {
             url.join(&format!("/{}/{}/", &self.app_name, &self.service_name))
                 .unwrap()
         })
-    }
-
-    #[deprecated]
-    pub fn set_id(&mut self, id: String) {
-        self.id = id;
     }
 
     pub fn id(&self) -> &String {
@@ -155,7 +142,6 @@ impl Service {
         })
     }
 
-    #[deprecated]
     pub fn endpoint_url(&self) -> Option<Url> {
         match &self.endpoint {
             None => None,
@@ -163,13 +149,19 @@ impl Service {
         }
     }
 
-    #[deprecated]
-    pub fn set_web_host_meta(&mut self, meta: Option<WebHostMeta>) {
-        self.web_host_meta = meta;
-    }
-
     pub fn started_at(&self) -> &DateTime<Utc> {
         &self.state.started_at
+    }
+
+    pub fn status(&self) -> &ServiceStatus {
+        &self.state.status
+    }
+
+    pub fn image<'a, 'b: 'a>(&'b self) -> Option<&'a Image> {
+        match &self.image {
+            Some(image) => Some(image),
+            None => None,
+        }
     }
 }
 
@@ -182,10 +174,13 @@ impl Serialize for Service {
         #[serde(rename_all = "camelCase")]
         struct Service<'a> {
             name: &'a String,
+            #[serde(skip_serializing_if = "Option::is_none")]
             url: Option<String>,
             #[serde(rename = "type")]
             service_type: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
             version: Option<Version>,
+            #[serde(skip_serializing_if = "Option::is_none")]
             open_api_url: Option<String>,
             state: &'a State,
         }
@@ -193,8 +188,11 @@ impl Serialize for Service {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Version {
+            #[serde(skip_serializing_if = "Option::is_none")]
             git_commit: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
             software_version: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
             date_modified: Option<DateTime<Utc>>,
         }
 
@@ -233,6 +231,8 @@ pub struct ServiceBuilder {
     container_type: Option<ContainerType>,
     base_url: Option<Url>,
     web_host_meta: Option<WebHostMeta>,
+    image: Option<Image>,
+    endpoint: Option<ServiceEndpoint>,
 }
 
 impl ServiceBuilder {
@@ -246,6 +246,8 @@ impl ServiceBuilder {
             container_type: None,
             base_url: None,
             web_host_meta: None,
+            image: None,
+            endpoint: None,
         }
     }
 
@@ -255,9 +257,7 @@ impl ServiceBuilder {
         let service_name = self
             .service_name
             .ok_or(ServiceBuilderError::MissingServiceName)?;
-        let started_at = self
-            .started_at
-            .ok_or(ServiceBuilderError::MissingStartUpTime)?;
+        let started_at = self.started_at.unwrap_or(Utc::now());
 
         Ok(Service {
             id,
@@ -265,12 +265,13 @@ impl ServiceBuilder {
             service_name,
             container_type: self.container_type.unwrap_or(ContainerType::Instance),
             base_url: self.base_url,
-            endpoint: None,
+            endpoint: self.endpoint,
             web_host_meta: self.web_host_meta,
             state: State {
                 started_at,
                 status: self.status.unwrap_or(ServiceStatus::Running),
             },
+            image: self.image,
         })
     }
 
@@ -321,6 +322,19 @@ impl ServiceBuilder {
         self.container_type = Some(container_type);
         self
     }
+
+    pub fn image(mut self, image: Image) -> Self {
+        self.image = Some(image);
+        self
+    }
+
+    pub fn endpoint(mut self, addr: IpAddr, port: u16) -> Self {
+        self.endpoint = Some(ServiceEndpoint {
+            internal_addr: addr,
+            exposed_port: port,
+        });
+        self
+    }
 }
 
 #[derive(Debug, Fail)]
@@ -331,8 +345,23 @@ pub enum ServiceBuilderError {
     MissingAppName,
     #[fail(display = "A service name must be provided.")]
     MissingServiceName,
-    #[fail(display = "A start up time must be provided.")]
-    MissingStartUpTime,
+}
+
+impl From<Service> for ServiceBuilder {
+    fn from(service: Service) -> Self {
+        ServiceBuilder {
+            id: Some(service.id),
+            app_name: Some(service.app_name),
+            service_name: Some(service.service_name),
+            status: Some(service.state.status),
+            started_at: Some(service.state.started_at),
+            container_type: Some(service.container_type),
+            base_url: service.base_url,
+            web_host_meta: service.web_host_meta,
+            image: service.image,
+            endpoint: service.endpoint,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize)]
@@ -480,6 +509,22 @@ mod tests {
     }
 
     #[test]
+    fn should_build_service_with_image() {
+        let image = Image::from_str("nginx").unwrap();
+
+        let service = ServiceBuilder::new()
+            .id("some-random-id".to_string())
+            .app_name("master".to_string())
+            .service_name("nginx".to_string())
+            .started_at(Utc::now())
+            .image(image.clone())
+            .build()
+            .unwrap();
+
+        assert_eq!(service.image, Some(image));
+    }
+
+    #[test]
     fn should_not_build_service_missing_id() {
         let err = match ServiceBuilder::new().build() {
             Err(err) => err,
@@ -521,24 +566,6 @@ mod tests {
 
         match err {
             ServiceBuilderError::MissingServiceName => {}
-            _ => panic!("Unexpected error"),
-        };
-    }
-
-    #[test]
-    fn should_not_build_service_missing_start_up_time() {
-        let err = match ServiceBuilder::new()
-            .id("some-container-id".to_string())
-            .app_name("master".to_string())
-            .service_name("nginx".to_string())
-            .build()
-        {
-            Err(err) => err,
-            _ => panic!("Unexpected successful build"),
-        };
-
-        match err {
-            ServiceBuilderError::MissingStartUpTime => {}
             _ => panic!("Unexpected error"),
         };
     }

@@ -52,6 +52,10 @@ pub trait Infrastructure: Send + Sync {
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error>;
 
+    /// Stops the services running for the given `app_name`
+    ///
+    /// The implementation must ensure that it returns the services that have been
+    /// stopped.
     async fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, Error>;
 
     /// Returns the configuration of all services running for the given application name.

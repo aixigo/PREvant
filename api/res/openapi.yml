@@ -309,13 +309,7 @@ components:
             are optional values.
           example: mariadb:10.3
         env:
-          type: array
-          items:
-            type: string
-          description: Key value list of enviroment variables
-          example:
-            - MYSQL_USER=admin
-            - MYSQL_DATABASE=dbname
+          $ref: '#/components/schemas/EnvironmentConfiguration'
         volumes:
           type: object
           description: >-
@@ -331,6 +325,19 @@ components:
       required:
         - serviceName
         - registry
+    EnvironmentConfiguration:
+      oneOf:
+        - type: object
+          description: Key value object of enviroment variables
+          example:
+            "MYSQL_USER": "admin"
+        - type: array
+          items:
+            type: string
+          description: Key value list of enviroment variables
+          example:
+            - MYSQL_USER=admin
+            - MYSQL_DATABASE=dbname
     Ticket:
       type: object
       properties:

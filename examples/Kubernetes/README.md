@@ -25,7 +25,7 @@ kubectl apply -f PREvant.yml
 For testing purposes you can forward the PREvant setup with following command.
 
 ```bash
-kubectl port-forward --address 127.0.0.1 service/traefik 80:80 8080:8080 -n default
+kubectl port-forward --address 127.0.0.1 service/traefik 8080:80 18080:8080 -n default
 ```
 
-Now, PREvant is running at [`http://localhost`](http://localhost).
+Now, PREvant is running at [`http://localhost:8080`](http://localhost:8080).

@@ -51,4 +51,81 @@ spec:
               containerPort: 80
             - name: admin
               containerPort: 8080
-# TODO: PREvant deployment, service, IngressRoute, and Middleware
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: prevant-config
+  namespace: default
+type: Opaque
+stringData:
+  config.toml: |-
+    [runtime]
+    type = 'Kubernetes'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prevant
+  namespace: default
+spec:
+  ports:
+    - protocol: TCP
+      name: web
+      port: 80
+  selector:
+    app: prevant
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  namespace: default
+  name: prevant
+  labels:
+    app: prevant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prevant
+  template:
+    metadata:
+      labels:
+        app: prevant
+    spec:
+      serviceAccountName: prevant-ingress-controller
+      containers:
+        - name: prevant
+          image: aixigo/prevant
+          command:
+            - /app/prevant
+          args:
+            - --config
+            - /config/config.toml
+          ports:
+            - name: web
+              containerPort: 80
+          volumeMounts:
+            - name: config
+              mountPath: "/config"
+              readOnly: true
+      volumes:
+        - name: config
+          secret:
+            secretName: prevant-config
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: prevant-ingress-route
+spec:
+  entryPoints:
+    - http
+  routes:
+    - kind: Rule
+      match: PathPrefix(`/`)
+      priority: -100
+      services:
+        - name: prevant
+          port: 80

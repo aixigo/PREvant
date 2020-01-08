@@ -39,3 +39,4 @@ mod kubernetes;
 static APP_NAME_LABEL: &str = "com.aixigo.preview.servant.app-name";
 static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
 static CONTAINER_TYPE_LABEL: &str = "com.aixigo.preview.servant.container-type";
+static IMAGE_LABEL: &str = "com.aixigo.preview.servant.image";

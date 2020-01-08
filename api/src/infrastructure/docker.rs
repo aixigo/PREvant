@@ -31,6 +31,7 @@ use crate::models::{Image, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
+use futures::future::join_all;
 use futures::StreamExt;
 use multimap::MultiMap;
 use regex::Regex;
@@ -392,23 +393,25 @@ impl DockerInfrastructure {
             .next())
     }
 
-    async fn get_container_details(
-        &self,
-        app_name: Option<String>,
+    async fn get_container_details<'a, 'b: 'a>(
+        &'b self,
+        app_name: Option<&String>,
     ) -> Result<MultiMap<String, ContainerDetails>, Error> {
         debug!("Resolve container details for app {:?}", app_name);
 
-        let docker = Docker::new();
-        let containers = docker.containers();
-
         let f = match app_name {
             None => ContainerFilter::LabelName(String::from(super::APP_NAME_LABEL)),
-            Some(app_name) => ContainerFilter::Label(String::from(super::APP_NAME_LABEL), app_name),
+            Some(app_name) => {
+                ContainerFilter::Label(String::from(super::APP_NAME_LABEL), app_name.clone())
+            }
         };
         let list_options = &ContainerListOptions::builder()
             .all()
             .filter(vec![f])
             .build();
+
+        let docker = Docker::new();
+        let containers = docker.containers();
 
         let mut container_details = MultiMap::new();
         for container in containers.list(&list_options).await? {
@@ -462,13 +465,16 @@ impl Infrastructure for DockerInfrastructure {
 
         self.connect_traefik(&network_id).await?;
 
-        let mut services: Vec<Service> = Vec::new();
-        for service_config in configs {
-            let service = self
-                .start_container(app_name, &network_id, &service_config, container_config)
-                .await?;
+        let futures = configs
+            .iter()
+            .map(|service_config| {
+                self.start_container(app_name, &network_id, &service_config, container_config)
+            })
+            .collect::<Vec<_>>();
 
-            services.push(service);
+        let mut services: Vec<Service> = Vec::new();
+        for service in join_all(futures).await {
+            services.push(service?);
         }
 
         Ok(services)
@@ -476,7 +482,11 @@ impl Infrastructure for DockerInfrastructure {
 
     /// Deletes all services for the given `app_name`.
     async fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, Error> {
-        let services = match self.get_services().await?.get_vec(app_name) {
+        let container_details = match self
+            .get_container_details(Some(app_name))
+            .await?
+            .get_vec(app_name)
+        {
             None => return Ok(vec![]),
             Some(services) => services.clone(),
         };
@@ -484,25 +494,20 @@ impl Infrastructure for DockerInfrastructure {
         let docker = Docker::new();
         let containers = docker.containers();
 
-        let f1 = ContainerFilter::Label(super::APP_NAME_LABEL.to_owned(), app_name.clone());
-        let list_options = ContainerListOptions::builder()
-            .all()
-            .filter(vec![f1])
-            .build();
-
-        let service_containers = containers.list(&list_options).await?;
-
-        for container in &service_containers {
-            let details = containers.get(&container.id).inspect().await?;
-            if !details.state.running {
-                continue;
-            }
-
+        // TODO: use join_all
+        for container in container_details
+            .iter()
+            .filter(|details| details.state.running)
+        {
             containers.get(&container.id).stop(None).await?;
         }
 
-        for container in &service_containers {
+        let mut services = Vec::with_capacity(container_details.len());
+        // TODO: use join_all
+        for container in &container_details {
             containers.get(&container.id).delete().await?;
+
+            services.push(Service::try_from(container)?);
         }
 
         self.delete_network(app_name).await?;
@@ -514,7 +519,7 @@ impl Infrastructure for DockerInfrastructure {
         let mut configs = Vec::new();
 
         for container_details in self
-            .get_container_details(Some(app_name.clone()))
+            .get_container_details(Some(app_name))
             .await?
             .iter_all()
             .flat_map(|(_, details)| details.iter())

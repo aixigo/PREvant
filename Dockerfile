@@ -16,18 +16,23 @@ WORKDIR /usr/src/api
 RUN cargo build --release --target x86_64-unknown-linux-musl
 
 
+# Compose application directory
+FROM scratch as directory-composer
+COPY --from=backend-builder /usr/src/api/target/x86_64-unknown-linux-musl/release/prevant /app/prevant
+COPY api/res/Rocket.toml api/res/config.toml api/res/openapi.yml /app/
+COPY --from=frontend-builder /usr/src/frontend/target/* /app/frontend/
+COPY frontend/index.html frontend/favicon.svg  /app/frontend/
+
+
 # Build whole application
 FROM docker.io/library/alpine
 LABEL maintainer="marc.schreiber@aixigo.de"
-
 RUN adduser -D -u 1000 prevant
-COPY --chown=prevant --from=backend-builder /usr/src/api/target/x86_64-unknown-linux-musl/release/prevant /app/prevant
-COPY --chown=prevant api/res/Rocket.toml api/res/config.toml api/res/openapi.yml /app/
-COPY --chown=prevant --from=frontend-builder /usr/src/frontend/target/* /app/frontend/
-COPY --chown=prevant frontend/index.html frontend/favicon.svg  /app/frontend/
 
 WORKDIR /app
 EXPOSE 80
 ENV ROCKET_ENV=staging
 ENV RUST_LOG=info
 CMD ["./prevant"]
+
+COPY --chown=prevant --from=directory-composer /app /app
