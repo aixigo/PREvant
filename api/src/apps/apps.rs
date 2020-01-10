@@ -110,7 +110,7 @@ impl AppsService {
             .map(|(app_name, service)| self.resolve_web_host_meta(app_name, service, request_info))
             .collect::<Vec<_>>();
 
-        let mut services = MultiMap::new();
+        let mut apps = MultiMap::new();
 
         trace!("Resolve web host meta for {} services.", futures.len());
         let resolved_host_meta_infos = runtime.block_on(join_all(futures));
@@ -121,7 +121,7 @@ impl AppsService {
                 cache.cache_set(service.id().clone(), web_host_meta.clone());
             }
 
-            services.insert(
+            apps.insert(
                 app_name.clone(),
                 ServiceBuilder::from(service)
                     .web_host_meta(web_host_meta)
@@ -131,7 +131,7 @@ impl AppsService {
             )
         }
 
-        services.extend(
+        apps.extend(
             services_with_host_meta
                 .into_iter()
                 .map(|(app_name, service)| {
@@ -147,7 +147,7 @@ impl AppsService {
                 }),
         );
 
-        Ok(services)
+        Ok(apps)
     }
 
     async fn resolve_web_host_meta(
@@ -207,7 +207,10 @@ impl AppsService {
 
                 let duration = Utc::now().signed_duration_since(service.started_at().clone());
                 if duration >= chrono::Duration::minutes(5) {
-                    trace!("Service {} is running for {}, therefore, it will be assumed that host-meta.json is not available.", Paint::magenta(service.service_name()), duration);
+                    trace!(
+                        "Service {} is running for {}, therefore, it will be assumed that host-meta.json is not available.",
+                        Paint::magenta(service.service_name()), duration
+                    );
                     WebHostMeta::empty()
                 } else {
                     WebHostMeta::invalid()

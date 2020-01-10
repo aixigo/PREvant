@@ -412,10 +412,16 @@ impl DockerInfrastructure {
 
         let docker = Docker::new();
         let containers = docker.containers();
+        let futures = containers
+            .list(&list_options)
+            .await?
+            .into_iter()
+            .map(|container| inspect(container));
 
         let mut container_details = MultiMap::new();
-        for container in containers.list(&list_options).await? {
-            let details = containers.get(&container.id).inspect().await?;
+
+        for details in join_all(futures).await {
+            let details = details?;
             let app_name = details
                 .config
                 .labels
@@ -491,23 +497,23 @@ impl Infrastructure for DockerInfrastructure {
             Some(services) => services.clone(),
         };
 
-        let docker = Docker::new();
-        let containers = docker.containers();
-
-        // TODO: use join_all
-        for container in container_details
+        let futures = container_details
             .iter()
             .filter(|details| details.state.running)
-        {
-            containers.get(&container.id).stop(None).await?;
+            .map(|details| stop(details.clone()));
+        for container in join_all(futures).await {
+            trace!("Stopped container {:?}", container?);
         }
 
         let mut services = Vec::with_capacity(container_details.len());
-        // TODO: use join_all
-        for container in &container_details {
-            containers.get(&container.id).delete().await?;
+        let futures = container_details
+            .iter()
+            .map(|details| delete(details.clone()));
+        for container in join_all(futures).await {
+            let container = container?;
+            trace!("Deleted container {:?}", container);
 
-            services.push(Service::try_from(container)?);
+            services.push(Service::try_from(&container)?);
         }
 
         self.delete_network(app_name).await?;
@@ -677,6 +683,29 @@ impl Infrastructure for DockerInfrastructure {
             None => Ok(None),
         }
     }
+}
+
+/// Helper function to stop containers with the aid of futures::future::join_all
+async fn stop(details: ContainerDetails) -> Result<ContainerDetails, ShipLiftError> {
+    let docker = Docker::new();
+    let containers = docker.containers();
+    containers.get(&details.id).stop(None).await?;
+    Ok(details)
+}
+
+/// Helper function to delete containers with the aid of futures::future::join_all
+async fn delete(details: ContainerDetails) -> Result<ContainerDetails, ShipLiftError> {
+    let docker = Docker::new();
+    let containers = docker.containers();
+    containers.get(&details.id).delete().await?;
+    Ok(details)
+}
+
+/// Helper function to inspect containers with the aid of futures::future::join_all
+async fn inspect(container: Container) -> Result<ContainerDetails, ShipLiftError> {
+    let docker = Docker::new();
+    let containers = docker.containers();
+    containers.get(&container.id).inspect().await
 }
 
 fn find_port(
