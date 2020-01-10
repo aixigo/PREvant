@@ -605,7 +605,7 @@ impl Infrastructure for KubernetesInfrastructure {
                     DateTime::parse_from_rfc3339(&timestamp).expect("Expecting a valid timestamp");
 
                 let mut log_line: String = iter.collect::<Vec<&str>>().join(" ");
-                log_line += "\n";
+                log_line.push('\n');
                 (datetime, log_line)
             })
             .collect();
@@ -784,12 +784,10 @@ mod tests {
 
         let service = ServiceBuilder::try_from(deployment)
             .unwrap()
-            .id("same-random-id".to_string())
             .started_at(Utc::now())
             .build()
             .unwrap();
 
-        // TODO: deployment name generation
         assert_eq!(service.app_name(), &String::from("master"));
         assert_eq!(service.service_name(), &String::from("nginx"));
     }
@@ -805,7 +803,6 @@ mod tests {
 
         let service = ServiceBuilder::try_from(deployment)
             .unwrap()
-            .id("same-random-id".to_string())
             .started_at(Utc::now())
             .build()
             .unwrap();
@@ -824,7 +821,6 @@ mod tests {
 
         let service = ServiceBuilder::try_from(deployment)
             .unwrap()
-            .id("same-random-id".to_string())
             .started_at(Utc::now())
             .build()
             .unwrap();
