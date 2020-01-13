@@ -36,7 +36,6 @@ use crate::services::service_templating::{
 };
 use cached::{Cached, SizedCache};
 use chrono::{DateTime, FixedOffset, Utc};
-use futures::future::join_all;
 use handlebars::TemplateRenderError;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
@@ -45,6 +44,7 @@ use std::convert::From;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
 use yansi::Paint;
 
 pub struct AppsService {
@@ -105,16 +105,10 @@ impl AppsService {
                 .partition(|(_app_name, service)| cache.cache_get(service.id()).is_some())
         };
 
-        let futures = services_without_host_meta
-            .into_iter()
-            .map(|(app_name, service)| self.resolve_web_host_meta(app_name, service, request_info))
-            .collect::<Vec<_>>();
+        let resolved_host_meta_infos =
+            runtime.block_on(self.resolve_host_meta(request_info, services_without_host_meta));
 
         let mut apps = MultiMap::new();
-
-        trace!("Resolve web host meta for {} services.", futures.len());
-        let resolved_host_meta_infos = runtime.block_on(join_all(futures));
-
         let mut cache = self.web_host_meta_cache.lock().unwrap();
         for (app_name, service, web_host_meta) in resolved_host_meta_infos {
             if web_host_meta.is_valid() {
@@ -150,11 +144,44 @@ impl AppsService {
         Ok(apps)
     }
 
-    async fn resolve_web_host_meta(
+    async fn resolve_host_meta(
         &self,
+        request_info: &RequestInfo,
+        services_without_host_meta: Vec<(String, Service)>,
+    ) -> Vec<(String, Service, WebHostMeta)> {
+        let number_of_services = services_without_host_meta.len();
+        if number_of_services == 0 {
+            return Vec::with_capacity(0);
+        }
+
+        trace!("Resolve web host meta for {} services.", number_of_services);
+
+        let (tx, mut rx) = mpsc::channel(number_of_services);
+
+        for (app_name, service) in services_without_host_meta {
+            let mut tx = tx.clone();
+            let request_info = request_info.clone();
+            tokio::spawn(async move {
+                let r = AppsService::resolve_web_host_meta(app_name, service, request_info).await;
+                if let Err(err) = tx.send(r).await {
+                    error!("Cannot send host meta result: {}", err);
+                }
+            });
+        }
+
+        let mut resolved_host_meta_infos = Vec::with_capacity(number_of_services);
+        for _c in 0..number_of_services {
+            let resolved_host_meta = rx.recv().await.unwrap();
+            resolved_host_meta_infos.push(resolved_host_meta);
+        }
+
+        resolved_host_meta_infos
+    }
+
+    async fn resolve_web_host_meta(
         app_name: String,
         service: Service,
-        request_info: &RequestInfo,
+        request_info: RequestInfo,
     ) -> (String, Service, WebHostMeta) {
         let url = match service.endpoint_url() {
             None => return (app_name, service, WebHostMeta::empty()),

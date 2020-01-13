@@ -47,6 +47,7 @@ use std::collections::HashMap;
 use std::convert::{From, TryFrom};
 use std::net::{AddrParseError, IpAddr};
 use std::str::FromStr;
+use tokio::sync::mpsc;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
@@ -393,8 +394,8 @@ impl DockerInfrastructure {
             .next())
     }
 
-    async fn get_container_details<'a, 'b: 'a>(
-        &'b self,
+    async fn get_container_details(
+        &self,
         app_name: Option<&String>,
     ) -> Result<MultiMap<String, ContainerDetails>, Error> {
         debug!("Resolve container details for app {:?}", app_name);
@@ -412,16 +413,27 @@ impl DockerInfrastructure {
 
         let docker = Docker::new();
         let containers = docker.containers();
-        let futures = containers
-            .list(&list_options)
-            .await?
-            .into_iter()
-            .map(|container| inspect(container));
+
+        let container_list = containers.list(&list_options).await?;
+        let number_of_containers = container_list.len();
+        if number_of_containers == 0 {
+            return Ok(MultiMap::new());
+        }
+
+        let (tx, mut rx) = mpsc::channel(container_list.len());
+        for container in container_list.into_iter() {
+            let mut tx = tx.clone();
+            tokio::spawn(async move {
+                let inspect_result = inspect(container).await;
+                if let Err(err) = tx.send(inspect_result).await {
+                    error!("Cannot send container inspection: {:?}", err);
+                }
+            });
+        }
 
         let mut container_details = MultiMap::new();
-
-        for details in join_all(futures).await {
-            let details = details?;
+        for _c in 0..number_of_containers {
+            let details = rx.recv().await.unwrap()?;
             let app_name = details
                 .config
                 .labels

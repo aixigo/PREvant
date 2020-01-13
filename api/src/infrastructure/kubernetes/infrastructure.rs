@@ -839,7 +839,6 @@ mod tests {
         };
 
         match err {
-            // TODO: deployment name generation
             KubernetesInfrastructureError::MissingAppNameLabel { deployment_name } => {
                 assert_eq!(deployment_name, "master-nginx");
             }
@@ -858,7 +857,6 @@ mod tests {
         };
 
         match err {
-            // TODO: deployment name generation
             KubernetesInfrastructureError::MissingServiceNameLabel { deployment_name } => {
                 assert_eq!(deployment_name, "master-nginx");
             }
