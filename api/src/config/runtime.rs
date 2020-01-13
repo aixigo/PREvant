@@ -24,7 +24,6 @@
  * =========================LICENSE_END==================================
  */
 use secstr::SecUtf8;
-use serde::{de, Deserialize, Deserializer};
 use std::path::PathBuf;
 use url::Url;
 
@@ -44,7 +43,6 @@ impl Default for Runtime {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct KubernetesRuntimeConfig {
-    #[serde(default, deserialize_with = "parse_url")]
     endpoint: Option<Url>,
     token: Option<SecUtf8>,
     cert_auth_file_path: Option<PathBuf>,
@@ -62,16 +60,6 @@ impl KubernetesRuntimeConfig {
     pub fn cert_auth_file_path(&self) -> &Option<PathBuf> {
         &self.cert_auth_file_path
     }
-}
-
-fn parse_url<'de, D>(deserializer: D) -> Result<Option<Url>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let url = String::deserialize(deserializer)?;
-    Url::parse(&url)
-        .map(|url| Some(url))
-        .map_err(de::Error::custom)
 }
 
 #[cfg(test)]

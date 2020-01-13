@@ -29,6 +29,7 @@ use rocket::request::{self, FromRequest, Request};
 use rocket::Outcome;
 use url::Url;
 
+#[derive(Clone)]
 pub struct RequestInfo {
     base_url: Url,
 }
