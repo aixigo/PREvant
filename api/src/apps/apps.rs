@@ -189,8 +189,8 @@ impl AppsService {
         };
 
         let get_request = reqwest::Client::builder()
-            .connect_timeout(Duration::from_millis(100))
-            .timeout(Duration::from_millis(500))
+            .connect_timeout(Duration::from_millis(500))
+            .timeout(Duration::from_millis(750))
             .user_agent(format!("PREvant/{}", crate_version!()))
             .build()
             .unwrap()
