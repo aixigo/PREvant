@@ -1,7 +1,9 @@
 # Build Frontend
 FROM docker.io/library/node:10-alpine as frontend-builder
+RUN apk add --no-cache python3 make g++
 WORKDIR /usr/src/frontend/
-COPY frontend/package.json frontend/package-lock.json frontend/postcss.config.js frontend/webpack.config.js /usr/src/frontend/
+COPY frontend/package.json frontend/package-lock.json frontend/*.config.js /usr/src/frontend/
+COPY frontend/public /usr/src/frontend/public/
 COPY frontend/src /usr/src/frontend/src/
 RUN npm ci && npm run build
 
@@ -20,8 +22,9 @@ RUN cargo build --release --target x86_64-unknown-linux-musl
 FROM scratch as directory-composer
 COPY --from=backend-builder /usr/src/api/target/x86_64-unknown-linux-musl/release/prevant /app/prevant
 COPY api/res/Rocket.toml api/res/config.toml api/res/openapi.yml /app/
-COPY --from=frontend-builder /usr/src/frontend/target/* /app/frontend/
-COPY frontend/index.html frontend/favicon.svg  /app/frontend/
+COPY --from=frontend-builder /usr/src/frontend/dist/index.html /usr/src/frontend/dist/favicon.svg /app/frontend/
+COPY --from=frontend-builder /usr/src/frontend/dist/js /app/frontend/js
+COPY --from=frontend-builder /usr/src/frontend/dist/css /app/frontend/css
 
 
 # Build whole application

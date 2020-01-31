@@ -23,12 +23,8 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+import 'current-script-polyfill';
 
-import 'intersection-observer';
-import 'mdn-polyfills/Object.assign';
-import 'mdn-polyfills/Object.entries';
-import 'mdn-polyfills/String.prototype.endsWith';
-import 'isomorphic-fetch';
 // Bootstrap material design library
 import $ from 'jquery/dist/jquery.js';
 import 'popper.js';
@@ -36,7 +32,7 @@ import 'bootstrap-material-design/dist/css/bootstrap-material-design.css';
 import 'bootstrap-material-design/dist/js/bootstrap-material-design.js';
 
 $(document).ready(() => {
-    $('body').bootstrapMaterialDesign();
+     $('body').bootstrapMaterialDesign();
 });
 
 import Vue from 'vue';
