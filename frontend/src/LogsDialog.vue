@@ -26,12 +26,9 @@
 <template>
    <dlg ref="dialog" :title="`Logs of ${serviceName} in ${appName}`" :large="true" @close="clearLogs">
       <template slot="body">
-         <recycle-scroller ref="recycleScroller" class="ra-logs" :item-size="20" :items="logLines"
-                           emit-update @update="updateLogs">
-            <template v-slot="{ item }">
-               <p class="ra-log-line">{{ item.line }}</p>
-            </template>
-         </recycle-scroller>
+         <virtual-list :size="10" :remain="50" :bench="120" class="ra-logs" :tobottom="updateLogs">
+            <log-line v-for="line of logLines" :line="line.line" :key="line.id" />
+         </virtual-list>
       </template>
    </dlg>
 </template>
@@ -47,33 +44,13 @@
 
       padding: 0.5rem;
    }
-
-   .ra-log-line {
-      padding: 0;
-      white-space: nowrap;
-      height: 20px;
-      line-height: 20px;
-      margin: 0;
-   }
-
-   /*
-    This is a workaround for vue-recycle-scroller because it sets the css property transform with translateY(...px)
-    for each line but without making the positioning of the lines relative (see
-    https://github.com/Akryum/vue-virtual-scroller/issues/196 for more information).
-   */
-   .ra-logs .vue-recycle-scroller__item-wrapper {
-      position: relative;
-   }
-
-   .ra-logs .vue-recycle-scroller__item-view {
-      position: absolute;
-   }
 </style>
 
 <script>
    import Dialog from './Dialog.vue';
-   import { RecycleScroller } from 'vue-virtual-scroller';
-   import LinkHeader from 'http-link-header';
+   import LogLine from "./LogLine";
+   import parseLinkHeader from 'parse-link-header';
+   import virtualList from 'vue-virtual-scroll-list'
 
    let requestUri;
 
@@ -91,7 +68,8 @@
       },
       components: {
          'dlg': Dialog,
-         'recycle-scroller': RecycleScroller
+         'virtual-list': virtualList,
+         'log-line': LogLine
       },
       props: {
          appName: { type: String },
@@ -151,10 +129,11 @@
             this.currentPageLink = null;
             this.nextPageLink = null;
             this.logLines = [];
+            this.$emit('clearedLogs');
          },
 
-         updateLogs( startIndex, endIndex ) {
-            if ( endIndex >= this.logLines.length && this.nextPageLink ) {
+         updateLogs() {
+            if ( this.nextPageLink ) {
                const nextPageLink = this.nextPageLink;
                this.nextPageLink = null;
                this.currentPageLink = nextPageLink;
@@ -172,8 +151,10 @@
          const link = response.headers.get( 'Link' );
          let rel = null;
          if ( link != null ) {
-            const linkHeader = LinkHeader.parse( link );
-            rel = linkHeader.get( 'rel', 'next' ).find( link => link.uri != null );
+            const linkHeader = parseLinkHeader( link );
+            if ( linkHeader.next != null ) {
+               rel = linkHeader.next.url;
+            }
          }
          return resolve( response.text().then( text => ( { logLines: text, rel } ) ) );
       } );

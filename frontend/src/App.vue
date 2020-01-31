@@ -49,7 +49,7 @@
             class="list-complete-item"/>
       </transition-group>
 
-      <logs-dialog ref="logsDialog" :app-name="selectLogs.appName" :service-name="selectLogs.serviceName"/>
+      <logs-dialog ref="logsDialog" :app-name="selectLogs.appName" :service-name="selectLogs.serviceName" @clearedLogs="clearedLogs"/>
    </div>
 </template>
 
@@ -110,6 +110,11 @@
 
          changeServiceState( appName, serviceName ) {
             this.$store.dispatch( 'changeServiceState', { appName, serviceName } );
+         },
+
+         clearedLogs() {
+            this.selectLogs.appName = null;
+            this.selectLogs.serviceName = null;
          }
       }
    };

@@ -53,7 +53,7 @@ fn apps(
     Ok(Json(apps.get_apps(&request_info)?))
 }
 
-#[delete("/<app_name>", format = "application/json")]
+#[delete("/<app_name>")]
 pub fn delete_app(
     app_name: Result<AppName, AppNameError>,
     apps: State<Apps>,
