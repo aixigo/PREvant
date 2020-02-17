@@ -36,7 +36,7 @@ reqwest = { version = "0.10", features = ["json"] }
 rocket = "0.4"
 rocket_contrib = "0.4"
 rocket-cache-response = "0.5"
-secstr = { version = "0.3", features = ["serde"] }
+secstr = { version = "0.4", features = ["serde"] }
 url = { version = "2.1", features = ["serde"] }
 yansi = "0.5"
 

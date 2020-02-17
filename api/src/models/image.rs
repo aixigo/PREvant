@@ -25,10 +25,10 @@
  */
 use crate::models::service::ServiceError;
 use regex::Regex;
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer};
 use std::str::FromStr;
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Image {
     Named {
         image_repository: String,
@@ -42,14 +42,6 @@ pub enum Image {
 }
 
 impl Image {
-    pub fn parse_from_string<'de, D>(deserializer: D) -> Result<Image, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let img = String::deserialize(deserializer)?;
-        Image::from_str(&img).map_err(de::Error::custom)
-    }
-
     pub fn tag(&self) -> Option<String> {
         match &self {
             Image::Digest { .. } => None,
@@ -167,6 +159,29 @@ impl std::string::ToString for Image {
                 format!("{}/{}/{}:{}", registry, user, image_repository, tag)
             }
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for Image {
+    fn deserialize<D>(deserializer: D) -> Result<Image, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ImageVisitor;
+        impl<'de> serde::de::Visitor<'de> for ImageVisitor {
+            type Value = Image;
+            fn expecting(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+                write!(formatter, "a string containing a docker image reference")
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(Image::from_str(v).map_err(serde::de::Error::custom)?)
+            }
+        }
+
+        deserializer.deserialize_string(ImageVisitor)
     }
 }
 
