@@ -23,97 +23,28 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-
-use crate::config::{ContainerConfig, Runtime};
-use crate::models::service::ContainerType;
-use crate::models::{Environment, Image, Router, ServiceConfig};
-use base64::decode;
-use regex::Regex;
+use crate::config::{Companion, CompanionType, ContainerConfig, Runtime, Secret};
+use crate::models::ServiceConfig;
 use secstr::SecUtf8;
-use serde::{de, Deserialize, Deserializer};
-use serde_value::Value;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::convert::{From, TryFrom};
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::Error as IOError;
-use std::path::PathBuf;
-use std::str::FromStr;
 use toml::de::Error as TomlError;
 use toml::from_str;
-
-#[derive(Clone)]
-struct AppSelector(Regex);
-
-impl AppSelector {
-    fn matches(&self, app_name: &str) -> bool {
-        match self.0.captures(app_name) {
-            None => false,
-            Some(captures) => captures.get(0).map_or("", |m| m.as_str()) == app_name,
-        }
-    }
-}
-
-impl Default for AppSelector {
-    fn default() -> Self {
-        AppSelector(Regex::new(".+").unwrap())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for AppSelector {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        serde_regex::deserialize(deserializer).map(|r| AppSelector(r))
-    }
-}
 
 #[derive(Clone, Deserialize)]
 pub struct JiraConfig {
     host: String,
     user: String,
-    #[serde(deserialize_with = "JiraConfig::parse_secstr")]
     password: SecUtf8,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Companion {
-    service_name: String,
-    #[serde(rename = "type")]
-    companion_type: CompanionType,
-    image: String,
-    env: Option<Environment>,
-    labels: Option<BTreeMap<String, String>>,
-    volumes: Option<BTreeMap<PathBuf, String>>,
-    #[serde(default = "AppSelector::default")]
-    app_selector: AppSelector,
-    router: Option<Router>,
-    middlewares: Option<BTreeMap<String, Value>>,
-}
-
-#[derive(Clone, Deserialize, PartialEq)]
-enum CompanionType {
-    #[serde(rename = "application")]
-    Application,
-    #[serde(rename = "service")]
-    Service,
 }
 
 #[derive(Clone, Deserialize)]
 struct Service {
     secrets: Option<Vec<Secret>>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Secret {
-    name: String,
-    #[serde(deserialize_with = "Secret::parse_secstr", rename = "data")]
-    secret: SecUtf8,
-    #[serde(default = "AppSelector::default")]
-    app_selector: AppSelector,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -162,7 +93,7 @@ impl Config {
         app_name: &str,
     ) -> Result<Vec<ServiceConfig>, ConfigError> {
         Ok(self.companion_configs(app_name, |companion| {
-            companion.companion_type == CompanionType::Service
+            companion.companion_type() == &CompanionType::Service
         })?)
     }
 
@@ -171,7 +102,7 @@ impl Config {
         app_name: &str,
     ) -> Result<Vec<ServiceConfig>, ConfigError> {
         Ok(self.companion_configs(app_name, |companion| {
-            companion.companion_type == CompanionType::Application
+            companion.companion_type() == &CompanionType::Application
         })?)
     }
 
@@ -190,12 +121,10 @@ impl Config {
 
                 for (_, companion) in companions_map
                     .iter()
-                    .filter(|(_, companion)| companion.app_selector.matches(app_name))
+                    .filter(|(_, companion)| companion.matches_app_name(app_name))
                     .filter(|(_, companion)| predicate(*companion))
                 {
-                    let mut config = ServiceConfig::try_from(companion)?;
-                    config.set_container_type(ContainerType::from(&companion.companion_type));
-
+                    let config = ServiceConfig::try_from(companion.clone())?;
                     companions.push(config);
                 }
 
@@ -223,38 +152,21 @@ impl JiraConfig {
     pub fn password(&self) -> &SecUtf8 {
         &self.password
     }
-
-    fn parse_secstr<'de, D>(deserializer: D) -> Result<SecUtf8, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let secret = String::deserialize(deserializer)?;
-        Ok(SecUtf8::from(secret))
-    }
 }
 
 impl Service {
     pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &str) {
         if let Some(secrets) = &self.secrets {
-            for s in secrets.iter().filter(|s| s.app_selector.matches(app_name)) {
+            for s in secrets.iter().filter(|s| s.matches_app_name(app_name)) {
+                let (path, sec) = s.clone().into();
+
                 service_config.add_volume(
-                    PathBuf::from(format!("/run/secrets/{}", s.name)),
+                    path,
                     // TODO: use secstr in service_config (see issue #8)
-                    String::from(s.secret.unsecure()),
+                    String::from(sec.unsecure()),
                 );
             }
         }
-    }
-}
-
-impl Secret {
-    fn parse_secstr<'de, D>(deserializer: D) -> Result<SecUtf8, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let secret = String::deserialize(deserializer)?;
-        let decoded = decode(&secret).map_err(de::Error::custom)?;
-        Ok(SecUtf8::from(decoded))
     }
 }
 
@@ -264,8 +176,6 @@ pub enum ConfigError {
     CannotOpenConfigFile { error: IOError },
     #[fail(display = "Invalid config file format. {}", error)]
     ConfigFormatError { error: TomlError },
-    #[fail(display = "Unable to parse image string {}.", image)]
-    UnableToParseImage { image: String },
 }
 
 impl From<IOError> for ConfigError {
@@ -280,52 +190,13 @@ impl From<TomlError> for ConfigError {
     }
 }
 
-impl TryFrom<&Companion> for ServiceConfig {
-    type Error = ConfigError;
-
-    fn try_from(companion: &Companion) -> Result<ServiceConfig, ConfigError> {
-        let image = match Image::from_str(&companion.image) {
-            Ok(image) => image,
-            Err(_) => {
-                return Err(ConfigError::UnableToParseImage {
-                    image: companion.image.clone(),
-                })
-            }
-        };
-
-        let mut config = ServiceConfig::new(companion.service_name.clone(), image);
-        config.set_env(companion.env.clone());
-        config.set_labels(companion.labels.clone());
-
-        if let Some(volumes) = &companion.volumes {
-            config.set_volumes(Some(volumes.clone()));
-        }
-
-        if let Some(router) = &companion.router {
-            config.set_router(router.clone());
-        }
-
-        if let Some(middlewares) = &companion.middlewares {
-            config.set_middlewares(middlewares.clone());
-        }
-
-        Ok(config)
-    }
-}
-
-impl From<&CompanionType> for ContainerType {
-    fn from(t: &CompanionType) -> Self {
-        match t {
-            CompanionType::Application => ContainerType::ApplicationCompanion,
-            CompanionType::Service => ContainerType::ServiceCompanion,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{service::ContainerType, Image};
     use sha2::{Digest, Sha256};
+    use std::path::PathBuf;
+    use std::str::FromStr;
 
     macro_rules! service_config {
         ( $name:expr ) => {{
@@ -457,27 +328,6 @@ mod tests {
                 assert_eq!(v, "bar");
             }
         });
-    }
-
-    #[test]
-    fn should_return_application_companions_as_error_when_invalid_image_is_provided() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'application'
-            image = ''
-            env = [ 'KEY=VALUE' ]
-            "#
-        );
-
-        let result = config.application_companion_configs("master");
-
-        assert_eq!(result.is_err(), true);
-        match result.err().unwrap() {
-            ConfigError::UnableToParseImage { image: _ } => assert!(true),
-            _ => assert!(false, "unexpected error"),
-        }
     }
 
     #[test]
@@ -630,19 +480,6 @@ mod tests {
         config.add_secrets_to(&mut service_config, &String::from("master-1.x"));
 
         assert_eq!(service_config.volumes(), None);
-    }
-
-    #[test]
-    fn should_not_parse_config_because_of_invalid_secret_data() {
-        let config_str = r#"
-            [services.mariadb]
-            [[services.mariadb.secrets]]
-            name = "user"
-            data = "+++"
-        "#;
-
-        let config_result = from_str::<Config>(config_str);
-        assert!(config_result.is_err(), "should not parse config");
     }
 
     #[test]

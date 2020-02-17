@@ -36,7 +36,6 @@ use std::path::PathBuf;
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
     service_name: String,
-    #[serde(deserialize_with = "Image::parse_from_string")]
     image: Image,
     env: Option<Environment>,
     // TODO: rename this field because it does not match to volumes any more (it is file content, cf. issue #8)

@@ -48,6 +48,9 @@ data = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS…FUlRJRklDQVRFLS0tLS0K"
 # An optional regular expression that checks if the secret has to be
 # mounted for this service. Default is ".+" (any app)
 appSelector = "master"
+# An optional path that points to the secret's parent directory.
+# Default is "/run/secrets" 
+path = "/run/secrets"
 
 [[services.nginx.secrets]]
 name = "key.pem"

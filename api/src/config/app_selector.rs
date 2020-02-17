@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant REST API
  * %%
- * Copyright (C) 2018 - 2019 aixigo AG
+ * Copyright (C) 2018 - 2020 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,16 +23,31 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-pub(self) use app_selector::AppSelector;
-pub(self) use companion::{Companion, CompanionType};
-pub use config::{Config, ConfigError};
-pub use container::ContainerConfig;
-pub use runtime::Runtime;
-pub(self) use secret::Secret;
+use regex::Regex;
 
-mod app_selector;
-mod companion;
-mod config;
-mod container;
-mod runtime;
-mod secret;
+#[derive(Clone)]
+pub(super) struct AppSelector(Regex);
+
+impl AppSelector {
+    pub fn matches(&self, app_name: &str) -> bool {
+        match self.0.captures(app_name) {
+            None => false,
+            Some(captures) => captures.get(0).map_or("", |m| m.as_str()) == app_name,
+        }
+    }
+}
+
+impl Default for AppSelector {
+    fn default() -> Self {
+        AppSelector(Regex::new(".+").unwrap())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AppSelector {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        serde_regex::deserialize(deserializer).map(|r| AppSelector(r))
+    }
+}
