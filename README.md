@@ -59,7 +59,8 @@ In order to generate the correct link the API specification PREvant adds followi
 
 # Further Readings
 
-PREvant's concept has been published at the conference [_Microservices 2019_ in Dortmund](https://www.conf-micro.services/2019/). You can read [the abstract here](https://www.conf-micro.services/2019/papers/Microservices_2019_paper_14.pdf).
+PREvant's concept has been published in the [Joint Post-proceedings of the First and Second International Conference on Microservices (Microservices 2017/2019): PREvant (Preview Servant): Composing Microservices into Reviewable and Testable Applications](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5).
+This paper is based on [the abstract](https://www.conf-micro.services/2019/papers/Microservices_2019_paper_14.pdf) that has been published at the conference [_Microservices 2019_ in Dortmund](https://www.conf-micro.services/2019/).
 
 The talk is available on [YouTube](http://www.youtube.com/watch?v=O9GxapQR5bk). Click on the image to start the playback:
 
