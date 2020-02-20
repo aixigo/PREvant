@@ -382,7 +382,8 @@ impl Router {
 #[macro_export]
 macro_rules! sc {
     ( $name:expr ) => {{
-        let mut hasher = Sha256::new();
+        use sha2::Digest;
+        let mut hasher = ::sha2::Sha256::new();
         hasher.input($name);
         let img_hash = &format!("sha256:{:x}", hasher.result_reset());
 
@@ -398,8 +399,9 @@ macro_rules! sc {
         env = ($($env_key:expr => $env_value:expr),*),
         volumes = ($($v_key:expr => $v_value:expr),*) ) => {{
         use std::str::FromStr;
+        use sha2::Digest;
 
-        let mut hasher = Sha256::new();
+        let mut hasher = ::sha2::Sha256::new();
         hasher.input($name);
         let img_hash = &format!("sha256:{:x}", hasher.result_reset());
 
