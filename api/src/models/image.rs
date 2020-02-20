@@ -26,6 +26,7 @@
 use crate::models::service::ServiceError;
 use regex::Regex;
 use serde::{Deserialize, Deserializer};
+use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -90,7 +91,7 @@ impl Image {
 }
 
 /// Parse a docker image string and returns an image
-impl std::str::FromStr for Image {
+impl FromStr for Image {
     type Err = ServiceError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -131,10 +132,10 @@ impl std::str::FromStr for Image {
     }
 }
 
-impl std::string::ToString for Image {
-    fn to_string(&self) -> String {
+impl Display for Image {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self {
-            Image::Digest { hash } => hash.clone(),
+            Image::Digest { hash } => write!(f, "{}", hash),
             Image::Named {
                 image_repository,
                 registry,
@@ -156,7 +157,7 @@ impl std::string::ToString for Image {
                     Some(tag) => tag.clone(),
                 };
 
-                format!("{}/{}/{}:{}", registry, user, image_repository, tag)
+                write!(f, "{}/{}/{}:{}", registry, user, image_repository, tag)
             }
         }
     }
@@ -203,6 +204,29 @@ mod tests {
         );
         assert_eq!(image.name(), None);
         assert_eq!(image.tag(), None);
+    }
+
+    #[test]
+    fn should_convert_to_string_for_named() {
+        let image = Image::from_str("zammad/zammad-docker-compose").unwrap();
+
+        assert_eq!(
+            &image.to_string(),
+            "docker.io/zammad/zammad-docker-compose:latest"
+        );
+    }
+
+    #[test]
+    fn should_convert_to_string_for_digest() {
+        let image = Image::from_str(
+            "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913",
+        )
+        .unwrap();
+
+        assert_eq!(
+            &image.to_string(),
+            "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913"
+        );
     }
 
     #[test]

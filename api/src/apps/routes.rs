@@ -24,22 +24,23 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::Apps;
+use crate::apps::{Apps, AppsError};
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::ServiceConfig;
 use crate::models::{AppName, AppNameError, LogChunk};
 use chrono::DateTime;
-use http_api_problem::HttpApiProblem;
+use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
 use rocket::data::{self, FromDataSimple};
-use rocket::http::Status;
-use rocket::request::{Form, Request};
+use rocket::http::{RawStr, Status};
+use rocket::request::{Form, FromFormValue, Request};
 use rocket::response::{Responder, Response};
 use rocket::Outcome::{Failure, Success};
 use rocket::{Data, State};
 use rocket_contrib::json::Json;
 use std::io::Read;
+use std::str::FromStr;
 
 pub fn routes() -> Vec<rocket::Route> {
     rocket::routes![apps, delete_app, create_app, logs, change_status]
@@ -151,11 +152,11 @@ pub struct LogsResponse {
 #[derive(FromForm)]
 pub struct CreateAppOptions {
     #[form(field = "replicateFrom")]
-    replicate_from: Option<String>,
+    replicate_from: Option<AppName>,
 }
 
 impl CreateAppOptions {
-    fn replicate_from(&self) -> &Option<String> {
+    fn replicate_from(&self) -> &Option<AppName> {
         &self.replicate_from
     }
 }
@@ -230,5 +231,28 @@ impl Responder<'static> for ServiceStatusResponse {
             Some(_service) => Response::build().status(Status::Accepted).ok(),
             None => Response::build().status(Status::NotFound).ok(),
         }
+    }
+}
+
+impl From<AppsError> for HttpApiProblem {
+    fn from(error: AppsError) -> Self {
+        let status = match error {
+            AppsError::AppNotFound { app_name: _ } => StatusCode::NOT_FOUND,
+            AppsError::AppIsInDeployment { app_name: _ } => StatusCode::CONFLICT,
+            AppsError::InfrastructureError { error: _ }
+            | AppsError::InvalidServerConfiguration { error: _ }
+            | AppsError::InvalidTemplateFormat { error: _ }
+            | AppsError::UnableToResolveImage { error: _ } => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+
+        HttpApiProblem::with_title_and_type_from_status(status).set_detail(format!("{}", error))
+    }
+}
+
+impl<'a> FromFormValue<'a> for AppName {
+    type Error = String;
+
+    fn from_form_value(form_value: &'a RawStr) -> Result<Self, Self::Error> {
+        AppName::from_str(form_value).map_err(|e| format!("{}", e))
     }
 }

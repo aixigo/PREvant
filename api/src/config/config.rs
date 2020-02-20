@@ -191,6 +191,14 @@ impl From<TomlError> for ConfigError {
 }
 
 #[cfg(test)]
+#[macro_export]
+macro_rules! config_from_str {
+    ( $config_str:expr ) => {
+        toml::from_str::<Config>($config_str).unwrap()
+    };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{service::ContainerType, Image};
@@ -206,12 +214,6 @@ mod tests {
 
             ServiceConfig::new(String::from($name), Image::from_str(&img_hash).unwrap())
         }};
-    }
-
-    macro_rules! config_from_str {
-        ( $config_str:expr ) => {
-            from_str::<Config>($config_str).unwrap()
-        };
     }
 
     #[test]

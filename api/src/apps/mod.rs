@@ -24,9 +24,10 @@
  * =========================LICENSE_END==================================
  */
 mod apps;
+mod deployment_unit;
 mod routes;
 
 pub use apps::AppsService as Apps;
 pub use apps::AppsServiceError as AppsError;
-pub use routes::delete_app;
-pub use routes::routes;
+pub(self) use deployment_unit::DeploymentUnit;
+pub use routes::{delete_app, routes};

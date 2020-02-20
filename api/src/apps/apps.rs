@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::apps::DeploymentUnit;
 use crate::config::{Config, ConfigError};
 use crate::infrastructure::Infrastructure;
 use crate::models::request_info::RequestInfo;
@@ -31,16 +32,13 @@ use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::web_host_meta::WebHostMeta;
 use crate::models::{AppName, LogChunk, ServiceBuilder, ServiceConfig};
 use crate::services::images_service::{ImagesService, ImagesServiceError};
-use crate::services::service_templating::{
-    apply_templating_for_application_companion, apply_templating_for_service_companion,
-};
 use cached::{Cached, SizedCache};
 use chrono::{DateTime, FixedOffset, Utc};
 use handlebars::TemplateRenderError;
-use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
 use std::collections::HashSet;
-use std::convert::From;
+use std::convert::{From, TryInto};
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -305,8 +303,8 @@ impl AppsService {
     /// * `replicate_from` - The application name that is used as a template.
     pub fn create_or_update(
         &self,
-        app_name: &String,
-        replicate_from: Option<String>,
+        app_name: &AppName,
+        replicate_from: Option<AppName>,
         service_configs: &Vec<ServiceConfig>,
     ) -> Result<Vec<Service>, AppsServiceError> {
         let _guard = match self.create_deployment_guard(app_name) {
@@ -321,7 +319,8 @@ impl AppsService {
         let mut runtime = Runtime::new().expect("Should create runtime");
         let mut configs: Vec<ServiceConfig> = service_configs.clone();
 
-        let replicate_from_app_name = replicate_from.unwrap_or_else(|| String::from("master"));
+        let replicate_from_app_name =
+            replicate_from.unwrap_or_else(|| AppName::from_str("master").unwrap());
         if &replicate_from_app_name != app_name {
             configs.extend(runtime.block_on(self.configs_to_replicate(
                 service_configs,
@@ -330,45 +329,14 @@ impl AppsService {
             ))?);
         }
 
-        for config in configs.iter_mut() {
-            self.config.add_secrets_to(config, app_name);
-        }
+        let mut deployment_unit = DeploymentUnit::new(app_name.clone(), configs);
+        deployment_unit.extend_with_config(&self.config)?;
 
-        let mut service_companions = Vec::new();
-        for config in &configs {
-            let companions = self.config.service_companion_configs(app_name)?;
+        let images = deployment_unit.images();
+        let port_mappings = runtime.block_on(ImagesService::new().resolve_image_ports(&images))?;
+        deployment_unit.assign_port_mappings(&port_mappings);
 
-            service_companions.extend(
-                companions
-                    .iter()
-                    .map(|companion_config| {
-                        apply_templating_for_service_companion(companion_config, app_name, config)
-                    })
-                    .filter_map(|r| r.ok())
-                    .collect::<Vec<ServiceConfig>>(),
-            );
-        }
-
-        AppsService::merge_companions_by_service_name(service_companions, &mut configs);
-        AppsService::merge_companions_by_service_name(
-            runtime.block_on(self.get_application_companion_configs(app_name, &configs))?,
-            &mut configs,
-        );
-
-        let images_service = ImagesService::new();
-        let mappings = runtime.block_on(images_service.resolve_image_ports(&configs))?;
-        for config in configs.iter_mut() {
-            if let Some(port) = mappings.get(config) {
-                config.set_port(port.clone());
-            }
-        }
-
-        configs.sort_unstable_by(|a, b| {
-            let index1 = AppsService::container_type_index(a.container_type());
-            let index2 = AppsService::container_type_index(b.container_type());
-            index1.cmp(&index2)
-        });
-
+        let configs: Vec<_> = deployment_unit.try_into()?;
         let services = runtime.block_on(self.infrastructure.deploy_services(
             app_name,
             &configs,
@@ -378,90 +346,8 @@ impl AppsService {
         Ok(services)
     }
 
-    /// Adds all companions to service_configs that are not yet present. Also updates
-    /// service configs if there is a corresponding companion config.
-    fn merge_companions_by_service_name(
-        companions: Vec<ServiceConfig>,
-        service_configs: &mut Vec<ServiceConfig>,
-    ) {
-        for service in service_configs.iter_mut() {
-            let matching_companion = companions
-                .iter()
-                .find(|companion| companion.service_name() == service.service_name());
-
-            if let Some(matching_companion) = matching_companion {
-                service.merge_with(matching_companion);
-            }
-        }
-
-        service_configs.extend(AppsService::filter_companions_by_service_name(
-            companions,
-            service_configs,
-        ));
-    }
-
-    fn filter_companions_by_service_name(
-        companions: Vec<ServiceConfig>,
-        service_configs: &Vec<ServiceConfig>,
-    ) -> Vec<ServiceConfig> {
-        companions
-            .into_iter()
-            .filter(|companion| {
-                service_configs
-                    .iter()
-                    .find(|c| companion.service_name() == c.service_name())
-                    .is_none()
-            })
-            .collect()
-    }
-
-    async fn get_application_companion_configs(
-        &self,
-        app_name: &String,
-        service_configs: &Vec<ServiceConfig>,
-    ) -> Result<Vec<ServiceConfig>, AppsServiceError> {
-        let mut configs_for_templating = service_configs.clone();
-
-        // TODO: make sure that service companions are included!
-        for config in self
-            .infrastructure
-            .get_configs_of_app(app_name)
-            .await?
-            .into_iter()
-            .filter(|config| {
-                service_configs
-                    .iter()
-                    .find(|c| c.service_name() == config.service_name())
-                    .is_none()
-            })
-        {
-            configs_for_templating.push(config);
-        }
-
-        let mut companion_configs = Vec::new();
-        for app_companion_config in self.config.application_companion_configs(app_name)? {
-            let c = apply_templating_for_application_companion(
-                &app_companion_config,
-                app_name,
-                &configs_for_templating,
-            )?;
-
-            companion_configs.push(c);
-        }
-
-        Ok(companion_configs)
-    }
-
-    fn container_type_index(container_type: &ContainerType) -> i32 {
-        match container_type {
-            ContainerType::ApplicationCompanion => 0,
-            ContainerType::ServiceCompanion => 1,
-            ContainerType::Instance | ContainerType::Replica => 2,
-        }
-    }
-
     /// Deletes all services for the given `app_name`.
-    pub fn delete_app(&self, app_name: &String) -> Result<Vec<Service>, AppsServiceError> {
+    pub fn delete_app(&self, app_name: &AppName) -> Result<Vec<Service>, AppsServiceError> {
         let mut runtime = Runtime::new().expect("Should create runtime");
 
         let services = runtime.block_on(self.infrastructure.stop_services(app_name))?;
@@ -520,12 +406,12 @@ impl AppsService {
 pub enum AppsServiceError {
     /// Will be used when no app with a given name is found
     #[fail(display = "Cannot find app {}.", app_name)]
-    AppNotFound { app_name: String },
+    AppNotFound { app_name: AppName },
     #[fail(
         display = "The app {} is currently beeing deployed in by another request.",
         app_name
     )]
-    AppIsInDeployment { app_name: String },
+    AppIsInDeployment { app_name: AppName },
     /// Will be used when the service cannot interact correctly with the infrastructure.
     #[fail(display = "Cannot interact with infrastructure: {}", error)]
     InfrastructureError { error: failure::Error },
@@ -536,23 +422,6 @@ pub enum AppsServiceError {
     InvalidTemplateFormat { error: TemplateRenderError },
     #[fail(display = "Unable to resolve information about image: {}", error)]
     UnableToResolveImage { error: ImagesServiceError },
-}
-
-impl From<AppsServiceError> for HttpApiProblem {
-    fn from(error: AppsServiceError) -> Self {
-        let status = match error {
-            AppsServiceError::AppNotFound { app_name: _ } => StatusCode::NOT_FOUND,
-            AppsServiceError::AppIsInDeployment { app_name: _ } => StatusCode::CONFLICT,
-            AppsServiceError::InfrastructureError { error: _ }
-            | AppsServiceError::InvalidServerConfiguration { error: _ }
-            | AppsServiceError::InvalidTemplateFormat { error: _ }
-            | AppsServiceError::UnableToResolveImage { error: _ } => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        };
-
-        HttpApiProblem::with_title_and_type_from_status(status).set_detail(format!("{}", error))
-    }
 }
 
 impl From<ConfigError> for AppsServiceError {
@@ -639,7 +508,7 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &String::from("master"),
+            &AppName::from_str("master").unwrap(),
             None,
             &service_configs!("service-a"),
         )?;
@@ -662,14 +531,14 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &String::from("master"),
+            &AppName::from_str("master").unwrap(),
             None,
             &service_configs!("service-a", "service-b"),
         )?;
 
         apps.create_or_update(
-            &String::from("branch"),
-            Some(String::from("master")),
+            &AppName::from_str("branch").unwrap(),
+            Some(AppName::from_str("master").unwrap()),
             &service_configs!("service-b"),
         )?;
 
@@ -691,20 +560,20 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &String::from("master"),
+            &AppName::from_str("master").unwrap(),
             None,
             &service_configs!("service-a", "service-b"),
         )?;
 
         apps.create_or_update(
-            &String::from("branch"),
-            Some(String::from("master")),
+            &AppName::from_str("branch").unwrap(),
+            Some(AppName::from_str("master").unwrap()),
             &service_configs!("service-b"),
         )?;
 
         apps.create_or_update(
-            &String::from("branch"),
-            Some(String::from("master")),
+            &AppName::from_str("branch").unwrap(),
+            Some(AppName::from_str("master").unwrap()),
             &service_configs!("service-a"),
         )?;
 
@@ -734,7 +603,11 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
-        apps.create_or_update(&String::from("master"), None, &service_configs!("mariadb"))?;
+        apps.create_or_update(
+            &AppName::from_str("master").unwrap(),
+            None,
+            &service_configs!("mariadb"),
+        )?;
 
         let mut runtime = Runtime::new().expect("Should create runtime");
         let configs = runtime.block_on(
@@ -769,7 +642,7 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &String::from("master-1.x"),
+            &AppName::from_str("master-1.x").unwrap(),
             None,
             &service_configs!("mariadb"),
         )?;

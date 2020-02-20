@@ -27,7 +27,7 @@
 pub use app_name::{AppName, AppNameError};
 pub use image::Image;
 pub use logs_chunks::LogChunk;
-pub use service::{ServiceBuilder, ServiceBuilderError};
+pub use service::{ContainerType, ServiceBuilder, ServiceBuilderError};
 pub use service_config::{Environment, EnvironmentVariable, Router, ServiceConfig};
 
 mod app_name;
