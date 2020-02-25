@@ -37,6 +37,7 @@ pub(super) struct DeploymentUnit {
     configs: Vec<ServiceConfig>,
     service_companions: Vec<(usize, ServiceConfig)>,
     app_companions: Vec<ServiceConfig>,
+    templating_only_service_configs: Vec<ServiceConfig>,
 }
 
 impl DeploymentUnit {
@@ -46,10 +47,11 @@ impl DeploymentUnit {
             configs,
             service_companions: Vec::new(),
             app_companions: Vec::new(),
+            templating_only_service_configs: Vec::new(),
         }
     }
 
-    /// Extends the configuration with configuration options, such as:
+    /// Extends the `DeploymentUnit` with configuration options, such as:
     ///
     /// - secrets
     /// - application and service companions
@@ -74,6 +76,16 @@ impl DeploymentUnit {
         self.app_companions.extend(app_companions);
 
         Ok(())
+    }
+
+    /// Extends the `DeploymentUnit` with service configuration that are only required for templating
+    pub fn extend_with_templating_only_service_configs<ServiceConfigIter>(
+        &mut self,
+        configs: ServiceConfigIter,
+    ) where
+        ServiceConfigIter: IntoIterator<Item = ServiceConfig>,
+    {
+        self.templating_only_service_configs.extend(configs);
     }
 
     /// Merges the `ServiceConfig`s with the corresponding companion config (based on the service name).
@@ -118,6 +130,11 @@ impl DeploymentUnit {
                 .iter()
                 .map(|config| config.image().clone()),
         );
+        images.extend(
+            self.templating_only_service_configs
+                .iter()
+                .map(|config| config.image().clone()),
+        );
 
         images
     }
@@ -129,6 +146,10 @@ impl DeploymentUnit {
             port_mappings,
         );
         Self::assign_port_mappings_impl(self.app_companions.iter_mut(), port_mappings);
+        Self::assign_port_mappings_impl(
+            self.templating_only_service_configs.iter_mut(),
+            port_mappings,
+        );
     }
 
     fn assign_port_mappings_impl<'a, Iter>(configs: Iter, port_mappings: &HashMap<Image, u16>)
@@ -160,11 +181,13 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
 
         configs.extend(self.configs);
 
+        let mut templating_only_service_configs = self.templating_only_service_configs;
+        templating_only_service_configs.extend(configs.clone());
         for companion_config in self.app_companions.into_iter() {
             let companion_config = apply_templating_for_application_companion(
                 &companion_config,
                 &self.app_name,
-                &configs,
+                &templating_only_service_configs,
             )?;
             configs.push(companion_config);
         }
@@ -379,6 +402,7 @@ mod tests {
             serviceName = '{{application.name}}-openid'
             type = 'application'
             image = 'private.example.com/library/openid:latest'
+            env = [ """SERVICES={{~#each services~}}{{name}},{{~/each~}}""" ]
         "#
         );
 
@@ -397,6 +421,67 @@ mod tests {
                 .find(|config| config.container_type() == &ContainerType::ApplicationCompanion)
                 .map(|config| config.service_name().clone()),
             Some("master-openid".to_string())
+        );
+
+        assert_eq!(
+            configs
+                .iter()
+                .find(|config| config.container_type() == &ContainerType::ApplicationCompanion)
+                .map(|config| config
+                    .env()
+                    .unwrap()
+                    .get(0)
+                    .unwrap()
+                    .value()
+                    .unsecure()
+                    .to_string()),
+            Some("wordpress,".to_string())
+        );
+    }
+
+    #[test]
+    fn should_apply_templating_on_app_companions_with_templating_only_configs() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = '{{application.name}}-openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+            env = [ """SERVICES={{~#each services~}}{{name}},{{~/each~}}""" ]
+        "#
+        );
+
+        let mut unit = DeploymentUnit::new(
+            AppName::from_str("master").unwrap(),
+            vec![sc!("wordpress", "wordpress:alpine")],
+        );
+        unit.extend_with_config(&config).unwrap();
+        unit.extend_with_templating_only_service_configs(vec![sc!("postgres", "postgres:alpine")]);
+
+        let configs: Vec<_> = unit.try_into().unwrap();
+        assert_eq!(configs.len(), 2);
+
+        assert_eq!(
+            configs
+                .iter()
+                .find(|config| config.container_type() == &ContainerType::ApplicationCompanion)
+                .map(|config| config.service_name().clone()),
+            Some("master-openid".to_string())
+        );
+
+        assert_eq!(
+            configs
+                .iter()
+                .find(|config| config.container_type() == &ContainerType::ApplicationCompanion)
+                .map(|config| config
+                    .env()
+                    .unwrap()
+                    .get(0)
+                    .unwrap()
+                    .value()
+                    .unsecure()
+                    .to_string()),
+            Some("postgres,wordpress,".to_string())
         );
     }
 }

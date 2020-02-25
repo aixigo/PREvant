@@ -332,6 +332,19 @@ impl AppsService {
         let mut deployment_unit = DeploymentUnit::new(app_name.clone(), configs);
         deployment_unit.extend_with_config(&self.config)?;
 
+        let configs_for_templating = runtime
+            .block_on(self.infrastructure.get_configs_of_app(app_name))?
+            .into_iter()
+            .filter(|config| config.container_type() == &ContainerType::Instance)
+            .filter(|config| {
+                service_configs
+                    .iter()
+                    .find(|c| c.service_name() == config.service_name())
+                    .is_none()
+            })
+            .collect::<Vec<_>>();
+        deployment_unit.extend_with_templating_only_service_configs(configs_for_templating);
+
         let images = deployment_unit.images();
         let port_mappings = runtime.block_on(ImagesService::new().resolve_image_ports(&images))?;
         deployment_unit.assign_port_mappings(&port_mappings);
@@ -838,6 +851,45 @@ Log msg 3 of service-a of app master
                 String::from("VAR_2"),
                 SecUtf8::from("1234")
             ))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_include_running_instance_in_templating() -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+            env = [ """SERVICES={{~#each services~}}{{name}},{{~/each~}}""" ]
+        "#
+        );
+
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+        let app_name = AppName::from_str("master").unwrap();
+
+        apps.create_or_update(&app_name, None, &vec![sc!("service-a")])?;
+        apps.create_or_update(&app_name, None, &vec![sc!("service-b")])?;
+        apps.create_or_update(&app_name, None, &vec![sc!("service-c")])?;
+
+        let mut runtime = Runtime::new().expect("Should create runtime");
+        let openid_config = runtime
+            .block_on(
+                apps.infrastructure
+                    .get_configs_of_app(&String::from("master")),
+            )?
+            .into_iter()
+            .find(|config| config.service_name() == "openid")
+            .unwrap();
+        let openid_env = openid_config.env().unwrap().get(0).unwrap();
+
+        assert_eq!(
+            openid_env.value().unsecure(),
+            "service-a,service-b,service-c,"
         );
 
         Ok(())
