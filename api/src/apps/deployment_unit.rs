@@ -35,7 +35,7 @@ use std::convert::TryInto;
 pub(super) struct DeploymentUnit {
     app_name: AppName,
     configs: Vec<ServiceConfig>,
-    service_companions: Vec<(usize, ServiceConfig)>,
+    service_companions: Vec<ServiceConfig>,
     app_companions: Vec<ServiceConfig>,
     templating_only_service_configs: Vec<ServiceConfig>,
 }
@@ -60,19 +60,10 @@ impl DeploymentUnit {
             config.add_secrets_to(service_config, &self.app_name);
         }
 
-        let service_companions = self.merge_service_configs_with_companions(
-            config.service_companion_configs(&self.app_name)?,
-        );
-        for service_companion in service_companions {
-            for (index, _service_config) in self.configs.iter().enumerate() {
-                self.service_companions
-                    .push((index, service_companion.clone()));
-            }
-        }
+        let service_companions = config.service_companion_configs(&self.app_name)?;
+        self.service_companions.extend(service_companions);
 
-        let app_companions = self.merge_service_configs_with_companions(
-            config.application_companion_configs(&self.app_name)?,
-        );
+        let app_companions = config.application_companion_configs(&self.app_name)?;
         self.app_companions.extend(app_companions);
 
         Ok(())
@@ -88,34 +79,6 @@ impl DeploymentUnit {
         self.templating_only_service_configs.extend(configs);
     }
 
-    /// Merges the `ServiceConfig`s with the corresponding companion config (based on the service name).
-    ///
-    /// Returns the remaining companions that do not match to any existing `ServiceConfig`.
-    fn merge_service_configs_with_companions(
-        &mut self,
-        companions: Vec<ServiceConfig>,
-    ) -> Vec<ServiceConfig> {
-        for service in self.configs.iter_mut() {
-            let matching_companion = companions
-                .iter()
-                .find(|companion| companion.service_name() == service.service_name());
-
-            if let Some(matching_companion) = matching_companion {
-                service.merge_with(matching_companion);
-            }
-        }
-
-        companions
-            .into_iter()
-            .filter(|companion| {
-                self.configs
-                    .iter()
-                    .find(|c| companion.service_name() == c.service_name())
-                    .is_none()
-            })
-            .collect()
-    }
-
     pub fn images(&self) -> HashSet<Image> {
         let mut images = HashSet::new();
 
@@ -123,7 +86,7 @@ impl DeploymentUnit {
         images.extend(
             self.service_companions
                 .iter()
-                .map(|(_, config)| config.image().clone()),
+                .map(|config| config.image().clone()),
         );
         images.extend(
             self.app_companions
@@ -141,10 +104,7 @@ impl DeploymentUnit {
 
     pub fn assign_port_mappings(&mut self, port_mappings: &HashMap<Image, u16>) {
         Self::assign_port_mappings_impl(self.configs.iter_mut(), port_mappings);
-        Self::assign_port_mappings_impl(
-            self.service_companions.iter_mut().map(|(_, config)| config),
-            port_mappings,
-        );
+        Self::assign_port_mappings_impl(self.service_companions.iter_mut(), port_mappings);
         Self::assign_port_mappings_impl(self.app_companions.iter_mut(), port_mappings);
         Self::assign_port_mappings_impl(
             self.templating_only_service_configs.iter_mut(),
@@ -168,30 +128,96 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
     type Error = TemplateRenderError;
 
     fn try_into(self) -> Result<Vec<ServiceConfig>, Self::Error> {
-        let mut configs = Vec::new();
+        let mut services = HashMap::new();
 
-        for (index, companion_config) in self.service_companions.into_iter() {
-            let companion_config = apply_templating_for_service_companion(
-                &companion_config,
-                &self.app_name,
-                &self.configs[index],
-            )?;
-            configs.push(companion_config);
+        for config in self.configs.into_iter() {
+            services.insert(config.service_name().clone(), config);
         }
 
-        configs.extend(self.configs);
+        // If the user wants to deploy a service that has the same name as a companion,
+        // it must be avoided that services will be deployed twice. Furthermore,
+        // deploying service companions should be avoided for services that override a
+        // service companion.
+
+        struct ServiceCompanion {
+            templated_companion: ServiceConfig,
+            for_service_name: String,
+        };
+
+        let mut service_companions = Vec::new();
+        for service in services.values() {
+            for service_companion in self.service_companions.iter() {
+                let templated_companion = apply_templating_for_service_companion(
+                    &service_companion,
+                    &self.app_name,
+                    &service,
+                )?;
+
+                service_companions.push(ServiceCompanion {
+                    templated_companion,
+                    for_service_name: service.service_name().clone(),
+                });
+            }
+        }
+
+        let (service_companions_of_request, service_companions_of_config): (Vec<_>, Vec<_>) =
+            service_companions
+                .into_iter()
+                .partition(|service_companion| {
+                    services
+                        .get_mut(service_companion.templated_companion.service_name())
+                        .is_some()
+                });
+
+        for companion in service_companions_of_request.iter() {
+            services
+                .get_mut(companion.templated_companion.service_name())
+                .unwrap()
+                .merge_with(&companion.templated_companion);
+        }
+
+        // Exclude service_companions that are included in the request
+        services.extend(
+            service_companions_of_config
+                .into_iter()
+                .filter(|service_companion| {
+                    service_companions_of_request
+                        .iter()
+                        .find(|scor| {
+                            &service_companion.for_service_name
+                                == scor.templated_companion.service_name()
+                        })
+                        .is_none()
+                })
+                .map(|service_companion| {
+                    (
+                        service_companion.templated_companion.service_name().clone(),
+                        service_companion.templated_companion,
+                    )
+                }),
+        );
 
         let mut templating_only_service_configs = self.templating_only_service_configs;
-        templating_only_service_configs.extend(configs.clone());
+        templating_only_service_configs.extend(services.values().cloned());
         for companion_config in self.app_companions.into_iter() {
             let companion_config = apply_templating_for_application_companion(
                 &companion_config,
                 &self.app_name,
                 &templating_only_service_configs,
             )?;
-            configs.push(companion_config);
+
+            // If a custom application companion was deployed, its config needs to be merged
+            // with the companion config
+            let existing_config = services.get_mut(companion_config.service_name());
+
+            if let Some(existing_config) = existing_config {
+                existing_config.merge_with(&companion_config);
+            } else {
+                services.insert(companion_config.service_name().clone(), companion_config);
+            }
         }
 
+        let mut configs: Vec<_> = services.into_iter().map(|(_, config)| config).collect();
         configs.sort_unstable_by(|a, b| {
             let index1 = container_type_index(a.container_type());
             let index2 = container_type_index(b.container_type());
@@ -482,6 +508,98 @@ mod tests {
                     .unsecure()
                     .to_string()),
             Some("postgres,wordpress,".to_string())
+        );
+    }
+
+    #[test]
+    fn should_apply_templating_on_merged_application_companions() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+            env = [ "VAR_1={{application.name}}" ]
+        "#
+        );
+
+        let mut unit = DeploymentUnit::new(
+            AppName::from_str("master").unwrap(),
+            vec![sc!("openid", "private.example.com/library/openid:backup")],
+        );
+
+        unit.extend_with_config(&config).unwrap();
+
+        let openid_configs: Vec<_> = unit.try_into().unwrap();
+        assert_eq!(openid_configs.len(), 1);
+        let openid_env = openid_configs[0].env().unwrap();
+
+        assert_eq!(
+            openid_env.variable("VAR_1"),
+            Some(&EnvironmentVariable::new(
+                String::from("VAR_1"),
+                SecUtf8::from("master")
+            ))
+        );
+        assert_eq!(
+            openid_configs[0].image().to_string(),
+            "private.example.com/library/openid:backup".to_string()
+        );
+    }
+
+    #[test]
+    fn should_apply_templating_on_merged_service_companions() {
+        let config = config_from_str!(
+            r#"
+            [companions.db]
+            serviceName = '{{service.name}}-db'
+            type = 'service'
+            image = 'postgres:11'
+            env = [ "VAR_1={{application.name}}" ]
+
+            [companions.kafka]
+            serviceName = '{{service.name}}-kafka'
+            type = 'service'
+            image = 'kafka'
+        "#
+        );
+
+        let mut unit = DeploymentUnit::new(
+            AppName::from_str("master").unwrap(),
+            vec![
+                sc!("wordpress", "wordpress:alpine"),
+                sc!("wordpress-db", "postgres:11-alpine"),
+            ],
+        );
+
+        unit.extend_with_config(&config).unwrap();
+
+        let configs: Vec<_> = unit.try_into().unwrap();
+        assert_eq!(configs.len(), 3);
+
+        assert_eq!(
+            configs
+                .iter()
+                .find(|config| config.service_name() == "wordpress-db")
+                .map(|config| config.image().to_string()),
+            Some("docker.io/library/postgres:11-alpine".to_string())
+        );
+        assert_eq!(
+            configs
+                .iter()
+                .find(|config| config.service_name() == "wordpress-db")
+                .and_then(|config| config.env().unwrap().variable("VAR_1")),
+            Some(&EnvironmentVariable::new(
+                String::from("VAR_1"),
+                SecUtf8::from("master")
+            ))
+        );
+        assert_eq!(
+            configs
+                .iter()
+                .find(|config| config.service_name() == "wordpress-kafka")
+                .map(|config| config.image().to_string()),
+            Some("docker.io/library/kafka:latest".to_string())
         );
     }
 }
