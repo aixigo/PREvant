@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant REST API
  * %%
- * Copyright (C) 2018 - 2019 aixigo AG
+ * Copyright (C) 2018 - 2020 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -35,99 +35,127 @@ use serde_value::Value;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-pub fn apply_templating_for_service_companion(
-    companion_config: &ServiceConfig,
-    app_name: &String,
-    service_config: &ServiceConfig,
-) -> Result<ServiceConfig, TemplateRenderError> {
-    let parameters = TemplateParameters {
-        application: ApplicationTemplateParameter {
-            name: app_name.clone(),
-        },
-        services: None,
-        service: Some(ServiceTemplateParameter {
-            name: service_config.service_name().clone(),
-            container_type: service_config.container_type().clone(),
-            port: service_config.port(),
-        }),
-    };
+impl ServiceConfig {
+    pub fn apply_templating(&self, app_name: &String) -> Result<Self, TemplateRenderError> {
+        let parameters = TemplateParameters {
+            application: ApplicationTemplateParameter {
+                name: app_name.clone(),
+            },
+            services: None,
+            service: Some(ServiceTemplateParameter {
+                name: self.service_name().clone(),
+                container_type: self.container_type().clone(),
+                port: self.port(),
+            }),
+        };
 
-    apply_template(companion_config, &parameters)
+        self.apply_template(&parameters)
+    }
+
+    pub fn apply_templating_for_service_companion(
+        &self,
+        app_name: &String,
+        service_config: &Self,
+    ) -> Result<Self, TemplateRenderError> {
+        let parameters = TemplateParameters {
+            application: ApplicationTemplateParameter {
+                name: app_name.clone(),
+            },
+            services: None,
+            service: Some(ServiceTemplateParameter {
+                name: service_config.service_name().clone(),
+                container_type: service_config.container_type().clone(),
+                port: service_config.port(),
+            }),
+        };
+
+        self.apply_template(&parameters)
+    }
+
+    pub fn apply_templating_for_application_companion(
+        &self,
+        app_name: &String,
+        service_configs: &Vec<Self>,
+    ) -> Result<Self, TemplateRenderError> {
+        let parameters = TemplateParameters {
+            application: ApplicationTemplateParameter {
+                name: app_name.clone(),
+            },
+            services: Some(
+                service_configs
+                    .iter()
+                    .map(|c| ServiceTemplateParameter {
+                        name: c.service_name().clone(),
+                        container_type: c.container_type().clone(),
+                        port: c.port(),
+                    })
+                    .collect(),
+            ),
+            service: None,
+        };
+
+        self.apply_template(&parameters)
+    }
+
+    fn apply_template(&self, parameters: &TemplateParameters) -> Result<Self, TemplateRenderError> {
+        let mut reg = Handlebars::new();
+        reg.register_helper("isCompanion", Box::new(is_companion));
+        reg.register_helper("isNotCompanion", Box::new(is_not_companion));
+
+        let mut templated_config = self.clone();
+        templated_config.set_service_name(&reg.render_template(self.service_name(), &parameters)?);
+
+        if let Some(env) = self.env() {
+            templated_config.set_env(Some(env.apply_templating(parameters, &mut reg)?));
+        }
+
+        if let Some(volumes) = self.volumes() {
+            templated_config.set_volumes(Some(apply_templates(&reg, &parameters, volumes)?));
+        }
+
+        if let Some(labels) = self.labels() {
+            templated_config.set_labels(Some(apply_templates(&reg, &parameters, labels)?));
+        }
+
+        if let Some(router) = self.router() {
+            let rule = reg.render_template(router.rule(), &parameters)?;
+            templated_config.set_router(router.with_rule(rule));
+        }
+
+        if let Some(middlewares) = self.middlewares() {
+            templated_config.set_middlewares(apply_templating_to_middlewares(
+                &reg,
+                &parameters,
+                middlewares,
+            )?);
+        }
+
+        Ok(templated_config)
+    }
 }
 
-pub fn apply_templating_for_application_companion(
-    companion_config: &ServiceConfig,
-    app_name: &String,
-    service_configs: &Vec<ServiceConfig>,
-) -> Result<ServiceConfig, TemplateRenderError> {
-    let parameters = TemplateParameters {
-        application: ApplicationTemplateParameter {
-            name: app_name.clone(),
-        },
-        services: Some(
-            service_configs
-                .iter()
-                .map(|c| ServiceTemplateParameter {
-                    name: c.service_name().clone(),
-                    container_type: c.container_type().clone(),
-                    port: c.port(),
-                })
-                .collect(),
-        ),
-        service: None,
-    };
-
-    apply_template(companion_config, &parameters)
-}
-
-fn apply_template(
-    comapnion_config: &ServiceConfig,
-    parameters: &TemplateParameters,
-) -> Result<ServiceConfig, TemplateRenderError> {
-    let mut reg = Handlebars::new();
-    reg.register_helper("isCompanion", Box::new(is_companion));
-    reg.register_helper("isNotCompanion", Box::new(is_not_companion));
-
-    let mut templated_config = comapnion_config.clone();
-    templated_config
-        .set_service_name(&reg.render_template(comapnion_config.service_name(), &parameters)?);
-
-    if let Some(env) = comapnion_config.env() {
+impl Environment {
+    fn apply_templating(
+        &self,
+        parameters: &TemplateParameters,
+        reg: &mut Handlebars,
+    ) -> Result<Self, TemplateRenderError> {
         let mut templated_env = Vec::new();
 
-        for e in env.iter() {
-            let v = EnvironmentVariable::new(
-                e.key().clone(),
-                SecUtf8::from(reg.render_template(&e.value().unsecure(), &parameters)?),
-            );
+        for e in self.iter() {
+            let v = if e.templated() {
+                EnvironmentVariable::with_original(
+                    SecUtf8::from(reg.render_template(&e.value().unsecure(), &parameters)?),
+                    e.clone(),
+                )
+            } else {
+                e.clone()
+            };
             templated_env.push(v);
         }
 
-        templated_config.set_env(Some(Environment::new(templated_env)));
+        Ok(Environment::new(templated_env))
     }
-
-    if let Some(volumes) = comapnion_config.volumes() {
-        templated_config.set_volumes(Some(apply_templates(&reg, &parameters, volumes)?));
-    }
-
-    if let Some(labels) = comapnion_config.labels() {
-        templated_config.set_labels(Some(apply_templates(&reg, &parameters, labels)?));
-    }
-
-    if let Some(router) = comapnion_config.router() {
-        let rule = reg.render_template(router.rule(), &parameters)?;
-        templated_config.set_router(router.with_rule(rule));
-    }
-
-    if let Some(middlewares) = comapnion_config.middlewares() {
-        templated_config.set_middlewares(apply_templating_to_middlewares(
-            &reg,
-            &parameters,
-            middlewares,
-        )?);
-    }
-
-    Ok(templated_config)
 }
 
 fn is_not_companion<'reg, 'rc>(
@@ -144,7 +172,7 @@ fn is_not_companion<'reg, 'rc>(
         .ok_or(RenderError::new("parameter type is required"))?;
 
     let container_type = ContainerType::from_str(s)
-        .map_err(|e| RenderError::new(format!("Invalid type paramter {:?}. {}", s, e)))?;
+        .map_err(|e| RenderError::new(format!("Invalid type parameter {:?}. {}", s, e)))?;
 
     match container_type {
         ContainerType::ServiceCompanion | ContainerType::ApplicationCompanion => h
@@ -272,8 +300,8 @@ struct ServiceTemplateParameter {
 mod tests {
 
     use super::*;
-    use crate::models::Image;
-    use crate::models::Router;
+    use crate::models::{Image, Router};
+    use crate::sc;
     use std::path::PathBuf;
     use std::str::FromStr;
 
@@ -285,12 +313,9 @@ mod tests {
         );
         config.set_env(Some(Environment::new(Vec::new())));
 
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &Vec::new(),
-        )
-        .unwrap();
+        let templated_config = config
+            .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
+            .unwrap();
 
         assert_eq!(templated_config.service_name(), "postgres-master");
     }
@@ -301,14 +326,16 @@ mod tests {
             String::from("postgres-db"),
             Image::from_str("postgres").unwrap(),
         );
-        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
-            "DATABASE_SCHEMAS".to_string(),
-            SecUtf8::from(
-                r#"{{~#each services~}}
+        config.set_env(Some(Environment::new(vec![
+            EnvironmentVariable::with_templating(
+                "DATABASE_SCHEMAS".to_string(),
+                SecUtf8::from(
+                    r#"{{~#each services~}}
                     {{~name~}},
                 {{~/each~}}"#,
+                ),
             ),
-        )])));
+        ])));
 
         let service_configs = vec![
             ServiceConfig::new(
@@ -320,12 +347,9 @@ mod tests {
                 Image::from_str("service").unwrap(),
             ),
         ];
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &service_configs,
-        )
-        .unwrap();
+        let templated_config = config
+            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .unwrap();
 
         let env = templated_config.env().unwrap().get(0).unwrap();
         assert_eq!(env.key(), "DATABASE_SCHEMAS");
@@ -356,12 +380,9 @@ mod tests {
                 Image::from_str("service").unwrap(),
             ),
         ];
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &service_configs,
-        )
-        .unwrap();
+        let templated_config = config
+            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .unwrap();
 
         for (k, v) in templated_config.labels().unwrap().iter() {
             assert_eq!(k, "com.foo.bar");
@@ -375,17 +396,19 @@ mod tests {
             String::from("postgres-db"),
             Image::from_str("postgres").unwrap(),
         );
-        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
-            "DATABASE_SCHEMAS".to_string(),
-            SecUtf8::from(
-                r#"{~each services~}}
+        config.set_env(Some(Environment::new(vec![
+            EnvironmentVariable::with_templating(
+                "DATABASE_SCHEMAS".to_string(),
+                SecUtf8::from(
+                    r#"{~each services~}}
                     {{~name~}},
                 {{~/each~}}"#,
+                ),
             ),
-        )])));
+        ])));
 
         let templated_config =
-            apply_templating_for_application_companion(&config, &String::from("master"), &vec![]);
+            config.apply_templating_for_application_companion(&String::from("master"), &vec![]);
 
         assert_eq!(templated_config.is_err(), true);
     }
@@ -421,12 +444,9 @@ location /{{name}} {
                 Image::from_str("service").unwrap(),
             ),
         ];
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &service_configs,
-        )
-        .unwrap();
+        let templated_config = config
+            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .unwrap();
 
         assert_eq!(
             templated_config
@@ -491,12 +511,9 @@ location /{{name}} {
         );
         config.set_volumes(Some(volumes));
 
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &service_configs,
-        )
-        .unwrap();
+        let templated_config = config
+            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .unwrap();
 
         assert_eq!(
             templated_config
@@ -559,12 +576,9 @@ location /{{name}} {
         );
         config.set_volumes(Some(volumes));
 
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &service_configs,
-        )
-        .unwrap();
+        let templated_config = config
+            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .unwrap();
 
         assert_eq!(
             templated_config
@@ -593,12 +607,9 @@ location /service-d {
             None,
         ));
 
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &Vec::new(),
-        )
-        .unwrap();
+        let templated_config = config
+            .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
+            .unwrap();
 
         let router = templated_config.router().unwrap();
         assert_eq!(router.rule(), &"PathPrefix(`/master/`)".to_string())
@@ -621,12 +632,9 @@ location /service-d {
         middlewares.insert("headers".to_string(), headers);
         config.set_middlewares(middlewares);
 
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &Vec::new(),
-        )
-        .unwrap();
+        let templated_config = config
+            .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
+            .unwrap();
 
         let middlewares = templated_config.middlewares().unwrap();
         match middlewares.get("headers").unwrap() {
@@ -665,12 +673,9 @@ location /service-d {
         middlewares.insert("headers".to_string(), headers);
         config.set_middlewares(middlewares);
 
-        let templated_config = apply_templating_for_application_companion(
-            &config,
-            &String::from("master"),
-            &Vec::new(),
-        )
-        .unwrap();
+        let templated_config = config
+            .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
+            .unwrap();
 
         let middlewares = templated_config.middlewares().unwrap();
         match middlewares.get("headers").unwrap() {
@@ -693,5 +698,74 @@ location /service-d {
             }
             _ => panic!("should be a map"),
         }
+    }
+
+    #[test]
+    fn should_not_apply_templating_for_environment() {
+        let mut config = sc!("db", "maria-db");
+        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
+            String::from("DB_USER"),
+            SecUtf8::from("admin-{{service.name}}"),
+        )])));
+
+        let config = config
+            .apply_templating_for_service_companion(
+                &String::from("master"),
+                &sc!("wordpress", "wordpress:alpine"),
+            )
+            .unwrap();
+
+        let env = config.env().unwrap().get(0).unwrap();
+
+        assert_eq!(env.value().unsecure(), "admin-{{service.name}}");
+    }
+
+    #[test]
+    fn should_apply_templating_for_environment() {
+        let mut config = sc!("db", "maria-db");
+        config.set_env(Some(Environment::new(vec![
+            EnvironmentVariable::with_templating(
+                String::from("DB_USER"),
+                SecUtf8::from("admin-{{service.name}}"),
+            ),
+        ])));
+
+        let config = config
+            .apply_templating_for_service_companion(
+                &String::from("master"),
+                &sc!("wordpress", "wordpress:alpine"),
+            )
+            .unwrap();
+
+        let env = config.env().unwrap().get(0).unwrap();
+
+        assert_eq!(env.value().unsecure(), "admin-wordpress");
+    }
+
+    #[test]
+    fn should_keep_original_environment_variable() {
+        let mut config = sc!("db", "maria-db");
+        config.set_env(Some(Environment::new(vec![
+            EnvironmentVariable::with_templating(
+                String::from("DB_USER"),
+                SecUtf8::from("admin-{{service.name}}"),
+            ),
+        ])));
+
+        let config = config
+            .apply_templating_for_service_companion(
+                &String::from("master"),
+                &sc!("wordpress", "wordpress:alpine"),
+            )
+            .unwrap();
+
+        let env = config.env().unwrap().get(0).unwrap();
+
+        assert_eq!(
+            env.original().templated(),
+            true,
+            "After applying a template, the environment keep that information"
+        );
+        assert_eq!(env.original().value().unsecure(), "admin-{{service.name}}");
     }
 }

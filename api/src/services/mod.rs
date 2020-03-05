@@ -25,4 +25,3 @@
  */
 
 pub mod images_service;
-pub mod service_templating;

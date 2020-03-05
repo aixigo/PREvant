@@ -23,12 +23,11 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use crate::config::{AppSelector, ConfigError};
+use crate::config::AppSelector;
 use crate::models::service::ContainerType;
 use crate::models::{Environment, Image, Router, ServiceConfig};
 use serde_value::Value;
 use std::collections::BTreeMap;
-use std::convert::TryFrom;
 use std::path::PathBuf;
 
 #[derive(Clone, Deserialize)]
@@ -65,13 +64,18 @@ impl Companion {
     }
 }
 
-impl TryFrom<Companion> for ServiceConfig {
-    type Error = ConfigError;
-
-    fn try_from(companion: Companion) -> Result<ServiceConfig, ConfigError> {
+impl From<Companion> for ServiceConfig {
+    fn from(companion: Companion) -> ServiceConfig {
         let mut config =
             ServiceConfig::new(companion.service_name.clone(), companion.image.clone());
-        config.set_env(companion.env.clone());
+
+        config.set_env(companion.env.clone().map(|env| {
+            Environment::new(
+                env.iter()
+                    .map(|variable| variable.clone().with_templated(true))
+                    .collect(),
+            )
+        }));
         config.set_labels(companion.labels.clone());
 
         if let Some(volumes) = &companion.volumes {
@@ -88,7 +92,7 @@ impl TryFrom<Companion> for ServiceConfig {
 
         config.set_container_type(companion.companion_type.into());
 
-        Ok(config)
+        config
     }
 }
 

@@ -26,7 +26,7 @@
 
 use crate::config::ContainerConfig;
 use crate::models::service::{Service, ServiceStatus};
-use crate::models::ServiceConfig;
+use crate::models::{ContainerType, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
@@ -58,10 +58,6 @@ pub trait Infrastructure: Send + Sync {
     /// stopped.
     async fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, Error>;
 
-    /// Returns the configuration of all services running for the given application name.
-    /// It is required that the configurations of the companions are excluded.
-    async fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error>;
-
     /// Returns the log lines with a the corresponding timestamps in it.
     async fn get_logs(
         &self,
@@ -78,4 +74,23 @@ pub trait Infrastructure: Send + Sync {
         service_name: &String,
         status: ServiceStatus,
     ) -> Result<Option<Service>, Error>;
+}
+
+impl dyn Infrastructure {
+    /// Returns the configuration of all services running for the given application name.
+    pub async fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error> {
+        let services = self.get_services().await?;
+        Ok(services
+            .get_vec(app_name)
+            .map_or_else(Vec::new, |services| {
+                services
+                    .iter()
+                    .filter(|service| {
+                        *service.container_type() == ContainerType::Instance
+                            || *service.container_type() == ContainerType::Replica
+                    })
+                    .map(|service| service.config().clone())
+                    .collect()
+            }))
+    }
 }

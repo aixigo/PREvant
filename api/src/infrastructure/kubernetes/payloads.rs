@@ -23,14 +23,17 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use super::super::{APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, SERVICE_NAME_LABEL};
+use super::super::{
+    APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
+};
 use crate::config::ContainerConfig;
 use crate::models::service::Service;
 use crate::models::ServiceConfig;
 use base64::encode;
 use chrono::Utc;
+use multimap::MultiMap;
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, PathBuf};
 use std::string::ToString;
 
@@ -49,6 +52,16 @@ macro_rules! secret_name_from_path {
     }};
 }
 
+macro_rules! secret_name_from_name {
+    ($path:expr) => {{
+        $path
+            .file_name()
+            .map(|name| name.to_os_string().into_string().unwrap())
+            .map(|name| name.replace(".", "-"))
+            .unwrap_or_else(String::new)
+    }};
+}
+
 /// Creates a JSON payload suitable for [Kubernetes' Namespaces](https://kubernetes.io/docs/tasks/administer-cluster/namespaces/)
 pub fn namespace_payload(app_name: &String) -> String {
     serde_json::json!({
@@ -63,10 +76,10 @@ pub fn namespace_payload(app_name: &String) -> String {
 
 /// Creates a JSON payload suitable for [Kubernetes' Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 pub fn deployment_payload(
-    app_name: &String,
+    app_name: &str,
     service_config: &ServiceConfig,
     container_config: &ContainerConfig,
-) -> String {
+) -> Value {
     let env = service_config.env().map_or(Vec::new(), |env| {
         env.iter()
             .map(|env| {
@@ -78,35 +91,62 @@ pub fn deployment_payload(
             .collect()
     });
 
-    let mounts = service_config.volumes().map_or(Vec::new(), |volumes| {
-        volumes
+    let replicated_env = service_config
+        .env()
+        .map(|env| super::super::replicated_environment_variable_to_json(env))
+        .flatten()
+        .map_or_else(|| Value::Null, |value| Value::String(value.to_string()));
+
+    let mounts = if let Some(volumes) = service_config.volumes() {
+        let parent_paths = volumes
             .iter()
-            .map(|(path, _)| {
+            .filter_map(|(path, _)| path.parent())
+            .collect::<HashSet<_>>();
+
+        parent_paths
+            .iter()
+            .map(|path| {
                 serde_json::json!({
                     "name": secret_name_from_path!(path),
-                    "mountPath": path.parent().unwrap()
+                    "mountPath": path
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let volumes = if let Some(volumes) = service_config.volumes() {
+        let volumes = volumes
+            .iter()
+            .filter_map(|(path, _)| match path.parent() {
+                Some(parent) => Some((parent, path)),
+                None => None,
+            })
+            .collect::<MultiMap<_, _>>();
+
+        volumes
+            .iter_all()
+            .map(|(parent, paths)| {
+                let items = paths.iter()
+                    .map(|path| serde_json::json!({
+                        "key": secret_name_from_name!(path),
+                        "path": path.file_name().map_or("", |name| name.to_str().unwrap())
+                    }))
+                    .collect::<Vec<_>>();
+
+                serde_json::json!({
+                    "name": secret_name_from_path!(parent),
+                    "secret": {
+                        "secretName": format!("{}-{}-secret", app_name, service_config.service_name()),
+                        "items": items
+                    }
                 })
             })
             .collect()
-    });
-
-    let volumes = service_config.volumes().map_or(Vec::new(), |volumes| {
-        volumes
-            .iter()
-            .map(|(path, _)| {
-                serde_json::json!({
-                        "name": secret_name_from_path!(path),
-                        "secret": {
-                            "secretName": format!("{}-{}-secret", app_name, service_config.service_name()),
-                            "items": [{
-                                "key": secret_name_from_path!(path),
-                                "path": path.file_name().map_or("", |name| name.to_str().unwrap())
-                            }]
-                        }
-                    })
-            })
-            .collect()
-    });
+    } else {
+        Vec::new()
+    };
 
     let resources = container_config
         .memory_limit()
@@ -126,6 +166,7 @@ pub fn deployment_payload(
         },
         "annotations": {
           IMAGE_LABEL: service_config.image().to_string(),
+          REPLICATED_ENV_LABEL: replicated_env
         }
       },
       "spec": {
@@ -169,7 +210,6 @@ pub fn deployment_payload(
         }
       }
     })
-    .to_string()
 }
 
 pub fn deployment_replicas_payload(app_name: &String, service: &Service, replicas: u32) -> String {
@@ -209,7 +249,7 @@ pub fn secrets_payload(
         .iter()
         .map(|(path, file_content)| {
             (
-                secret_name_from_path!(path),
+                secret_name_from_name!(path),
                 Value::String(encode(file_content)),
             )
         })
@@ -317,4 +357,229 @@ pub fn middleware_payload(app_name: &String, service_config: &ServiceConfig) -> 
        "spec": service_config.traefik_middlewares(app_name)
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Environment, EnvironmentVariable};
+    use crate::sc;
+    use secstr::SecUtf8;
+
+    #[test]
+    fn should_create_deployment_payload() {
+        let config = sc!("db", "mariadb:10.3.17");
+
+        let payload = deployment_payload("master", &config, &ContainerConfig::default());
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!({
+              "apiVersion": "apps/v1",
+              "kind": "Deployment",
+              "metadata": {
+                "annotations": {
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
+                  "com.aixigo.preview.servant.replicated-env": null
+                },
+                "labels": {
+                  "com.aixigo.preview.servant.app-name": "master",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db"
+                },
+                "name": "master-db-deployment",
+                "namespace": "master"
+              },
+              "spec": {
+                "replicas": 1,
+                "selector": {
+                  "matchLabels": {
+                    "com.aixigo.preview.servant.app-name": "master",
+                    "com.aixigo.preview.servant.container-type": "instance",
+                    "com.aixigo.preview.servant.service-name": "db"
+                  }
+                },
+                "template": {
+                  "metadata": {
+                    "annotations": {
+                    },
+                    "labels": {
+                      "com.aixigo.preview.servant.app-name": "master",
+                      "com.aixigo.preview.servant.container-type": "instance",
+                      "com.aixigo.preview.servant.service-name": "db"
+                    }
+                  },
+                  "spec": {
+                    "containers": [
+                      {
+                        "env": [],
+                        "image": "docker.io/library/mariadb:10.3.17",
+                        "imagePullPolicy": "Always",
+                        "name": "db",
+                        "ports": [
+                          {
+                            "containerPort": 80
+                          }
+                        ],
+                        "resources": null,
+                        "volumeMounts": []
+                      }
+                    ],
+                    "volumes": []
+                  }
+                }
+              }
+            })
+        );
+    }
+
+    #[test]
+    fn should_create_deployment_with_environment_variable() {
+        let mut config = sc!("db", "mariadb:10.3.17");
+        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
+            String::from("MYSQL_ROOT_PASSWORD"),
+            SecUtf8::from("example"),
+        )])));
+
+        let payload = deployment_payload("master", &config, &ContainerConfig::default());
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!({
+              "apiVersion": "apps/v1",
+              "kind": "Deployment",
+              "metadata": {
+                "annotations": {
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
+                  "com.aixigo.preview.servant.replicated-env": null
+                },
+                "labels": {
+                  "com.aixigo.preview.servant.app-name": "master",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db"
+                },
+                "name": "master-db-deployment",
+                "namespace": "master"
+              },
+              "spec": {
+                "replicas": 1,
+                "selector": {
+                  "matchLabels": {
+                    "com.aixigo.preview.servant.app-name": "master",
+                    "com.aixigo.preview.servant.container-type": "instance",
+                    "com.aixigo.preview.servant.service-name": "db"
+                  }
+                },
+                "template": {
+                  "metadata": {
+                    "annotations": {
+                    },
+                    "labels": {
+                      "com.aixigo.preview.servant.app-name": "master",
+                      "com.aixigo.preview.servant.container-type": "instance",
+                      "com.aixigo.preview.servant.service-name": "db"
+                    }
+                  },
+                  "spec": {
+                    "containers": [
+                      {
+                        "env": [],
+                        "image": "docker.io/library/mariadb:10.3.17",
+                        "imagePullPolicy": "Always",
+                        "name": "db",
+                        "ports": [
+                          {
+                            "containerPort": 80
+                          }
+                        ],
+                        "resources": null,
+                        "volumeMounts": []
+                      }
+                    ],
+                    "volumes": []
+                  }
+                }
+              }
+            })
+        );
+    }
+
+    #[test]
+    fn should_create_deployment_with_replicated_environment_variable() {
+        let mut config = sc!("db", "mariadb:10.3.17");
+        config.set_env(Some(Environment::new(vec![
+            EnvironmentVariable::with_replicated(
+                String::from("MYSQL_ROOT_PASSWORD"),
+                SecUtf8::from("example"),
+            ),
+        ])));
+
+        let payload = deployment_payload("master", &config, &ContainerConfig::default());
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!({
+              "apiVersion": "apps/v1",
+              "kind": "Deployment",
+              "metadata": {
+                "annotations": {
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
+                  "com.aixigo.preview.servant.replicated-env": serde_json::json!({
+                      "MYSQL_ROOT_PASSWORD": {
+                        "value": "example",
+                        "templated": false,
+                        "replicate": true,
+                      }
+                    }).to_string()
+                },
+                "labels": {
+                  "com.aixigo.preview.servant.app-name": "master",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db"
+                },
+                "name": "master-db-deployment",
+                "namespace": "master"
+              },
+              "spec": {
+                "replicas": 1,
+                "selector": {
+                  "matchLabels": {
+                    "com.aixigo.preview.servant.app-name": "master",
+                    "com.aixigo.preview.servant.container-type": "instance",
+                    "com.aixigo.preview.servant.service-name": "db"
+                  }
+                },
+                "template": {
+                  "metadata": {
+                    "annotations": {
+                    },
+                    "labels": {
+                      "com.aixigo.preview.servant.app-name": "master",
+                      "com.aixigo.preview.servant.container-type": "instance",
+                      "com.aixigo.preview.servant.service-name": "db"
+                    }
+                  },
+                  "spec": {
+                    "containers": [
+                      {
+                        "env": [],
+                        "image": "docker.io/library/mariadb:10.3.17",
+                        "imagePullPolicy": "Always",
+                        "name": "db",
+                        "ports": [
+                          {
+                            "containerPort": 80
+                          }
+                        ],
+                        "resources": null,
+                        "volumeMounts": []
+                      }
+                    ],
+                    "volumes": []
+                  }
+                }
+              }
+            })
+        );
+    }
 }

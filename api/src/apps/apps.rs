@@ -330,7 +330,7 @@ impl AppsService {
         }
 
         let mut deployment_unit = DeploymentUnit::new(app_name.clone(), configs);
-        deployment_unit.extend_with_config(&self.config)?;
+        deployment_unit.extend_with_config(&self.config);
 
         let configs_for_templating = runtime
             .block_on(self.infrastructure.get_configs_of_app(app_name))?
@@ -877,13 +877,13 @@ Log msg 3 of service-a of app master
         apps.create_or_update(&app_name, None, &vec![sc!("service-c")])?;
 
         let mut runtime = Runtime::new().expect("Should create runtime");
-        let openid_config = runtime
-            .block_on(
-                apps.infrastructure
-                    .get_configs_of_app(&String::from("master")),
-            )?
-            .into_iter()
-            .find(|config| config.service_name() == "openid")
+        let services = runtime.block_on(apps.infrastructure.get_services())?;
+        let openid_config = services
+            .get_vec("master")
+            .unwrap()
+            .iter()
+            .find(|service| service.service_name() == "openid")
+            .map(|service| service.config())
             .unwrap();
         let openid_env = openid_config.env().unwrap().get(0).unwrap();
 

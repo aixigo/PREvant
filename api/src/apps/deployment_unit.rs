@@ -23,11 +23,8 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use crate::config::{Config, ConfigError};
+use crate::config::Config;
 use crate::models::{AppName, ContainerType, Image, ServiceConfig};
-use crate::services::service_templating::{
-    apply_templating_for_application_companion, apply_templating_for_service_companion,
-};
 use handlebars::TemplateRenderError;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
@@ -55,18 +52,16 @@ impl DeploymentUnit {
     ///
     /// - secrets
     /// - application and service companions
-    pub fn extend_with_config(&mut self, config: &Config) -> Result<(), ConfigError> {
+    pub fn extend_with_config(&mut self, config: &Config) {
         for service_config in self.configs.iter_mut() {
             config.add_secrets_to(service_config, &self.app_name);
         }
 
-        let service_companions = config.service_companion_configs(&self.app_name)?;
+        let service_companions = config.service_companion_configs(&self.app_name);
         self.service_companions.extend(service_companions);
 
-        let app_companions = config.application_companion_configs(&self.app_name)?;
+        let app_companions = config.application_companion_configs(&self.app_name);
         self.app_companions.extend(app_companions);
-
-        Ok(())
     }
 
     /// Extends the `DeploymentUnit` with service configuration that are only required for templating
@@ -131,7 +126,10 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
         let mut services = HashMap::new();
 
         for config in self.configs.into_iter() {
-            services.insert(config.service_name().clone(), config);
+            services.insert(
+                config.service_name().clone(),
+                config.apply_templating(&self.app_name)?,
+            );
         }
 
         // If the user wants to deploy a service that has the same name as a companion,
@@ -147,11 +145,8 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
         let mut service_companions = Vec::new();
         for service in services.values() {
             for service_companion in self.service_companions.iter() {
-                let templated_companion = apply_templating_for_service_companion(
-                    &service_companion,
-                    &self.app_name,
-                    &service,
-                )?;
+                let templated_companion = service_companion
+                    .apply_templating_for_service_companion(&self.app_name, &service)?;
 
                 service_companions.push(ServiceCompanion {
                     templated_companion,
@@ -200,8 +195,7 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
         let mut templating_only_service_configs = self.templating_only_service_configs;
         templating_only_service_configs.extend(services.values().cloned());
         for companion_config in self.app_companions.into_iter() {
-            let companion_config = apply_templating_for_application_companion(
-                &companion_config,
+            let companion_config = companion_config.apply_templating_for_application_companion(
                 &self.app_name,
                 &templating_only_service_configs,
             )?;
@@ -239,7 +233,7 @@ fn container_type_index(container_type: &ContainerType) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::EnvironmentVariable;
+    use crate::models::{Environment, EnvironmentVariable};
     use crate::{config_from_str, sc};
     use secstr::SecUtf8;
     use std::str::FromStr;
@@ -276,7 +270,7 @@ mod tests {
             AppName::from_str("master").unwrap(),
             vec![sc!("http1", "nginx:1.13")],
         );
-        unit.extend_with_config(&config).unwrap();
+        unit.extend_with_config(&config);
 
         let mut port_mappings = HashMap::new();
         port_mappings.insert(Image::from_str("nginx:1.13").unwrap(), 4711);
@@ -311,7 +305,7 @@ mod tests {
             )],
         );
 
-        unit.extend_with_config(&config).unwrap();
+        unit.extend_with_config(&config);
 
         let openid_configs: Vec<_> = unit.try_into().unwrap();
         assert_eq!(openid_configs.len(), 1);
@@ -359,7 +353,7 @@ mod tests {
             )],
         );
 
-        unit.extend_with_config(&config).unwrap();
+        unit.extend_with_config(&config);
 
         let openid_configs: Vec<_> = unit.try_into().unwrap();
         assert_eq!(openid_configs.len(), 1);
@@ -399,7 +393,7 @@ mod tests {
                 sc!("nextcloud", "nextcloud:alpine"),
             ],
         );
-        unit.extend_with_config(&config).unwrap();
+        unit.extend_with_config(&config);
 
         let configs: Vec<_> = unit.try_into().unwrap();
         assert_eq!(configs.len(), 4);
@@ -421,6 +415,54 @@ mod tests {
     }
 
     #[test]
+    fn should_apply_templating_on_service_environment_variables() {
+        let mut config = sc!("wordpress-db", "mariadb:10.3.17");
+        config.set_env(Some(Environment::new(vec![
+            EnvironmentVariable::with_templating(
+                String::from("MYSQL_DATABASE"),
+                SecUtf8::from("{{service.name}}"),
+            ),
+        ])));
+
+        let unit = DeploymentUnit::new(AppName::from_str("master").unwrap(), vec![config]);
+
+        let configs: Vec<_> = unit.try_into().unwrap();
+        assert_eq!(configs.len(), 1);
+        let env = configs[0].env().unwrap();
+
+        assert_eq!(
+            env.variable("MYSQL_DATABASE"),
+            Some(&EnvironmentVariable::new(
+                String::from("MYSQL_DATABASE"),
+                SecUtf8::from("wordpress-db")
+            ))
+        );
+    }
+
+    #[test]
+    fn should_not_apply_templating_on_service_environment_variables() {
+        let mut config = sc!("wordpress-db", "mariadb:10.3.17");
+        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
+            String::from("MYSQL_DATABASE"),
+            SecUtf8::from("{{application.name}}"),
+        )])));
+
+        let unit = DeploymentUnit::new(AppName::from_str("master").unwrap(), vec![config]);
+
+        let configs: Vec<_> = unit.try_into().unwrap();
+        assert_eq!(configs.len(), 1);
+        let env = configs[0].env().unwrap();
+
+        assert_eq!(
+            env.variable("MYSQL_DATABASE"),
+            Some(&EnvironmentVariable::new(
+                String::from("MYSQL_DATABASE"),
+                SecUtf8::from("{{application.name}}")
+            ))
+        );
+    }
+
+    #[test]
     fn should_apply_templating_on_app_companions() {
         let config = config_from_str!(
             r#"
@@ -436,7 +478,7 @@ mod tests {
             AppName::from_str("master").unwrap(),
             vec![sc!("wordpress", "wordpress:alpine")],
         );
-        unit.extend_with_config(&config).unwrap();
+        unit.extend_with_config(&config);
 
         let configs: Vec<_> = unit.try_into().unwrap();
         assert_eq!(configs.len(), 2);
@@ -481,7 +523,7 @@ mod tests {
             AppName::from_str("master").unwrap(),
             vec![sc!("wordpress", "wordpress:alpine")],
         );
-        unit.extend_with_config(&config).unwrap();
+        unit.extend_with_config(&config);
         unit.extend_with_templating_only_service_configs(vec![sc!("postgres", "postgres:alpine")]);
 
         let configs: Vec<_> = unit.try_into().unwrap();
@@ -528,7 +570,7 @@ mod tests {
             vec![sc!("openid", "private.example.com/library/openid:backup")],
         );
 
-        unit.extend_with_config(&config).unwrap();
+        unit.extend_with_config(&config);
 
         let openid_configs: Vec<_> = unit.try_into().unwrap();
         assert_eq!(openid_configs.len(), 1);
@@ -572,7 +614,7 @@ mod tests {
             ],
         );
 
-        unit.extend_with_config(&config).unwrap();
+        unit.extend_with_config(&config);
 
         let configs: Vec<_> = unit.try_into().unwrap();
         assert_eq!(configs.len(), 3);

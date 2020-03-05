@@ -24,10 +24,11 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::{web_host_meta::WebHostMeta, Image};
+use crate::models::{web_host_meta::WebHostMeta, Image, ServiceConfig};
 use chrono::{DateTime, Utc};
 use serde::ser::{Serialize, Serializer};
 use serde::Deserialize;
+use std::fmt::Display;
 use std::net::IpAddr;
 use std::str::FromStr;
 use url::Url;
@@ -37,13 +38,11 @@ pub struct Service {
     /// An unique identifier of the service, e.g. the container id
     id: String,
     app_name: String,
-    service_name: String,
-    container_type: ContainerType,
     base_url: Option<Url>,
     endpoint: Option<ServiceEndpoint>,
     web_host_meta: Option<WebHostMeta>,
-    image: Option<Image>,
     state: State,
+    config: ServiceConfig,
 }
 
 #[derive(Clone, Debug)]
@@ -78,39 +77,13 @@ pub enum ServiceStatus {
 }
 
 impl Service {
-    #[deprecated]
-    pub fn new(
-        id: String,
-        app_name: String,
-        service_name: String,
-        container_type: ContainerType,
-        status: ServiceStatus,
-        started_at: DateTime<Utc>,
-    ) -> Service {
-        Service {
-            id,
-            app_name,
-            service_name,
-            container_type,
-            base_url: None,
-            endpoint: None,
-            web_host_meta: None,
-            state: State { status, started_at },
-            image: None,
-        }
-    }
-
     pub fn app_name(&self) -> &String {
         &self.app_name
     }
 
-    pub fn set_container_type(&mut self, container_type: ContainerType) {
-        self.container_type = container_type;
-    }
-
     fn service_url(&self) -> Option<Url> {
         self.base_url.clone().map(|url| {
-            url.join(&format!("/{}/{}/", &self.app_name, &self.service_name))
+            url.join(&format!("/{}/{}/", &self.app_name, self.service_name()))
                 .unwrap()
         })
     }
@@ -120,11 +93,15 @@ impl Service {
     }
 
     pub fn service_name(&self) -> &String {
-        &self.service_name
+        &self.config.service_name()
     }
 
     pub fn container_type(&self) -> &ContainerType {
-        &self.container_type
+        &self.config.container_type()
+    }
+
+    pub fn config(&self) -> &ServiceConfig {
+        &self.config
     }
 
     pub fn port(&self) -> Option<u16> {
@@ -132,14 +109,6 @@ impl Service {
             None => None,
             Some(endpoint) => Some(endpoint.exposed_port),
         }
-    }
-
-    #[deprecated]
-    pub fn set_endpoint(&mut self, addr: IpAddr, port: u16) {
-        self.endpoint = Some(ServiceEndpoint {
-            internal_addr: addr,
-            exposed_port: port,
-        })
     }
 
     pub fn endpoint_url(&self) -> Option<Url> {
@@ -157,11 +126,8 @@ impl Service {
         &self.state.status
     }
 
-    pub fn image<'a, 'b: 'a>(&'b self) -> Option<&'a Image> {
-        match &self.image {
-            Some(image) => Some(image),
-            None => None,
-        }
+    pub fn image(&self) -> &Image {
+        self.config.image()
     }
 }
 
@@ -207,12 +173,12 @@ impl Serialize for Service {
         };
 
         let s = Service {
-            name: &self.service_name,
+            name: self.service_name(),
             url: match self.web_host_meta {
                 Some(ref meta) if meta.is_valid() => self.service_url().map(|url| url.to_string()),
                 _ => None,
             },
-            service_type: self.container_type.to_string(),
+            service_type: self.container_type().to_string(),
             version,
             open_api_url,
             state: &self.state,
@@ -222,16 +188,15 @@ impl Serialize for Service {
     }
 }
 
+#[derive(Debug)]
 pub struct ServiceBuilder {
     id: Option<String>,
     app_name: Option<String>,
-    service_name: Option<String>,
+    config: Option<ServiceConfig>,
     status: Option<ServiceStatus>,
     started_at: Option<DateTime<Utc>>,
-    container_type: Option<ContainerType>,
     base_url: Option<Url>,
     web_host_meta: Option<WebHostMeta>,
-    image: Option<Image>,
     endpoint: Option<ServiceEndpoint>,
 }
 
@@ -240,30 +205,27 @@ impl ServiceBuilder {
         ServiceBuilder {
             id: None,
             app_name: None,
-            service_name: None,
             status: None,
             started_at: None,
-            container_type: None,
             base_url: None,
             web_host_meta: None,
-            image: None,
             endpoint: None,
+            config: None,
         }
     }
 
     pub fn build(self) -> Result<Service, ServiceBuilderError> {
         let id = self.id.ok_or(ServiceBuilderError::MissingId)?;
         let app_name = self.app_name.ok_or(ServiceBuilderError::MissingAppName)?;
-        let service_name = self
-            .service_name
-            .ok_or(ServiceBuilderError::MissingServiceName)?;
+        let config = self
+            .config
+            .ok_or(ServiceBuilderError::MissingServiceConfiguration)?;
         let started_at = self.started_at.unwrap_or(Utc::now());
 
         Ok(Service {
             id,
             app_name,
-            service_name,
-            container_type: self.container_type.unwrap_or(ContainerType::Instance),
+            config,
             base_url: self.base_url,
             endpoint: self.endpoint,
             web_host_meta: self.web_host_meta,
@@ -271,7 +233,6 @@ impl ServiceBuilder {
                 started_at,
                 status: self.status.unwrap_or(ServiceStatus::Running),
             },
-            image: self.image,
         })
     }
 
@@ -285,17 +246,12 @@ impl ServiceBuilder {
         self
     }
 
-    pub fn current_app_name(&self) -> Option<String> {
-        self.app_name.clone()
+    pub fn current_app_name(&self) -> Option<&String> {
+        self.app_name.as_ref()
     }
 
-    pub fn service_name(mut self, service_name: String) -> Self {
-        self.service_name = Some(service_name);
-        self
-    }
-
-    pub fn current_service_name(&self) -> Option<String> {
-        self.service_name.clone()
+    pub fn current_config(&self) -> Option<&ServiceConfig> {
+        self.config.as_ref()
     }
 
     pub fn started_at(mut self, started_at: DateTime<Utc>) -> Self {
@@ -318,13 +274,8 @@ impl ServiceBuilder {
         self
     }
 
-    pub fn container_type(mut self, container_type: ContainerType) -> Self {
-        self.container_type = Some(container_type);
-        self
-    }
-
-    pub fn image(mut self, image: Image) -> Self {
-        self.image = Some(image);
+    pub fn config(mut self, config: ServiceConfig) -> Self {
+        self.config = Some(config);
         self
     }
 
@@ -337,14 +288,14 @@ impl ServiceBuilder {
     }
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Fail, PartialEq)]
 pub enum ServiceBuilderError {
     #[fail(display = "An ID must be provided.")]
     MissingId,
     #[fail(display = "An app name must be provided.")]
     MissingAppName,
-    #[fail(display = "A service name must be provided.")]
-    MissingServiceName,
+    #[fail(display = "A service configuration must be provided.")]
+    MissingServiceConfiguration,
 }
 
 impl From<Service> for ServiceBuilder {
@@ -352,13 +303,11 @@ impl From<Service> for ServiceBuilder {
         ServiceBuilder {
             id: Some(service.id),
             app_name: Some(service.app_name),
-            service_name: Some(service.service_name),
+            config: Some(service.config),
             status: Some(service.state.status),
             started_at: Some(service.state.started_at),
-            container_type: Some(service.container_type),
             base_url: service.base_url,
             web_host_meta: service.web_host_meta,
-            image: service.image,
             endpoint: service.endpoint,
         }
     }
@@ -398,7 +347,7 @@ impl FromStr for ContainerType {
     }
 }
 
-impl std::fmt::Display for ContainerType {
+impl Display for ContainerType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             &ContainerType::Instance => write!(f, "instance"),
@@ -425,6 +374,7 @@ pub enum ServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sc;
 
     #[test]
     fn should_build_service() {
@@ -433,30 +383,16 @@ mod tests {
         let service = ServiceBuilder::new()
             .id("some-random-id".to_string())
             .app_name("master".to_string())
-            .service_name("nginx".to_string())
+            .config(sc!("nginx", "nginx"))
             .started_at(started_at)
             .build()
             .unwrap();
 
         assert_eq!(service.id(), "some-random-id");
         assert_eq!(service.app_name(), "master");
-        assert_eq!(service.service_name(), "nginx");
+        assert_eq!(service.config(), &sc!("nginx", "nginx"));
         assert_eq!(service.started_at(), &started_at);
         assert_eq!(service.state.status, ServiceStatus::Running);
-    }
-
-    #[test]
-    fn should_build_service_with_container_type() {
-        let service = ServiceBuilder::new()
-            .id("some-random-id".to_string())
-            .app_name("master".to_string())
-            .service_name("nginx".to_string())
-            .started_at(Utc::now())
-            .container_type(ContainerType::Replica)
-            .build()
-            .unwrap();
-
-        assert_eq!(service.container_type(), &ContainerType::Replica);
     }
 
     #[test]
@@ -464,7 +400,7 @@ mod tests {
         let service = ServiceBuilder::new()
             .id("some-random-id".to_string())
             .app_name("master".to_string())
-            .service_name("nginx".to_string())
+            .config(sc!("nginx", "nginx"))
             .started_at(Utc::now())
             .service_status(ServiceStatus::Paused)
             .build()
@@ -480,7 +416,7 @@ mod tests {
         let service = ServiceBuilder::new()
             .id("some-random-id".to_string())
             .app_name("master".to_string())
-            .service_name("nginx".to_string())
+            .config(sc!("nginx", "nginx"))
             .started_at(Utc::now())
             .base_url(url.clone())
             .build()
@@ -499,7 +435,7 @@ mod tests {
         let service = ServiceBuilder::new()
             .id("some-random-id".to_string())
             .app_name("master".to_string())
-            .service_name("nginx".to_string())
+            .config(sc!("nginx", "nginx"))
             .started_at(Utc::now())
             .web_host_meta(meta.clone())
             .build()
@@ -509,64 +445,29 @@ mod tests {
     }
 
     #[test]
-    fn should_build_service_with_image() {
-        let image = Image::from_str("nginx").unwrap();
-
-        let service = ServiceBuilder::new()
-            .id("some-random-id".to_string())
-            .app_name("master".to_string())
-            .service_name("nginx".to_string())
-            .started_at(Utc::now())
-            .image(image.clone())
-            .build()
-            .unwrap();
-
-        assert_eq!(service.image, Some(image));
-    }
-
-    #[test]
     fn should_not_build_service_missing_id() {
-        let err = match ServiceBuilder::new().build() {
-            Err(err) => err,
-            _ => panic!("Unexpected successful build"),
-        };
-
-        match err {
-            ServiceBuilderError::MissingId => {}
-            _ => panic!("Unexpected error"),
-        };
+        let err = ServiceBuilder::new().build().unwrap_err();
+        assert_eq!(err, ServiceBuilderError::MissingId);
     }
 
     #[test]
     fn should_not_build_service_missing_app_name() {
-        let err = match ServiceBuilder::new()
+        let err = ServiceBuilder::new()
             .id("some-container-id".to_string())
             .build()
-        {
-            Err(err) => err,
-            _ => panic!("Unexpected successful build"),
-        };
+            .unwrap_err();
 
-        match err {
-            ServiceBuilderError::MissingAppName => {}
-            _ => panic!("Unexpected error"),
-        };
+        assert_eq!(err, ServiceBuilderError::MissingAppName);
     }
 
     #[test]
-    fn should_not_build_service_missing_service_name() {
-        let err = match ServiceBuilder::new()
+    fn should_not_build_service_missing_config() {
+        let err = ServiceBuilder::new()
             .id("some-container-id".to_string())
             .app_name("master".to_string())
             .build()
-        {
-            Err(err) => err,
-            _ => panic!("Unexpected successful build"),
-        };
+            .unwrap_err();
 
-        match err {
-            ServiceBuilderError::MissingServiceName => {}
-            _ => panic!("Unexpected error"),
-        };
+        assert_eq!(err, ServiceBuilderError::MissingServiceConfiguration);
     }
 }

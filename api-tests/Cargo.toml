@@ -1,0 +1,17 @@
+[package]
+name = "prevant-api-tests"
+version = "0.9.0"
+authors = ["Marc Schreiber <marc.schreiber@aixigo.de>"]
+repository = "https://github.com/aixigo/PREvant/"
+edition = "2018"
+
+[dev-dependencies]
+env_logger = "0.7"
+futures = "0.3"
+lazy_static = "1.4"
+reqwest = { version = "0.10", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+testcontainers = { git = "https://github.com/testcontainers/testcontainers-rs.git", branch = "master" }
+tokio = { version = "0.2", features = ["macros"] }
+uuid = { version = "0.8", features = ["serde", "v4"] }
