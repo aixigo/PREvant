@@ -28,7 +28,7 @@ use crate::models::ServiceConfig;
 use secstr::SecUtf8;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::convert::{From, TryFrom};
+use std::convert::From;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::Error as IOError;
@@ -88,48 +88,30 @@ impl Config {
         }
     }
 
-    pub fn service_companion_configs(
-        &self,
-        app_name: &str,
-    ) -> Result<Vec<ServiceConfig>, ConfigError> {
-        Ok(self.companion_configs(app_name, |companion| {
+    pub fn service_companion_configs(&self, app_name: &str) -> Vec<ServiceConfig> {
+        self.companion_configs(app_name, |companion| {
             companion.companion_type() == &CompanionType::Service
-        })?)
+        })
     }
 
-    pub fn application_companion_configs(
-        &self,
-        app_name: &str,
-    ) -> Result<Vec<ServiceConfig>, ConfigError> {
-        Ok(self.companion_configs(app_name, |companion| {
+    pub fn application_companion_configs(&self, app_name: &str) -> Vec<ServiceConfig> {
+        self.companion_configs(app_name, |companion| {
             companion.companion_type() == &CompanionType::Application
-        })?)
+        })
     }
 
-    fn companion_configs<P>(
-        &self,
-        app_name: &str,
-        predicate: P,
-    ) -> Result<Vec<ServiceConfig>, ConfigError>
+    fn companion_configs<P>(&self, app_name: &str, predicate: P) -> Vec<ServiceConfig>
     where
         P: Fn(&Companion) -> bool,
     {
         match &self.companions {
-            None => Ok(vec![]),
-            Some(companions_map) => {
-                let mut companions = Vec::new();
-
-                for (_, companion) in companions_map
-                    .iter()
-                    .filter(|(_, companion)| companion.matches_app_name(app_name))
-                    .filter(|(_, companion)| predicate(*companion))
-                {
-                    let config = ServiceConfig::try_from(companion.clone())?;
-                    companions.push(config);
-                }
-
-                Ok(companions)
-            }
+            None => vec![],
+            Some(companions_map) => companions_map
+                .iter()
+                .filter(|(_, companion)| companion.matches_app_name(app_name))
+                .filter(|(_, companion)| predicate(*companion))
+                .map(|(_, companion)| companion.clone().into())
+                .collect(),
         }
     }
 
@@ -234,7 +216,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master").unwrap();
+        let companion_configs = config.application_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -269,7 +251,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.service_companion_configs("master").unwrap();
+        let companion_configs = config.service_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -299,7 +281,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master").unwrap();
+        let companion_configs = config.application_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -321,7 +303,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master").unwrap();
+        let companion_configs = config.application_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -345,7 +327,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master").unwrap();
+        let companion_configs = config.application_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|config| {
@@ -375,7 +357,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("random-name").unwrap();
+        let companion_configs = config.application_companion_configs("random-name");
 
         assert_eq!(companion_configs.len(), 0);
     }

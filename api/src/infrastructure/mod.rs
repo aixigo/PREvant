@@ -24,11 +24,13 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::models::Environment;
 pub use docker::DockerInfrastructure as Docker;
 #[cfg(test)]
 pub use dummy_infrastructure::DummyInfrastructure as Dummy;
 pub use infrastructure::Infrastructure;
 pub use kubernetes::KubernetesInfrastructure as Kubernetes;
+use serde_json::{map::Map, Value};
 
 mod docker;
 #[cfg(test)]
@@ -39,4 +41,35 @@ mod kubernetes;
 static APP_NAME_LABEL: &str = "com.aixigo.preview.servant.app-name";
 static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
 static CONTAINER_TYPE_LABEL: &str = "com.aixigo.preview.servant.container-type";
+static REPLICATED_ENV_LABEL: &str = "com.aixigo.preview.servant.replicated-env";
 static IMAGE_LABEL: &str = "com.aixigo.preview.servant.image";
+
+/// This function converts the environment variables and adds all variables, that
+/// must be replicated, into a JSON object. This function should be used by implementations
+/// to serialize the environment variable so that it can be deserialized when service configurations
+/// will be cloned from a running service.
+fn replicated_environment_variable_to_json(env: &Environment) -> Option<Value> {
+    let replicated_env = env
+        .iter()
+        .filter(|ev| ev.replicate())
+        .map(|ev| {
+            (
+                ev.key(),
+                serde_json::json!({
+                    "value": ev.original().value().unsecure(),
+                    "templated": ev.templated(),
+                    "replicate": true
+                }),
+            )
+        })
+        .fold(Map::<String, Value>::new(), |mut acc, (key, value)| {
+            acc.insert(key.clone(), value);
+            acc
+        });
+
+    if !replicated_env.is_empty() {
+        Some(Value::Object(replicated_env))
+    } else {
+        None
+    }
+}

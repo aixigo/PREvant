@@ -25,9 +25,11 @@
  */
 
 use crate::config::ContainerConfig;
-use crate::infrastructure::Infrastructure;
+use crate::infrastructure::{
+    Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
+};
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
-use crate::models::{Image, ServiceConfig};
+use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
@@ -91,11 +93,11 @@ impl DockerInfrastructure {
             .list(&Default::default())
             .await?
             .iter()
-            .find(|n| &n.name == &network_name)
+            .find(|n| n.name == network_name)
             .map(|n| n.id.clone());
 
         if let Some(n) = network_id {
-            return Ok(n.clone());
+            return Ok(n);
         }
 
         debug!("Creating network for app {}.", app_name);
@@ -171,7 +173,7 @@ impl DockerInfrastructure {
             .list(&Default::default())
             .await?
             .iter()
-            .filter(|n| &n.name == &network_name)
+            .filter(|n| n.name == network_name)
         {
             self.disconnect_traefik(&n.id).await?;
             docker.networks().get(&n.id).delete().await?;
@@ -218,56 +220,21 @@ impl DockerInfrastructure {
             image_to_delete = Some(container_details.image);
         }
 
-        let container_type_name = service_config.container_type().to_string();
-        let image = service_config.image().to_string();
-
         info!(
             "Creating new review app container for {:?}: service={:?} with image={:?} ({:?})",
             app_name,
             service_config.service_name(),
-            image,
-            container_type_name
+            service_config.image(),
+            service_config.container_type(),
         );
 
-        let mut options = ContainerOptions::builder(&image);
-        if let Some(env) = service_config.env() {
-            let variables = env
-                .iter()
-                .map(|e| format!("{}={}", e.key(), e.value().unsecure()))
-                .collect::<Vec<String>>();
-
-            options.env(variables.iter().map(|s| s.as_str()).collect::<Vec<&str>>());
-        }
-
-        // TODO: this combination of ReplacePathRegex and PathPrefix should be replaced by
-        // PathPrefixStrip so that the request to the service contains the X-Forwarded-Prefix header
-        // which can be used by the service to generate dynamic links.
-        let traefik_frontend = format!(
-            "PathPrefixStrip: /{app_name}/{service_name}/; PathPrefix:/{app_name}/{service_name}/;",
-            app_name = app_name,
-            service_name = service_config.service_name()
+        let options = DockerInfrastructure::create_container_options(
+            app_name,
+            &service_config,
+            container_config,
         );
-        let mut labels: HashMap<&str, &str> = HashMap::new();
-        labels.insert("traefik.frontend.rule", &traefik_frontend);
 
-        if let Some(config_labels) = service_config.labels() {
-            for (k, v) in config_labels {
-                labels.insert(k, v);
-            }
-        }
-
-        labels.insert(super::APP_NAME_LABEL, app_name);
-        labels.insert(super::SERVICE_NAME_LABEL, &service_config.service_name());
-        labels.insert(super::CONTAINER_TYPE_LABEL, &container_type_name);
-
-        options.labels(&labels);
-        options.restart_policy("always", 5);
-
-        if let Some(memory_limit) = container_config.memory_limit() {
-            options.memory(memory_limit.clone());
-        }
-
-        let container_info = containers.create(&options.build()).await?;
+        let container_info = containers.create(&options).await?;
         debug!("Created container: {:?}", container_info);
 
         self.copy_volume_data(&container_info, service_config)
@@ -292,9 +259,6 @@ impl DockerInfrastructure {
 
         let container_details = containers.get(&container_info.id).inspect().await?;
 
-        let mut service = Service::try_from(&container_details)?;
-        service.set_container_type(service_config.container_type().clone());
-
         if let Some(image) = image_to_delete {
             info!("Clean up image {:?} of app {:?}", image, app_name);
             match images.get(&image).delete().await {
@@ -307,7 +271,62 @@ impl DockerInfrastructure {
             }
         }
 
-        Ok(service)
+        Ok(Service::try_from(&container_details)?)
+    }
+
+    fn create_container_options(
+        app_name: &String,
+        service_config: &ServiceConfig,
+        container_config: &ContainerConfig,
+    ) -> ContainerOptions {
+        let mut options = ContainerOptions::builder(&service_config.image().to_string());
+        if let Some(env) = service_config.env() {
+            let variables = env
+                .iter()
+                .map(|e| format!("{}={}", e.key(), e.value().unsecure()))
+                .collect::<Vec<String>>();
+
+            options.env(variables.iter().map(|s| s.as_str()).collect::<Vec<&str>>());
+        }
+
+        let mut labels: HashMap<&str, &str> = HashMap::new();
+
+        let traefik_frontend = format!(
+            "PathPrefixStrip: /{app_name}/{service_name}/; PathPrefix:/{app_name}/{service_name}/;",
+            app_name = app_name,
+            service_name = service_config.service_name()
+        );
+        labels.insert("traefik.frontend.rule", &traefik_frontend);
+
+        if let Some(config_labels) = service_config.labels() {
+            for (k, v) in config_labels {
+                labels.insert(k, v);
+            }
+        }
+
+        labels.insert(APP_NAME_LABEL, app_name);
+        labels.insert(SERVICE_NAME_LABEL, &service_config.service_name());
+        let container_type_name = service_config.container_type().to_string();
+        labels.insert(CONTAINER_TYPE_LABEL, &container_type_name);
+
+        let replicated_env = service_config
+            .env()
+            .map(|env| super::replicated_environment_variable_to_json(env))
+            .flatten()
+            .map(|value| value.to_string());
+
+        if let Some(replicated_env) = &replicated_env {
+            labels.insert(REPLICATED_ENV_LABEL, &replicated_env);
+        }
+
+        options.labels(&labels);
+        options.restart_policy("always", 5);
+
+        if let Some(memory_limit) = container_config.memory_limit() {
+            options.memory(memory_limit.clone());
+        }
+
+        options.build()
     }
 
     async fn copy_volume_data(
@@ -383,11 +402,11 @@ impl DockerInfrastructure {
             .list(&list_options)
             .await?
             .into_iter()
-            .filter(|c| match c.labels.get(super::APP_NAME_LABEL) {
+            .filter(|c| match c.labels.get(APP_NAME_LABEL) {
                 None => false,
                 Some(app) => app == app_name,
             })
-            .filter(|c| match c.labels.get(super::SERVICE_NAME_LABEL) {
+            .filter(|c| match c.labels.get(SERVICE_NAME_LABEL) {
                 None => false,
                 Some(service) => service == service_name,
             })
@@ -401,9 +420,9 @@ impl DockerInfrastructure {
         debug!("Resolve container details for app {:?}", app_name);
 
         let f = match app_name {
-            None => ContainerFilter::LabelName(String::from(super::APP_NAME_LABEL)),
+            None => ContainerFilter::LabelName(String::from(APP_NAME_LABEL)),
             Some(app_name) => {
-                ContainerFilter::Label(String::from(super::APP_NAME_LABEL), app_name.clone())
+                ContainerFilter::Label(String::from(APP_NAME_LABEL), app_name.clone())
             }
         };
         let list_options = &ContainerListOptions::builder()
@@ -439,7 +458,7 @@ impl DockerInfrastructure {
                 .labels
                 .clone()
                 .unwrap()
-                .get(super::APP_NAME_LABEL)
+                .get(APP_NAME_LABEL)
                 .unwrap()
                 .clone();
 
@@ -533,44 +552,6 @@ impl Infrastructure for DockerInfrastructure {
         Ok(services)
     }
 
-    async fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error> {
-        let mut configs = Vec::new();
-
-        for container_details in self
-            .get_container_details(Some(app_name))
-            .await?
-            .iter_all()
-            .flat_map(|(_, details)| details.iter())
-        {
-            let service = match Service::try_from(container_details) {
-                Err(e) => {
-                    warn!(
-                        "Container {} does not provide required information: {}",
-                        container_details.id, e
-                    );
-                    continue;
-                }
-                Ok(service) => service,
-            };
-
-            match service.container_type() {
-                ContainerType::ApplicationCompanion | ContainerType::ServiceCompanion => continue,
-                _ => {}
-            };
-
-            let image = Image::from_str(&container_details.image).unwrap();
-            let mut service_config = ServiceConfig::new(service.service_name().clone(), image);
-
-            if let Some(port) = service.port() {
-                service_config.set_port(port);
-            }
-
-            configs.push(service_config);
-        }
-
-        Ok(configs)
-    }
-
     async fn get_logs(
         &self,
         app_name: &String,
@@ -603,7 +584,6 @@ impl Infrastructure for DockerInfrastructure {
                         .build(),
                 };
 
-                let cloned_from = from.clone();
                 let logs = docker
                     .containers()
                     .get(&container.id)
@@ -634,7 +614,7 @@ impl Infrastructure for DockerInfrastructure {
                     .filter(move |(timestamp, _)| {
                         // Due to the fact that docker's REST API supports only unix time (cf. since),
                         // it is necessary to filter the timestamps as well.
-                        cloned_from.map(|from| timestamp >= &from).unwrap_or_else(|| true)
+                        from.map(|from| timestamp >= &from).unwrap_or_else(|| true)
                     })
                     .collect();
 
@@ -722,19 +702,20 @@ async fn inspect(container: Container) -> Result<ContainerDetails, ShipLiftError
 
 fn find_port(
     container_details: &ContainerDetails,
-    labels: HashMap<String, String>,
+    labels: Option<&HashMap<String, String>>,
 ) -> Result<u16, DockerInfrastructureError> {
-    if let Some(port) = labels.get(CONTAINER_PORT_LABEL) {
+    if let Some(port) = labels
+        .map(|labels| labels.get(CONTAINER_PORT_LABEL))
+        .flatten()
+    {
         match port.parse::<u16>() {
             Ok(port) => Ok(port),
-            Err(err) => {
-                return Err(DockerInfrastructureError::UnexpectedError {
-                    internal_message: format!(
-                        "Cannot parse traefik port label into port number: {}",
-                        err
-                    ),
-                })
-            }
+            Err(err) => Err(DockerInfrastructureError::UnexpectedError {
+                internal_message: format!(
+                    "Cannot parse traefik port label into port number: {}",
+                    err
+                ),
+            }),
         }
     } else {
         Ok(match &container_details.network_settings.ports {
@@ -759,33 +740,15 @@ impl TryFrom<&ContainerDetails> for Service {
     fn try_from(
         container_details: &ContainerDetails,
     ) -> Result<Service, DockerInfrastructureError> {
-        let labels = container_details
-            .config
-            .labels
-            .clone()
-            .unwrap_or(HashMap::new());
+        let labels = container_details.config.labels.as_ref();
 
-        let service_name = match labels.get(super::SERVICE_NAME_LABEL) {
-            Some(name) => name,
-            None => {
-                return Err(DockerInfrastructureError::MissingServiceNameLabel {
-                    container_id: container_details.id.clone(),
-                });
-            }
-        };
-
-        let app_name = match labels.get(super::APP_NAME_LABEL) {
+        let app_name = match labels.map(|labels| labels.get(APP_NAME_LABEL)).flatten() {
             Some(name) => name,
             None => {
                 return Err(DockerInfrastructureError::MissingAppNameLabel {
                     container_id: container_details.id.clone(),
                 });
             }
-        };
-
-        let container_type = match labels.get(super::CONTAINER_TYPE_LABEL) {
-            None => ContainerType::Instance,
-            Some(lb) => lb.parse::<ContainerType>()?,
         };
 
         let started_at = container_details.state.started_at.clone();
@@ -795,22 +758,64 @@ impl TryFrom<&ContainerDetails> for Service {
             ServiceStatus::Paused
         };
 
-        let mut service = Service::new(
-            container_details.id.clone(),
-            app_name.clone(),
-            service_name.clone(),
-            container_type,
-            status,
-            started_at,
-        );
+        let mut builder = ServiceBuilder::new()
+            .id(container_details.id.clone())
+            .app_name(app_name.clone())
+            .config(ServiceConfig::try_from(container_details)?)
+            .service_status(status)
+            .started_at(started_at);
 
         if !container_details.network_settings.ip_address.is_empty() {
             let addr = IpAddr::from_str(&container_details.network_settings.ip_address)?;
             let port = find_port(container_details, labels)?;
-            service.set_endpoint(addr, port);
+            builder = builder.endpoint(addr, port);
         }
 
-        Ok(service)
+        Ok(builder.build()?)
+    }
+}
+
+impl TryFrom<&ContainerDetails> for ServiceConfig {
+    type Error = DockerInfrastructureError;
+
+    fn try_from(container_details: &ContainerDetails) -> Result<Self, Self::Error> {
+        let labels = container_details.config.labels.as_ref();
+
+        let service_name = match labels
+            .map(|labels| labels.get(SERVICE_NAME_LABEL))
+            .flatten()
+        {
+            Some(name) => name,
+            None => {
+                return Err(DockerInfrastructureError::MissingServiceNameLabel {
+                    container_id: container_details.id.clone(),
+                });
+            }
+        };
+
+        let image = Image::from_str(&container_details.image).unwrap();
+        let mut config = ServiceConfig::new(service_name.clone(), image);
+
+        if let Some(lb) = labels
+            .map(|labels| labels.get(CONTAINER_TYPE_LABEL))
+            .flatten()
+        {
+            config.set_container_type(lb.parse::<ContainerType>()?);
+        }
+
+        if let Some(replicated_env) = labels
+            .map(|labels| labels.get(REPLICATED_ENV_LABEL))
+            .flatten()
+        {
+            let env = serde_json::from_str::<Environment>(replicated_env).map_err(|err| {
+                DockerInfrastructureError::UnexpectedError {
+                    internal_message: err.to_string(),
+                }
+            })?;
+            config.set_env(Some(env));
+        }
+
+        Ok(config)
     }
 }
 
@@ -852,5 +857,264 @@ impl From<AddrParseError> for DockerInfrastructureError {
         DockerInfrastructureError::InvalidContainerAddress {
             internal_message: err.to_string(),
         }
+    }
+}
+
+impl From<ServiceBuilderError> for DockerInfrastructureError {
+    fn from(err: ServiceBuilderError) -> Self {
+        DockerInfrastructureError::UnexpectedError {
+            internal_message: err.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Environment, EnvironmentVariable};
+    use crate::sc;
+    use secstr::SecUtf8;
+
+    macro_rules! container_details {
+        ($id:expr, $app_name:expr, $service_name:expr, $image:expr, $container_type:expr, $($l_key:expr => $l_value:expr),* ) => {{
+            let mut labels = std::collections::HashMap::new();
+
+            if let Some(app_name) = $app_name {
+                labels.insert(String::from(APP_NAME_LABEL), app_name);
+            }
+            if let Some(service_name) = $service_name {
+                labels.insert(String::from(SERVICE_NAME_LABEL), service_name);
+            }
+            if let Some(container_type) = $container_type {
+                labels.insert(String::from(CONTAINER_TYPE_LABEL), container_type);
+            }
+
+            $( labels.insert($l_key, $l_value); )*
+
+            shiplift::rep::ContainerDetails {
+                app_armor_profile: "".to_string(),
+                args: vec![],
+                config: shiplift::rep::Config {
+                    attach_stderr: false,
+                    attach_stdin: false,
+                    attach_stdout: false,
+                    cmd: None,
+                    domainname: "".to_string(),
+                    entrypoint: None,
+                    env: None,
+                    exposed_ports: None,
+                    hostname: "".to_string(),
+                    image: "".to_string(),
+                    labels: Some(labels),
+                    on_build: None,
+                    open_stdin: false,
+                    stdin_once: false,
+                    tty: false,
+                    user: "".to_string(),
+                    working_dir: "".to_string(),
+                },
+                driver: "".to_string(),
+                host_config: shiplift::rep::HostConfig {
+                    cgroup_parent: None,
+                    container_id_file: "".to_string(),
+                    cpu_shares: None,
+                    cpuset_cpus: None,
+                    memory: None,
+                    memory_swap: None,
+                    network_mode: "".to_string(),
+                    pid_mode: None,
+                    port_bindings: None,
+                    privileged: false,
+                    publish_all_ports: false,
+                    readonly_rootfs: None,
+                },
+                hostname_path: "".to_string(),
+                hosts_path: "".to_string(),
+                log_path: "".to_string(),
+                id: $id,
+                image: $image.unwrap_or_else(|| "".to_string()),
+                mount_label: "".to_string(),
+                name: "".to_string(),
+                network_settings: shiplift::rep::NetworkSettings {
+                    bridge: "".to_string(),
+                    gateway: "".to_string(),
+                    ip_address: "".to_string(),
+                    ip_prefix_len: 0,
+                    mac_address: "".to_string(),
+                    ports: None,
+                    networks: Default::default(),
+                },
+                path: "".to_string(),
+                process_label: "".to_string(),
+                resolv_conf_path: "".to_string(),
+                restart_count: 0,
+                state: shiplift::rep::State {
+                    error: "".to_string(),
+                    exit_code: 0,
+                    oom_killed: false,
+                    paused: false,
+                    pid: 0,
+                    restarting: false,
+                    running: false,
+                    finished_at: chrono::Utc::now(),
+                    started_at: chrono::Utc::now(),
+                },
+                created: chrono::Utc::now(),
+                mounts: vec![],
+            }
+        }};
+    }
+
+    #[test]
+    fn should_create_container_options() {
+        let config = sc!("db", "mariadb:10.3.17");
+
+        let options = DockerInfrastructure::create_container_options(
+            &String::from("master"),
+            &config,
+            &ContainerConfig::default(),
+        );
+
+        let json = serde_json::to_value(&options).unwrap();
+        assert_json_diff::assert_json_eq!(
+            json,
+            serde_json::json!({
+              "name": null,
+              "params": {
+                "HostConfig.RestartPolicy.Name": "always",
+                "Image": "docker.io/library/mariadb:10.3.17",
+                "Labels": {
+                  "com.aixigo.preview.servant.app-name": "master",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db",
+                  "traefik.frontend.rule": "PathPrefixStrip: /master/db/; PathPrefix:/master/db/;"
+                }
+              }
+            })
+        );
+    }
+
+    #[test]
+    fn should_create_container_options_with_environment_variable() {
+        let mut config = sc!("db", "mariadb:10.3.17");
+        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
+            String::from("MYSQL_ROOT_PASSWORD"),
+            SecUtf8::from("example"),
+        )])));
+
+        let options = DockerInfrastructure::create_container_options(
+            &String::from("master"),
+            &config,
+            &ContainerConfig::default(),
+        );
+
+        let json = serde_json::to_value(&options).unwrap();
+        assert_json_diff::assert_json_eq!(
+            json,
+            serde_json::json!({
+              "name": null,
+              "params": {
+                "HostConfig.RestartPolicy.Name": "always",
+                "Image": "docker.io/library/mariadb:10.3.17",
+                "Labels": {
+                  "com.aixigo.preview.servant.app-name": "master",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db",
+                  "traefik.frontend.rule": "PathPrefixStrip: /master/db/; PathPrefix:/master/db/;"
+                },
+                "Env": [
+                  "MYSQL_ROOT_PASSWORD=example"
+                ]
+              }
+            })
+        );
+    }
+
+    #[test]
+    fn should_create_container_options_with_replicated_environment_variable() {
+        let mut config = sc!("db", "mariadb:10.3.17");
+        config.set_env(Some(Environment::new(vec![
+            EnvironmentVariable::with_replicated(
+                String::from("MYSQL_ROOT_PASSWORD"),
+                SecUtf8::from("example"),
+            ),
+        ])));
+
+        let options = DockerInfrastructure::create_container_options(
+            &String::from("master"),
+            &config,
+            &ContainerConfig::default(),
+        );
+
+        let json = serde_json::to_value(&options).unwrap();
+        assert_json_diff::assert_json_eq!(
+            json,
+            serde_json::json!({
+                "name": null,
+                "params": {
+                  "HostConfig.RestartPolicy.Name": "always",
+                  "Image": "docker.io/library/mariadb:10.3.17",
+                  "Labels": {
+                    "com.aixigo.preview.servant.app-name": "master",
+                    "com.aixigo.preview.servant.container-type": "instance",
+                    "com.aixigo.preview.servant.service-name": "db",
+                    "com.aixigo.preview.servant.replicated-env": serde_json::json!({
+                      "MYSQL_ROOT_PASSWORD": {
+                        "value": "example",
+                        "templated": false,
+                        "replicate": true,
+                      }
+                    }).to_string(),
+                    "traefik.frontend.rule": "PathPrefixStrip: /master/db/; PathPrefix:/master/db/;"
+                  },
+                  "Env": [
+                    "MYSQL_ROOT_PASSWORD=example"
+                  ]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn should_create_service_config_from_container_details() {
+        let details = container_details!(
+            "some-random-id".to_string(),
+            Some(String::from("master")),
+            Some(String::from("nginx")),
+            Some(String::from("nginx")),
+            None,
+        );
+
+        let service = Service::try_from(&details).unwrap();
+
+        assert_eq!(service.id(), "some-random-id");
+        assert_eq!(service.app_name(), "master");
+        assert_eq!(service.config().service_name(), "nginx");
+        assert_eq!(
+            &service.config().image().to_string(),
+            "docker.io/library/nginx:latest"
+        );
+    }
+
+    #[test]
+    fn should_create_service_config_from_container_details_with_replicated_env() {
+        let details = container_details!(
+            "some-random-id".to_string(),
+            Some(String::from("master")),
+            Some(String::from("nginx")),
+            Some(String::from("nginx")),
+            None,
+            String::from(REPLICATED_ENV_LABEL) => serde_json::json!({ "MYSQL_ROOT_PASSWORD": { "value": "example" } }).to_string()
+        );
+
+        let service = Service::try_from(&details).unwrap();
+
+        assert_eq!(
+            service.config().env().unwrap().get(0).unwrap(),
+            &EnvironmentVariable::with_replicated(
+                String::from("MYSQL_ROOT_PASSWORD"),
+                SecUtf8::from("example")
+            )
+        );
     }
 }

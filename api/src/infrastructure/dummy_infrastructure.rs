@@ -27,7 +27,7 @@
 use crate::config::ContainerConfig;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{Service, ServiceStatus};
-use crate::models::ServiceConfig;
+use crate::models::{ServiceBuilder, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use multimap::MultiMap;
@@ -57,19 +57,20 @@ impl Infrastructure for DummyInfrastructure {
         let services = self.services.lock().unwrap();
         for (app, configs) in services.iter_all() {
             for config in configs {
-                s.insert(
-                    app.clone(),
-                    Service::new(
-                        format!("{}-{}", app.clone(), config.service_name()),
-                        app.clone(),
-                        config.service_name().clone(),
-                        config.container_type().clone(),
-                        crate::models::service::ServiceStatus::Running,
+                let service = ServiceBuilder::new()
+                    .id(format!("{}-{}", app.clone(), config.service_name()))
+                    .app_name(app.clone())
+                    .config(config.clone())
+                    .service_status(ServiceStatus::Running)
+                    .started_at(
                         DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
                             .unwrap()
                             .with_timezone(&Utc),
-                    ),
-                );
+                    )
+                    .build()
+                    .unwrap();
+
+                s.insert(app.clone(), service);
             }
         }
 
@@ -104,17 +105,6 @@ impl Infrastructure for DummyInfrastructure {
         let mut services = self.services.lock().unwrap();
         services.remove(app_name);
         Ok(vec![])
-    }
-
-    async fn get_configs_of_app(
-        &self,
-        app_name: &String,
-    ) -> Result<Vec<ServiceConfig>, failure::Error> {
-        let services = self.services.lock().unwrap();
-        match services.get_vec(app_name) {
-            None => Ok(vec![]),
-            Some(configs) => Ok(configs.clone()),
-        }
     }
 
     async fn get_logs(

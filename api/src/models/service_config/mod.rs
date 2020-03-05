@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant REST API
  * %%
- * Copyright (C) 2018 - 2019 aixigo AG
+ * Copyright (C) 2018 - 2020 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,12 +25,15 @@
  */
 use crate::models::service::ContainerType;
 use crate::models::Image;
-use secstr::SecUtf8;
-use serde::{de, Deserialize, Deserializer};
+pub use environment::{Environment, EnvironmentVariable};
+use serde::Deserialize;
 use serde_value::Value;
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::path::PathBuf;
+
+mod environment;
+mod templating;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -197,11 +200,11 @@ impl ServiceConfig {
         if let Some(env) = &other.env {
             self.env = match self.env.take() {
                 Some(mut self_env) => {
-                    for env in &env.values {
-                        if self_env.variable(&env.key).is_some() {
+                    for env in env.iter() {
+                        if self_env.variable(env.key()).is_some() {
                             continue;
                         }
-                        self_env.values.push(env.clone());
+                        self_env.push(env.clone());
                     }
                     Some(self_env)
                 }
@@ -234,119 +237,6 @@ impl ServiceConfig {
                 .unwrap_or(BTreeMap::new()),
         );
         self.labels = Some(labels);
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct Environment {
-    values: Vec<EnvironmentVariable>,
-}
-
-impl Environment {
-    pub fn new(values: Vec<EnvironmentVariable>) -> Self {
-        Environment { values }
-    }
-
-    pub fn get<'a, 'b: 'a>(&'b self, index: usize) -> Option<&'a EnvironmentVariable> {
-        self.values.get(index)
-    }
-
-    pub fn iter<'a, 'b: 'a>(&'b self) -> std::slice::Iter<'a, EnvironmentVariable> {
-        self.values.iter()
-    }
-
-    pub fn variable<'a, 'b: 'a>(&'b self, env_name: &str) -> Option<&'a EnvironmentVariable> {
-        for env in &self.values {
-            if &env.key == env_name {
-                return Some(env);
-            }
-        }
-        None
-    }
-}
-
-impl<'de> Deserialize<'de> for Environment {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        use regex::Regex;
-        use serde_json::Value;
-
-        match Value::deserialize(deserializer)? {
-            Value::Object(map) => {
-                let mut values = Vec::with_capacity(map.len());
-                for (key, v) in map.into_iter() {
-                    values.push(EnvironmentVariable {
-                        key,
-                        value: match v {
-                            Value::String(v) => SecUtf8::from(v),
-                            _ => {
-                                return Err(de::Error::custom(
-                                    "Invalid env value payload: The value must be a string.",
-                                ));
-                            }
-                        },
-                    });
-                }
-
-                Ok(Environment { values })
-            }
-            Value::Array(raw_values) => {
-                lazy_static! {
-                    static ref RE: Regex = Regex::new("(.*)=(.*)").unwrap();
-                }
-
-                let mut values = Vec::with_capacity(raw_values.len());
-                for value in raw_values {
-                    values.push(match value {
-                        Value::String(value) => match RE.captures(&value) {
-                            Some(captures) => EnvironmentVariable {
-                                key: captures.get(1).map_or("", |m| m.as_str()).to_string(),
-                                value: SecUtf8::from(captures.get(2).map_or("", |m| m.as_str())),
-                            },
-                            None => return Err(de::Error::custom(
-                                "Invalid env value payload: Key and value must be seperated by equal sign."
-                            )),
-                        },
-                        _ => {
-                            return Err(de::Error::custom(
-                                "Invalid environment payload: Payload must be an array of string.",
-                            ));
-                        }
-                    })
-                }
-                Ok(Environment { values })
-            }
-            _ => return Err(de::Error::custom("Invalid environment payload.")),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EnvironmentVariable {
-    key: String,
-    value: SecUtf8,
-}
-
-impl EnvironmentVariable {
-    pub fn new(key: String, value: SecUtf8) -> Self {
-        EnvironmentVariable { key, value }
-    }
-
-    pub fn key(&self) -> &String {
-        &self.key
-    }
-
-    pub fn value(&self) -> &SecUtf8 {
-        &self.value
-    }
-}
-
-impl Hash for EnvironmentVariable {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.key.hash(state);
-        self.value.unsecure().hash(state);
     }
 }
 
@@ -450,82 +340,8 @@ macro_rules! sc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secstr::SecUtf8;
     use serde_json::from_value;
-
-    #[test]
-    fn should_parse_env_from_kv_string() {
-        let e = from_value::<Environment>(serde_json::json!(["MYSQL_USER=admin"]))
-            .unwrap()
-            .values
-            .into_iter()
-            .next()
-            .unwrap();
-
-        assert_eq!(e.key, "MYSQL_USER".to_string());
-        assert_eq!(e.value.unsecure(), "admin".to_string());
-    }
-
-    #[test]
-    fn should_parse_env_from_kv_object() {
-        let e = from_value::<Environment>(serde_json::json!({"MYSQL_USER": "admin"}))
-            .unwrap()
-            .values
-            .into_iter()
-            .next()
-            .unwrap();
-
-        assert_eq!(e.key, "MYSQL_USER".to_string());
-        assert_eq!(e.value.unsecure(), "admin".to_string());
-    }
-
-    #[test]
-    fn should_not_parse_env_from_kv_object_due_to_invalid_env_value() {
-        let e = from_value::<Environment>(serde_json::json!({"MYSQL_USER": {}}));
-
-        match e {
-            Ok(_) => panic!("Should not be parseable"),
-            Err(err) => assert_eq!(
-                &err.to_string(),
-                "Invalid env value payload: The value must be a string."
-            ),
-        }
-    }
-
-    #[test]
-    fn should_not_parse_env_unexpected_json() {
-        let e = from_value::<Environment>(serde_json::json!("Some random string"));
-
-        match e {
-            Ok(_) => panic!("Should not be parseable"),
-            Err(err) => assert_eq!(&err.to_string(), "Invalid environment payload."),
-        }
-    }
-
-    #[test]
-    fn should_not_parse_env_unexpected_array_formt() {
-        let e = from_value::<Environment>(serde_json::json!([{}]));
-
-        match e {
-            Ok(_) => panic!("Should not be parseable"),
-            Err(err) => assert_eq!(
-                &err.to_string(),
-                "Invalid environment payload: Payload must be an array of string."
-            ),
-        }
-    }
-
-    #[test]
-    fn should_not_parse_env_unexpected_kv_definitions() {
-        let e = from_value::<Environment>(serde_json::json!(["MYSQL_USER"]));
-
-        match e {
-            Ok(_) => panic!("Should not be parseable"),
-            Err(err) => assert_eq!(
-                &err.to_string(),
-                "Invalid env value payload: Key and value must be seperated by equal sign."
-            ),
-        }
-    }
 
     #[test]
     fn should_parse_service_config_json() {
@@ -605,7 +421,7 @@ mod tests {
         config.merge_with(&config2);
 
         let env = config.env().unwrap();
-        assert_eq!(env.values.len(), 3);
+        assert_eq!(env.iter().count(), 3);
         assert_eq!(
             env.variable("VAR_1"),
             Some(&EnvironmentVariable::new(
