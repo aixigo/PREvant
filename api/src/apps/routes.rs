@@ -242,7 +242,10 @@ impl From<AppsError> for HttpApiProblem {
             AppsError::InfrastructureError { error: _ }
             | AppsError::InvalidServerConfiguration { error: _ }
             | AppsError::InvalidTemplateFormat { error: _ }
-            | AppsError::UnableToResolveImage { error: _ } => StatusCode::INTERNAL_SERVER_ERROR,
+            | AppsError::UnableToResolveImage { error: _ } => {
+                error!("Internal server error: {}", error);
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         };
 
         HttpApiProblem::with_title_and_type_from_status(status).set_detail(format!("{}", error))

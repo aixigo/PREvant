@@ -26,7 +26,8 @@
 
 use crate::config::ContainerConfig;
 use crate::infrastructure::{
-    Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
+    Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL,
+    SERVICE_NAME_LABEL,
 };
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
@@ -55,7 +56,7 @@ static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
 pub struct DockerInfrastructure {}
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Fail, PartialEq)]
 pub enum DockerInfrastructureError {
     #[fail(display = "Could not find image: {}", internal_message)]
     ImageNotFound { internal_message: String },
@@ -69,6 +70,8 @@ pub enum DockerInfrastructureError {
         container_id
     )]
     MissingAppNameLabel { container_id: String },
+    #[fail(display = "Unexpected image format for image “{}” ({}).", img, err)]
+    UnexpectedImageFormat { img: String, err: String },
     #[fail(display = "Unexpected docker interaction error: {}", internal_message)]
     UnexpectedError { internal_message: String },
     #[fail(display = "Unknown service type label: {}", unknown_label)]
@@ -308,6 +311,8 @@ impl DockerInfrastructure {
         labels.insert(SERVICE_NAME_LABEL, &service_config.service_name());
         let container_type_name = service_config.container_type().to_string();
         labels.insert(CONTAINER_TYPE_LABEL, &container_type_name);
+        let image_name = service_config.image().to_string();
+        labels.insert(IMAGE_LABEL, &image_name);
 
         let replicated_env = service_config
             .env()
@@ -793,7 +798,20 @@ impl TryFrom<&ContainerDetails> for ServiceConfig {
             }
         };
 
-        let image = Image::from_str(&container_details.image).unwrap();
+        let image = match labels.map(|labels| labels.get(IMAGE_LABEL)).flatten() {
+            Some(image_label) => Image::from_str(image_label).map_err(|err| {
+                DockerInfrastructureError::UnexpectedImageFormat {
+                    img: image_label.clone(),
+                    err: err.to_string(),
+                }
+            }),
+            None => Image::from_str(&container_details.image).map_err(|err| {
+                DockerInfrastructureError::UnexpectedImageFormat {
+                    img: container_details.image.clone(),
+                    err: err.to_string(),
+                }
+            }),
+        }?;
         let mut config = ServiceConfig::new(service_name.clone(), image);
 
         if let Some(lb) = labels
@@ -888,6 +906,9 @@ mod tests {
             if let Some(container_type) = $container_type {
                 labels.insert(String::from(CONTAINER_TYPE_LABEL), container_type);
             }
+            if let Some(image) = $image {
+                labels.insert(String::from(IMAGE_LABEL), image);
+            }
 
             $( labels.insert($l_key, $l_value); )*
 
@@ -932,7 +953,7 @@ mod tests {
                 hosts_path: "".to_string(),
                 log_path: "".to_string(),
                 id: $id,
-                image: $image.unwrap_or_else(|| "".to_string()),
+                image: "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913".to_string(),
                 mount_label: "".to_string(),
                 name: "".to_string(),
                 network_settings: shiplift::rep::NetworkSettings {
@@ -987,6 +1008,7 @@ mod tests {
                   "com.aixigo.preview.servant.app-name": "master",
                   "com.aixigo.preview.servant.container-type": "instance",
                   "com.aixigo.preview.servant.service-name": "db",
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
                   "traefik.frontend.rule": "PathPrefixStrip: /master/db/; PathPrefix:/master/db/;"
                 }
               }
@@ -1020,6 +1042,7 @@ mod tests {
                   "com.aixigo.preview.servant.app-name": "master",
                   "com.aixigo.preview.servant.container-type": "instance",
                   "com.aixigo.preview.servant.service-name": "db",
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
                   "traefik.frontend.rule": "PathPrefixStrip: /master/db/; PathPrefix:/master/db/;"
                 },
                 "Env": [
@@ -1058,6 +1081,7 @@ mod tests {
                     "com.aixigo.preview.servant.app-name": "master",
                     "com.aixigo.preview.servant.container-type": "instance",
                     "com.aixigo.preview.servant.service-name": "db",
+                    "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
                     "com.aixigo.preview.servant.replicated-env": serde_json::json!({
                       "MYSQL_ROOT_PASSWORD": {
                         "value": "example",
@@ -1093,6 +1117,47 @@ mod tests {
         assert_eq!(
             &service.config().image().to_string(),
             "docker.io/library/nginx:latest"
+        );
+    }
+
+    #[test]
+    fn should_not_create_service_config_from_container_details_with_invalid_image_information() {
+        let details = container_details!(
+            "some-random-id".to_string(),
+            Some(String::from("master")),
+            Some(String::from("nginx")),
+            Some(String::from("\n")),
+            None,
+        );
+
+        let error = Service::try_from(&details).unwrap_err();
+        assert_eq!(
+            error,
+            DockerInfrastructureError::UnexpectedImageFormat {
+                img: String::from("\n"),
+                err: String::from("Invalid image: \n")
+            }
+        );
+    }
+
+    #[test]
+    fn should_create_service_config_from_container_details_without_image_information() {
+        let details = container_details!(
+            "some-random-id".to_string(),
+            Some(String::from("master")),
+            Some(String::from("nginx")),
+            None,
+            None,
+        );
+
+        let service = Service::try_from(&details).unwrap();
+
+        assert_eq!(service.id(), "some-random-id");
+        assert_eq!(service.app_name(), "master");
+        assert_eq!(service.config().service_name(), "nginx");
+        assert_eq!(
+            service.image().to_string(),
+            "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913"
         );
     }
 
