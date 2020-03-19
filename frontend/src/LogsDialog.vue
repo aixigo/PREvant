@@ -24,7 +24,7 @@
 * =========================LICENSE_END==================================
 */
 <template>
-   <dlg ref="dialog" :title="`Logs of ${serviceName} in ${appName}`" :large="true" @close="clearLogs">
+   <dlg ref="dialog" :title="`Logs of ${$route.params.service} in ${$route.params.app}`" :large="true" @close="clearLogs">
       <template slot="body">
          <virtual-list :size="10" :remain="50" :bench="120" class="ra-logs" :tobottom="updateLogs">
             <log-line v-for="line of logLines" :line="line.line" :key="line.id" />
@@ -58,12 +58,7 @@
       data() {
          return {
             logLines: [],
-            currentPageLink: null,
-            nextPageLink: null,
-            logsFrom: {
-               appName: this.appName,
-               serviceName: this.serviceName
-            }
+            nextPageLink: null
          };
       },
       components: {
@@ -71,34 +66,22 @@
          'virtual-list': virtualList,
          'log-line': LogLine
       },
-      props: {
-         appName: { type: String },
-         serviceName: { type: String }
-      },
       watch: {
-         appName( newAppName ) {
-            this.logsFrom.appName = newAppName;
-
-            if ( newAppName != null && this.logsFrom.serviceName != null ) {
-               this.currentPageLink = `/api/apps/${this.logsFrom.appName}/logs/${this.logsFrom.serviceName}`;
-            }
-         },
-         serviceName( newServiceName ) {
-            this.logsFrom.serviceName = newServiceName;
-
-            if ( this.logsFrom.appName != null && newServiceName != null ) {
-               this.currentPageLink = `/api/apps/${this.logsFrom.appName}/logs/${this.logsFrom.serviceName}`;
-            }
-         },
-         currentPageLink( newCurrentPageLink ) {
+         currentPageLink(newCurrentPageLink) {
+            this.logLines = [];
             this.fetchLogs( newCurrentPageLink );
          }
       },
+      computed: {
+         currentPageLink() {
+            return `/api/apps/${this.$route.params.app}/logs/${this.$route.params.service}`;
+         }
+      },
+      mounted() {
+         this.fetchLogs( this.currentPageLink );
+         this.$refs.dialog.open();
+      },
       methods: {
-         open() {
-            this.$refs.dialog.open();
-         },
-
          fetchLogs( newRequestUri ) {
             if ( newRequestUri == null || requestUri != null ) {
                return;
@@ -129,7 +112,8 @@
             this.currentPageLink = null;
             this.nextPageLink = null;
             this.logLines = [];
-            this.$emit('clearedLogs');
+
+            this.$router.push('/');
          },
 
          updateLogs() {
