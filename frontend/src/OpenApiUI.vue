@@ -10,10 +10,10 @@
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -30,7 +30,7 @@
             <div class="ra-modal-container">
 
                <div class="ra-modal-header">
-                  <h1>API Documentation<span v-if="showAdditionalHeadlineInformation"> – {{ this.title }}</span></h1>
+                  <h1>API Documentation<span v-if="showAdditionalHeadlineInformation"> – {{ $route.params.title }}</span></h1>
 
                   <font-awesome-icon icon="window-close" @click="close()" class="ra-modal-close-button"/>
                </div>
@@ -120,23 +120,14 @@
       data() {
          return {};
       },
-      props: {
-         url: {
-            type: String
-         },
-         title: {
-            type: String,
-            default: null
-         }
-      },
       computed: {
          showAdditionalHeadlineInformation() {
-            return this.title != null;
+            return this.$route.params.title != null;
          }
       },
       mounted() {
          SwaggerUIBundle( {
-            url: this.url,
+            url: this.$route.params.url,
             dom_id: `#swagger-ui-${this._uid}`,
             presets: [
                SwaggerUIBundle.presets.apis,
@@ -146,7 +137,7 @@
       },
       methods: {
          close() {
-            this.$emit('close');
+            this.$router.push('/');
          }
       }
    }

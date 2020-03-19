@@ -33,9 +33,7 @@
                    class="ra-headline">
                   <a :href="reviewApp.ticket.link" target="_blank">{{ reviewApp.name }}</a>
                </h4>
-               <h4 v-else>
-                  {{ reviewApp.name }}
-               </h4>
+               <h4 v-else>{{ reviewApp.name }}</h4>
 
                <div class="dropdown menu">
                   <button class="btn bmd-btn-icon dropdown-toggle" type="button" :id="'menu' + reviewApp.name"
@@ -116,10 +114,10 @@
                   <div class="ra-build-infos__wrapper"
                        v-if="isExpanded( container )">
                      <div class="ra-build-infos">
-                        <a v-if="container.openApiUrl" href="#" @click="currentApiUrl = container.openApiUrl">API
-                           Documentation</a>
-
-                        <a href="#" @click="showLogs($event, container.name)">Logs</a>
+                        <template v-if="container.openApiUrl">
+                           <router-link :to="{ name: 'open-api-ui', params: {  url: container.openApiUrl, title: container.name }}">API Documentation</router-link>
+                        </template>
+                        <router-link :to="{ name: 'logs', params: {  app: reviewApp.name, service: container.name }}">Logs</router-link>
                      </div>
 
                      <div v-if="container.version && container.version.dateModified" class="ra-build-infos">
@@ -158,9 +156,6 @@
       </div>
 
       <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name != 'master'"/>
-
-      <open-api-ui :url="currentApiUrl" v-if="currentApiUrl != null" @close="currentApiUrl = null"/>
-
       <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
    </div>
 </template>
@@ -174,7 +169,6 @@
    export default {
       data() {
          return {
-            currentApiUrl: null,
             currentAppName: window.location.hash.slice(1),
             expandedContainers: {}
          };
@@ -302,9 +296,6 @@
             }
 
             return this.expandedContainers[container.name] == true;
-         },
-         showLogs(event, service) {
-            this.$emit('showLogs', this.reviewApp.name, service);
          },
          changeState(event, service) {
             this.$emit('changeState', this.reviewApp.name, service);

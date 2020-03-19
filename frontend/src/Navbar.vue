@@ -10,10 +10,10 @@
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -51,14 +51,12 @@
                <font-awesome-icon icon="code"/>
                Code
             </a>
-            <a class="btn btn-outline-success my-2 my-sm-0" href="#" @click="showApi = true">
+            <router-link class="btn btn-outline-success my-2 my-sm-0" :to="{ name: 'open-api-ui', params: { url: '/openapi.yaml', title: 'PREvant' }}">
                <font-awesome-icon icon="terminal"/>
                API
-            </a>
+            </router-link>
          </form>
       </div>
-
-      <open-api-ui url="/openapi.yaml" title="PREvant" v-if="showApi" @close="showApi = false" />
    </nav>
 
 </template>
@@ -75,9 +73,7 @@
 
    export default {
       data() {
-         return {
-            showApi: false
-         };
+         return {};
       },
       components: {
          'open-api-ui': OpenApiUI
