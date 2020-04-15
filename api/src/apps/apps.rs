@@ -36,10 +36,10 @@ use cached::{Cached, SizedCache};
 use chrono::{DateTime, FixedOffset, Utc};
 use handlebars::TemplateRenderError;
 use multimap::MultiMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::{From, TryInto};
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -48,19 +48,81 @@ use yansi::Paint;
 pub struct AppsService {
     config: Config,
     infrastructure: Box<dyn Infrastructure>,
-    apps_in_deployment: Mutex<HashSet<String>>,
+    app_guards: Mutex<HashMap<AppName, Arc<AppGuard>>>,
     web_host_meta_cache: Mutex<SizedCache<String, WebHostMeta>>,
 }
 
-struct DeploymentGuard<'a, 'b> {
-    apps_service: &'a AppsService,
-    app_name: &'b String,
+type GuardedResult = Result<Vec<Service>, AppsServiceError>;
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum AppGuardKind {
+    Deployment,
+    Deletion,
 }
 
-impl<'a, 'b> Drop for DeploymentGuard<'a, 'b> {
-    fn drop(&mut self) {
-        let mut apps_in_deployment = self.apps_service.apps_in_deployment.lock().unwrap();
-        apps_in_deployment.remove(self.app_name);
+/// This helper struct ensures that there is only one thread interacting with an application through
+/// the infrastructure while multiple threads requests want to interact at the same time.
+///
+/// With [#40](https://github.com/aixigo/PREvant/issues/40) this should be replaced with an worker/
+/// producer approach.
+struct AppGuard {
+    app_name: AppName,
+    kind: AppGuardKind,
+    process_mutex: Mutex<(bool, Option<GuardedResult>)>,
+    condvar: Condvar,
+}
+
+impl AppGuard {
+    fn new(app_name: AppName, kind: AppGuardKind) -> Self {
+        AppGuard {
+            app_name,
+            kind,
+            process_mutex: Mutex::new((false, None)),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn is_first(&self) -> bool {
+        let mut guard = self.process_mutex.lock().unwrap();
+        if (*guard).0 {
+            false
+        } else {
+            (*guard).0 = true;
+            true
+        }
+    }
+
+    fn wait_for_result(&self) -> GuardedResult {
+        let mut guard = self.process_mutex.lock().unwrap();
+        while (*guard).1.is_none() {
+            trace!("waiting for the result of {}", self.app_name);
+            guard = self.condvar.wait(guard).unwrap();
+        }
+        (*guard)
+            .1
+            .as_ref()
+            .cloned()
+            .expect("Here it is expected that the deletion result is always present")
+    }
+
+    #[must_use]
+    fn notify_with_result(
+        &self,
+        apps_service: &AppsService,
+        result: GuardedResult,
+    ) -> GuardedResult {
+        let mut guard = self.process_mutex.lock().unwrap();
+        (*guard).1 = Some(result.clone());
+        self.condvar.notify_all();
+
+        let mut apps_in_deletion = apps_service.app_guards.lock().unwrap();
+        let removed_guard = apps_in_deletion.remove(&self.app_name);
+        trace!(
+            "Dropped guard for {:?}",
+            removed_guard.as_ref().map(|g| &*g.app_name)
+        );
+
+        result
     }
 }
 
@@ -72,7 +134,7 @@ impl AppsService {
         Ok(AppsService {
             config,
             infrastructure,
-            apps_in_deployment: Mutex::new(HashSet::new()),
+            app_guards: Mutex::new(HashMap::new()),
             web_host_meta_cache: Mutex::new(SizedCache::with_size(500)),
         })
     }
@@ -245,17 +307,24 @@ impl AppsService {
         (app_name, service, meta)
     }
 
-    fn create_deployment_guard<'a, 'b>(
-        &'a self,
-        app_name: &'b String,
-    ) -> Option<DeploymentGuard<'a, 'b>> {
-        let mut apps_in_deployment = self.apps_in_deployment.lock().unwrap();
-        match apps_in_deployment.insert(app_name.clone()) {
-            true => Some(DeploymentGuard {
-                apps_service: self,
-                app_name,
-            }),
-            false => None,
+    #[must_use]
+    fn create_or_get_app_guard(
+        &self,
+        app_name: AppName,
+        kind: AppGuardKind,
+    ) -> Result<Arc<AppGuard>, AppsServiceError> {
+        let mut apps_in_deletion = self.app_guards.lock().unwrap();
+        let guard = &*apps_in_deletion
+            .entry(app_name.clone())
+            .or_insert_with(|| Arc::new(AppGuard::new(app_name.clone(), kind)));
+
+        if &guard.kind != &kind {
+            match guard.kind {
+                AppGuardKind::Deletion => Err(AppsServiceError::AppIsInDeletion { app_name }),
+                AppGuardKind::Deployment => Err(AppsServiceError::AppIsInDeployment { app_name }),
+            }
+        } else {
+            Ok(guard.clone())
         }
     }
 
@@ -285,7 +354,7 @@ impl AppsService {
             .filter(|config| !service_names.contains(config.service_name()))
             .filter(|config| !running_service_names.contains(config.service_name()))
             .map(|config| {
-                let mut replicated_config = config.clone();
+                let mut replicated_config = config;
                 replicated_config.set_container_type(ContainerType::Replica);
                 replicated_config
             })
@@ -307,15 +376,26 @@ impl AppsService {
         replicate_from: Option<AppName>,
         service_configs: &Vec<ServiceConfig>,
     ) -> Result<Vec<Service>, AppsServiceError> {
-        let _guard = match self.create_deployment_guard(app_name) {
-            None => {
-                return Err(AppsServiceError::AppIsInDeployment {
-                    app_name: app_name.clone(),
-                })
-            }
-            Some(guard) => guard,
-        };
+        let guard = self.create_or_get_app_guard(app_name.clone(), AppGuardKind::Deployment)?;
 
+        if !guard.is_first() {
+            return Err(AppsServiceError::AppIsInDeployment {
+                app_name: app_name.clone(),
+            });
+        }
+
+        guard.notify_with_result(
+            self,
+            self.create_or_update_impl(app_name, replicate_from, service_configs),
+        )
+    }
+
+    fn create_or_update_impl(
+        &self,
+        app_name: &AppName,
+        replicate_from: Option<AppName>,
+        service_configs: &Vec<ServiceConfig>,
+    ) -> Result<Vec<Service>, AppsServiceError> {
         let mut runtime = Runtime::new().expect("Should create runtime");
         let mut configs: Vec<ServiceConfig> = service_configs.clone();
 
@@ -361,6 +441,16 @@ impl AppsService {
 
     /// Deletes all services for the given `app_name`.
     pub fn delete_app(&self, app_name: &AppName) -> Result<Vec<Service>, AppsServiceError> {
+        let guard = self.create_or_get_app_guard(app_name.clone(), AppGuardKind::Deletion)?;
+
+        if !guard.is_first() {
+            guard.wait_for_result()
+        } else {
+            guard.notify_with_result(self, self.delete_app_impl(app_name))
+        }
+    }
+
+    fn delete_app_impl(&self, app_name: &AppName) -> Result<Vec<Service>, AppsServiceError> {
         let mut runtime = Runtime::new().expect("Should create runtime");
 
         let services = runtime.block_on(self.infrastructure.stop_services(app_name))?;
@@ -415,43 +505,54 @@ impl AppsService {
 }
 
 /// Defines error cases for the `AppService`
-#[derive(Debug, Fail)]
+#[derive(Debug, Clone, Fail)]
 pub enum AppsServiceError {
     /// Will be used when no app with a given name is found
     #[fail(display = "Cannot find app {}.", app_name)]
     AppNotFound { app_name: AppName },
     #[fail(
-        display = "The app {} is currently beeing deployed in by another request.",
+        display = "The app {} is currently within deployment by another request.",
         app_name
     )]
     AppIsInDeployment { app_name: AppName },
+    #[fail(
+        display = "The app {} is currently within deletion in by another request.",
+        app_name
+    )]
+    AppIsInDeletion { app_name: AppName },
     /// Will be used when the service cannot interact correctly with the infrastructure.
     #[fail(display = "Cannot interact with infrastructure: {}", error)]
-    InfrastructureError { error: failure::Error },
+    InfrastructureError { error: Arc<failure::Error> },
     /// Will be used if the service configuration cannot be loaded.
     #[fail(display = "Invalid configuration: {}", error)]
-    InvalidServerConfiguration { error: ConfigError },
+    InvalidServerConfiguration { error: Arc<ConfigError> },
     #[fail(display = "Invalid configuration (invalid template): {}", error)]
-    InvalidTemplateFormat { error: TemplateRenderError },
+    InvalidTemplateFormat { error: Arc<TemplateRenderError> },
     #[fail(display = "Unable to resolve information about image: {}", error)]
     UnableToResolveImage { error: ImagesServiceError },
 }
 
 impl From<ConfigError> for AppsServiceError {
     fn from(error: ConfigError) -> Self {
-        AppsServiceError::InvalidServerConfiguration { error }
+        AppsServiceError::InvalidServerConfiguration {
+            error: Arc::new(error),
+        }
     }
 }
 
 impl From<failure::Error> for AppsServiceError {
     fn from(error: failure::Error) -> Self {
-        AppsServiceError::InfrastructureError { error }
+        AppsServiceError::InfrastructureError {
+            error: Arc::new(error),
+        }
     }
 }
 
 impl From<TemplateRenderError> for AppsServiceError {
     fn from(error: TemplateRenderError) -> Self {
-        AppsServiceError::InvalidTemplateFormat { error }
+        AppsServiceError::InvalidTemplateFormat {
+            error: Arc::new(error),
+        }
     }
 }
 
@@ -891,6 +992,54 @@ Log msg 3 of service-a of app master
             openid_env.value().unsecure(),
             "service-a,service-b,service-c,"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_delete_apps() -> Result<(), AppsServiceError> {
+        let config = Config::default();
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        let app_name = AppName::from_str("master").unwrap();
+        apps.create_or_update(&app_name, None, &service_configs!("service-a"))?;
+        let deleted_services = apps.delete_app(&app_name)?;
+
+        assert_eq!(
+            deleted_services,
+            vec![ServiceBuilder::new()
+                .id("service-a".to_string())
+                .app_name("master".to_string())
+                .config(sc!("service-a"))
+                .started_at(
+                    DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                )
+                .build()
+                .unwrap()],
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn should_delete_apps_from_parallel_threads_returning_the_same_result(
+    ) -> Result<(), AppsServiceError> {
+        let config = Config::default();
+        let infrastructure = Box::new(Dummy::with_delay(std::time::Duration::from_millis(500)));
+        let apps = Arc::new(AppsService::new(config, infrastructure)?);
+
+        let app_name = AppName::from_str("master").unwrap();
+        apps.create_or_update(&app_name, None, &service_configs!("service-a"))?;
+
+        let apps_clone = apps.clone();
+        let handle1 = std::thread::spawn(move || apps_clone.delete_app(&app_name));
+        let app_name = AppName::from_str("master").unwrap();
+        let handle2 = std::thread::spawn(move || apps.delete_app(&app_name));
+
+        assert_eq!(handle1.join().unwrap()?, handle2.join().unwrap()?,);
 
         Ok(())
     }

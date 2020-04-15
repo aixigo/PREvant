@@ -33,17 +33,36 @@ use chrono::{DateTime, FixedOffset, Utc};
 use multimap::MultiMap;
 use std::collections::HashSet;
 use std::sync::Mutex;
+use std::time::Duration;
 
 #[cfg(test)]
 pub struct DummyInfrastructure {
+    delay: Option<Duration>,
     services: Mutex<MultiMap<String, ServiceConfig>>,
 }
 
 #[cfg(test)]
 impl DummyInfrastructure {
-    pub fn new() -> DummyInfrastructure {
+    pub fn new() -> Self {
         DummyInfrastructure {
+            delay: None,
             services: Mutex::new(MultiMap::new()),
+        }
+    }
+
+    pub fn with_delay(delay: Duration) -> Self {
+        DummyInfrastructure {
+            delay: Some(delay),
+            services: Mutex::new(MultiMap::new()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl DummyInfrastructure {
+    async fn delay_if_configured(&self) {
+        if let Some(delay) = &self.delay {
+            tokio::time::delay_for(delay.clone()).await;
         }
     }
 }
@@ -83,6 +102,8 @@ impl Infrastructure for DummyInfrastructure {
         configs: &Vec<ServiceConfig>,
         _container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, failure::Error> {
+        self.delay_if_configured().await;
+
         let mut services = self.services.lock().unwrap();
 
         if let Some(running_services) = services.get_vec_mut(app_name) {
@@ -102,9 +123,28 @@ impl Infrastructure for DummyInfrastructure {
     }
 
     async fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, failure::Error> {
+        self.delay_if_configured().await;
+
         let mut services = self.services.lock().unwrap();
-        services.remove(app_name);
-        Ok(vec![])
+        match services.remove(app_name) {
+            Some(services) => Ok(services
+                .into_iter()
+                .map(|sc| {
+                    ServiceBuilder::new()
+                        .app_name(app_name.clone())
+                        .id(sc.service_name().clone())
+                        .config(sc)
+                        .started_at(
+                            DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
+                                .unwrap()
+                                .with_timezone(&Utc),
+                        )
+                        .build()
+                        .unwrap()
+                })
+                .collect()),
+            None => Ok(vec![]),
+        }
     }
 
     async fn get_logs(

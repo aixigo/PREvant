@@ -144,7 +144,7 @@ impl ImageConfig {
     }
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Clone, Fail)]
 pub enum ImagesServiceError {
     #[fail(display = "Unknown manifest format for {}", image)]
     UnknownManifestFormat { image: Image },

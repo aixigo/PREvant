@@ -32,7 +32,7 @@ use std::collections::HashSet;
 use std::ops::Deref;
 use std::str::{FromStr, Utf8Error};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AppName(String);
 
 impl Deref for AppName {

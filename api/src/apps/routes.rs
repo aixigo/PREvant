@@ -237,12 +237,13 @@ impl Responder<'static> for ServiceStatusResponse {
 impl From<AppsError> for HttpApiProblem {
     fn from(error: AppsError) -> Self {
         let status = match error {
-            AppsError::AppNotFound { app_name: _ } => StatusCode::NOT_FOUND,
-            AppsError::AppIsInDeployment { app_name: _ } => StatusCode::CONFLICT,
-            AppsError::InfrastructureError { error: _ }
-            | AppsError::InvalidServerConfiguration { error: _ }
-            | AppsError::InvalidTemplateFormat { error: _ }
-            | AppsError::UnableToResolveImage { error: _ } => {
+            AppsError::AppNotFound { .. } => StatusCode::NOT_FOUND,
+            AppsError::AppIsInDeployment { .. } => StatusCode::CONFLICT,
+            AppsError::AppIsInDeletion { .. } => StatusCode::CONFLICT,
+            AppsError::InfrastructureError { .. }
+            | AppsError::InvalidServerConfiguration { .. }
+            | AppsError::InvalidTemplateFormat { .. }
+            | AppsError::UnableToResolveImage { .. } => {
                 error!("Internal server error: {}", error);
                 StatusCode::INTERNAL_SERVER_ERROR
             }
