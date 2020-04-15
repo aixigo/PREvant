@@ -415,8 +415,8 @@ impl KubernetesInfrastructure {
         }
     }
 
-    async fn stop_service<'a>(
-        &self,
+    async fn stop_service<'a, 'b: 'a>(
+        &'b self,
         app_name: &String,
         service: &'a Service,
     ) -> Result<&'a Service, KubernetesInfrastructureError> {

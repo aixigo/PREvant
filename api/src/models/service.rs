@@ -33,7 +33,7 @@ use std::net::IpAddr;
 use std::str::FromStr;
 use url::Url;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Service {
     /// An unique identifier of the service, e.g. the container id
     id: String,
@@ -45,7 +45,7 @@ pub struct Service {
     config: ServiceConfig,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct ServiceEndpoint {
     internal_addr: IpAddr,
     exposed_port: u16,
@@ -61,7 +61,7 @@ impl ServiceEndpoint {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
     status: ServiceStatus,
