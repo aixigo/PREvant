@@ -16,7 +16,7 @@
     "core-js": "^3.4.4",
     "current-script-polyfill": "^1.0.0",
     "esprima": "^4.0.1",
-    "jquery": "^3.4.1",
+    "jquery": "^3.5.0",
     "moment": "^2.22.2",
     "parse-link-header": "^1.0.1",
     "swagger-ui-dist": "^3.25.0",
