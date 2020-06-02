@@ -27,6 +27,17 @@
 <template>
    <div class="container" id="app">
 
+      <spinner v-if="isFetchInProgress" />
+
+      <div v-if="errors.length > 0" class="alert alert-danger" role="alert">
+         <p v-for="error in errors">
+            <b>{{ error.title }}</b>: {{ error.detail }}
+         </p>
+      </div>
+      <h1 v-else-if="reviewApps.length === 0" class="ra-container__title--preview">
+         No apps to review.
+      </h1>
+
       <h1 class="ra-container__title--preview" v-if="appsWithoutTicket(reviewApps).length > 0">Previews</h1>
       <transition-group tag="div" name="list-complete" class="ra-container__apps--preview ra-apps ">
          <review-app-card
@@ -68,12 +79,21 @@
    .list-complete-leave-active {
       position: absolute;
    }
+
+   .alert > p {
+      margin-bottom: 0;
+      text-align: center;
+   }
+   .alert > p + p {
+      margin-top: 1rem;
+   }
 </style>
 
 <script>
    import { mapGetters } from 'vuex';
    import LogsDialog from './LogsDialog.vue';
    import ReviewAppCard from './ReviewAppCard.vue';
+   import Spinner from './Spinner.vue';
 
    export default {
       data() {
@@ -86,10 +106,11 @@
       },
       components: {
          'review-app-card': ReviewAppCard,
-         'logs-dialog': LogsDialog
+         'logs-dialog': LogsDialog,
+         'spinner': Spinner
       },
       computed: {
-         ...mapGetters( [ 'reviewApps' ] )
+         ...mapGetters( [ 'reviewApps', 'errors', 'isFetchInProgress' ] )
       },
       methods: {
          appsWithTicket( apps ) {

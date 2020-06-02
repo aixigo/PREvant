@@ -36,19 +36,13 @@ const SERVICE_TYPE_ORDER = [
     'service-companion'
 ];
 
-function timeout(ms, promise) {
-    return new Promise(function(resolve, reject) {
-        setTimeout(function() {
-            reject(new Error("timeout"))
-        }, ms);
-        promise.then(resolve, reject)
-    })
-}
-
 export default new Vuex.Store( {
    state: {
+      fetchInProgress: false,
       apps: {},
+      appsError: null,
       tickets: {},
+      ticketsError: null,
       appNameFilter: ''
    },
    getters: {
@@ -106,15 +100,51 @@ export default new Vuex.Store( {
             const [ keyA, keyB ] = [ appA, appB ].map( ( { name } ) => name );
             return keyA > keyB ? -1 : 1;
          }
-      }
-   },
-   mutations: {
-      storeApps( state, apps ) {
-         state.apps = apps;
       },
 
-      storeTickets( state, tickets ) {
-         state.tickets = tickets;
+      errors: state => {
+         const errors = [];
+
+         if( state.appsError ) {
+            errors.push( state.appsError );
+         }
+         if( state.ticketsError ) {
+            errors.push( state.ticketsError );
+         }
+
+         return errors;
+      },
+
+      isFetchInProgress: state => state.fetchInProgress
+   },
+   mutations: {
+      startFetch( state ) {
+         state.fetchInProgress = true;
+      },
+      endFetch( state ) {
+         state.fetchInProgress = false;
+      },
+
+      storeApps( state, appsResponse ) {
+         if( appsResponse.type ) {
+            state.apps = {};
+            state.appsError = appsResponse;
+         }
+         else {
+            state.apps = appsResponse;
+            state.appsError = null;
+         }
+      },
+
+      storeTickets( state, ticketsResponse ) {
+         if( ticketsResponse.type ) {
+            state.tickets = {};
+            state.ticketsError = ticketsResponse;
+         }
+         else {
+            state.tickets = ticketsResponse;
+            state.ticketsError = null;
+         }
       },
 
       storeVersion( state, e ) {
@@ -134,22 +164,44 @@ export default new Vuex.Store( {
    },
    actions: {
       fetchData( context ) {
+         context.commit( 'startFetch' );
+
          Promise.all([
             fetch( '/api/apps' )
                .then( response => {
-                   if (response.ok && response.status === 200) {
-                       return response.json();
-                   }
-                   return Promise.resolve(() => {});
+                  if( response.ok && response.status === 200 ) {
+                     return response.json();
+                  }
+                  if( response.headers.get('Content-Type') === 'application/problem+json' ) {
+                     return response.json();
+                  }
+                  return response.text().then( detail => ({
+                     type: 'cannot-fetch-apps',
+                     title: 'Cannot fetch apps',
+                     detail
+                  }));
                } ),
             fetch( '/api/apps/tickets' )
                .then( response => {
-                  if (response.ok && response.status === 200) {
+                  if( response.ok ) {
+                     if( response.status === 200 ) {
+                        return response.json();
+                     }
+                     else {
+                        return Promise.resolve({});
+                     }
+                  }
+                  if( response.headers.get('Content-Type') === 'application/problem+json' ) {
                      return response.json();
                   }
-                   return Promise.resolve(() => {});
+                  return response.text().then( detail => ({
+                     type: 'cannot-fetch-tickets',
+                     title: 'Cannot fetch tickets',
+                     detail
+                  }));
                } )
          ]).then((values) => {
+            context.commit( 'endFetch' );
             context.commit( "storeTickets", values[1] );
             context.commit( "storeApps", values[0] );
          });
