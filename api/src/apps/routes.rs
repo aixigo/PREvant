@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::apps::HostMetaCache;
 use crate::apps::{Apps, AppsError};
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceStatus};
@@ -41,6 +42,8 @@ use rocket::{Data, State};
 use rocket_contrib::json::Json;
 use std::io::Read;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 pub fn routes() -> Vec<rocket::Route> {
     rocket::routes![apps, delete_app, create_app, logs, change_status]
@@ -48,10 +51,15 @@ pub fn routes() -> Vec<rocket::Route> {
 
 #[get("/", format = "application/json")]
 fn apps(
-    apps: State<Apps>,
+    apps: State<Arc<Apps>>,
     request_info: RequestInfo,
+    host_meta_cache: State<Arc<Mutex<HostMetaCache>>>,
 ) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
-    Ok(Json(apps.get_apps(&request_info)?))
+    let services = apps.get_apps()?;
+    let host_meta_cache = host_meta_cache.lock().unwrap();
+    Ok(Json(
+        host_meta_cache.update_meta_data(services, &request_info),
+    ))
 }
 
 #[delete("/<app_name>")]
@@ -71,7 +79,7 @@ pub fn delete_app(
 )]
 fn create_app(
     app_name: Result<AppName, AppNameError>,
-    apps: State<Apps>,
+    apps: State<Arc<Apps>>,
     create_app_form: Form<CreateAppOptions>,
     service_configs_data: ServiceConfigsData,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {

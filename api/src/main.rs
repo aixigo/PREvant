@@ -39,6 +39,7 @@ extern crate rocket;
 #[macro_use]
 extern crate serde_derive;
 
+use crate::apps::host_meta_crawling;
 use crate::apps::Apps;
 use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
@@ -55,6 +56,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::Mutex;
 use url::Url;
 
 mod apps;
@@ -239,9 +242,14 @@ fn main() -> Result<(), StartUpError> {
         }
     };
 
+    let (host_meta_cache, host_meta_crawler) = host_meta_crawling();
+    let apps = Arc::new(apps);
+    host_meta_crawler.spawn(apps.clone());
+
     rocket::ignite()
         .manage(config)
         .manage(apps)
+        .manage(Arc::new(Mutex::new(host_meta_cache)))
         .mount("/", routes![index])
         .mount("/openapi.yaml", routes![openapi])
         .mount("/", routes![files])

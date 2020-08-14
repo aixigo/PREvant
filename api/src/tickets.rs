@@ -26,7 +26,6 @@
 
 use crate::apps::{Apps, AppsError};
 use crate::config::Config;
-use crate::models::request_info::RequestInfo;
 use crate::models::ticket_info::TicketInfo;
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
@@ -42,7 +41,6 @@ use std::convert::From;
 pub fn tickets(
     config_state: State<Config>,
     apps_service: State<Apps>,
-    request_info: RequestInfo,
 ) -> Result<Json<HashMap<String, TicketInfo>>, HttpApiProblem> {
     let mut tickets: HashMap<String, TicketInfo> = HashMap::new();
 
@@ -53,7 +51,7 @@ pub fn tickets(
             ));
         }
         Some(jira_config) => {
-            let services = apps_service.get_apps(&request_info)?;
+            let services = apps_service.get_apps()?;
 
             let pw = String::from(jira_config.password().unsecure());
             let jira = match Jira::new(
