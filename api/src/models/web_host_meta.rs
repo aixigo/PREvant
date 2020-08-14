@@ -24,8 +24,9 @@
  * =========================LICENSE_END==================================
  */
 use chrono::{DateTime, Utc};
+use url::Url;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Serialize, PartialEq)]
 pub struct WebHostMeta {
     properties: Option<Properties>,
     links: Option<Vec<Link>>,
@@ -37,7 +38,7 @@ fn valid_web_host() -> bool {
     true
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Serialize, PartialEq)]
 struct Properties {
     #[serde(rename = "https://schema.org/softwareVersion")]
     version: Option<String>,
@@ -47,10 +48,10 @@ struct Properties {
     date_modified: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Serialize, PartialEq)]
 struct Link {
     rel: String,
-    href: String,
+    href: Url,
 }
 
 impl WebHostMeta {
@@ -85,7 +86,7 @@ impl WebHostMeta {
         }
     }
 
-    pub fn openapi(&self) -> Option<String> {
+    pub fn openapi(&self) -> Option<Url> {
         match &self.links {
             None => None,
             Some(links) => links
@@ -107,6 +108,18 @@ impl WebHostMeta {
             None => None,
             Some(properties) => properties.date_modified.clone(),
         }
+    }
+
+    pub fn with_base_url(&self, url: &Url) -> WebHostMeta {
+        let mut web_host_meta = self.clone();
+        if let Some(ref mut links) = web_host_meta.links {
+            for link in links {
+                link.href = url
+                    .join(link.href.path())
+                    .expect("invalid urls in web host meta data");
+            }
+        }
+        web_host_meta
     }
 }
 
@@ -228,7 +241,26 @@ mod tests {
 
         assert_eq!(
             meta.openapi(),
-            Some(String::from("https://speca.io/speca/petstore-api"))
+            Some(Url::parse("https://speca.io/speca/petstore-api").unwrap())
+        );
+    }
+
+    #[test]
+    fn should_replace_base_url_in_links() {
+        let json = r#"{
+          "links":[{
+            "rel": "https://github.com/OAI/OpenAPI-Specification",
+            "href":"https://speca.io/speca/petstore-api"
+          }]
+        }"#;
+
+        let meta = serde_json::from_str::<WebHostMeta>(json)
+            .unwrap()
+            .with_base_url(&Url::parse("http://example.com").unwrap());
+
+        assert_eq!(
+            meta.openapi(),
+            Some(Url::parse("http://example.com/speca/petstore-api").unwrap())
         );
     }
 }

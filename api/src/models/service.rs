@@ -147,7 +147,7 @@ impl Serialize for Service {
             #[serde(skip_serializing_if = "Option::is_none")]
             version: Option<Version>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            open_api_url: Option<String>,
+            open_api_url: Option<Url>,
             state: &'a State,
         }
 

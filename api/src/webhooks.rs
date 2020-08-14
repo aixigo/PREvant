@@ -33,10 +33,11 @@ use http_api_problem::HttpApiProblem;
 use rocket::State;
 use rocket_contrib::json::Json;
 use std::str::FromStr;
+use std::sync::Arc;
 
 #[post("/webhooks", format = "application/json", data = "<web_hook_info>")]
 pub fn webhooks(
-    apps: State<Apps>,
+    apps: State<Arc<Apps>>,
     web_hook_info: WebHookInfo,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
     info!(

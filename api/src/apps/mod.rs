@@ -25,9 +25,13 @@
  */
 mod apps;
 mod deployment_unit;
+mod host_meta_cache;
 mod routes;
 
 pub use apps::AppsService as Apps;
 pub use apps::AppsServiceError as AppsError;
 pub(self) use deployment_unit::DeploymentUnit;
+pub use host_meta_cache::new as host_meta_crawling;
+pub use host_meta_cache::HostMetaCache;
+pub use host_meta_cache::HostMetaCrawler;
 pub use routes::{delete_app, routes};
