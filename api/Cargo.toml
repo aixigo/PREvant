@@ -13,6 +13,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = "2.33"
 dkregistry = "0.4"
 env_logger = "0.7"
+evmap = "10.0"
 failure = "0.1"
 futures = { version = "0.3", features = ["compat"] }
 handlebars = "2"

@@ -26,7 +26,6 @@
 
 use crate::apps::{Apps, AppsError};
 use crate::config::Config;
-use crate::models::request_info::RequestInfo;
 use crate::models::ticket_info::TicketInfo;
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
@@ -35,14 +34,14 @@ use rocket::State;
 use rocket_contrib::json::Json;
 use std::collections::HashMap;
 use std::convert::From;
+use std::sync::Arc;
 
 /// Analyzes running containers and returns a map of `review-app-name` with the
 /// corresponding `TicketInfo`.
 #[get("/apps/tickets", format = "application/json")]
 pub fn tickets(
     config_state: State<Config>,
-    apps_service: State<Apps>,
-    request_info: RequestInfo,
+    apps_service: State<Arc<Apps>>,
 ) -> Result<Json<HashMap<String, TicketInfo>>, HttpApiProblem> {
     let mut tickets: HashMap<String, TicketInfo> = HashMap::new();
 
@@ -53,7 +52,7 @@ pub fn tickets(
             ));
         }
         Some(jira_config) => {
-            let services = apps_service.get_apps(&request_info)?;
+            let services = apps_service.get_apps()?;
 
             let pw = String::from(jira_config.password().unsecure());
             let jira = match Jira::new(

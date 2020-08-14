@@ -27,29 +27,22 @@
 use crate::apps::DeploymentUnit;
 use crate::config::{Config, ConfigError};
 use crate::infrastructure::Infrastructure;
-use crate::models::request_info::RequestInfo;
 use crate::models::service::{ContainerType, Service, ServiceStatus};
-use crate::models::web_host_meta::WebHostMeta;
-use crate::models::{AppName, LogChunk, ServiceBuilder, ServiceConfig};
+use crate::models::{AppName, LogChunk, ServiceConfig};
 use crate::services::images_service::{ImagesService, ImagesServiceError};
-use cached::{Cached, SizedCache};
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset};
 use handlebars::TemplateRenderError;
 use multimap::MultiMap;
 use std::collections::{HashMap, HashSet};
 use std::convert::{From, TryInto};
 use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
 use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
-use yansi::Paint;
 
 pub struct AppsService {
     config: Config,
     infrastructure: Box<dyn Infrastructure>,
     app_guards: Mutex<HashMap<AppName, Arc<AppGuard>>>,
-    web_host_meta_cache: Mutex<SizedCache<String, WebHostMeta>>,
 }
 
 type GuardedResult = Result<Vec<Service>, AppsServiceError>;
@@ -135,176 +128,15 @@ impl AppsService {
             config,
             infrastructure,
             app_guards: Mutex::new(HashMap::new()),
-            web_host_meta_cache: Mutex::new(SizedCache::with_size(500)),
         })
     }
 
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
-    pub fn get_apps(
-        &self,
-        request_info: &RequestInfo,
-    ) -> Result<MultiMap<String, Service>, AppsServiceError> {
+    pub fn get_apps(&self) -> Result<MultiMap<String, Service>, AppsServiceError> {
         let mut runtime = Runtime::new().expect("Should create runtime");
 
-        let services = runtime
-            .block_on(self.infrastructure.get_services())?
-            .iter_all()
-            .flat_map(|(app_name, services)| {
-                services
-                    .iter()
-                    // avoid cloning when https://github.com/havarnov/multimap/issues/24 has been implemented
-                    .map(move |service| (app_name.clone(), service.clone()))
-            })
-            .collect::<Vec<_>>();
-
-        let (services_with_host_meta, services_without_host_meta): (Vec<_>, Vec<_>) = {
-            let mut cache = self.web_host_meta_cache.lock().unwrap();
-            services
-                .into_iter()
-                .partition(|(_app_name, service)| cache.cache_get(service.id()).is_some())
-        };
-
-        let resolved_host_meta_infos =
-            runtime.block_on(self.resolve_host_meta(request_info, services_without_host_meta));
-
-        let mut apps = MultiMap::new();
-        let mut cache = self.web_host_meta_cache.lock().unwrap();
-        for (app_name, service, web_host_meta) in resolved_host_meta_infos {
-            if web_host_meta.is_valid() {
-                cache.cache_set(service.id().clone(), web_host_meta.clone());
-            }
-
-            apps.insert(
-                app_name.clone(),
-                ServiceBuilder::from(service)
-                    .web_host_meta(web_host_meta)
-                    .base_url(request_info.get_base_url().clone())
-                    .build()
-                    .unwrap(),
-            )
-        }
-
-        apps.extend(
-            services_with_host_meta
-                .into_iter()
-                .map(|(app_name, service)| {
-                    let host_meta = cache.cache_get(service.id()).unwrap().clone();
-                    (
-                        app_name,
-                        ServiceBuilder::from(service)
-                            .web_host_meta(host_meta)
-                            .base_url(request_info.get_base_url().clone())
-                            .build()
-                            .unwrap(),
-                    )
-                }),
-        );
-
-        Ok(apps)
-    }
-
-    async fn resolve_host_meta(
-        &self,
-        request_info: &RequestInfo,
-        services_without_host_meta: Vec<(String, Service)>,
-    ) -> Vec<(String, Service, WebHostMeta)> {
-        let number_of_services = services_without_host_meta.len();
-        if number_of_services == 0 {
-            return Vec::with_capacity(0);
-        }
-
-        trace!("Resolve web host meta for {} services.", number_of_services);
-
-        let (tx, mut rx) = mpsc::channel(number_of_services);
-
-        for (app_name, service) in services_without_host_meta {
-            let mut tx = tx.clone();
-            let request_info = request_info.clone();
-            tokio::spawn(async move {
-                let r = AppsService::resolve_web_host_meta(app_name, service, request_info).await;
-                if let Err(err) = tx.send(r).await {
-                    error!("Cannot send host meta result: {}", err);
-                }
-            });
-        }
-
-        let mut resolved_host_meta_infos = Vec::with_capacity(number_of_services);
-        for _c in 0..number_of_services {
-            let resolved_host_meta = rx.recv().await.unwrap();
-            resolved_host_meta_infos.push(resolved_host_meta);
-        }
-
-        resolved_host_meta_infos
-    }
-
-    async fn resolve_web_host_meta(
-        app_name: String,
-        service: Service,
-        request_info: RequestInfo,
-    ) -> (String, Service, WebHostMeta) {
-        let url = match service.endpoint_url() {
-            None => return (app_name, service, WebHostMeta::empty()),
-            Some(endpoint_url) => endpoint_url.join(".well-known/host-meta.json").unwrap(),
-        };
-
-        let get_request = reqwest::Client::builder()
-            .connect_timeout(Duration::from_millis(500))
-            .timeout(Duration::from_millis(750))
-            .user_agent(format!("PREvant/{}", crate_version!()))
-            .build()
-            .unwrap()
-            .get(&url.to_string())
-            .header(
-                "Forwarded",
-                format!(
-                    "host={};proto={}",
-                    request_info.host(),
-                    request_info.scheme()
-                ),
-            )
-            .header(
-                "X-Forwarded-Prefix",
-                format!("/{}/{}", service.app_name(), service.service_name()),
-            )
-            .header("Accept", "application/json")
-            .send()
-            .await;
-
-        let meta = match get_request {
-            Ok(response) => match response.json::<WebHostMeta>().await {
-                Ok(meta) => meta,
-                Err(err) => {
-                    error!(
-                        "Cannot parse host meta for service {} of {}: {}",
-                        Paint::magenta(service.service_name()),
-                        Paint::magenta(service.app_name()),
-                        err
-                    );
-                    WebHostMeta::empty()
-                }
-            },
-            Err(err) => {
-                debug!(
-                    "Cannot acquire host meta for service {} of {}: {}",
-                    Paint::magenta(service.service_name()),
-                    Paint::magenta(service.app_name()),
-                    err
-                );
-
-                let duration = Utc::now().signed_duration_since(service.started_at().clone());
-                if duration >= chrono::Duration::minutes(5) {
-                    trace!(
-                        "Service {} is running for {}, therefore, it will be assumed that host-meta.json is not available.",
-                        Paint::magenta(service.service_name()), duration
-                    );
-                    WebHostMeta::empty()
-                } else {
-                    WebHostMeta::invalid()
-                }
-            }
-        };
-        (app_name, service, meta)
+        Ok(runtime.block_on(self.infrastructure.get_services())?)
     }
 
     #[must_use]
@@ -490,17 +322,10 @@ impl AppsService {
         status: ServiceStatus,
     ) -> Result<Option<Service>, AppsServiceError> {
         let mut runtime = Runtime::new().expect("Should create runtime");
-        match runtime.block_on(
+        Ok(runtime.block_on(
             self.infrastructure
                 .change_status(app_name, service_name, status),
-        )? {
-            Some(service) => {
-                let mut cache = self.web_host_meta_cache.lock().unwrap();
-                (*cache).cache_remove(service.id());
-                Ok(Some(service))
-            }
-            None => Ok(None),
-        }
+        )?)
     }
 }
 
@@ -568,11 +393,11 @@ mod tests {
     use super::super::super::sc;
     use super::*;
     use crate::infrastructure::Dummy;
-    use crate::models::{EnvironmentVariable, Image};
+    use crate::models::{EnvironmentVariable, Image, ServiceBuilder};
+    use chrono::Utc;
     use sha2::{Digest, Sha256};
     use std::path::PathBuf;
     use std::str::FromStr;
-    use url::Url;
 
     macro_rules! config_from_str {
         ( $config_str:expr ) => {
@@ -627,9 +452,7 @@ mod tests {
             &service_configs!("service-a"),
         )?;
 
-        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
-
-        let deployed_apps = apps.get_apps(&info)?;
+        let deployed_apps = apps.get_apps()?;
         assert_eq!(deployed_apps.len(), 1);
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 1);
@@ -656,8 +479,7 @@ mod tests {
             &service_configs!("service-b"),
         )?;
 
-        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
-        let deployed_apps = apps.get_apps(&info)?;
+        let deployed_apps = apps.get_apps()?;
 
         let services = deployed_apps.get_vec("branch").unwrap();
         assert_eq!(services.len(), 2);
@@ -691,8 +513,7 @@ mod tests {
             &service_configs!("service-a"),
         )?;
 
-        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
-        let deployed_apps = apps.get_apps(&info)?;
+        let deployed_apps = apps.get_apps()?;
 
         let services = deployed_apps.get_vec("branch").unwrap();
         assert_eq!(services.len(), 2);
@@ -830,9 +651,7 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::from_str("master").unwrap();
         apps.create_or_update(&app_name, None, &service_configs!("service-a"))?;
-
-        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
-        let deployed_apps = apps.get_apps(&info)?;
+        let deployed_apps = apps.get_apps()?;
 
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 3);
@@ -865,9 +684,7 @@ Log msg 3 of service-a of app master
         let app_name = AppName::from_str("master").unwrap();
         let configs = service_configs!("openid", "db");
         apps.create_or_update(&app_name, None, &configs)?;
-
-        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
-        let deployed_apps = apps.get_apps(&info)?;
+        let deployed_apps = apps.get_apps()?;
 
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 2);
@@ -919,8 +736,7 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(&app_name, None, &configs)?;
 
-        let info = RequestInfo::new(Url::parse("http://example.com").unwrap());
-        let deployed_apps = apps.get_apps(&info)?;
+        let deployed_apps = apps.get_apps()?;
 
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 1);
