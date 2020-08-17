@@ -11,7 +11,7 @@ base64 = "0.11"
 cached = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
 clap = "2.33"
-dkregistry = { git = "https://github.com/camallo/dkregistry-rs", branch = "master" }
+dkregistry = "0.4"
 env_logger = "0.7"
 failure = "0.1"
 futures = { version = "0.3", features = ["compat"] }
@@ -41,8 +41,7 @@ url = { version = "2.1", features = ["serde"] }
 yansi = "0.5"
 
 [dependencies.shiplift]
-git = "https://github.com/schrieveslaach/shiplift.git"
-branch = "update-hyper"
+git = "https://github.com/softprops/shiplift.git"
 default-features = false
 features = ["unix-socket", "chrono"]
 

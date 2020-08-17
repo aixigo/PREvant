@@ -970,6 +970,7 @@ mod tests {
                 resolv_conf_path: "".to_string(),
                 restart_count: 0,
                 state: shiplift::rep::State {
+                    status: "Running".to_string(),
                     error: "".to_string(),
                     exit_code: 0,
                     oom_killed: false,
