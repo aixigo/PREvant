@@ -35,7 +35,6 @@ pub struct RequestInfo {
 }
 
 impl RequestInfo {
-    // #[cfg(test)]
     pub fn new(base_url: Url) -> Self {
         RequestInfo { base_url }
     }
