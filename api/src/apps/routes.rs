@@ -65,7 +65,7 @@ fn apps(
 #[delete("/<app_name>")]
 pub fn delete_app(
     app_name: Result<AppName, AppNameError>,
-    apps: State<Apps>,
+    apps: State<Arc<Apps>>,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
     let app_name = app_name?;
 
@@ -102,7 +102,7 @@ fn create_app(
 fn change_status(
     app_name: Result<AppName, AppNameError>,
     service_name: String,
-    apps: State<Apps>,
+    apps: State<Arc<Apps>>,
     status_data: Json<ServiceStatusData>,
 ) -> Result<ServiceStatusResponse, HttpApiProblem> {
     let app_name = app_name?;
@@ -122,7 +122,7 @@ fn logs(
     service_name: String,
     since: Option<String>,
     limit: Option<usize>,
-    apps: State<Apps>,
+    apps: State<Arc<Apps>>,
 ) -> Result<LogsResponse, HttpApiProblem> {
     let app_name = app_name?;
 

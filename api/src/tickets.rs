@@ -34,13 +34,14 @@ use rocket::State;
 use rocket_contrib::json::Json;
 use std::collections::HashMap;
 use std::convert::From;
+use std::sync::Arc;
 
 /// Analyzes running containers and returns a map of `review-app-name` with the
 /// corresponding `TicketInfo`.
 #[get("/apps/tickets", format = "application/json")]
 pub fn tickets(
     config_state: State<Config>,
-    apps_service: State<Apps>,
+    apps_service: State<Arc<Apps>>,
 ) -> Result<Json<HashMap<String, TicketInfo>>, HttpApiProblem> {
     let mut tickets: HashMap<String, TicketInfo> = HashMap::new();
 

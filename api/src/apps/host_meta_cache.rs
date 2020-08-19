@@ -2,24 +2,29 @@ use crate::apps::Apps;
 use crate::models::service::{Service, ServiceBuilder};
 use crate::models::RequestInfo;
 use crate::models::WebHostMeta;
-
 use chrono::Utc;
 use evmap::ReadHandle;
 use evmap::WriteHandle;
 use multimap::MultiMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
-use url::Url;
 use yansi::Paint;
 
 pub struct HostMetaCache {
-    reader: ReadHandle<(String, String), Arc<WebHostMeta>>,
+    reader: ReadHandle<Key, Arc<WebHostMeta>>,
 }
 pub struct HostMetaCrawler {
-    writer: WriteHandle<(String, String), Arc<WebHostMeta>>,
+    writer: WriteHandle<Key, Arc<WebHostMeta>>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct Key {
+    app_name: String,
+    service_id: String,
 }
 
 pub fn new() -> (HostMetaCache, HostMetaCrawler) {
@@ -38,12 +43,17 @@ impl HostMetaCache {
 
         for (app_name, service) in services.iter_all() {
             for service in service.iter().cloned() {
-                let tuple = (app_name.clone(), service.id().clone());
+                let key = Key {
+                    app_name: app_name.to_string(),
+                    service_id: service.id().to_string(),
+                };
+
                 let mut b = ServiceBuilder::from(service);
-                if let Some(web_host_meta) = self.reader.get_one(&tuple) {
+                if let Some(web_host_meta) = self.reader.get_one(&key) {
                     b = b.web_host_meta(web_host_meta.with_base_url(request_info.get_base_url()));
                 }
-                assigned_apps.insert(app_name.clone(), b.build().unwrap());
+
+                assigned_apps.insert(key.app_name, b.build().unwrap());
             }
         }
         assigned_apps
@@ -55,41 +65,71 @@ impl HostMetaCrawler {
         let mut runtime = Runtime::new().expect("Should create runtime");
 
         std::thread::spawn(move || loop {
-            let services = match apps.get_apps() {
-                Ok(apps) => {
-                    info!("apps: {:?}", apps);
-                    apps.iter_all()
-                        .flat_map(|(app_name, services)| {
-                            services
-                                .iter()
-                                // avoid cloning when https://github.com/havarnov/multimap/issues/24 has been implemented
-                                .map(move |service| (app_name.clone(), service.clone()))
-                        })
-                        .collect::<Vec<_>>()
-                }
+            let apps = match apps.get_apps() {
+                Ok(apps) => apps,
                 Err(error) => {
                     error!("error: {}", error);
                     continue;
                 }
             };
 
-            let resolved_host_meta_infos = runtime.block_on(Self::resolve_host_meta(services));
+            self.clear_stale_web_host_meta(&apps);
 
-            info!("resolved infos: {:?}", resolved_host_meta_infos);
-            self.writer.purge();
-            for (app_name, service, web_host_meta) in resolved_host_meta_infos {
-                self.writer
-                    .insert((app_name, service.id().clone()), Arc::new(web_host_meta));
+            let services_without_host_meta = apps
+                .iter_all()
+                .flat_map(|(app_name, services)| {
+                    services
+                        .iter()
+                        // avoid cloning when https://github.com/havarnov/multimap/issues/24 has been implemented
+                        .map(move |service| {
+                            let key = Key {
+                                app_name: app_name.to_string(),
+                                service_id: service.id().to_string(),
+                            };
+                            (key, service.clone())
+                        })
+                })
+                .filter(|(key, _service)| !self.writer.contains_key(key))
+                .collect::<Vec<(Key, Service)>>();
+
+            let resolved_host_meta_infos =
+                runtime.block_on(Self::resolve_host_meta(services_without_host_meta));
+            for (key, _service, web_host_meta) in resolved_host_meta_infos {
+                if !web_host_meta.is_valid() {
+                    continue;
+                }
+
+                self.writer.insert(key, Arc::new(web_host_meta));
             }
+
             self.writer.refresh();
 
             std::thread::sleep(std::time::Duration::from_secs(5));
         });
     }
 
+    fn clear_stale_web_host_meta(&mut self, apps: &MultiMap<String, Service>) {
+        use std::iter::FromIterator;
+        let copy: HashMap<Key, Vec<_>> = self
+            .writer
+            .map_into(|k, vs| (k.clone(), Vec::from_iter(vs.iter().cloned())));
+
+        let keys_to_clear = copy
+            .into_iter()
+            .map(|(key, _)| key)
+            .filter(|key| !apps.contains_key(&key.app_name))
+            .collect::<HashSet<Key>>();
+
+        debug!("Clearing stale apps: {:?}", keys_to_clear);
+
+        for key in keys_to_clear {
+            self.writer.empty(key);
+        }
+    }
+
     async fn resolve_host_meta(
-        services_without_host_meta: Vec<(String, Service)>,
-    ) -> Vec<(String, Service, WebHostMeta)> {
+        services_without_host_meta: Vec<(Key, Service)>,
+    ) -> Vec<(Key, Service, WebHostMeta)> {
         let number_of_services = services_without_host_meta.len();
         if number_of_services == 0 {
             return Vec::with_capacity(0);
@@ -99,10 +139,10 @@ impl HostMetaCrawler {
 
         let (tx, mut rx) = mpsc::channel(number_of_services);
 
-        for (app_name, service) in services_without_host_meta {
+        for (key, service) in services_without_host_meta {
             let mut tx = tx.clone();
             tokio::spawn(async move {
-                let r = Self::resolve_web_host_meta(app_name, service).await;
+                let r = Self::resolve_web_host_meta(key, service).await;
                 if let Err(err) = tx.send(r).await {
                     error!("Cannot send host meta result: {}", err);
                 }
@@ -118,16 +158,12 @@ impl HostMetaCrawler {
         resolved_host_meta_infos
     }
 
-    async fn resolve_web_host_meta(
-        app_name: String,
-        service: Service,
-    ) -> (String, Service, WebHostMeta) {
+    async fn resolve_web_host_meta(key: Key, service: Service) -> (Key, Service, WebHostMeta) {
         let url = match service.endpoint_url() {
-            None => return (app_name, service, WebHostMeta::empty()),
+            None => return (key, service, WebHostMeta::invalid()),
             Some(endpoint_url) => endpoint_url.join(".well-known/host-meta.json").unwrap(),
         };
 
-        let request_info = RequestInfo::new(Url::parse("http://www.prevant-example.de").unwrap());
         let get_request = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(500))
             .timeout(Duration::from_millis(750))
@@ -135,14 +171,7 @@ impl HostMetaCrawler {
             .build()
             .unwrap()
             .get(&url.to_string())
-            .header(
-                "Forwarded",
-                format!(
-                    "host={};proto={}",
-                    request_info.host(),
-                    request_info.scheme()
-                ),
-            )
+            .header("Forwarded", "host=www.prevant.example.com;proto=http")
             .header(
                 "X-Forwarded-Prefix",
                 format!("/{}/{}", service.app_name(), service.service_name()),
@@ -172,9 +201,9 @@ impl HostMetaCrawler {
                     err
                 );
 
-                let duration = Utc::now().signed_duration_since(service.started_at().clone());
+                let duration = Utc::now().signed_duration_since(*service.started_at());
                 if duration >= chrono::Duration::minutes(5) {
-                    trace!(
+                    error!(
                         "Service {} is running for {}, therefore, it will be assumed that host-meta.json is not available.",
                         Paint::magenta(service.service_name()), duration
                     );
@@ -184,6 +213,13 @@ impl HostMetaCrawler {
                 }
             }
         };
-        (app_name, service, meta)
+        (key, service, meta)
     }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn should_resolve_host_meta() {}
 }
