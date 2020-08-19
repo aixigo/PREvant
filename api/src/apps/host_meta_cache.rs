@@ -65,10 +65,11 @@ impl HostMetaCrawler {
         let mut runtime = Runtime::new().expect("Should create runtime");
 
         std::thread::spawn(move || loop {
+            debug!("Resolving list of apps for web host meta cache.");
             let apps = match apps.get_apps() {
                 Ok(apps) => apps,
                 Err(error) => {
-                    error!("error: {}", error);
+                    error!("Cannot load apps: {}", error);
                     continue;
                 }
             };
