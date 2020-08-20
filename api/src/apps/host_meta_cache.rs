@@ -106,7 +106,7 @@ impl HostMetaCrawler {
                 .collect::<Vec<(Key, Service)>>();
 
             if services_without_host_meta.is_empty() {
-                return;
+                continue;
             }
 
             debug!(
