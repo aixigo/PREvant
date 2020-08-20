@@ -1,8 +1,8 @@
 use crate::apps::Apps;
-use crate::models::service::{Service, ServiceBuilder};
+use crate::models::service::{Service, ServiceBuilder, ServiceStatus};
 use crate::models::RequestInfo;
 use crate::models::WebHostMeta;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use evmap::ReadHandle;
 use evmap::WriteHandle;
 use multimap::MultiMap;
@@ -15,16 +15,22 @@ use tokio::sync::mpsc;
 use yansi::Paint;
 
 pub struct HostMetaCache {
-    reader: ReadHandle<Key, Arc<WebHostMeta>>,
+    reader: ReadHandle<Key, Arc<Value>>,
 }
 pub struct HostMetaCrawler {
-    writer: WriteHandle<Key, Arc<WebHostMeta>>,
+    writer: WriteHandle<Key, Arc<Value>>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct Key {
     app_name: String,
     service_id: String,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct Value {
+    timestamp: DateTime<Utc>,
+    web_host_meta: WebHostMeta,
 }
 
 pub fn new() -> (HostMetaCache, HostMetaCrawler) {
@@ -48,14 +54,20 @@ impl HostMetaCache {
                     service_id: service.id().to_string(),
                 };
 
-                let mut b = ServiceBuilder::from(service);
-                if let Some(web_host_meta) = self.reader.get_one(&key) {
-                    b = b.web_host_meta(web_host_meta.with_base_url(request_info.get_base_url()));
+                let mut b =
+                    ServiceBuilder::from(service).base_url(request_info.get_base_url().clone());
+                if let Some(value) = self.reader.get_one(&key) {
+                    b = b.web_host_meta(
+                        value
+                            .web_host_meta
+                            .with_base_url(request_info.get_base_url()),
+                    );
                 }
 
                 assigned_apps.insert(key.app_name, b.build().unwrap());
             }
         }
+
         assigned_apps
     }
 }
@@ -93,14 +105,33 @@ impl HostMetaCrawler {
                 .filter(|(key, _service)| !self.writer.contains_key(key))
                 .collect::<Vec<(Key, Service)>>();
 
+            if services_without_host_meta.is_empty() {
+                return;
+            }
+
+            debug!(
+                "Resolving web host meta data for {:?}.",
+                services_without_host_meta
+                    .iter()
+                    .map(|(k, _)| k)
+                    .collect::<Vec<_>>()
+            );
+
             let resolved_host_meta_infos =
                 runtime.block_on(Self::resolve_host_meta(services_without_host_meta));
+            let now = Utc::now();
             for (key, _service, web_host_meta) in resolved_host_meta_infos {
                 if !web_host_meta.is_valid() {
                     continue;
                 }
 
-                self.writer.insert(key, Arc::new(web_host_meta));
+                self.writer.insert(
+                    key,
+                    Arc::new(Value {
+                        timestamp: now,
+                        web_host_meta,
+                    }),
+                );
             }
 
             self.writer.refresh();
@@ -117,15 +148,39 @@ impl HostMetaCrawler {
 
         let keys_to_clear = copy
             .into_iter()
+            .flat_map(|(key, values)| values.into_iter().map(move |v| (key.clone(), v)))
+            .filter(|(key, value)| {
+                let service = match apps.get_vec(&key.app_name) {
+                    Some(services) => services
+                        .iter()
+                        .find(|s| s.id() == &key.service_id)
+                        .map(|s| s),
+                    None => {
+                        return true;
+                    }
+                };
+
+                match service {
+                    Some(service) => {
+                        *service.status() == ServiceStatus::Paused
+                            || *service.started_at() > value.timestamp
+                    }
+                    None => true,
+                }
+            })
             .map(|(key, _)| key)
-            .filter(|key| !apps.contains_key(&key.app_name))
             .collect::<HashSet<Key>>();
+
+        if keys_to_clear.is_empty() {
+            return;
+        }
 
         debug!("Clearing stale apps: {:?}", keys_to_clear);
 
         for key in keys_to_clear {
             self.writer.empty(key);
         }
+        self.writer.refresh();
     }
 
     async fn resolve_host_meta(
@@ -135,8 +190,6 @@ impl HostMetaCrawler {
         if number_of_services == 0 {
             return Vec::with_capacity(0);
         }
-
-        trace!("Resolve web host meta for {} services.", number_of_services);
 
         let (tx, mut rx) = mpsc::channel(number_of_services);
 
@@ -216,11 +269,4 @@ impl HostMetaCrawler {
         };
         (key, service, meta)
     }
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn should_resolve_host_meta() {}
 }
