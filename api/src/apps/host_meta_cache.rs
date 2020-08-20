@@ -76,7 +76,10 @@ impl HostMetaCrawler {
     pub fn spawn(mut self, apps: Arc<Apps>) {
         let mut runtime = Runtime::new().expect("Should create runtime");
 
+        let timestamp_prevant_startup = Utc::now();
+
         std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
             debug!("Resolving list of apps for web host meta cache.");
             let apps = match apps.get_apps() {
                 Ok(apps) => apps,
@@ -116,10 +119,13 @@ impl HostMetaCrawler {
                     .map(|(k, _)| k)
                     .collect::<Vec<_>>()
             );
-
-            let resolved_host_meta_infos =
-                runtime.block_on(Self::resolve_host_meta(services_without_host_meta));
             let now = Utc::now();
+            let duration_prevant_startup =
+                Utc::now().signed_duration_since(timestamp_prevant_startup);
+            let resolved_host_meta_infos = runtime.block_on(Self::resolve_host_meta(
+                services_without_host_meta,
+                duration_prevant_startup,
+            ));
             for (key, _service, web_host_meta) in resolved_host_meta_infos {
                 if !web_host_meta.is_valid() {
                     continue;
@@ -135,8 +141,6 @@ impl HostMetaCrawler {
             }
 
             self.writer.refresh();
-
-            std::thread::sleep(std::time::Duration::from_secs(5));
         });
     }
 
@@ -185,6 +189,7 @@ impl HostMetaCrawler {
 
     async fn resolve_host_meta(
         services_without_host_meta: Vec<(Key, Service)>,
+        duration_prevant_startup: chrono::Duration,
     ) -> Vec<(Key, Service, WebHostMeta)> {
         let number_of_services = services_without_host_meta.len();
         if number_of_services == 0 {
@@ -196,7 +201,7 @@ impl HostMetaCrawler {
         for (key, service) in services_without_host_meta {
             let mut tx = tx.clone();
             tokio::spawn(async move {
-                let r = Self::resolve_web_host_meta(key, service).await;
+                let r = Self::resolve_web_host_meta(key, service, duration_prevant_startup).await;
                 if let Err(err) = tx.send(r).await {
                     error!("Cannot send host meta result: {}", err);
                 }
@@ -212,7 +217,11 @@ impl HostMetaCrawler {
         resolved_host_meta_infos
     }
 
-    async fn resolve_web_host_meta(key: Key, service: Service) -> (Key, Service, WebHostMeta) {
+    async fn resolve_web_host_meta(
+        key: Key,
+        service: Service,
+        duration_prevant_startup: chrono::Duration,
+    ) -> (Key, Service, WebHostMeta) {
         let url = match service.endpoint_url() {
             None => return (key, service, WebHostMeta::invalid()),
             Some(endpoint_url) => endpoint_url.join(".well-known/host-meta.json").unwrap(),
@@ -256,7 +265,9 @@ impl HostMetaCrawler {
                 );
 
                 let duration = Utc::now().signed_duration_since(*service.started_at());
-                if duration >= chrono::Duration::minutes(5) {
+                if duration >= chrono::Duration::minutes(5)
+                    && duration_prevant_startup >= chrono::Duration::minutes(1)
+                {
                     error!(
                         "Service {} is running for {}, therefore, it will be assumed that host-meta.json is not available.",
                         Paint::magenta(service.service_name()), duration
