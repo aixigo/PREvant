@@ -223,7 +223,7 @@ fn main() -> Result<(), StartUpError> {
         )
         .get_matches();
 
-    env_logger::from_env(Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let config = match Config::load(argument_matches.value_of("config").unwrap_or("config.toml")) {
         Ok(config) => config,
