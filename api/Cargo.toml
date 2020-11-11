@@ -7,12 +7,11 @@ edition = "2018"
 
 [dependencies]
 async-trait = "0.1"
-base64 = "0.11"
-cached = "0.9"
+base64 = "0.13"
 chrono = { version = "0.4", features = ["serde"] }
 clap = "2.33"
-dkregistry = "0.4"
-env_logger = "0.7"
+dkregistry = "0.5"
+env_logger = "0.8"
 evmap = "10.0"
 failure = "0.1"
 futures = { version = "0.3", features = ["compat"] }
@@ -31,8 +30,8 @@ serde-value = "0.6"
 serde_yaml = "0.8"
 tokio = { version = "0.2", features = ["sync"] }
 tokio-core = "0.1"
-toml = "0.4"
-regex = "1.0"
+toml = "0.5"
+regex = "1.4"
 reqwest = { version = "0.10", features = ["json"] }
 rocket = "0.4"
 rocket_contrib = "0.4"
