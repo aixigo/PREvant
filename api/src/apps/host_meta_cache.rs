@@ -3,8 +3,7 @@ use crate::models::service::{Service, ServiceBuilder, ServiceStatus};
 use crate::models::RequestInfo;
 use crate::models::WebHostMeta;
 use chrono::{DateTime, Utc};
-use evmap::ReadHandle;
-use evmap::WriteHandle;
+use evmap::{ReadHandleFactory, WriteHandle};
 use multimap::MultiMap;
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
@@ -15,7 +14,7 @@ use tokio::sync::mpsc;
 use yansi::Paint;
 
 pub struct HostMetaCache {
-    reader: ReadHandle<Key, Arc<Value>>,
+    reader_factory: ReadHandleFactory<Key, Arc<Value>>,
 }
 pub struct HostMetaCrawler {
     writer: WriteHandle<Key, Arc<Value>>,
@@ -36,7 +35,12 @@ struct Value {
 pub fn new() -> (HostMetaCache, HostMetaCrawler) {
     let (reader, writer) = evmap::new();
 
-    (HostMetaCache { reader }, HostMetaCrawler { writer })
+    (
+        HostMetaCache {
+            reader_factory: reader.factory(),
+        },
+        HostMetaCrawler { writer },
+    )
 }
 
 impl HostMetaCache {
@@ -47,6 +51,8 @@ impl HostMetaCache {
     ) -> MultiMap<String, Service> {
         let mut assigned_apps = MultiMap::new();
 
+        let reader = self.reader_factory.handle();
+
         for (app_name, service) in services.iter_all() {
             for service in service.iter().cloned() {
                 let key = Key {
@@ -56,7 +62,7 @@ impl HostMetaCache {
 
                 let mut b =
                     ServiceBuilder::from(service).base_url(request_info.get_base_url().clone());
-                if let Some(value) = self.reader.get_one(&key) {
+                if let Some(value) = reader.get_one(&key) {
                     b = b.web_host_meta(
                         value
                             .web_host_meta
@@ -145,20 +151,16 @@ impl HostMetaCrawler {
     }
 
     fn clear_stale_web_host_meta(&mut self, apps: &MultiMap<String, Service>) {
-        use std::iter::FromIterator;
         let copy: HashMap<Key, Vec<_>> = self
             .writer
-            .map_into(|k, vs| (k.clone(), Vec::from_iter(vs.iter().cloned())));
+            .map_into(|k, vs| (k.clone(), vs.iter().cloned().collect()));
 
         let keys_to_clear = copy
             .into_iter()
             .flat_map(|(key, values)| values.into_iter().map(move |v| (key.clone(), v)))
             .filter(|(key, value)| {
                 let service = match apps.get_vec(&key.app_name) {
-                    Some(services) => services
-                        .iter()
-                        .find(|s| s.id() == &key.service_id)
-                        .map(|s| s),
+                    Some(services) => services.iter().find(|s| s.id() == &key.service_id),
                     None => {
                         return true;
                     }

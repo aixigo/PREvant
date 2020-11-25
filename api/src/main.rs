@@ -57,7 +57,6 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::Mutex;
 use url::Url;
 
 mod apps;
@@ -98,7 +97,7 @@ fn openapi(request_info: RequestInfo) -> Option<String> {
 
     let mut url = request_info.get_base_url().clone();
     url.set_path("/api");
-    v["servers"][0]["url"] = Value::String(String::from(url.to_string()));
+    v["servers"][0]["url"] = Value::String(url.to_string());
 
     Some(to_string(&v).unwrap())
 }
@@ -249,7 +248,7 @@ fn main() -> Result<(), StartUpError> {
     rocket::ignite()
         .manage(config)
         .manage(apps)
-        .manage(Arc::new(Mutex::new(host_meta_cache)))
+        .manage(host_meta_cache)
         .mount("/", routes![index])
         .mount("/openapi.yaml", routes![openapi])
         .mount("/", routes![files])
