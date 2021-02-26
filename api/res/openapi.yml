@@ -70,6 +70,7 @@ paths:
             type: string
             default: 'master'
           description: The application name that will be used to replicate from.
+        - $ref: '#/components/parameters/preferAsync'
       requestBody:
         description: Information of review app to create
         required: true
@@ -88,6 +89,16 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Service'
+        '202':
+          description: >-
+            Accepted. The deployment is being processed asynchronously. The current state of the action
+            can be polled at the url pointed to by the Location header.
+          headers:
+            Location:
+              description: The url of the queued task
+              schema:
+                type: string
+                format: url
         '409':
           description: The application is currently in deployment. A parallel deployment of two apps is not allowed.
           content:
@@ -104,6 +115,7 @@ paths:
       summary: Shutdown a review app
       parameters:
         - $ref: '#/components/parameters/appName'
+        - $ref: '#/components/parameters/preferAsync'
       responses:
         '200':
           description: 'List of deleted containers'
@@ -113,6 +125,16 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Service'
+        '202':
+          description: >-
+            Accepted. The shutdown is being processed asynchronously. The current state of the action
+            can be polled at the url pointed to by the Location header.
+          headers:
+            Location:
+              description: The url of the queued task
+              schema:
+                type: string
+                format: url
         '404':
           description: Cannot find app
           content:
@@ -185,6 +207,24 @@ paths:
             text/plain:
               schema:
                 type: string
+  /apps/{appName}/status-changes/{statusId}:
+    parameters:
+      - $ref: '#/components/parameters/appName'
+      - name: statusId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Check if the given status change is still in progress
+      description: >-
+        Can be used to poll the completion of a status change, such as deploying or stopping an app.
+      responses:
+        '202':
+          description: The status change is still running
+        '404':
+          description: The status change finished
   /webhooks/:
     post:
       summary: Cleans up apps when webhook triggers this resource.
@@ -239,6 +279,19 @@ components:
       required: true
       schema:
         type: string
+    preferAsync:
+      in: header
+      name: Prefer
+      description: >-
+        Whether the server should respond without waiting for completion
+        (see [RFC-7240](https://tools.ietf.org/html/rfc7240) for details)
+      required: false
+      schema:
+        enum:
+          - respond-async
+          - respond-async, wait=1
+          - respond-async, wait=5
+          - respond-async, wait=10
   schemas:
     Service:
       type: object

@@ -43,7 +43,7 @@ static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
 static CONTAINER_TYPE_LABEL: &str = "com.aixigo.preview.servant.container-type";
 static REPLICATED_ENV_LABEL: &str = "com.aixigo.preview.servant.replicated-env";
 static IMAGE_LABEL: &str = "com.aixigo.preview.servant.image";
-static DEPLOYMENT_ID: &str = "com.aixigo.preview.servant.deployment-id";
+static STATUS_ID: &str = "com.aixigo.preview.servant.status-id";
 
 /// This function converts the environment variables and adds all variables, that
 /// must be replicated, into a JSON object. This function should be used by implementations

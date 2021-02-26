@@ -11,7 +11,7 @@ RUN npm ci && npm run build
 # Build Backend
 FROM rust:1 as backend-builder
 USER root
-RUN rustup default nightly
+RUN rustup default nightly-2021-03-15
 COPY api/Cargo.toml api/Cargo.lock /usr/src/api/
 COPY api/src /usr/src/api/src
 WORKDIR /usr/src/api

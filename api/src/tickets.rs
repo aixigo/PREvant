@@ -35,6 +35,7 @@ use rocket_contrib::json::Json;
 use std::collections::HashMap;
 use std::convert::From;
 use std::sync::Arc;
+use tokio::runtime::Runtime;
 
 /// Analyzes running containers and returns a map of `review-app-name` with the
 /// corresponding `TicketInfo`.
@@ -52,7 +53,8 @@ pub fn tickets(
             ));
         }
         Some(jira_config) => {
-            let services = apps_service.get_apps()?;
+            let runtime = Runtime::new().expect("Should create runtime");
+            let services = runtime.block_on(apps_service.get_apps())?;
 
             let pw = String::from(jira_config.password().unsecure());
             let jira = match Jira::new(

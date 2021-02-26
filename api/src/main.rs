@@ -40,13 +40,13 @@ extern crate rocket;
 extern crate serde_derive;
 
 use crate::apps::host_meta_crawling;
-use crate::apps::Apps;
+use crate::apps::{Apps, Tasks};
 use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
 use clap::{App, Arg};
 use env_logger::Env;
-use reqwest::Certificate;
+use openssl::x509::X509;
 use rocket::response::NamedFile;
 use rocket_cache_response::CacheResponse;
 use secstr::SecUtf8;
@@ -175,37 +175,31 @@ fn read_token_file(path: &PathBuf) -> Result<SecUtf8, StartUpError> {
     Ok(SecUtf8::from(token))
 }
 
-fn read_ca_file(path: &PathBuf) -> Result<Certificate, StartUpError> {
+fn read_ca_file(path: &PathBuf) -> Result<Vec<X509>, StartUpError> {
     debug!(
         "Reading certificate authority from {}.",
         path.to_str().unwrap()
     );
 
-    let mut f = match File::open(path) {
-        Ok(f) => f,
-        Err(e) => {
-            return Err(StartUpError::CannotReadCertificateAuthority {
-                path: String::from(path.to_str().unwrap()),
-                err: format!("{}", e),
-            });
+    let mut file =
+        File::open(path).map_err(|err| StartUpError::CannotReadCertificateAuthority {
+            path: String::from(path.to_str().unwrap()),
+            err: format!("{}", err),
+        })?;
+
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)
+        .map_err(|err| StartUpError::CannotReadCertificateAuthority {
+            path: String::from(path.to_str().unwrap()),
+            err: format!("{}", err),
+        })?;
+
+    X509::stack_from_pem(buffer.as_slice()).map_err(|err| {
+        StartUpError::CannotReadCertificateAuthority {
+            path: String::from(path.to_str().unwrap()),
+            err: format!("{}", err),
         }
-    };
-
-    let mut buf = Vec::new();
-    if let Err(e) = f.read_to_end(&mut buf) {
-        return Err(StartUpError::CannotReadCertificateAuthority {
-            path: String::from(path.to_str().unwrap()),
-            err: format!("{}", e),
-        });
-    }
-
-    match Certificate::from_pem(&buf) {
-        Ok(cert) => Ok(cert),
-        Err(e) => Err(StartUpError::CannotReadCertificateAuthority {
-            path: String::from(path.to_str().unwrap()),
-            err: format!("{}", e),
-        }),
-    }
+    })
 }
 
 fn main() -> Result<(), StartUpError> {
@@ -240,6 +234,13 @@ fn main() -> Result<(), StartUpError> {
             process::exit(0x0200);
         }
     };
+    let tasks = match Tasks::new() {
+        Ok(tasks_service) => tasks_service,
+        Err(e) => {
+            error!("Cannot create tasks service: {}", e);
+            process::exit(0x0300);
+        }
+    };
 
     let (host_meta_cache, host_meta_crawler) = host_meta_crawling();
     let apps = Arc::new(apps);
@@ -249,10 +250,11 @@ fn main() -> Result<(), StartUpError> {
         .manage(config)
         .manage(apps)
         .manage(host_meta_cache)
+        .manage(tasks)
         .mount("/", routes![index])
         .mount("/openapi.yaml", routes![openapi])
         .mount("/", routes![files])
-        .mount("/api/apps", crate::apps::routes())
+        .mount("/api/apps", crate::apps::apps_routes())
         .mount("/api", routes![tickets::tickets])
         .mount("/api", routes![webhooks::webhooks])
         .launch();

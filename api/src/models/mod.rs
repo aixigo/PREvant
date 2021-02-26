@@ -25,6 +25,7 @@
  */
 
 pub use app_name::{AppName, AppNameError};
+pub use app_status_change_id::{AppStatusChangeId, AppStatusChangeIdError};
 pub use image::Image;
 pub use logs_chunks::LogChunk;
 pub use request_info::RequestInfo;
@@ -33,6 +34,7 @@ pub use service_config::{Environment, EnvironmentVariable, Router, ServiceConfig
 pub use web_host_meta::WebHostMeta;
 
 mod app_name;
+mod app_status_change_id;
 mod image;
 mod logs_chunks;
 pub mod request_info;

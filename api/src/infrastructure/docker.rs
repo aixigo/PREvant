@@ -26,14 +26,14 @@
 
 use crate::config::ContainerConfig;
 use crate::infrastructure::{
-    Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, DEPLOYMENT_ID, IMAGE_LABEL,
-    REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
+    Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL,
+    SERVICE_NAME_LABEL, STATUS_ID,
 };
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
-use failure::Error;
+use failure::{format_err, Error};
 use futures::future::join_all;
 use futures::StreamExt;
 use multimap::MultiMap;
@@ -51,7 +51,6 @@ use std::convert::{From, TryFrom};
 use std::net::{AddrParseError, IpAddr};
 use std::str::FromStr;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
@@ -86,27 +85,39 @@ impl DockerInfrastructure {
         DockerInfrastructure {}
     }
 
-    async fn find_deployment_task_container(
+    async fn find_status_change_container(
         &self,
-        deployment_id: &Uuid,
-        app_name: &str,
-    ) -> Result<Option<ContainerDetails>, ShipLiftError> {
-        Ok(None)
+        status_id: &String,
+    ) -> Result<Option<Container>, ShipLiftError> {
+        self.get_status_change_containers(None, Some(status_id))
+            .await
+            .map(|list| list.into_iter().next())
     }
 
-    async fn create_deployment_task_container(
+    async fn create_status_change_container(
         &self,
-        deployment_id: &Uuid,
+        status_id: &String,
         app_name: &str,
     ) -> Result<ContainerDetails, Error> {
-        // TODO: what to if there is already an deployment
+        let existing_task = self
+            .get_status_change_containers(Some(&String::from(app_name)), None)
+            .await?
+            .into_iter()
+            .next();
+
+        if let Some(existing_task) = existing_task {
+            // TODO: what to if there is already a deployment
+            return Err(format_err!(
+                "There is already an operation in progress: {:?}",
+                existing_task
+            ));
+        }
 
         let mut labels: HashMap<&str, &str> = HashMap::new();
         labels.insert(APP_NAME_LABEL, app_name);
-        let deployment_id = deployment_id.to_hyphenated().to_string();
-        labels.insert(DEPLOYMENT_ID, &deployment_id);
+        labels.insert(STATUS_ID, &status_id);
 
-        let mut options = ContainerOptions::builder("busybox");
+        let mut options = ContainerOptions::builder("docker.io/library/busybox");
         options.labels(&labels);
 
         let docker = Docker::new();
@@ -114,12 +125,14 @@ impl DockerInfrastructure {
 
         trace!(
             "Create deployment task container {} for {}",
-            deployment_id,
+            status_id,
             app_name
         );
-        let container_info = containers.create(&options.build()).await?;
+        let container_info = containers.create(&options.build()).await;
+        let ci = container_info?;
 
-        Ok(containers.get(&container_info.id).inspect().await?)
+        let container = containers.get(&ci.id);
+        Ok(container.inspect().await?)
     }
 
     async fn create_or_get_network_id(&self, app_name: &String) -> Result<String, ShipLiftError> {
@@ -220,6 +233,65 @@ impl DockerInfrastructure {
         }
 
         Ok(())
+    }
+
+    async fn deploy_services_impl(
+        &self,
+        app_name: &String,
+        configs: &Vec<ServiceConfig>,
+        container_config: &ContainerConfig,
+    ) -> Result<Vec<Service>, Error> {
+        let network_id = self.create_or_get_network_id(app_name).await?;
+
+        self.connect_traefik(&network_id).await?;
+
+        let futures = configs
+            .iter()
+            .map(|service_config| {
+                self.start_container(app_name, &network_id, &service_config, container_config)
+            })
+            .collect::<Vec<_>>();
+
+        let mut services: Vec<Service> = Vec::new();
+        for service in join_all(futures).await {
+            services.push(service?);
+        }
+
+        Ok(services)
+    }
+
+    async fn stop_services_impl(&self, app_name: &String) -> Result<Vec<Service>, Error> {
+        let container_details = match self
+            .get_container_details(Some(app_name), None)
+            .await?
+            .get_vec(app_name)
+        {
+            None => return Ok(vec![]),
+            Some(services) => services.clone(),
+        };
+
+        let futures = container_details
+            .iter()
+            .filter(|details| details.state.running)
+            .map(|details| stop(details.clone()));
+        for container in join_all(futures).await {
+            trace!("Stopped container {:?}", container?);
+        }
+
+        let mut services = Vec::with_capacity(container_details.len());
+        let futures = container_details
+            .iter()
+            .map(|details| delete(details.clone()));
+        for container in join_all(futures).await {
+            let container = container?;
+            trace!("Deleted container {:?}", container);
+
+            services.push(Service::try_from(&container)?);
+        }
+
+        self.delete_network(app_name).await?;
+
+        Ok(services)
     }
 
     async fn start_container(
@@ -430,62 +502,74 @@ impl DockerInfrastructure {
         Ok(())
     }
 
+    async fn get_containers(
+        &self,
+        filters: Vec<ContainerFilter>,
+    ) -> Result<Vec<Container>, ShipLiftError> {
+        let docker = Docker::new();
+        let containers = docker.containers();
+
+        let list_options = ContainerListOptions::builder()
+            .all()
+            .filter(filters)
+            .build();
+
+        containers.list(&list_options).await
+    }
+
+    async fn get_app_containers(
+        &self,
+        app_name: Option<&String>,
+        service_name: Option<&String>,
+    ) -> Result<Vec<Container>, ShipLiftError> {
+        let filters = vec![
+            label_filter(APP_NAME_LABEL, app_name),
+            label_filter(SERVICE_NAME_LABEL, service_name),
+        ];
+        self.get_containers(filters).await
+    }
+
+    async fn get_status_change_containers(
+        &self,
+        app_name: Option<&String>,
+        status_id: Option<&String>,
+    ) -> Result<Vec<Container>, ShipLiftError> {
+        let filters = vec![
+            label_filter(APP_NAME_LABEL, app_name),
+            label_filter(STATUS_ID, status_id),
+        ];
+        self.get_containers(filters).await
+    }
+
     async fn get_app_container(
         &self,
         app_name: &String,
         service_name: &String,
     ) -> Result<Option<Container>, ShipLiftError> {
-        let docker = Docker::new();
-        let containers = docker.containers();
-
-        let list_options = ContainerListOptions::builder().all().build();
-
-        Ok(containers
-            .list(&list_options)
-            .await?
-            .into_iter()
-            .filter(|c| match c.labels.get(APP_NAME_LABEL) {
-                None => false,
-                Some(app) => app == app_name,
-            })
-            .filter(|c| match c.labels.get(SERVICE_NAME_LABEL) {
-                None => false,
-                Some(service) => service == service_name,
-            })
-            .next())
+        self.get_app_containers(Some(app_name), Some(service_name))
+            .await
+            .map(|list| list.into_iter().next())
     }
 
     async fn get_container_details(
         &self,
         app_name: Option<&String>,
+        service_name: Option<&String>,
     ) -> Result<MultiMap<String, ContainerDetails>, Error> {
         debug!("Resolve container details for app {:?}", app_name);
 
-        let f = match app_name {
-            None => ContainerFilter::LabelName(String::from(APP_NAME_LABEL)),
-            Some(app_name) => {
-                ContainerFilter::Label(String::from(APP_NAME_LABEL), app_name.clone())
-            }
-        };
-        let list_options = &ContainerListOptions::builder()
-            .all()
-            .filter(vec![f])
-            .build();
-
-        let docker = Docker::new();
-        let containers = docker.containers();
-
-        let container_list = containers.list(&list_options).await?;
+        let container_list = self.get_app_containers(app_name, service_name).await?;
         let number_of_containers = container_list.len();
         if number_of_containers == 0 {
             return Ok(MultiMap::new());
         }
 
-        let (tx, mut rx) = mpsc::channel(container_list.len());
+        let (tx, mut rx) = mpsc::channel(number_of_containers);
         for container in container_list.into_iter() {
-            let mut tx = tx.clone();
+            let tx = tx.clone();
             tokio::spawn(async move {
                 let inspect_result = inspect(container).await;
+                debug!("Container inspection result: {:?}", inspect_result);
                 if let Err(err) = tx.send(inspect_result).await {
                     error!("Cannot send container inspection: {:?}", err);
                 }
@@ -493,20 +577,32 @@ impl DockerInfrastructure {
         }
 
         let mut container_details = MultiMap::new();
+        let mut first_error = None;
         for _c in 0..number_of_containers {
-            let details = rx.recv().await.unwrap()?;
-            let app_name = details
-                .config
-                .labels
-                .clone()
-                .unwrap()
-                .get(APP_NAME_LABEL)
-                .unwrap()
-                .clone();
-
-            container_details.insert(app_name, details);
+            // consume all expected messages to avoid rx being dropped
+            match rx.recv().await.unwrap() {
+                Ok(details) => {
+                    let app_name = details
+                        .config
+                        .labels
+                        .clone()
+                        .unwrap()
+                        .get(APP_NAME_LABEL)
+                        .unwrap()
+                        .clone();
+                    container_details.insert(app_name, details);
+                }
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
+            }
         }
 
+        if let Some(first_error) = first_error {
+            return Err(Error::from(first_error));
+        }
         Ok(container_details)
     }
 }
@@ -515,7 +611,7 @@ impl DockerInfrastructure {
 impl Infrastructure for DockerInfrastructure {
     async fn get_services(&self) -> Result<MultiMap<String, Service>, Error> {
         let mut apps = MultiMap::new();
-        let container_details = self.get_container_details(None).await?;
+        let container_details = self.get_container_details(None, None).await?;
 
         for (app_name, details_vec) in container_details.iter_all() {
             for details in details_vec {
@@ -536,50 +632,36 @@ impl Infrastructure for DockerInfrastructure {
 
     async fn deploy_services(
         &self,
-        deployment_id: &Uuid,
+        status_id: &String,
         app_name: &String,
         configs: &Vec<ServiceConfig>,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
         let deployment_container = self
-            .create_deployment_task_container(deployment_id, app_name)
+            .create_status_change_container(status_id, app_name)
             .await?;
 
-        let network_id = self.create_or_get_network_id(app_name).await?;
-
-        self.connect_traefik(&network_id).await?;
-
-        let futures = configs
-            .iter()
-            .map(|service_config| {
-                self.start_container(app_name, &network_id, &service_config, container_config)
-            })
-            .collect::<Vec<_>>();
-
-        let mut services: Vec<Service> = Vec::new();
-        for service in join_all(futures).await {
-            services.push(service?);
-        }
+        let result = self
+            .deploy_services_impl(app_name, configs, container_config)
+            .await;
 
         delete(deployment_container).await?;
 
-        Ok(services)
+        result
     }
 
-    async fn get_deployment_task(
-        &self,
-        deployment_id: &Uuid,
-        app_name: &String,
-    ) -> Result<Option<Vec<Service>>, Error> {
+    async fn get_status_change(&self, status_id: &String) -> Result<Option<Vec<Service>>, Error> {
         Ok(
             match self
-                .find_deployment_task_container(deployment_id, app_name)
+                .find_status_change_container(status_id)
                 .await?
+                .as_ref()
+                .and_then(|c| c.labels.get(APP_NAME_LABEL))
             {
-                Some(_) => {
+                Some(app_name) => {
                     let mut services = Vec::new();
                     if let Some(container_details) = self
-                        .get_container_details(Some(app_name))
+                        .get_container_details(Some(app_name), None)
                         .await?
                         .get_vec(app_name)
                     {
@@ -596,38 +678,20 @@ impl Infrastructure for DockerInfrastructure {
     }
 
     /// Deletes all services for the given `app_name`.
-    async fn stop_services(&self, app_name: &String) -> Result<Vec<Service>, Error> {
-        let container_details = match self
-            .get_container_details(Some(app_name))
-            .await?
-            .get_vec(app_name)
-        {
-            None => return Ok(vec![]),
-            Some(services) => services.clone(),
-        };
+    async fn stop_services(
+        &self,
+        status_id: &String,
+        app_name: &String,
+    ) -> Result<Vec<Service>, Error> {
+        let deployment_container = self
+            .create_status_change_container(status_id, app_name)
+            .await?;
 
-        let futures = container_details
-            .iter()
-            .filter(|details| details.state.running)
-            .map(|details| stop(details.clone()));
-        for container in join_all(futures).await {
-            trace!("Stopped container {:?}", container?);
-        }
+        let result = self.stop_services_impl(app_name).await;
 
-        let mut services = Vec::with_capacity(container_details.len());
-        let futures = container_details
-            .iter()
-            .map(|details| delete(details.clone()));
-        for container in join_all(futures).await {
-            let container = container?;
-            trace!("Deleted container {:?}", container);
+        delete(deployment_container).await?;
 
-            services.push(Service::try_from(&container)?);
-        }
-
-        self.delete_network(app_name).await?;
-
-        Ok(services)
+        result
     }
 
     async fn get_logs(
@@ -752,6 +816,15 @@ impl Infrastructure for DockerInfrastructure {
             }
             None => Ok(None),
         }
+    }
+}
+
+/// Helper function to build ContainerFilters
+fn label_filter(label_name: &str, label_value: Option<&String>) -> ContainerFilter {
+    let label_name = String::from(label_name);
+    match label_value {
+        None => ContainerFilter::LabelName(label_name),
+        Some(value) => ContainerFilter::Label(label_name, value.clone()),
     }
 }
 
