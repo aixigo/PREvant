@@ -31,11 +31,43 @@ use crate::models::service::Service;
 use crate::models::ServiceConfig;
 use base64::encode;
 use chrono::Utc;
+use k8s_openapi::api::{
+    apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
+    core::v1::Secret as V1Secret, core::v1::Service as V1Service,
+};
+use kube_derive::CustomResource;
 use multimap::MultiMap;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, PathBuf};
 use std::string::ToString;
+
+#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[kube(
+    group = "traefik.containo.us",
+    version = "v1alpha1",
+    kind = "IngressRoute",
+    apiextensions = "v1beta1",
+    namespaced
+)]
+#[serde(rename_all = "camelCase")]
+pub struct IngressRouteSpec {
+    entry_points: Option<Vec<String>>,
+    routes: Option<Vec<Value>>,
+}
+
+#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[kube(
+    group = "traefik.containo.us",
+    version = "v1alpha1",
+    kind = "Middleware",
+    apiextensions = "v1beta1",
+    namespaced
+)]
+#[serde(rename_all = "camelCase")]
+pub struct MiddlewareSpec(BTreeMap<String, Value>);
 
 macro_rules! secret_name_from_path {
     ($path:expr) => {{
@@ -63,15 +95,15 @@ macro_rules! secret_name_from_name {
 }
 
 /// Creates a JSON payload suitable for [Kubernetes' Namespaces](https://kubernetes.io/docs/tasks/administer-cluster/namespaces/)
-pub fn namespace_payload(app_name: &String) -> String {
-    serde_json::json!({
+pub fn namespace_payload(app_name: &String) -> V1Namespace {
+    serde_json::from_value(serde_json::json!({
       "apiVersion": "v1",
       "kind": "Namespace",
       "metadata": {
         "name": app_name
       }
-    })
-    .to_string()
+    }))
+    .expect("Cannot convert value to core/v1/Namespace")
 }
 
 /// Creates a JSON payload suitable for [Kubernetes' Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
@@ -79,7 +111,7 @@ pub fn deployment_payload(
     app_name: &str,
     service_config: &ServiceConfig,
     container_config: &ContainerConfig,
-) -> Value {
+) -> V1Deployment {
     let env = service_config.env().map_or(Vec::new(), |env| {
         env.iter()
             .map(|env| {
@@ -91,11 +123,20 @@ pub fn deployment_payload(
             .collect()
     });
 
-    let replicated_env = service_config
+    let annotations = if let Some(replicated_env) = service_config
         .env()
-        .map(|env| super::super::replicated_environment_variable_to_json(env))
+        .map(super::super::replicated_environment_variable_to_json)
         .flatten()
-        .map_or_else(|| Value::Null, |value| Value::String(value.to_string()));
+    {
+        serde_json::json!({
+          IMAGE_LABEL: service_config.image().to_string(),
+          REPLICATED_ENV_LABEL: replicated_env.to_string(),
+        })
+    } else {
+        serde_json::json!({
+          IMAGE_LABEL: service_config.image().to_string(),
+        })
+    };
 
     let mounts = if let Some(volumes) = service_config.volumes() {
         let parent_paths = volumes
@@ -150,10 +191,10 @@ pub fn deployment_payload(
 
     let resources = container_config
         .memory_limit()
-        .map(|mem_limit| serde_json::json!({ "limits": {"memory": mem_limit }}))
+        .map(|mem_limit| serde_json::json!({ "limits": {"memory": format!("{}", mem_limit) }}))
         .unwrap_or(serde_json::json!(null));
 
-    serde_json::json!({
+    serde_json::from_value(serde_json::json!({
       "apiVersion": "apps/v1",
       "kind": "Deployment",
       "metadata": {
@@ -164,10 +205,7 @@ pub fn deployment_payload(
           SERVICE_NAME_LABEL: service_config.service_name(),
           CONTAINER_TYPE_LABEL: service_config.container_type().to_string(),
         },
-        "annotations": {
-          IMAGE_LABEL: service_config.image().to_string(),
-          REPLICATED_ENV_LABEL: replicated_env
-        }
+        "annotations": annotations,
       },
       "spec": {
         "replicas": 1,
@@ -186,7 +224,7 @@ pub fn deployment_payload(
               CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
             },
             "annotations": {
-              "date": Utc::now()
+              "date": Utc::now().to_rfc3339()
             }
           },
           "spec": {
@@ -209,11 +247,16 @@ pub fn deployment_payload(
           }
         }
       }
-    })
+    }))
+    .expect("Cannot convert value to apps/v1/Deployment")
 }
 
-pub fn deployment_replicas_payload(app_name: &String, service: &Service, replicas: u32) -> String {
-    serde_json::json!({
+pub fn deployment_replicas_payload(
+    app_name: &String,
+    service: &Service,
+    replicas: u32,
+) -> V1Deployment {
+    serde_json::from_value(serde_json::json!({
       "apiVersion": "apps/v1",
       "kind": "Deployment",
       "metadata": {
@@ -235,8 +278,8 @@ pub fn deployment_replicas_payload(app_name: &String, service: &Service, replica
           }
         }
       }
-    })
-    .to_string()
+    }))
+    .expect("Cannot convert value to apps/v1/Deployment")
 }
 
 /// Creates a JSON payload suitable for [Kubernetes' Secrets](https://kubernetes.io/docs/concepts/configuration/secret/)
@@ -244,7 +287,7 @@ pub fn secrets_payload(
     app_name: &String,
     service_config: &ServiceConfig,
     volumes: &BTreeMap<PathBuf, String>,
-) -> String {
+) -> V1Secret {
     let secrets = volumes
         .iter()
         .map(|(path, file_content)| {
@@ -255,7 +298,7 @@ pub fn secrets_payload(
         })
         .collect::<Map<String, Value>>();
 
-    serde_json::json!({
+    serde_json::from_value(serde_json::json!({
       "apiVersion": "v1",
       "kind": "Secret",
       "metadata": {
@@ -267,13 +310,13 @@ pub fn secrets_payload(
       },
       "type": "Opaque",
       "data": secrets
-    })
-    .to_string()
+    }))
+    .expect("Cannot convert value to core/v1/Secret")
 }
 
 /// Creates a JSON payload suitable for [Kubernetes' Services](https://kubernetes.io/docs/concepts/services-networking/service/)
-pub fn service_payload(app_name: &String, service_config: &ServiceConfig) -> String {
-    serde_json::json!({
+pub fn service_payload(app_name: &String, service_config: &ServiceConfig) -> V1Service {
+    serde_json::from_value(serde_json::json!({
       "apiVersion": "v1",
       "kind": "Service",
       "namespace": app_name,
@@ -297,16 +340,16 @@ pub fn service_payload(app_name: &String, service_config: &ServiceConfig) -> Str
           CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
         }
       }
-    })
-    .to_string()
+    }))
+    .expect("Cannot convert value to core/v1/Service")
 }
 
 /// Creates a payload that ensures that Traefik find the correct route in Kubernetes
 ///
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
-pub fn ingress_route_payload(app_name: &String, service_config: &ServiceConfig) -> String {
-    serde_json::json!({
+pub fn ingress_route_payload(app_name: &String, service_config: &ServiceConfig) -> IngressRoute {
+    serde_json::from_value(serde_json::json!({
       "apiVersion": "traefik.containo.us/v1alpha1",
       "kind": "IngressRoute",
       "metadata": {
@@ -338,16 +381,16 @@ pub fn ingress_route_payload(app_name: &String, service_config: &ServiceConfig) 
           }
         ]
       }
-    })
-    .to_string()
+    }))
+    .expect("Cannot convert value to traefik.containo.us/v1alpha1/IngressRoute")
 }
 
 /// Creates a payload that ensures that Traefik strips out the path prefix.
 ///
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
-pub fn middleware_payload(app_name: &String, service_config: &ServiceConfig) -> String {
-    serde_json::json!({
+pub fn middleware_payload(app_name: &String, service_config: &ServiceConfig) -> Middleware {
+    serde_json::from_value(serde_json::json!({
       "apiVersion": "traefik.containo.us/v1alpha1",
       "kind": "Middleware",
       "metadata": {
@@ -355,8 +398,8 @@ pub fn middleware_payload(app_name: &String, service_config: &ServiceConfig) -> 
         "namespace": app_name,
       },
        "spec": service_config.traefik_middlewares(app_name)
-    })
-    .to_string()
+    }))
+    .expect("Cannot convert value to traefik.containo.us/v1alpha1/MiddleWare")
 }
 
 #[cfg(test)]
@@ -380,7 +423,6 @@ mod tests {
               "metadata": {
                 "annotations": {
                   "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
-                  "com.aixigo.preview.servant.replicated-env": null
                 },
                 "labels": {
                   "com.aixigo.preview.servant.app-name": "master",
@@ -421,7 +463,6 @@ mod tests {
                             "containerPort": 80
                           }
                         ],
-                        "resources": null,
                         "volumeMounts": []
                       }
                     ],
@@ -451,7 +492,6 @@ mod tests {
               "metadata": {
                 "annotations": {
                   "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
-                  "com.aixigo.preview.servant.replicated-env": null
                 },
                 "labels": {
                   "com.aixigo.preview.servant.app-name": "master",
@@ -492,7 +532,6 @@ mod tests {
                             "containerPort": 80
                           }
                         ],
-                        "resources": null,
                         "volumeMounts": []
                       }
                     ],
@@ -571,7 +610,6 @@ mod tests {
                             "containerPort": 80
                           }
                         ],
-                        "resources": null,
                         "volumeMounts": []
                       }
                     ],
@@ -580,6 +618,109 @@ mod tests {
                 }
               }
             })
+        );
+    }
+
+    #[test]
+    fn should_create_ingress_route() {
+        let mut config = sc!("db", "mariadb:10.3.17");
+        let port = 1234;
+        config.set_port(port);
+
+        let payload = ingress_route_payload(&String::from("master"), &config);
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!({
+              "apiVersion": "traefik.containo.us/v1alpha1",
+              "kind": "IngressRoute",
+              "metadata": {
+                "name": "master-db-ingress-route",
+                "namespace": "master",
+              },
+              "spec": {
+                "entryPoints": [ "http" ],
+                "routes": [
+                  {
+                    "match": "PathPrefix(`/master/db/`)",
+                    "kind": "Rule",
+                    "services": [
+                      {
+                        "name": "db",
+                        "port": port,
+                      }
+                    ],
+                    "middlewares": [
+                      {
+                        "name": "master-db-middleware",
+                      }
+                    ]
+                  }
+                ]
+              },
+            }),
+        );
+    }
+
+    #[test]
+    fn should_create_middleware_with_default_prefix() {
+        let config = sc!("db", "mariadb:10.3.17");
+
+        let payload = middleware_payload(&String::from("master"), &config);
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!({
+              "apiVersion": "traefik.containo.us/v1alpha1",
+              "kind": "Middleware",
+              "metadata": {
+                "name": "master-db-middleware",
+                "namespace": "master",
+              },
+              "spec": {
+                "stripPrefix": {
+                  "prefixes": [
+                    "/master/db/"
+                  ]
+                }
+              },
+            }),
+        );
+    }
+
+    #[test]
+    fn should_create_middleware_with_extra_config() {
+        let mut middlewares: BTreeMap<String, serde_value::Value> = BTreeMap::new();
+        middlewares.insert(
+            String::from("compress"),
+            serde_value::to_value(serde_json::json!({})).expect("Should create value"),
+        );
+        middlewares.insert(
+            String::from("rateLimit"),
+            serde_value::to_value(serde_json::json!({"average": 100}))
+                .expect("Should create value"),
+        );
+        let mut config = sc!("db", "mariadb:10.3.17");
+        config.set_middlewares(middlewares);
+
+        let payload = middleware_payload(&String::from("master"), &config);
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!({
+              "apiVersion": "traefik.containo.us/v1alpha1",
+              "kind": "Middleware",
+              "metadata": {
+                "name": "master-db-middleware",
+                "namespace": "master",
+              },
+              "spec": {
+                "compress": {},
+                "rateLimit": {
+                  "average": 100
+                },
+              },
+            }),
         );
     }
 }

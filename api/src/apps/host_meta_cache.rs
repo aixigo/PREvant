@@ -80,14 +80,14 @@ impl HostMetaCache {
 
 impl HostMetaCrawler {
     pub fn spawn(mut self, apps: Arc<Apps>) {
-        let mut runtime = Runtime::new().expect("Should create runtime");
+        let runtime = Runtime::new().expect("Should create runtime");
 
         let timestamp_prevant_startup = Utc::now();
 
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(5));
             debug!("Resolving list of apps for web host meta cache.");
-            let apps = match apps.get_apps() {
+            let apps = match runtime.block_on(apps.get_apps()) {
                 Ok(apps) => apps,
                 Err(error) => {
                     error!("Cannot load apps: {}", error);
@@ -201,7 +201,7 @@ impl HostMetaCrawler {
         let (tx, mut rx) = mpsc::channel(number_of_services);
 
         for (key, service) in services_without_host_meta {
-            let mut tx = tx.clone();
+            let tx = tx.clone();
             tokio::spawn(async move {
                 let r = Self::resolve_web_host_meta(key, service, duration_prevant_startup).await;
                 if let Err(err) = tx.send(r).await {

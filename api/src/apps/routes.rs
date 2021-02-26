@@ -24,18 +24,24 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::apps::tasks::RunOptions;
 use crate::apps::HostMetaCache;
 use crate::apps::{Apps, AppsError};
+use crate::apps::{Tasks, TasksError};
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::ServiceConfig;
 use crate::models::{AppName, AppNameError, LogChunk};
+use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
 use chrono::DateTime;
 use http_api_problem::{HttpApiProblem, StatusCode};
+use hyper::header::Header;
 use multimap::MultiMap;
 use rocket::data::{self, FromDataSimple};
+use rocket::http::hyper::header::{Location, Prefer, Preference};
+use rocket::http::hyper::Error;
 use rocket::http::{RawStr, Status};
-use rocket::request::{Form, FromFormValue, Request};
+use rocket::request::{Form, FromFormValue, FromRequest, Outcome, Request};
 use rocket::response::{Responder, Response};
 use rocket::Outcome::{Failure, Success};
 use rocket::{Data, State};
@@ -43,9 +49,19 @@ use rocket_contrib::json::Json;
 use std::io::Read;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::task::Poll;
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
-pub fn routes() -> Vec<rocket::Route> {
-    rocket::routes![apps, delete_app, create_app, logs, change_status]
+pub fn apps_routes() -> Vec<rocket::Route> {
+    rocket::routes![
+        apps,
+        delete_app,
+        create_app,
+        logs,
+        change_status,
+        status_change
+    ]
 }
 
 #[get("/", format = "application/json")]
@@ -54,20 +70,69 @@ fn apps(
     request_info: RequestInfo,
     host_meta_cache: State<HostMetaCache>,
 ) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
-    let services = apps.get_apps()?;
+    let runtime = Runtime::new().expect("Should create runtime");
+    let services = runtime.block_on(apps.get_apps())?;
     Ok(Json(
         host_meta_cache.update_meta_data(services, &request_info),
     ))
+}
+
+#[get("/<app_name>/status-changes/<status_id>", format = "application/json")]
+fn status_change(
+    app_name: Result<AppName, AppNameError>,
+    status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
+    apps: State<Arc<Apps>>,
+    tasks: State<Tasks>,
+    options: RunOptions,
+) -> Result<AsyncCompletion<Json<Vec<Service>>>, HttpApiProblem> {
+    let app_name = app_name?;
+    let status_id = status_id?;
+
+    let apps = apps.clone();
+    let future = async move { apps.wait_for_status_change(&status_id).await };
+    let runtime = Runtime::new().expect("Should create runtime");
+
+    match runtime.block_on(tasks.run(options, future))? {
+        Poll::Pending => Ok(AsyncCompletion::Pending(app_name, status_id)),
+        Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
+        Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
+    }
 }
 
 #[delete("/<app_name>")]
 pub fn delete_app(
     app_name: Result<AppName, AppNameError>,
     apps: State<Arc<Apps>>,
-) -> Result<Json<Vec<Service>>, HttpApiProblem> {
+    tasks: State<Tasks>,
+    options: RunOptions,
+) -> Result<AsyncCompletion<Json<Vec<Service>>>, HttpApiProblem> {
     let app_name = app_name?;
+    let app_name_cloned = app_name.clone();
+    let status_id = AppStatusChangeId::new();
 
-    Ok(Json(apps.delete_app(&app_name)?))
+    let apps = apps.clone();
+    let future = async move { apps.delete_app(&app_name, &status_id).await };
+
+    let runtime = Runtime::new().expect("Should create runtime");
+
+    match runtime.block_on(tasks.run(options, future))? {
+        Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
+        Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
+        Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
+    }
+}
+
+pub fn delete_app_sync(
+    app_name: Result<AppName, AppNameError>,
+    apps: State<Arc<Apps>>,
+    tasks: State<Tasks>,
+) -> Result<Json<Vec<Service>>, HttpApiProblem> {
+    match delete_app(app_name, apps, tasks, RunOptions::Sync)? {
+        AsyncCompletion::Pending(_, _) => Err(HttpApiProblem::with_title_and_type_from_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )),
+        AsyncCompletion::Ready(result) => Ok(result),
+    }
 }
 
 #[post(
@@ -75,21 +140,33 @@ pub fn delete_app(
     format = "application/json",
     data = "<service_configs_data>"
 )]
-fn create_app(
+pub fn create_app(
     app_name: Result<AppName, AppNameError>,
     apps: State<Arc<Apps>>,
+    tasks: State<Tasks>,
     create_app_form: Form<CreateAppOptions>,
     service_configs_data: ServiceConfigsData,
-) -> Result<Json<Vec<Service>>, HttpApiProblem> {
+    options: RunOptions,
+) -> Result<AsyncCompletion<Json<Vec<Service>>>, HttpApiProblem> {
+    let status_id = AppStatusChangeId::new();
     let app_name = app_name?;
+    let app_name_cloned = app_name.clone();
+    let replicate_from = create_app_form.replicate_from().clone();
+    let service_configs = service_configs_data.service_configs.clone();
 
-    let services = apps.create_or_update(
-        &app_name,
-        create_app_form.replicate_from().clone(),
-        &service_configs_data.service_configs,
-    )?;
+    let apps = apps.clone();
+    let future = async move {
+        apps.create_or_update(&app_name.clone(), &status_id, replicate_from, &service_configs)
+            .await
+    };
 
-    Ok(Json(services))
+    let runtime = Runtime::new().expect("Should create runtime");
+
+    match runtime.block_on(tasks.run(options, future))? {
+        Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
+        Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
+        Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
+    }
 }
 
 #[put(
@@ -106,9 +183,10 @@ fn change_status(
     let app_name = app_name?;
     let status = status_data.status.clone();
 
-    Ok(ServiceStatusResponse {
-        service: apps.change_status(&app_name, &service_name, status)?,
-    })
+    let runtime = Runtime::new().expect("Should create runtime");
+    let service = runtime.block_on(apps.change_status(&app_name, &service_name, status))?;
+
+    Ok(ServiceStatusResponse { service })
 }
 
 #[get(
@@ -138,7 +216,8 @@ fn logs(
     };
     let limit = limit.unwrap_or(20_000);
 
-    let log_chunk = apps.get_logs(&app_name, &service_name, &since, limit)?;
+    let runtime = Runtime::new().expect("Should create runtime");
+    let log_chunk = runtime.block_on(apps.get_logs(&app_name, &service_name, &since, limit))?;
 
     Ok(LogsResponse {
         log_chunk,
@@ -231,6 +310,26 @@ pub struct ServiceStatusResponse {
     service: Option<Service>,
 }
 
+pub enum AsyncCompletion<T> {
+    Pending(AppName, AppStatusChangeId),
+    Ready(T),
+}
+
+impl<'a, T: Responder<'a>> Responder<'a> for AsyncCompletion<T> {
+    fn respond_to(self, request: &Request) -> Result<Response<'a>, Status> {
+        match self {
+            AsyncCompletion::Pending(app_name, status_id) => {
+                let url = format!("/api/apps/{}/status-changes/{}", app_name, status_id);
+                Response::build()
+                    .status(Status::Accepted)
+                    .header(Location(url))
+                    .ok()
+            }
+            AsyncCompletion::Ready(result) => result.respond_to(request),
+        }
+    }
+}
+
 impl Responder<'static> for ServiceStatusResponse {
     fn respond_to(self, _request: &Request) -> Result<Response<'static>, Status> {
         match self.service {
@@ -259,10 +358,59 @@ impl From<AppsError> for HttpApiProblem {
     }
 }
 
+impl From<TasksError> for HttpApiProblem {
+    fn from(error: TasksError) -> Self {
+        let status = StatusCode::INTERNAL_SERVER_ERROR;
+        HttpApiProblem::with_title_from_status(status).set_detail(format!("{}", error))
+    }
+}
+
 impl<'a> FromFormValue<'a> for AppName {
     type Error = String;
 
     fn from_form_value(form_value: &'a RawStr) -> Result<Self, Self::Error> {
         AppName::from_str(form_value).map_err(|e| format!("{}", e))
+    }
+}
+
+impl<'a, 'r> FromRequest<'a, 'r> for RunOptions {
+    type Error = hyper::Error;
+
+    // Typed headers have been moved out of hyper into hyperium/headers.
+    // When Rocket updates their hyper dependency, we probably have to update this.
+    // See: https://github.com/SergioBenitez/Rocket/issues/1067
+    fn from_request(request: &'a Request<'r>) -> Outcome<RunOptions, Error> {
+        let headers = request
+            .headers()
+            .get(Prefer::header_name())
+            .map(Vec::from)
+            .collect::<Vec<Vec<u8>>>();
+
+        if headers.is_empty() {
+            return Outcome::Success(RunOptions::Sync);
+        }
+
+        match Prefer::parse_header(headers.as_slice()) {
+            Err(err) => Outcome::Failure((Status::BadRequest, err)),
+            Ok(prefer) => Outcome::Success({
+                let mut sync = true;
+                let mut wait = None;
+                for preference in prefer.0 {
+                    match preference {
+                        Preference::RespondAsync => {
+                            sync = false;
+                        }
+                        Preference::Wait(secs) => {
+                            wait = Some(Duration::from_secs(u64::from(secs)));
+                        }
+                        _ => {}
+                    }
+                }
+                match sync {
+                    true => RunOptions::Sync,
+                    false => RunOptions::Async { wait },
+                }
+            }),
+        }
     }
 }

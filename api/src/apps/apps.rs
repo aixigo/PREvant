@@ -28,7 +28,7 @@ use crate::apps::DeploymentUnit;
 use crate::config::{Config, ConfigError};
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Service, ServiceStatus};
-use crate::models::{AppName, LogChunk, ServiceConfig};
+use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
 use crate::services::images_service::{ImagesService, ImagesServiceError};
 use chrono::{DateTime, FixedOffset};
 use handlebars::TemplateRenderError;
@@ -37,7 +37,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::{From, TryInto};
 use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex};
-use tokio::runtime::Runtime;
+use std::time::Duration;
 
 pub struct AppsService {
     config: Config,
@@ -133,10 +133,8 @@ impl AppsService {
 
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
-    pub fn get_apps(&self) -> Result<MultiMap<String, Service>, AppsServiceError> {
-        let mut runtime = Runtime::new().expect("Should create runtime");
-
-        Ok(runtime.block_on(self.infrastructure.get_services())?)
+    pub async fn get_apps(&self) -> Result<MultiMap<String, Service>, AppsServiceError> {
+        Ok(self.infrastructure.get_services().await?)
     }
 
     #[must_use]
@@ -193,6 +191,22 @@ impl AppsService {
             .collect::<Vec<ServiceConfig>>())
     }
 
+    pub async fn wait_for_status_change(
+        &self,
+        status_id: &AppStatusChangeId,
+    ) -> Result<Vec<Service>, AppsServiceError> {
+        let mut services = Vec::new();
+        while let Some(s) = self
+            .infrastructure
+            .get_status_change(&status_id.to_string())
+            .await?
+        {
+            services = s;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Ok(services)
+    }
+
     /// Creates or updates an app to review with the given service configurations.
     ///
     /// The list of given services will be extended with:
@@ -202,9 +216,10 @@ impl AppsService {
     ///
     /// # Arguments
     /// * `replicate_from` - The application name that is used as a template.
-    pub fn create_or_update(
+    pub async fn create_or_update(
         &self,
         app_name: &AppName,
+        status_id: &AppStatusChangeId,
         replicate_from: Option<AppName>,
         service_configs: &Vec<ServiceConfig>,
     ) -> Result<Vec<Service>, AppsServiceError> {
@@ -218,34 +233,36 @@ impl AppsService {
 
         guard.notify_with_result(
             self,
-            self.create_or_update_impl(app_name, replicate_from, service_configs),
+            self.create_or_update_impl(app_name, status_id, replicate_from, service_configs)
+                .await,
         )
     }
 
-    fn create_or_update_impl(
+    async fn create_or_update_impl(
         &self,
         app_name: &AppName,
+        status_id: &AppStatusChangeId,
         replicate_from: Option<AppName>,
         service_configs: &Vec<ServiceConfig>,
     ) -> Result<Vec<Service>, AppsServiceError> {
-        let mut runtime = Runtime::new().expect("Should create runtime");
         let mut configs: Vec<ServiceConfig> = service_configs.clone();
 
         let replicate_from_app_name =
             replicate_from.unwrap_or_else(|| AppName::from_str("master").unwrap());
         if &replicate_from_app_name != app_name {
-            configs.extend(runtime.block_on(self.configs_to_replicate(
-                service_configs,
-                app_name,
-                &replicate_from_app_name,
-            ))?);
+            configs.extend(
+                self.configs_to_replicate(service_configs, app_name, &replicate_from_app_name)
+                    .await?,
+            );
         }
 
         let mut deployment_unit = DeploymentUnit::new(app_name.clone(), configs);
         deployment_unit.extend_with_config(&self.config);
 
-        let configs_for_templating = runtime
-            .block_on(self.infrastructure.get_configs_of_app(app_name))?
+        let configs_for_templating = self
+            .infrastructure
+            .get_configs_of_app(app_name)
+            .await?
             .into_iter()
             .filter(|config| config.container_type() == &ContainerType::Instance)
             .filter(|config| {
@@ -258,38 +275,47 @@ impl AppsService {
         deployment_unit.extend_with_templating_only_service_configs(configs_for_templating);
 
         let images = deployment_unit.images();
-        let port_mappings = runtime.block_on(ImagesService::new().resolve_image_ports(&images))?;
+        let port_mappings = ImagesService::new().resolve_image_ports(&images).await?;
         deployment_unit.assign_port_mappings(&port_mappings);
 
-        // TODO: return or input parameter?
-        let deployment_id = uuid::Uuid::new_v4();
-
         let configs: Vec<_> = deployment_unit.try_into()?;
-        let services = runtime.block_on(self.infrastructure.deploy_services(
-            &deployment_id,
-            app_name,
-            &configs,
-            &self.config.container_config(),
-        ))?;
+        let services = self
+            .infrastructure
+            .deploy_services(
+                &status_id.to_string(),
+                app_name,
+                &configs,
+                &self.config.container_config(),
+            )
+            .await?;
 
         Ok(services)
     }
 
     /// Deletes all services for the given `app_name`.
-    pub fn delete_app(&self, app_name: &AppName) -> Result<Vec<Service>, AppsServiceError> {
+    pub async fn delete_app(
+        &self,
+        app_name: &AppName,
+        status_id: &AppStatusChangeId,
+    ) -> Result<Vec<Service>, AppsServiceError> {
         let guard = self.create_or_get_app_guard(app_name.clone(), AppGuardKind::Deletion)?;
 
         if !guard.is_first() {
             guard.wait_for_result()
         } else {
-            guard.notify_with_result(self, self.delete_app_impl(app_name))
+            guard.notify_with_result(self, self.delete_app_impl(app_name, status_id).await)
         }
     }
 
-    fn delete_app_impl(&self, app_name: &AppName) -> Result<Vec<Service>, AppsServiceError> {
-        let mut runtime = Runtime::new().expect("Should create runtime");
-
-        let services = runtime.block_on(self.infrastructure.stop_services(app_name))?;
+    async fn delete_app_impl(
+        &self,
+        app_name: &AppName,
+        status_id: &AppStatusChangeId,
+    ) -> Result<Vec<Service>, AppsServiceError> {
+        let services = self
+            .infrastructure
+            .stop_services(&status_id.to_string(), app_name)
+            .await?;
         if services.is_empty() {
             Err(AppsServiceError::AppNotFound {
                 app_name: app_name.clone(),
@@ -299,37 +325,34 @@ impl AppsService {
         }
     }
 
-    pub fn get_logs(
+    pub async fn get_logs(
         &self,
         app_name: &AppName,
         service_name: &String,
         since: &Option<DateTime<FixedOffset>>,
         limit: usize,
     ) -> Result<Option<LogChunk>, AppsServiceError> {
-        let mut runtime = Runtime::new().expect("Should create runtime");
-        match runtime.block_on(self.infrastructure.get_logs(
-            app_name,
-            service_name,
-            since,
-            limit,
-        ))? {
+        match self
+            .infrastructure
+            .get_logs(app_name, service_name, since, limit)
+            .await?
+        {
             None => Ok(None),
             Some(ref logs) if logs.is_empty() => Ok(None),
             Some(logs) => Ok(Some(LogChunk::from(logs))),
         }
     }
 
-    pub fn change_status(
+    pub async fn change_status(
         &self,
         app_name: &String,
         service_name: &String,
         status: ServiceStatus,
     ) -> Result<Option<Service>, AppsServiceError> {
-        let mut runtime = Runtime::new().expect("Should create runtime");
-        Ok(runtime.block_on(
-            self.infrastructure
-                .change_status(app_name, service_name, status),
-        )?)
+        Ok(self
+            .infrastructure
+            .change_status(app_name, service_name, status)
+            .await?)
     }
 }
 
@@ -402,6 +425,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::path::PathBuf;
     use std::str::FromStr;
+    use tokio::runtime;
 
     macro_rules! config_from_str {
         ( $config_str:expr ) => {
@@ -436,27 +460,28 @@ mod tests {
                     .find(|s| s.service_name() == $service_name
                         && s.container_type() == &$container_type)
                     .is_some(),
-                format!(
-                    "services should contain {:?} with type {:?}",
-                    $service_name, $container_type
-                )
+                "services should contain {:?} with type {:?}",
+                $service_name,
+                $container_type
             );
         };
     }
 
-    #[test]
-    fn should_create_app_for_master() -> Result<(), AppsServiceError> {
+    #[tokio::test]
+    async fn should_create_app_for_master() -> Result<(), AppsServiceError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::from_str("master").unwrap(),
+            &AppStatusChangeId::new(),
             None,
             &service_configs!("service-a"),
-        )?;
+        )
+        .await?;
 
-        let deployed_apps = apps.get_apps()?;
+        let deployed_apps = apps.get_apps().await?;
         assert_eq!(deployed_apps.len(), 1);
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 1);
@@ -465,25 +490,29 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn should_replication_from_master() -> Result<(), AppsServiceError> {
+    #[tokio::test]
+    async fn should_replication_from_master() -> Result<(), AppsServiceError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::from_str("master").unwrap(),
+            &AppStatusChangeId::new(),
             None,
             &service_configs!("service-a", "service-b"),
-        )?;
+        )
+        .await?;
 
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
+            &AppStatusChangeId::new(),
             Some(AppName::from_str("master").unwrap()),
             &service_configs!("service-b"),
-        )?;
+        )
+        .await?;
 
-        let deployed_apps = apps.get_apps()?;
+        let deployed_apps = apps.get_apps().await?;
 
         let services = deployed_apps.get_vec("branch").unwrap();
         assert_eq!(services.len(), 2);
@@ -493,31 +522,37 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn should_override_replicas_from_master() -> Result<(), AppsServiceError> {
+    #[tokio::test]
+    async fn should_override_replicas_from_master() -> Result<(), AppsServiceError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::from_str("master").unwrap(),
+            &AppStatusChangeId::new(),
             None,
             &service_configs!("service-a", "service-b"),
-        )?;
+        )
+        .await?;
 
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
+            &AppStatusChangeId::new(),
             Some(AppName::from_str("master").unwrap()),
             &service_configs!("service-b"),
-        )?;
+        )
+        .await?;
 
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
+            &AppStatusChangeId::new(),
             Some(AppName::from_str("master").unwrap()),
             &service_configs!("service-a"),
-        )?;
+        )
+        .await?;
 
-        let deployed_apps = apps.get_apps()?;
+        let deployed_apps = apps.get_apps().await?;
 
         let services = deployed_apps.get_vec("branch").unwrap();
         assert_eq!(services.len(), 2);
@@ -527,8 +562,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn should_create_app_for_master_with_secrets() -> Result<(), AppsServiceError> {
+    #[tokio::test]
+    async fn should_create_app_for_master_with_secrets() -> Result<(), AppsServiceError> {
         let config = config_from_str!(
             r#"
             [services.mariadb]
@@ -544,15 +579,16 @@ mod tests {
 
         apps.create_or_update(
             &AppName::from_str("master").unwrap(),
+            &AppStatusChangeId::new(),
             None,
             &service_configs!("mariadb"),
-        )?;
+        )
+        .await?;
 
-        let mut runtime = Runtime::new().expect("Should create runtime");
-        let configs = runtime.block_on(
-            apps.infrastructure
-                .get_configs_of_app(&String::from("master")),
-        )?;
+        let configs = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master"))
+            .await?;
         assert_eq!(configs.len(), 1);
 
         let volumes = configs.get(0).unwrap().volumes().unwrap();
@@ -564,8 +600,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn should_create_app_for_master_without_secrets_because_of_none_matching_app_selector(
+    #[tokio::test]
+    async fn should_create_app_for_master_without_secrets_because_of_none_matching_app_selector(
     ) -> Result<(), AppsServiceError> {
         let config = config_from_str!(
             r#"
@@ -582,15 +618,16 @@ mod tests {
 
         apps.create_or_update(
             &AppName::from_str("master-1.x").unwrap(),
+            &AppStatusChangeId::new(),
             None,
             &service_configs!("mariadb"),
-        )?;
+        )
+        .await?;
 
-        let mut runtime = Runtime::new().expect("Should create runtime");
-        let configs = runtime.block_on(
-            apps.infrastructure
-                .get_configs_of_app(&String::from("master-1.x")),
-        )?;
+        let configs = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master-1.x"))
+            .await?;
         assert_eq!(configs.len(), 1);
 
         let volumes = configs.get(0).unwrap().volumes();
@@ -599,18 +636,25 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn should_collect_log_chunk_from_infrastructure() -> Result<(), AppsServiceError> {
+    #[tokio::test]
+    async fn should_collect_log_chunk_from_infrastructure() -> Result<(), AppsServiceError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         let app_name = AppName::from_str("master").unwrap();
 
-        apps.create_or_update(&app_name, None, &service_configs!("service-a", "service-b"))?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &service_configs!("service-a", "service-b"),
+        )
+        .await?;
 
         let log_chunk = apps
             .get_logs(&app_name, &String::from("service-a"), &None, 100)
+            .await
             .unwrap()
             .unwrap();
 
@@ -635,8 +679,8 @@ Log msg 3 of service-a of app master
         Ok(())
     }
 
-    #[test]
-    fn should_deploy_companions() -> Result<(), AppsServiceError> {
+    #[tokio::test]
+    async fn should_deploy_companions() -> Result<(), AppsServiceError> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -654,8 +698,14 @@ Log msg 3 of service-a of app master
         let apps = AppsService::new(config, infrastructure)?;
 
         let app_name = AppName::from_str("master").unwrap();
-        apps.create_or_update(&app_name, None, &service_configs!("service-a"))?;
-        let deployed_apps = apps.get_apps()?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &service_configs!("service-a"),
+        )
+        .await?;
+        let deployed_apps = apps.get_apps().await?;
 
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 3);
@@ -666,8 +716,8 @@ Log msg 3 of service-a of app master
         Ok(())
     }
 
-    #[test]
-    fn should_filter_companions_if_services_to_deploy_contain_same_service_name(
+    #[tokio::test]
+    async fn should_filter_companions_if_services_to_deploy_contain_same_service_name(
     ) -> Result<(), AppsServiceError> {
         let config = config_from_str!(
             r#"
@@ -687,20 +737,19 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::from_str("master").unwrap();
         let configs = service_configs!("openid", "db");
-        apps.create_or_update(&app_name, None, &configs)?;
-        let deployed_apps = apps.get_apps()?;
+        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
+            .await?;
+        let deployed_apps = apps.get_apps().await?;
 
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 2);
         assert_contains_service!(services, "openid", ContainerType::Instance);
         assert_contains_service!(services, "db", ContainerType::Instance);
 
-        let mut runtime = Runtime::new().expect("Should create runtime");
-        let openid_configs: Vec<ServiceConfig> = runtime
-            .block_on(
-                apps.infrastructure
-                    .get_configs_of_app(&String::from("master")),
-            )?
+        let openid_configs: Vec<ServiceConfig> = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master"))
+            .await?
             .into_iter()
             .filter(|config| config.service_name() == "openid")
             .collect();
@@ -710,8 +759,8 @@ Log msg 3 of service-a of app master
         Ok(())
     }
 
-    #[test]
-    fn should_merge_with_companion_config_if_services_to_deploy_contain_same_service_name(
+    #[tokio::test]
+    async fn should_merge_with_companion_config_if_services_to_deploy_contain_same_service_name(
     ) -> Result<(), AppsServiceError> {
         let config = config_from_str!(
             r#"
@@ -738,20 +787,19 @@ Log msg 3 of service-a of app master
             volumes = ()
         )];
 
-        apps.create_or_update(&app_name, None, &configs)?;
+        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
+            .await?;
 
-        let deployed_apps = apps.get_apps()?;
+        let deployed_apps = apps.get_apps().await?;
 
         let services = deployed_apps.get_vec("master").unwrap();
         assert_eq!(services.len(), 1);
         assert_contains_service!(services, "openid", ContainerType::Instance);
 
-        let mut runtime = Runtime::new().expect("Should create runtime");
-        let openid_configs: Vec<ServiceConfig> = runtime
-            .block_on(
-                apps.infrastructure
-                    .get_configs_of_app(&String::from("master")),
-            )?
+        let openid_configs: Vec<ServiceConfig> = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master"))
+            .await?
             .into_iter()
             .filter(|config| config.service_name() == "openid")
             .collect();
@@ -777,8 +825,8 @@ Log msg 3 of service-a of app master
         Ok(())
     }
 
-    #[test]
-    fn should_include_running_instance_in_templating() -> Result<(), AppsServiceError> {
+    #[tokio::test]
+    async fn should_include_running_instance_in_templating() -> Result<(), AppsServiceError> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -793,12 +841,29 @@ Log msg 3 of service-a of app master
         let apps = AppsService::new(config, infrastructure)?;
         let app_name = AppName::from_str("master").unwrap();
 
-        apps.create_or_update(&app_name, None, &vec![sc!("service-a")])?;
-        apps.create_or_update(&app_name, None, &vec![sc!("service-b")])?;
-        apps.create_or_update(&app_name, None, &vec![sc!("service-c")])?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &vec![sc!("service-a")],
+        )
+        .await?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &vec![sc!("service-b")],
+        )
+        .await?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &vec![sc!("service-c")],
+        )
+        .await?;
 
-        let mut runtime = Runtime::new().expect("Should create runtime");
-        let services = runtime.block_on(apps.infrastructure.get_services())?;
+        let services = apps.infrastructure.get_services().await?;
         let openid_config = services
             .get_vec("master")
             .unwrap()
@@ -816,15 +881,23 @@ Log msg 3 of service-a of app master
         Ok(())
     }
 
-    #[test]
-    fn should_delete_apps() -> Result<(), AppsServiceError> {
+    #[tokio::test]
+    async fn should_delete_apps() -> Result<(), AppsServiceError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
         let app_name = AppName::from_str("master").unwrap();
-        apps.create_or_update(&app_name, None, &service_configs!("service-a"))?;
-        let deleted_services = apps.delete_app(&app_name)?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &service_configs!("service-a"),
+        )
+        .await?;
+        let deleted_services = apps
+            .delete_app(&app_name, &AppStatusChangeId::new())
+            .await?;
 
         assert_eq!(
             deleted_services,
@@ -844,20 +917,38 @@ Log msg 3 of service-a of app master
         Ok(())
     }
 
-    #[test]
-    fn should_delete_apps_from_parallel_threads_returning_the_same_result(
+    #[tokio::test]
+    async fn should_delete_apps_from_parallel_threads_returning_the_same_result(
     ) -> Result<(), AppsServiceError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::with_delay(std::time::Duration::from_millis(500)));
         let apps = Arc::new(AppsService::new(config, infrastructure)?);
 
         let app_name = AppName::from_str("master").unwrap();
-        apps.create_or_update(&app_name, None, &service_configs!("service-a"))?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &service_configs!("service-a"),
+        )
+        .await?;
 
         let apps_clone = apps.clone();
-        let handle1 = std::thread::spawn(move || apps_clone.delete_app(&app_name));
+        let handle1 = std::thread::spawn(move || {
+            let rt = runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            rt.block_on(apps_clone.delete_app(&app_name, &AppStatusChangeId::new()))
+        });
         let app_name = AppName::from_str("master").unwrap();
-        let handle2 = std::thread::spawn(move || apps.delete_app(&app_name));
+        let handle2 = std::thread::spawn(move || {
+            let rt = runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            rt.block_on(apps.delete_app(&app_name, &AppStatusChangeId::new()))
+        });
 
         assert_eq!(handle1.join().unwrap()?, handle2.join().unwrap()?,);
 

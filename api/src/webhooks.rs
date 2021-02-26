@@ -24,8 +24,8 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::delete_app;
-use crate::apps::Apps;
+use crate::apps::delete_app_sync;
+use crate::apps::{Apps, Tasks};
 use crate::models::service::Service;
 use crate::models::web_hook_info::WebHookInfo;
 use crate::models::AppName;
@@ -38,6 +38,7 @@ use std::sync::Arc;
 #[post("/webhooks", format = "application/json", data = "<web_hook_info>")]
 pub fn webhooks(
     apps: State<Arc<Apps>>,
+    tasks: State<Tasks>,
     web_hook_info: WebHookInfo,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
     info!(
@@ -48,5 +49,5 @@ pub fn webhooks(
     );
 
     let app_name = AppName::from_str(&web_hook_info.get_app_name());
-    delete_app(app_name, apps)
+    delete_app_sync(app_name, apps, tasks)
 }
