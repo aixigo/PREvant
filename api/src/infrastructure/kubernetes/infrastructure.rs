@@ -54,6 +54,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use url::Url;
+use uuid::Uuid;
 
 type Deployment = Object<DeploymentSpec, DeploymentStatus>;
 
@@ -483,6 +484,7 @@ impl Infrastructure for KubernetesInfrastructure {
 
     async fn deploy_services(
         &self,
+        deployment_id: &Uuid,
         app_name: &String,
         configs: &Vec<ServiceConfig>,
         container_config: &ContainerConfig,

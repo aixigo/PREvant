@@ -261,8 +261,12 @@ impl AppsService {
         let port_mappings = runtime.block_on(ImagesService::new().resolve_image_ports(&images))?;
         deployment_unit.assign_port_mappings(&port_mappings);
 
+        // TODO: return or input parameter?
+        let deployment_id = uuid::Uuid::new_v4();
+
         let configs: Vec<_> = deployment_unit.try_into()?;
         let services = runtime.block_on(self.infrastructure.deploy_services(
+            &deployment_id,
             app_name,
             &configs,
             &self.config.container_config(),

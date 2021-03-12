@@ -34,6 +34,7 @@ use multimap::MultiMap;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Duration;
+use uuid::Uuid;
 
 #[cfg(test)]
 pub struct DummyInfrastructure {
@@ -62,7 +63,8 @@ impl DummyInfrastructure {
 impl DummyInfrastructure {
     async fn delay_if_configured(&self) {
         if let Some(delay) = &self.delay {
-            tokio::time::delay_for(delay.clone()).await;
+            // TODO: the test are failing with: panicked at 'not currently running on a Tokio 0.2.x runtime.'
+            tokio::time::sleep(delay.clone()).await;
         }
     }
 }
@@ -98,6 +100,7 @@ impl Infrastructure for DummyInfrastructure {
 
     async fn deploy_services(
         &self,
+        deployment_id: &Uuid,
         app_name: &String,
         configs: &Vec<ServiceConfig>,
         _container_config: &ContainerConfig,

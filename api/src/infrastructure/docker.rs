@@ -26,8 +26,8 @@
 
 use crate::config::ContainerConfig;
 use crate::infrastructure::{
-    Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL,
-    SERVICE_NAME_LABEL,
+    Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, DEPLOYMENT_ID, IMAGE_LABEL,
+    REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
 };
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
@@ -51,6 +51,7 @@ use std::convert::{From, TryFrom};
 use std::net::{AddrParseError, IpAddr};
 use std::str::FromStr;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
@@ -83,6 +84,42 @@ pub enum DockerInfrastructureError {
 impl DockerInfrastructure {
     pub fn new() -> DockerInfrastructure {
         DockerInfrastructure {}
+    }
+
+    async fn find_deployment_task_container(
+        &self,
+        deployment_id: &Uuid,
+        app_name: &str,
+    ) -> Result<Option<ContainerDetails>, ShipLiftError> {
+        Ok(None)
+    }
+
+    async fn create_deployment_task_container(
+        &self,
+        deployment_id: &Uuid,
+        app_name: &str,
+    ) -> Result<ContainerDetails, Error> {
+        // TODO: what to if there is already an deployment
+
+        let mut labels: HashMap<&str, &str> = HashMap::new();
+        labels.insert(APP_NAME_LABEL, app_name);
+        let deployment_id = deployment_id.to_hyphenated().to_string();
+        labels.insert(DEPLOYMENT_ID, &deployment_id);
+
+        let mut options = ContainerOptions::builder("busybox");
+        options.labels(&labels);
+
+        let docker = Docker::new();
+        let containers = docker.containers();
+
+        trace!(
+            "Create deployment task container {} for {}",
+            deployment_id,
+            app_name
+        );
+        let container_info = containers.create(&options.build()).await?;
+
+        Ok(containers.get(&container_info.id).inspect().await?)
     }
 
     async fn create_or_get_network_id(&self, app_name: &String) -> Result<String, ShipLiftError> {
@@ -499,10 +536,15 @@ impl Infrastructure for DockerInfrastructure {
 
     async fn deploy_services(
         &self,
+        deployment_id: &Uuid,
         app_name: &String,
         configs: &Vec<ServiceConfig>,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
+        let deployment_container = self
+            .create_deployment_task_container(deployment_id, app_name)
+            .await?;
+
         let network_id = self.create_or_get_network_id(app_name).await?;
 
         self.connect_traefik(&network_id).await?;
@@ -519,7 +561,38 @@ impl Infrastructure for DockerInfrastructure {
             services.push(service?);
         }
 
+        delete(deployment_container).await?;
+
         Ok(services)
+    }
+
+    async fn get_deployment_task(
+        &self,
+        deployment_id: &Uuid,
+        app_name: &String,
+    ) -> Result<Option<Vec<Service>>, Error> {
+        Ok(
+            match self
+                .find_deployment_task_container(deployment_id, app_name)
+                .await?
+            {
+                Some(_) => {
+                    let mut services = Vec::new();
+                    if let Some(container_details) = self
+                        .get_container_details(Some(app_name))
+                        .await?
+                        .get_vec(app_name)
+                    {
+                        for container in container_details {
+                            services.push(Service::try_from(container)?);
+                        }
+                    }
+
+                    Some(services)
+                }
+                None => None,
+            },
+        )
     }
 
     /// Deletes all services for the given `app_name`.
