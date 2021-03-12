@@ -31,6 +31,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
 use multimap::MultiMap;
+use uuid::Uuid;
 
 #[async_trait]
 pub trait Infrastructure: Send + Sync {
@@ -47,10 +48,19 @@ pub trait Infrastructure: Send + Sync {
     ///   must be able to find the corresponding services.
     async fn deploy_services(
         &self,
+        deployment_id: &Uuid,
         app_name: &String,
         configs: &Vec<ServiceConfig>,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error>;
+
+    async fn get_deployment_task(
+        &self,
+        _deployment_id: &Uuid,
+        _app_name: &String,
+    ) -> Result<Option<Vec<Service>>, Error> {
+        Ok(None)
+    }
 
     /// Stops the services running for the given `app_name`
     ///
