@@ -1,4 +1,5 @@
 use crate::apps::Apps;
+use crate::apps::RUNTIME as runtime;
 use crate::models::service::{Service, ServiceBuilder, ServiceStatus};
 use crate::models::RequestInfo;
 use crate::models::WebHostMeta;
@@ -9,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use yansi::Paint;
 
@@ -80,8 +80,6 @@ impl HostMetaCache {
 
 impl HostMetaCrawler {
     pub fn spawn(mut self, apps: Arc<Apps>) {
-        let runtime = Runtime::new().expect("Should create runtime");
-
         let timestamp_prevant_startup = Utc::now();
 
         std::thread::spawn(move || loop {

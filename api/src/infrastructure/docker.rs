@@ -50,7 +50,6 @@ use std::collections::HashMap;
 use std::convert::{From, TryFrom};
 use std::net::{AddrParseError, IpAddr};
 use std::str::FromStr;
-use tokio::sync::mpsc;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
@@ -559,50 +558,22 @@ impl DockerInfrastructure {
         debug!("Resolve container details for app {:?}", app_name);
 
         let container_list = self.get_app_containers(app_name, service_name).await?;
-        let number_of_containers = container_list.len();
-        if number_of_containers == 0 {
-            return Ok(MultiMap::new());
-        }
-
-        let (tx, mut rx) = mpsc::channel(number_of_containers);
-        for container in container_list.into_iter() {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let inspect_result = inspect(container).await;
-                debug!("Container inspection result: {:?}", inspect_result);
-                if let Err(err) = tx.send(inspect_result).await {
-                    error!("Cannot send container inspection: {:?}", err);
-                }
-            });
-        }
 
         let mut container_details = MultiMap::new();
-        let mut first_error = None;
-        for _c in 0..number_of_containers {
-            // consume all expected messages to avoid rx being dropped
-            match rx.recv().await.unwrap() {
-                Ok(details) => {
-                    let app_name = details
-                        .config
-                        .labels
-                        .clone()
-                        .unwrap()
-                        .get(APP_NAME_LABEL)
-                        .unwrap()
-                        .clone();
-                    container_details.insert(app_name, details);
-                }
-                Err(err) => {
-                    if first_error.is_none() {
-                        first_error = Some(err);
-                    }
-                }
-            }
+        for container in container_list.into_iter() {
+            let details = inspect(container).await?;
+
+            let app_name = details
+                .config
+                .labels
+                .clone()
+                .unwrap()
+                .get(APP_NAME_LABEL)
+                .unwrap()
+                .clone();
+            container_details.insert(app_name, details);
         }
 
-        if let Some(first_error) = first_error {
-            return Err(Error::from(first_error));
-        }
         Ok(container_details)
     }
 }
