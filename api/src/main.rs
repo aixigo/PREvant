@@ -40,7 +40,7 @@ extern crate rocket;
 extern crate serde_derive;
 
 use crate::apps::host_meta_crawling;
-use crate::apps::{Apps, Tasks};
+use crate::apps::Apps;
 use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
@@ -234,13 +234,6 @@ fn main() -> Result<(), StartUpError> {
             process::exit(0x0200);
         }
     };
-    let tasks = match Tasks::new() {
-        Ok(tasks_service) => tasks_service,
-        Err(e) => {
-            error!("Cannot create tasks service: {}", e);
-            process::exit(0x0300);
-        }
-    };
 
     let (host_meta_cache, host_meta_crawler) = host_meta_crawling();
     let apps = Arc::new(apps);
@@ -250,7 +243,6 @@ fn main() -> Result<(), StartUpError> {
         .manage(config)
         .manage(apps)
         .manage(host_meta_cache)
-        .manage(tasks)
         .mount("/", routes![index])
         .mount("/openapi.yaml", routes![openapi])
         .mount("/", routes![files])

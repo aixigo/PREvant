@@ -24,10 +24,9 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::tasks::RunOptions;
 use crate::apps::HostMetaCache;
+use crate::apps::RUNTIME as runtime;
 use crate::apps::{Apps, AppsError};
-use crate::apps::{Tasks, TasksError};
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::ServiceConfig;
@@ -46,12 +45,13 @@ use rocket::response::{Responder, Response};
 use rocket::Outcome::{Failure, Success};
 use rocket::{Data, State};
 use rocket_contrib::json::Json;
+use std::future::Future;
 use std::io::Read;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
-use tokio::runtime::Runtime;
+use tokio::time::timeout;
 
 pub fn apps_routes() -> Vec<rocket::Route> {
     rocket::routes![
@@ -70,7 +70,6 @@ fn apps(
     request_info: RequestInfo,
     host_meta_cache: State<HostMetaCache>,
 ) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
-    let runtime = Runtime::new().expect("Should create runtime");
     let services = runtime.block_on(apps.get_apps())?;
     Ok(Json(
         host_meta_cache.update_meta_data(services, &request_info),
@@ -82,7 +81,6 @@ fn status_change(
     app_name: Result<AppName, AppNameError>,
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
     apps: State<Arc<Apps>>,
-    tasks: State<Tasks>,
     options: RunOptions,
 ) -> Result<AsyncCompletion<Json<Vec<Service>>>, HttpApiProblem> {
     let app_name = app_name?;
@@ -90,9 +88,8 @@ fn status_change(
 
     let apps = apps.clone();
     let future = async move { apps.wait_for_status_change(&status_id).await };
-    let runtime = Runtime::new().expect("Should create runtime");
 
-    match runtime.block_on(tasks.run(options, future))? {
+    match runtime.block_on(spawn_with_options(options, future))? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name, status_id)),
         Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
         Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
@@ -103,7 +100,6 @@ fn status_change(
 pub fn delete_app(
     app_name: Result<AppName, AppNameError>,
     apps: State<Arc<Apps>>,
-    tasks: State<Tasks>,
     options: RunOptions,
 ) -> Result<AsyncCompletion<Json<Vec<Service>>>, HttpApiProblem> {
     let app_name = app_name?;
@@ -113,9 +109,7 @@ pub fn delete_app(
     let apps = apps.clone();
     let future = async move { apps.delete_app(&app_name, &status_id).await };
 
-    let runtime = Runtime::new().expect("Should create runtime");
-
-    match runtime.block_on(tasks.run(options, future))? {
+    match runtime.block_on(spawn_with_options(options, future))? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
         Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
         Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
@@ -125,9 +119,8 @@ pub fn delete_app(
 pub fn delete_app_sync(
     app_name: Result<AppName, AppNameError>,
     apps: State<Arc<Apps>>,
-    tasks: State<Tasks>,
 ) -> Result<Json<Vec<Service>>, HttpApiProblem> {
-    match delete_app(app_name, apps, tasks, RunOptions::Sync)? {
+    match delete_app(app_name, apps, RunOptions::Sync)? {
         AsyncCompletion::Pending(_, _) => Err(HttpApiProblem::with_title_and_type_from_status(
             StatusCode::INTERNAL_SERVER_ERROR,
         )),
@@ -143,7 +136,6 @@ pub fn delete_app_sync(
 pub fn create_app(
     app_name: Result<AppName, AppNameError>,
     apps: State<Arc<Apps>>,
-    tasks: State<Tasks>,
     create_app_form: Form<CreateAppOptions>,
     service_configs_data: ServiceConfigsData,
     options: RunOptions,
@@ -156,13 +148,16 @@ pub fn create_app(
 
     let apps = apps.clone();
     let future = async move {
-        apps.create_or_update(&app_name.clone(), &status_id, replicate_from, &service_configs)
-            .await
+        apps.create_or_update(
+            &app_name.clone(),
+            &status_id,
+            replicate_from,
+            &service_configs,
+        )
+        .await
     };
 
-    let runtime = Runtime::new().expect("Should create runtime");
-
-    match runtime.block_on(tasks.run(options, future))? {
+    match runtime.block_on(spawn_with_options(options, future))? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
         Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
         Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
@@ -183,7 +178,6 @@ fn change_status(
     let app_name = app_name?;
     let status = status_data.status.clone();
 
-    let runtime = Runtime::new().expect("Should create runtime");
     let service = runtime.block_on(apps.change_status(&app_name, &service_name, status))?;
 
     Ok(ServiceStatusResponse { service })
@@ -216,7 +210,6 @@ fn logs(
     };
     let limit = limit.unwrap_or(20_000);
 
-    let runtime = Runtime::new().expect("Should create runtime");
     let log_chunk = runtime.block_on(apps.get_logs(&app_name, &service_name, &since, limit))?;
 
     Ok(LogsResponse {
@@ -225,6 +218,49 @@ fn logs(
         service_name,
         limit,
     })
+}
+
+pub enum RunOptions {
+    Sync,
+    Async { wait: Option<Duration> },
+}
+
+pub async fn spawn_with_options<F>(
+    options: RunOptions,
+    future: F,
+) -> Result<Poll<F::Output>, HttpApiProblem>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let handle = runtime.handle();
+    let join_handle = handle.spawn(future);
+
+    match options {
+        RunOptions::Sync => Ok(Poll::Ready(join_handle.await.map_err(map_join_error)?)),
+        RunOptions::Async { wait: None } => Ok(Poll::Pending),
+        RunOptions::Async {
+            wait: Some(duration),
+        } => {
+            match handle
+                .spawn(timeout(duration, join_handle))
+                .await
+                .map_err(map_join_error)?
+            {
+                // Execution completed before timeout
+                Ok(Ok(result)) => Ok(Poll::Ready(result)),
+                // JoinError occurred before timeout
+                Ok(Err(err)) => Err(map_join_error(err)),
+                // Timeout elapsed while waiting for future
+                Err(_) => Ok(Poll::Pending),
+            }
+        }
+    }
+}
+
+fn map_join_error(err: tokio::task::JoinError) -> HttpApiProblem {
+    HttpApiProblem::with_title_and_type_from_status(StatusCode::INTERNAL_SERVER_ERROR)
+        .set_detail(format!("{}", err))
 }
 
 pub struct LogsResponse {
@@ -355,13 +391,6 @@ impl From<AppsError> for HttpApiProblem {
         };
 
         HttpApiProblem::with_title_and_type_from_status(status).set_detail(format!("{}", error))
-    }
-}
-
-impl From<TasksError> for HttpApiProblem {
-    fn from(error: TasksError) -> Self {
-        let status = StatusCode::INTERNAL_SERVER_ERROR;
-        HttpApiProblem::with_title_from_status(status).set_detail(format!("{}", error))
     }
 }
 
