@@ -91,7 +91,9 @@ fn status_change(
 
     match runtime.block_on(spawn_with_options(options, future))? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name, status_id)),
-        Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
+        Poll::Ready(Ok(_)) => Err(HttpApiProblem::with_title_and_type_from_status(
+            StatusCode::NOT_FOUND,
+        )),
         Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
     }
 }

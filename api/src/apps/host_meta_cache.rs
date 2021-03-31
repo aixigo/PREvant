@@ -1,3 +1,4 @@
+use crate::apps::apps::AppsServiceError;
 use crate::apps::Apps;
 use crate::apps::RUNTIME as runtime;
 use crate::models::service::{Service, ServiceBuilder, ServiceStatus};
@@ -11,6 +12,7 @@ use std::convert::From;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::interval;
 use yansi::Paint;
 
 pub struct HostMetaCache {
@@ -82,70 +84,75 @@ impl HostMetaCrawler {
     pub fn spawn(mut self, apps: Arc<Apps>) {
         let timestamp_prevant_startup = Utc::now();
 
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(5));
-            debug!("Resolving list of apps for web host meta cache.");
-            let apps = match runtime.block_on(apps.get_apps()) {
-                Ok(apps) => apps,
-                Err(error) => {
-                    error!("Cannot load apps: {}", error);
-                    continue;
+        runtime.handle().spawn(async move {
+            let mut interval = interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                if let Err(err) = self.crawl(&apps, timestamp_prevant_startup).await {
+                    error!("Cannot load apps: {}", err);
                 }
-            };
+            }
+        });
+    }
 
-            self.clear_stale_web_host_meta(&apps);
+    async fn crawl(
+        &mut self,
+        apps: &Arc<Apps>,
+        since_timestamp: DateTime<Utc>,
+    ) -> Result<(), AppsServiceError> {
+        debug!("Resolving list of apps for web host meta cache.");
+        let apps = apps.get_apps().await?;
 
-            let services_without_host_meta = apps
-                .iter_all()
-                .flat_map(|(app_name, services)| {
-                    services
-                        .iter()
-                        // avoid cloning when https://github.com/havarnov/multimap/issues/24 has been implemented
-                        .map(move |service| {
-                            let key = Key {
-                                app_name: app_name.to_string(),
-                                service_id: service.id().to_string(),
-                            };
-                            (key, service.clone())
-                        })
-                })
-                .filter(|(key, _service)| !self.writer.contains_key(key))
-                .collect::<Vec<(Key, Service)>>();
+        self.clear_stale_web_host_meta(&apps);
 
-            if services_without_host_meta.is_empty() {
+        let services_without_host_meta = apps
+            .iter_all()
+            .flat_map(|(app_name, services)| {
+                services
+                    .iter()
+                    // avoid cloning when https://github.com/havarnov/multimap/issues/24 has been implemented
+                    .map(move |service| {
+                        let key = Key {
+                            app_name: app_name.to_string(),
+                            service_id: service.id().to_string(),
+                        };
+                        (key, service.clone())
+                    })
+            })
+            .filter(|(key, _service)| !self.writer.contains_key(key))
+            .collect::<Vec<(Key, Service)>>();
+
+        if services_without_host_meta.is_empty() {
+            return Ok(());
+        }
+
+        debug!(
+            "Resolving web host meta data for {:?}.",
+            services_without_host_meta
+                .iter()
+                .map(|(k, _)| k)
+                .collect::<Vec<_>>()
+        );
+        let now = Utc::now();
+        let duration_prevant_startup = Utc::now().signed_duration_since(since_timestamp);
+        let resolved_host_meta_infos =
+            Self::resolve_host_meta(services_without_host_meta, duration_prevant_startup).await;
+        for (key, _service, web_host_meta) in resolved_host_meta_infos {
+            if !web_host_meta.is_valid() {
                 continue;
             }
 
-            debug!(
-                "Resolving web host meta data for {:?}.",
-                services_without_host_meta
-                    .iter()
-                    .map(|(k, _)| k)
-                    .collect::<Vec<_>>()
+            self.writer.insert(
+                key,
+                Arc::new(Value {
+                    timestamp: now,
+                    web_host_meta,
+                }),
             );
-            let now = Utc::now();
-            let duration_prevant_startup =
-                Utc::now().signed_duration_since(timestamp_prevant_startup);
-            let resolved_host_meta_infos = runtime.block_on(Self::resolve_host_meta(
-                services_without_host_meta,
-                duration_prevant_startup,
-            ));
-            for (key, _service, web_host_meta) in resolved_host_meta_infos {
-                if !web_host_meta.is_valid() {
-                    continue;
-                }
+        }
 
-                self.writer.insert(
-                    key,
-                    Arc::new(Value {
-                        timestamp: now,
-                        web_host_meta,
-                    }),
-                );
-            }
-
-            self.writer.refresh();
-        });
+        self.writer.refresh();
+        Ok(())
     }
 
     fn clear_stale_web_host_meta(&mut self, apps: &MultiMap<String, Service>) {

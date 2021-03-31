@@ -1734,6 +1734,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "paste"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acbf547ad0c65e31259204bd90935776d1c693cec2f4ff7abb7a1bbbd40dfe58"
+
+[[package]]
 name = "pear"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2535,8 +2541,7 @@ dependencies = [
 [[package]]
 name = "shiplift"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e468265908f45299c26571dad9a2e5cb3656eceb51cd58f1441cf61aa71aad6"
+source = "git+https://github.com/jpommerening/shiplift.git?rev=7b58b17f58dd4a04486706c304cf7283defc9be9#7b58b17f58dd4a04486706c304cf7283defc9be9"
 dependencies = [
  "base64 0.13.0",
  "byteorder",
@@ -2549,6 +2554,7 @@ dependencies = [
  "hyperlocal",
  "log 0.4.14",
  "mime 0.3.16",
+ "paste",
  "pin-project 1.0.6",
  "serde",
  "serde_json",
