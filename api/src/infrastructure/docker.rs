@@ -35,16 +35,15 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::{format_err, Error};
 use futures::future::join_all;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use multimap::MultiMap;
 use regex::Regex;
-use shiplift::builder::ContainerOptions;
+use shiplift::container::{ContainerCreateInfo, ContainerDetails, ContainerInfo};
 use shiplift::errors::Error as ShipLiftError;
-use shiplift::rep::{Container, ContainerCreateInfo, ContainerDetails};
 use shiplift::tty::TtyChunk;
 use shiplift::{
-    ContainerConnectionOptions, ContainerFilter, ContainerListOptions, Docker, LogsOptions,
-    NetworkCreateOptions, PullOptions,
+    ContainerConnectionOptions, ContainerFilter, ContainerListOptions, ContainerOptions, Docker,
+    LogsOptions, NetworkCreateOptions, PullOptions,
 };
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
@@ -87,7 +86,7 @@ impl DockerInfrastructure {
     async fn find_status_change_container(
         &self,
         status_id: &String,
-    ) -> Result<Option<Container>, ShipLiftError> {
+    ) -> Result<Option<ContainerInfo>, ShipLiftError> {
         self.get_status_change_containers(None, Some(status_id))
             .await
             .map(|list| list.into_iter().next())
@@ -112,11 +111,15 @@ impl DockerInfrastructure {
             ));
         }
 
+        let image = "docker.io/library/busybox:stable";
+
+        pull(&image).await?;
+
         let mut labels: HashMap<&str, &str> = HashMap::new();
         labels.insert(APP_NAME_LABEL, app_name);
         labels.insert(STATUS_ID, &status_id);
 
-        let mut options = ContainerOptions::builder("docker.io/library/busybox");
+        let mut options = ContainerOptions::builder(image);
         options.labels(&labels);
 
         let docker = Docker::new();
@@ -485,14 +488,7 @@ impl DockerInfrastructure {
             app_name
         );
 
-        let pull_options = PullOptions::builder().image(image).build();
-
-        let docker = Docker::new();
-        let images = docker.images();
-        let pull_results = images
-            .pull(&pull_options)
-            .collect::<Vec<Result<serde_json::Value, ShipLiftError>>>()
-            .await;
+        let pull_results = pull(&image).await?;
 
         for pull_result in pull_results {
             debug!("{:?}", pull_result);
@@ -504,7 +500,7 @@ impl DockerInfrastructure {
     async fn get_containers(
         &self,
         filters: Vec<ContainerFilter>,
-    ) -> Result<Vec<Container>, ShipLiftError> {
+    ) -> Result<Vec<ContainerInfo>, ShipLiftError> {
         let docker = Docker::new();
         let containers = docker.containers();
 
@@ -520,7 +516,7 @@ impl DockerInfrastructure {
         &self,
         app_name: Option<&String>,
         service_name: Option<&String>,
-    ) -> Result<Vec<Container>, ShipLiftError> {
+    ) -> Result<Vec<ContainerInfo>, ShipLiftError> {
         let filters = vec![
             label_filter(APP_NAME_LABEL, app_name),
             label_filter(SERVICE_NAME_LABEL, service_name),
@@ -532,7 +528,7 @@ impl DockerInfrastructure {
         &self,
         app_name: Option<&String>,
         status_id: Option<&String>,
-    ) -> Result<Vec<Container>, ShipLiftError> {
+    ) -> Result<Vec<ContainerInfo>, ShipLiftError> {
         let filters = vec![
             label_filter(APP_NAME_LABEL, app_name),
             label_filter(STATUS_ID, status_id),
@@ -544,7 +540,7 @@ impl DockerInfrastructure {
         &self,
         app_name: &String,
         service_name: &String,
-    ) -> Result<Option<Container>, ShipLiftError> {
+    ) -> Result<Option<ContainerInfo>, ShipLiftError> {
         self.get_app_containers(Some(app_name), Some(service_name))
             .await
             .map(|list| list.into_iter().next())
@@ -561,17 +557,17 @@ impl DockerInfrastructure {
 
         let mut container_details = MultiMap::new();
         for container in container_list.into_iter() {
-            let details = inspect(container).await?;
-
-            let app_name = details
-                .config
-                .labels
-                .clone()
-                .unwrap()
-                .get(APP_NAME_LABEL)
-                .unwrap()
-                .clone();
-            container_details.insert(app_name, details);
+            if let Some(details) = not_found_to_none(inspect(container).await)? {
+                let app_name = details
+                    .config
+                    .labels
+                    .clone()
+                    .unwrap()
+                    .get(APP_NAME_LABEL)
+                    .unwrap()
+                    .clone();
+                container_details.insert(app_name, details);
+            }
         }
 
         Ok(container_details)
@@ -799,6 +795,25 @@ fn label_filter(label_name: &str, label_value: Option<&String>) -> ContainerFilt
     }
 }
 
+/// Helper function to map ShipLift 404 errors to None
+fn not_found_to_none<T>(result: Result<T, ShipLiftError>) -> Result<Option<T>, ShipLiftError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(ShipLiftError::Fault { code, .. }) if code.as_u16() == 404u16 => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+/// Helper function to pull images
+async fn pull(image: &str) -> Result<Vec<serde_json::Value>, ShipLiftError> {
+    let pull_options = PullOptions::builder().image(image).build();
+
+    let docker = Docker::new();
+    let images = docker.images();
+
+    images.pull(&pull_options).try_collect().await
+}
+
 /// Helper function to stop containers with the aid of futures::future::join_all
 async fn stop(details: ContainerDetails) -> Result<ContainerDetails, ShipLiftError> {
     let docker = Docker::new();
@@ -816,7 +831,7 @@ async fn delete(details: ContainerDetails) -> Result<ContainerDetails, ShipLiftE
 }
 
 /// Helper function to inspect containers with the aid of futures::future::join_all
-async fn inspect(container: Container) -> Result<ContainerDetails, ShipLiftError> {
+async fn inspect(container: ContainerInfo) -> Result<ContainerDetails, ShipLiftError> {
     let docker = Docker::new();
     let containers = docker.containers();
     containers.get(&container.id).inspect().await
@@ -1029,10 +1044,10 @@ mod tests {
 
             $( labels.insert($l_key, $l_value); )*
 
-            shiplift::rep::ContainerDetails {
+            ContainerDetails {
                 app_armor_profile: "".to_string(),
                 args: vec![],
-                config: shiplift::rep::Config {
+                config: shiplift::image::Config {
                     attach_stderr: false,
                     attach_stdin: false,
                     attach_stdout: false,
@@ -1052,7 +1067,7 @@ mod tests {
                     working_dir: "".to_string(),
                 },
                 driver: "".to_string(),
-                host_config: shiplift::rep::HostConfig {
+                host_config: shiplift::container::HostConfig {
                     cgroup_parent: None,
                     container_id_file: "".to_string(),
                     cpu_shares: None,
@@ -1073,7 +1088,7 @@ mod tests {
                 image: "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913".to_string(),
                 mount_label: "".to_string(),
                 name: "".to_string(),
-                network_settings: shiplift::rep::NetworkSettings {
+                network_settings: shiplift::network::NetworkSettings {
                     bridge: "".to_string(),
                     gateway: "".to_string(),
                     ip_address: "".to_string(),
@@ -1086,7 +1101,7 @@ mod tests {
                 process_label: "".to_string(),
                 resolv_conf_path: "".to_string(),
                 restart_count: 0,
-                state: shiplift::rep::State {
+                state: shiplift::container::State {
                     status: "Running".to_string(),
                     error: "".to_string(),
                     exit_code: 0,
