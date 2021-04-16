@@ -67,6 +67,11 @@ mod services;
 mod tickets;
 mod webhooks;
 
+lazy_static! {
+    static ref RUNTIME: tokio::runtime::Runtime =
+        tokio::runtime::Runtime::new().expect("Should create runtime");
+}
+
 #[get("/")]
 fn index() -> CacheResponse<Option<NamedFile>> {
     CacheResponse::Private {

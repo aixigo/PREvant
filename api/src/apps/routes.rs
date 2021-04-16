@@ -25,13 +25,13 @@
  */
 
 use crate::apps::HostMetaCache;
-use crate::apps::RUNTIME as runtime;
 use crate::apps::{Apps, AppsError};
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::ServiceConfig;
 use crate::models::{AppName, AppNameError, LogChunk};
 use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
+use crate::RUNTIME as runtime;
 use chrono::DateTime;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use hyper::header::Header;

@@ -27,6 +27,7 @@
 use crate::apps::{Apps, AppsError};
 use crate::config::Config;
 use crate::models::ticket_info::TicketInfo;
+use crate::RUNTIME as runtime;
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
 use http_api_problem::{HttpApiProblem, StatusCode};
@@ -53,7 +54,6 @@ pub fn tickets(
             ));
         }
         Some(jira_config) => {
-            let runtime = Runtime::new().expect("Should create runtime");
             let services = runtime.block_on(apps_service.get_apps())?;
 
             let pw = String::from(jira_config.password().unsecure());

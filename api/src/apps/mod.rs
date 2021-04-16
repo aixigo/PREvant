@@ -23,6 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+
 mod apps;
 mod deployment_unit;
 mod host_meta_cache;
@@ -35,8 +36,3 @@ pub use host_meta_cache::new as host_meta_crawling;
 pub use host_meta_cache::HostMetaCache;
 pub use host_meta_cache::HostMetaCrawler;
 pub use routes::{apps_routes, delete_app_sync};
-
-lazy_static! {
-    static ref RUNTIME: tokio::runtime::Runtime =
-        tokio::runtime::Runtime::new().expect("Should create runtime");
-}
