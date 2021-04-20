@@ -12,7 +12,7 @@ use std::convert::From;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::interval;
+use tokio::time::sleep;
 use yansi::Paint;
 
 pub struct HostMetaCache {
@@ -85,9 +85,8 @@ impl HostMetaCrawler {
         let timestamp_prevant_startup = Utc::now();
 
         runtime.handle().spawn(async move {
-            let mut interval = interval(Duration::from_secs(5));
             loop {
-                interval.tick().await;
+                sleep(Duration::from_secs(5)).await;
                 if let Err(err) = self.crawl(&apps, timestamp_prevant_startup).await {
                     error!("Cannot load apps: {}", err);
                 }
