@@ -15,8 +15,7 @@ evmap = "10.0"
 failure = "0.1"
 futures = { version = "0.3", features = ["compat"] }
 handlebars = "2"
-http-api-problem = { version = "0.12", features = ["with_rocket"] }
-hyper = "0.10"
+http-api-problem = "0.50"
 kube = "0.48"
 kube-derive = "0.48.0"
 k8s-openapi = { version = "0.11", default-features = false, features = ["v1_15"] }
@@ -29,16 +28,14 @@ secstr = { version = "0.4", features = ["serde"] }
 serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
-serde_regex = "0.4"
-serde-value = "0.6"
+serde_regex = "1.1"
+serde-value = "0.7"
 serde_yaml = "0.8"
-tokio = { version = "1.5", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.7", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 toml = "0.5"
-regex = "1.4"
+regex = "1.5.1"
 reqwest = { version = "0.11", features = ["json"] }
-rocket = "0.4"
-rocket_contrib = "0.4"
-rocket-cache-response = "0.5"
+rocket = { version = "0.5.0-rc.1", features = ["json"] }
 url = { version = "2.1", features = ["serde"] }
 uuid = { version = "0.8", features = ["serde", "v4"] }
 yansi = "0.5"
@@ -49,12 +46,11 @@ rev = "5916526332951a144b6f6fd7c94d02ea56fdad31"
 
 [dependencies.dkregistry]
 git = "https://github.com/camallo/dkregistry-rs.git"
-rev = "24af5d417b7769db63238bf4667113bda2a2bb03"
+rev = "854d0da53bef5dd85b5e901123e85d43af97c74e"
 
-# Workaround for softprops/shiplift#280 and softprops/shiplift#281
 [dependencies.shiplift]
-git = "https://github.com/jpommerening/shiplift.git"
-rev = "7b58b17f58dd4a04486706c304cf7283defc9be9"
+git = "https://github.com/softprops/shiplift.git"
+rev = "3a7c1dc3ae388b6a9f0a8f724fabff30953bcc5b"
 default-features = false
 features = ["unix-socket", "chrono"]
 

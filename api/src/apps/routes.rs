@@ -26,28 +26,22 @@
 
 use crate::apps::HostMetaCache;
 use crate::apps::{Apps, AppsError};
+use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::ServiceConfig;
 use crate::models::{AppName, AppNameError, LogChunk};
 use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
-use crate::RUNTIME as runtime;
 use chrono::DateTime;
 use http_api_problem::{HttpApiProblem, StatusCode};
-use hyper::header::Header;
 use multimap::MultiMap;
-use rocket::data::{self, FromDataSimple};
-use rocket::http::hyper::header::{Location, Prefer, Preference};
-use rocket::http::hyper::Error;
+use regex::Regex;
 use rocket::http::{RawStr, Status};
-use rocket::request::{Form, FromFormValue, FromRequest, Outcome, Request};
+use rocket::request::{FromRequest, Outcome, Request};
 use rocket::response::{Responder, Response};
-use rocket::Outcome::{Failure, Success};
-use rocket::{Data, State};
-use rocket_contrib::json::Json;
+use rocket::serde::json::Json;
+use rocket::State;
 use std::future::Future;
-use std::io::Read;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
@@ -65,67 +59,65 @@ pub fn apps_routes() -> Vec<rocket::Route> {
 }
 
 #[get("/", format = "application/json")]
-fn apps(
-    apps: State<Arc<Apps>>,
+async fn apps(
+    apps: &State<Arc<Apps>>,
     request_info: RequestInfo,
-    host_meta_cache: State<HostMetaCache>,
-) -> Result<Json<MultiMap<String, Service>>, HttpApiProblem> {
-    let services = runtime.block_on(apps.get_apps())?;
+    host_meta_cache: &State<HostMetaCache>,
+) -> HttpResult<Json<MultiMap<String, Service>>> {
+    let services = apps.get_apps().await?;
     Ok(Json(
         host_meta_cache.update_meta_data(services, &request_info),
     ))
 }
 
 #[get("/<app_name>/status-changes/<status_id>", format = "application/json")]
-fn status_change(
+async fn status_change(
     app_name: Result<AppName, AppNameError>,
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
-    apps: State<Arc<Apps>>,
+    apps: &State<Arc<Apps>>,
     options: RunOptions,
-) -> Result<AsyncCompletion<Json<Vec<Service>>>, HttpApiProblem> {
+) -> HttpResult<AsyncCompletion<Json<Vec<Service>>>> {
     let app_name = app_name?;
     let status_id = status_id?;
 
-    let apps = apps.clone();
+    let apps = (**apps).clone();
     let future = async move { apps.wait_for_status_change(&status_id).await };
 
-    match runtime.block_on(spawn_with_options(options, future))? {
+    match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name, status_id)),
-        Poll::Ready(Ok(_)) => Err(HttpApiProblem::with_title_and_type_from_status(
-            StatusCode::NOT_FOUND,
-        )),
-        Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
+        Poll::Ready(Ok(_)) => Err(HttpApiProblem::with_title(StatusCode::NOT_FOUND).into()),
+        Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
 
 #[delete("/<app_name>")]
-pub fn delete_app(
+pub async fn delete_app(
     app_name: Result<AppName, AppNameError>,
-    apps: State<Arc<Apps>>,
+    apps: &State<Arc<Apps>>,
     options: RunOptions,
-) -> Result<AsyncCompletion<Json<Vec<Service>>>, HttpApiProblem> {
+) -> HttpResult<AsyncCompletion<Json<Vec<Service>>>> {
     let app_name = app_name?;
     let app_name_cloned = app_name.clone();
     let status_id = AppStatusChangeId::new();
 
-    let apps = apps.clone();
+    let apps = (**apps).clone();
     let future = async move { apps.delete_app(&app_name, &status_id).await };
 
-    match runtime.block_on(spawn_with_options(options, future))? {
+    match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
         Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
-        Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
+        Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
 
-pub fn delete_app_sync(
+pub async fn delete_app_sync(
     app_name: Result<AppName, AppNameError>,
-    apps: State<Arc<Apps>>,
-) -> Result<Json<Vec<Service>>, HttpApiProblem> {
-    match delete_app(app_name, apps, RunOptions::Sync)? {
-        AsyncCompletion::Pending(_, _) => Err(HttpApiProblem::with_title_and_type_from_status(
-            StatusCode::INTERNAL_SERVER_ERROR,
-        )),
+    apps: &State<Arc<Apps>>,
+) -> HttpResult<Json<Vec<Service>>> {
+    match delete_app(app_name, apps, RunOptions::Sync).await? {
+        AsyncCompletion::Pending(_, _) => {
+            Err(HttpApiProblem::with_title(StatusCode::INTERNAL_SERVER_ERROR).into())
+        }
         AsyncCompletion::Ready(result) => Ok(result),
     }
 }
@@ -133,22 +125,21 @@ pub fn delete_app_sync(
 #[post(
     "/<app_name>?<create_app_form..>",
     format = "application/json",
-    data = "<service_configs_data>"
+    data = "<service_configs>"
 )]
-pub fn create_app(
+pub async fn create_app(
     app_name: Result<AppName, AppNameError>,
-    apps: State<Arc<Apps>>,
-    create_app_form: Form<CreateAppOptions>,
-    service_configs_data: ServiceConfigsData,
+    apps: &State<Arc<Apps>>,
+    create_app_form: CreateAppOptions,
+    service_configs: Json<Vec<ServiceConfig>>,
     options: RunOptions,
-) -> Result<AsyncCompletion<Json<Vec<Service>>>, HttpApiProblem> {
+) -> HttpResult<AsyncCompletion<Json<Vec<Service>>>> {
     let status_id = AppStatusChangeId::new();
     let app_name = app_name?;
     let app_name_cloned = app_name.clone();
     let replicate_from = create_app_form.replicate_from().clone();
-    let service_configs = service_configs_data.service_configs.clone();
 
-    let apps = apps.clone();
+    let apps = (**apps).clone();
     let future = async move {
         apps.create_or_update(
             &app_name.clone(),
@@ -159,10 +150,10 @@ pub fn create_app(
         .await
     };
 
-    match runtime.block_on(spawn_with_options(options, future))? {
+    match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
         Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
-        Poll::Ready(Err(err)) => Err(HttpApiProblem::from(err)),
+        Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
 
@@ -171,16 +162,16 @@ pub fn create_app(
     format = "application/json",
     data = "<status_data>"
 )]
-fn change_status(
+async fn change_status(
     app_name: Result<AppName, AppNameError>,
     service_name: String,
-    apps: State<Arc<Apps>>,
+    apps: &State<Arc<Apps>>,
     status_data: Json<ServiceStatusData>,
-) -> Result<ServiceStatusResponse, HttpApiProblem> {
+) -> HttpResult<ServiceStatusResponse> {
     let app_name = app_name?;
     let status = status_data.status.clone();
 
-    let service = runtime.block_on(apps.change_status(&app_name, &service_name, status))?;
+    let service = apps.change_status(&app_name, &service_name, status).await?;
 
     Ok(ServiceStatusResponse { service })
 }
@@ -189,13 +180,13 @@ fn change_status(
     "/<app_name>/logs/<service_name>?<since>&<limit>",
     format = "text/plain"
 )]
-fn logs(
+async fn logs(
     app_name: Result<AppName, AppNameError>,
     service_name: String,
     since: Option<String>,
     limit: Option<usize>,
-    apps: State<Arc<Apps>>,
-) -> Result<LogsResponse, HttpApiProblem> {
+    apps: &State<Arc<Apps>>,
+) -> HttpResult<LogsResponse> {
     let app_name = app_name?;
 
     let since = match since {
@@ -203,16 +194,18 @@ fn logs(
         Some(since) => match DateTime::parse_from_rfc3339(&since) {
             Ok(since) => Some(since),
             Err(err) => {
-                return Err(HttpApiProblem::with_title_and_type_from_status(
-                    http_api_problem::StatusCode::BAD_REQUEST,
-                )
-                .set_detail(format!("{}", err)));
+                return Err(
+                    HttpApiProblem::with_title(http_api_problem::StatusCode::BAD_REQUEST)
+                        .detail(format!("{}", err)),
+                )?;
             }
         },
     };
     let limit = limit.unwrap_or(20_000);
 
-    let log_chunk = runtime.block_on(apps.get_logs(&app_name, &service_name, &since, limit))?;
+    let log_chunk = apps
+        .get_logs(&app_name, &service_name, &since, limit)
+        .await?;
 
     Ok(LogsResponse {
         log_chunk,
@@ -222,21 +215,18 @@ fn logs(
     })
 }
 
+#[derive(Debug, PartialEq)]
 pub enum RunOptions {
     Sync,
     Async { wait: Option<Duration> },
 }
 
-pub async fn spawn_with_options<F>(
-    options: RunOptions,
-    future: F,
-) -> Result<Poll<F::Output>, HttpApiProblem>
+pub async fn spawn_with_options<F>(options: RunOptions, future: F) -> HttpResult<Poll<F::Output>>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let handle = runtime.handle();
-    let join_handle = handle.spawn(future);
+    let join_handle = tokio::spawn(future);
 
     match options {
         RunOptions::Sync => Ok(Poll::Ready(join_handle.await.map_err(map_join_error)?)),
@@ -244,8 +234,7 @@ where
         RunOptions::Async {
             wait: Some(duration),
         } => {
-            match handle
-                .spawn(timeout(duration, join_handle))
+            match tokio::spawn(timeout(duration, join_handle))
                 .await
                 .map_err(map_join_error)?
             {
@@ -260,9 +249,10 @@ where
     }
 }
 
-fn map_join_error(err: tokio::task::JoinError) -> HttpApiProblem {
-    HttpApiProblem::with_title_and_type_from_status(StatusCode::INTERNAL_SERVER_ERROR)
-        .set_detail(format!("{}", err))
+fn map_join_error(err: tokio::task::JoinError) -> HttpApiError {
+    HttpApiProblem::with_title(StatusCode::INTERNAL_SERVER_ERROR)
+        .detail(format!("{}", err))
+        .into()
 }
 
 pub struct LogsResponse {
@@ -274,7 +264,7 @@ pub struct LogsResponse {
 
 #[derive(FromForm)]
 pub struct CreateAppOptions {
-    #[form(field = "replicateFrom")]
+    #[field(name = "replicateFrom")]
     replicate_from: Option<AppName>,
 }
 
@@ -284,41 +274,18 @@ impl CreateAppOptions {
     }
 }
 
-pub struct ServiceConfigsData {
-    service_configs: Vec<ServiceConfig>,
-}
-
-impl FromDataSimple for ServiceConfigsData {
-    type Error = String;
-
-    fn from_data(_request: &Request, data: Data) -> data::Outcome<ServiceConfigsData, String> {
-        let mut body = String::new();
-        if let Err(e) = data.open().read_to_string(&mut body) {
-            return Failure((Status::InternalServerError, format!("{:?}", e)));
-        }
-
-        let service_configs = match serde_json::from_str::<Vec<ServiceConfig>>(&body) {
-            Ok(v) => v,
-            Err(err) => {
-                return Failure((
-                    Status::BadRequest,
-                    format!("Cannot read body as JSON: {:?}", err),
-                ));
-            }
-        };
-
-        Success(ServiceConfigsData { service_configs })
-    }
-}
-
-impl Responder<'static> for LogsResponse {
-    fn respond_to(self, _request: &Request) -> Result<Response<'static>, Status> {
+impl<'r> Responder<'r, 'static> for LogsResponse {
+    fn respond_to(self, _request: &'r Request) -> Result<Response<'static>, Status> {
+        use std::io::Cursor;
         let log_chunk = match self.log_chunk {
             None => {
-                return Ok(
-                    HttpApiProblem::from(http_api_problem::StatusCode::NOT_FOUND)
-                        .to_rocket_response(),
-                )
+                let payload = HttpApiProblem::with_title(http_api_problem::StatusCode::NOT_FOUND)
+                    .json_bytes();
+                return Response::build()
+                    .status(Status::NotFound)
+                    .raw_header("Content-type", "application/problem+json")
+                    .sized_body(payload.len(), Cursor::new(payload))
+                    .ok();
             }
             Some(log_chunk) => log_chunk,
         };
@@ -330,11 +297,13 @@ impl Responder<'static> for LogsResponse {
             self.app_name,
             self.service_name,
             self.limit,
-            rocket::http::uri::Uri::percent_encode(&from.to_rfc3339()),
+            RawStr::new(&from.to_rfc3339()).percent_encode(),
         );
+
+        let log_lines = log_chunk.log_lines();
         Response::build()
             .raw_header("Link", format!("<{}>;rel=next", next_logs_url))
-            .sized_body(std::io::Cursor::new(log_chunk.log_lines().clone()))
+            .sized_body(log_lines.len(), Cursor::new(log_lines.clone()))
             .ok()
     }
 }
@@ -353,14 +322,17 @@ pub enum AsyncCompletion<T> {
     Ready(T),
 }
 
-impl<'a, T: Responder<'a>> Responder<'a> for AsyncCompletion<T> {
-    fn respond_to(self, request: &Request) -> Result<Response<'a>, Status> {
+impl<'r, T> Responder<'r, 'static> for AsyncCompletion<T>
+where
+    T: Responder<'r, 'static>,
+{
+    fn respond_to(self, request: &'r Request) -> Result<Response<'static>, Status> {
         match self {
             AsyncCompletion::Pending(app_name, status_id) => {
                 let url = format!("/api/apps/{}/status-changes/{}", app_name, status_id);
                 Response::build()
                     .status(Status::Accepted)
-                    .header(Location(url))
+                    .raw_header("Location", url)
                     .ok()
             }
             AsyncCompletion::Ready(result) => result.respond_to(request),
@@ -368,8 +340,8 @@ impl<'a, T: Responder<'a>> Responder<'a> for AsyncCompletion<T> {
     }
 }
 
-impl Responder<'static> for ServiceStatusResponse {
-    fn respond_to(self, _request: &Request) -> Result<Response<'static>, Status> {
+impl<'r> Responder<'r, 'static> for ServiceStatusResponse {
+    fn respond_to(self, _request: &'r Request) -> Result<Response<'static>, Status> {
         match self.service {
             Some(_service) => Response::build().status(Status::Accepted).ok(),
             None => Response::build().status(Status::NotFound).ok(),
@@ -377,7 +349,7 @@ impl Responder<'static> for ServiceStatusResponse {
     }
 }
 
-impl From<AppsError> for HttpApiProblem {
+impl From<AppsError> for HttpApiError {
     fn from(error: AppsError) -> Self {
         let status = match error {
             AppsError::AppNotFound { .. } => StatusCode::NOT_FOUND,
@@ -392,56 +364,150 @@ impl From<AppsError> for HttpApiProblem {
             }
         };
 
-        HttpApiProblem::with_title_and_type_from_status(status).set_detail(format!("{}", error))
+        HttpApiProblem::with_title_and_type(status)
+            .detail(format!("{}", error))
+            .into()
     }
 }
 
-impl<'a> FromFormValue<'a> for AppName {
-    type Error = String;
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for RunOptions {
+    type Error = &'static str;
 
-    fn from_form_value(form_value: &'a RawStr) -> Result<Self, Self::Error> {
-        AppName::from_str(form_value).map_err(|e| format!("{}", e))
-    }
-}
+    async fn from_request(request: &'r Request<'_>) -> rocket::request::Outcome<Self, Self::Error> {
+        let headers = request.headers().get("Prefer").collect::<Vec<_>>();
 
-impl<'a, 'r> FromRequest<'a, 'r> for RunOptions {
-    type Error = hyper::Error;
-
-    // Typed headers have been moved out of hyper into hyperium/headers.
-    // When Rocket updates their hyper dependency, we probably have to update this.
-    // See: https://github.com/SergioBenitez/Rocket/issues/1067
-    fn from_request(request: &'a Request<'r>) -> Outcome<RunOptions, Error> {
-        let headers = request
-            .headers()
-            .get(Prefer::header_name())
-            .map(Vec::from)
-            .collect::<Vec<Vec<u8>>>();
-
-        if headers.is_empty() {
-            return Outcome::Success(RunOptions::Sync);
+        let mut run_options = RunOptions::Sync;
+        let mut wait = None;
+        lazy_static! {
+            static ref RE: Regex = Regex::new(r"^wait=(\d+)$").unwrap();
         }
 
-        match Prefer::parse_header(headers.as_slice()) {
-            Err(err) => Outcome::Failure((Status::BadRequest, err)),
-            Ok(prefer) => Outcome::Success({
-                let mut sync = true;
-                let mut wait = None;
-                for preference in prefer.0 {
-                    match preference {
-                        Preference::RespondAsync => {
-                            sync = false;
-                        }
-                        Preference::Wait(secs) => {
-                            wait = Some(Duration::from_secs(u64::from(secs)));
-                        }
-                        _ => {}
-                    }
-                }
-                match sync {
-                    true => RunOptions::Sync,
-                    false => RunOptions::Async { wait },
-                }
-            }),
+        for header in headers
+            .iter()
+            .map(|header| header.split(","))
+            .flatten()
+            .map(str::trim)
+        {
+            if header == "respond-async" {
+                run_options = RunOptions::Async { wait: None };
+                continue;
+            }
+
+            if let Some(wait_capture) = RE.captures(header) {
+                wait = Some(Duration::from_secs(
+                    dbg!(wait_capture.get(1))
+                        .unwrap()
+                        .as_str()
+                        .parse::<u64>()
+                        .unwrap(),
+                ));
+            }
+        }
+
+        Outcome::Success(match (run_options, wait) {
+            (RunOptions::Sync, _) => RunOptions::Sync,
+            (RunOptions::Async { .. }, wait) => RunOptions::Async { wait },
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    mod parse_run_options_from_request {
+        use crate::apps::routes::*;
+        use rocket::http::Header;
+        use rocket::local::asynchronous::Client;
+
+        #[tokio::test]
+        async fn without_prefer_header() {
+            let rocket = rocket::build();
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let get = client.get("/");
+            let request = get.inner();
+
+            let run_options = RunOptions::from_request(request).await.succeeded();
+
+            assert_eq!(run_options, Some(RunOptions::Sync));
+        }
+
+        #[tokio::test]
+        async fn with_unknown_prefer_header_content() {
+            let rocket = rocket::build();
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let get = client
+                .get("/")
+                .header(Header::new("Prefer", "handling=lenient"));
+            let request = get.inner();
+
+            let run_options = RunOptions::from_request(request).await.succeeded();
+
+            assert_eq!(run_options, Some(RunOptions::Sync));
+        }
+
+        #[tokio::test]
+        async fn prefer_async_without_wait() {
+            let rocket = rocket::build();
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let get = client
+                .get("/")
+                .header(Header::new("Prefer", "respond-async"));
+            let request = get.inner();
+
+            let run_options = RunOptions::from_request(request).await.succeeded();
+
+            assert_eq!(run_options, Some(RunOptions::Async { wait: None }));
+        }
+
+        #[tokio::test]
+        async fn prefer_async_with_wait() {
+            let rocket = rocket::build();
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let get = client
+                .get("/")
+                .header(Header::new("Prefer", "respond-async, wait=100"));
+            let request = get.inner();
+
+            let run_options = RunOptions::from_request(request).await.succeeded();
+
+            assert_eq!(
+                run_options,
+                Some(RunOptions::Async {
+                    wait: Some(Duration::from_secs(100))
+                })
+            );
+        }
+
+        #[tokio::test]
+        async fn prefer_async_and_with_second_wait() {
+            let rocket = rocket::build();
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let get = client
+                .get("/")
+                .header(Header::new("Prefer", "respond-async"))
+                .header(Header::new("Prefer", "wait=100"));
+            let request = get.inner();
+
+            let run_options = RunOptions::from_request(request).await.succeeded();
+
+            assert_eq!(
+                run_options,
+                Some(RunOptions::Async {
+                    wait: Some(Duration::from_secs(100))
+                })
+            );
+        }
+
+        #[tokio::test]
+        async fn with_malformed_prefer_header() {
+            let rocket = rocket::build();
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let get = client.get("/").header(Header::new("Prefer", "abcd"));
+            let request = get.inner();
+
+            let run_options = RunOptions::from_request(request).await.succeeded();
+
+            assert_eq!(run_options, Some(RunOptions::Sync));
         }
     }
 }

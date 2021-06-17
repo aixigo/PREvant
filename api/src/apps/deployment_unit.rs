@@ -140,7 +140,7 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
         struct ServiceCompanion {
             templated_companion: ServiceConfig,
             for_service_name: String,
-        };
+        }
 
         let mut service_companions = Vec::new();
         for service in services.values() {

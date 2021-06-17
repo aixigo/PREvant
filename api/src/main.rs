@@ -33,8 +33,6 @@ extern crate failure;
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
-extern crate log;
-#[macro_use]
 extern crate rocket;
 #[macro_use]
 extern crate serde_derive;
@@ -47,8 +45,7 @@ use crate::models::request_info::RequestInfo;
 use clap::{App, Arg};
 use env_logger::Env;
 use openssl::x509::X509;
-use rocket::response::NamedFile;
-use rocket_cache_response::CacheResponse;
+use rocket::fs::NamedFile;
 use secstr::SecUtf8;
 use serde_yaml::{from_reader, to_string, Value};
 use std::fs::File;
@@ -61,31 +58,23 @@ use url::Url;
 
 mod apps;
 mod config;
+mod http_result;
 mod infrastructure;
 mod models;
 mod services;
 mod tickets;
 mod webhooks;
 
-lazy_static! {
-    static ref RUNTIME: tokio::runtime::Runtime =
-        tokio::runtime::Runtime::new().expect("Should create runtime");
-}
-
 #[get("/")]
-fn index() -> CacheResponse<Option<NamedFile>> {
-    CacheResponse::Private {
-        responder: NamedFile::open(Path::new("frontend/index.html")).ok(),
-        max_age: 60 * 60, // cached for seconds
-    }
+async fn index() -> Option<NamedFile> {
+    NamedFile::open(Path::new("frontend/index.html")).await.ok()
 }
 
 #[get("/<path..>", rank = 100)]
-fn files(path: PathBuf) -> CacheResponse<Option<NamedFile>> {
-    CacheResponse::Private {
-        responder: NamedFile::open(Path::new("frontend/").join(path)).ok(),
-        max_age: 60 * 60, // cached for seconds
-    }
+async fn files(path: PathBuf) -> Option<NamedFile> {
+    NamedFile::open(Path::new("frontend/").join(path))
+        .await
+        .ok()
 }
 
 #[get("/")]
@@ -127,7 +116,7 @@ fn create_infrastructure(config: &Config) -> Result<Box<dyn Infrastructure>, Sta
                     let container_secret =
                         Path::new("/run/secrets/kubernetes.io/serviceaccount/ca.crt");
                     if container_secret.exists() {
-                        Some(read_ca_file(&PathBuf::from(container_secret))?)
+                        Some(read_ca_file(container_secret)?)
                     } else {
                         None
                     }
@@ -140,7 +129,7 @@ fn create_infrastructure(config: &Config) -> Result<Box<dyn Infrastructure>, Sta
                     let container_secret =
                         Path::new("/run/secrets/kubernetes.io/serviceaccount/token");
                     if container_secret.exists() {
-                        Some(read_token_file(&PathBuf::from(container_secret))?)
+                        Some(read_token_file(container_secret)?)
                     } else {
                         None
                     }
@@ -156,7 +145,7 @@ fn create_infrastructure(config: &Config) -> Result<Box<dyn Infrastructure>, Sta
     }
 }
 
-fn read_token_file(path: &PathBuf) -> Result<SecUtf8, StartUpError> {
+fn read_token_file(path: &Path) -> Result<SecUtf8, StartUpError> {
     debug!("Reading token from {}.", path.to_str().unwrap());
 
     let mut f = match File::open(path) {
@@ -180,7 +169,7 @@ fn read_token_file(path: &PathBuf) -> Result<SecUtf8, StartUpError> {
     Ok(SecUtf8::from(token))
 }
 
-fn read_ca_file(path: &PathBuf) -> Result<Vec<X509>, StartUpError> {
+fn read_ca_file(path: &Path) -> Result<Vec<X509>, StartUpError> {
     debug!(
         "Reading certificate authority from {}.",
         path.to_str().unwrap()
@@ -207,7 +196,8 @@ fn read_ca_file(path: &PathBuf) -> Result<Vec<X509>, StartUpError> {
     })
 }
 
-fn main() -> Result<(), StartUpError> {
+#[rocket::main]
+async fn main() -> Result<(), StartUpError> {
     let argument_matches = App::new(crate_name!())
         .version(crate_version!())
         .author(crate_authors!())
@@ -244,7 +234,7 @@ fn main() -> Result<(), StartUpError> {
     let apps = Arc::new(apps);
     host_meta_crawler.spawn(apps.clone());
 
-    rocket::ignite()
+    rocket::build()
         .manage(config)
         .manage(apps)
         .manage(host_meta_cache)
@@ -254,7 +244,8 @@ fn main() -> Result<(), StartUpError> {
         .mount("/api/apps", crate::apps::apps_routes())
         .mount("/api", routes![tickets::tickets])
         .mount("/api", routes![webhooks::webhooks])
-        .launch();
+        .launch()
+        .await?;
 
     Ok(())
 }
@@ -265,4 +256,14 @@ enum StartUpError {
     CannotReadCertificateAuthority { path: String, err: String },
     #[fail(display = "Cannot read API token from {}: {}", path, err)]
     CannotReadToken { path: String, err: String },
+    #[fail(display = "Cannot start HTTP server: {}", err)]
+    CannotStartWebServer { err: String },
+}
+
+impl std::convert::From<rocket::Error> for StartUpError {
+    fn from(err: rocket::Error) -> Self {
+        Self::CannotStartWebServer {
+            err: err.to_string(),
+        }
+    }
 }

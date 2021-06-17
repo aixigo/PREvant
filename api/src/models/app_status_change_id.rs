@@ -23,8 +23,8 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+use crate::http_result::HttpApiError;
 use http_api_problem::{HttpApiProblem, StatusCode};
-use rocket::http::RawStr;
 use rocket::request::FromParam;
 use std::str::FromStr;
 
@@ -54,8 +54,8 @@ impl std::str::FromStr for AppStatusChangeId {
 impl<'r> FromParam<'r> for AppStatusChangeId {
     type Error = AppStatusChangeIdError;
 
-    fn from_param(param: &'r RawStr) -> Result<Self, Self::Error> {
-        AppStatusChangeId::from_str(&param.url_decode()?)
+    fn from_param(param: &'r str) -> Result<Self, Self::Error> {
+        AppStatusChangeId::from_str(param)
     }
 }
 
@@ -83,9 +83,10 @@ impl From<uuid::Error> for AppStatusChangeIdError {
     }
 }
 
-impl From<AppStatusChangeIdError> for HttpApiProblem {
+impl From<AppStatusChangeIdError> for HttpApiError {
     fn from(err: AppStatusChangeIdError) -> Self {
-        HttpApiProblem::with_title_from_status(StatusCode::BAD_REQUEST)
-            .set_detail(format!("{}", err))
+        HttpApiProblem::with_title(StatusCode::BAD_REQUEST)
+            .detail(format!("{}", err))
+            .into()
     }
 }

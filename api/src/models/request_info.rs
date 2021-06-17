@@ -25,8 +25,8 @@
  */
 
 use rocket::http::Status;
+use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
-use rocket::Outcome;
 use url::Url;
 
 #[derive(Clone)]
@@ -67,17 +67,18 @@ impl RequestInfo {
     }
 }
 
-impl<'a, 'r> FromRequest<'a, 'r> for RequestInfo {
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for RequestInfo {
     type Error = ();
 
-    fn from_request(request: &'a Request<'r>) -> request::Outcome<RequestInfo, ()> {
+    async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
         let hosts: Vec<_> = request.headers().get("host").collect();
 
         if hosts.len() != 1 {
             return Outcome::Failure((Status::BadRequest, ()));
         }
 
-        let url_string = "http://".to_owned() + &hosts[0];
+        let url_string = format!("http://{}", hosts[0]);
         match Url::parse(&url_string) {
             Ok(url) => return Outcome::Success(RequestInfo { base_url: url }),
             Err(_) => return Outcome::Failure((Status::BadRequest, ())),

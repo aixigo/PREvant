@@ -33,7 +33,7 @@ LABEL maintainer="marc.schreiber@aixigo.de"
 
 WORKDIR /app
 EXPOSE 80
-ENV ROCKET_ENV=staging RUST_LOG=info
+ENV ROCKET_PROFILE=staging RUST_LOG=info
 CMD ["./prevant"]
 
 COPY --from=directory-composer /app /app
