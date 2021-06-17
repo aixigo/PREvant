@@ -25,15 +25,12 @@
  */
 
 use regex::Regex;
-use rocket::data::{self, FromDataSimple};
+use rocket::data::{self, Data, FromData, ToByteUnit};
 use rocket::http::Status;
 use rocket::request::Request;
-use rocket::Data;
-use rocket::Outcome::{Failure, Success};
 use serde::de::Error as DeserializeError;
 use serde::{Deserialize, Deserializer};
 use serde_json::from_str;
-use std::io::Read;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,25 +97,35 @@ impl WebHookInfo {
     }
 }
 
-impl FromDataSimple for WebHookInfo {
+#[rocket::async_trait]
+impl<'r> FromData<'r> for WebHookInfo {
     type Error = String;
 
-    fn from_data(_request: &Request, data: Data) -> data::Outcome<WebHookInfo, String> {
-        let mut body = String::new();
-        if let Err(e) = data.open().read_to_string(&mut body) {
-            return Failure((Status::InternalServerError, format!("{:?}", e)));
-        }
+    async fn from_data(
+        _request: &'r Request<'_>,
+        data: Data<'r>,
+    ) -> data::Outcome<'r, Self, Self::Error> {
+        let body = match data.open(2.mebibytes()).into_string().await {
+            Ok(string) if string.is_complete() => string.into_inner(),
+            Ok(_) => {
+                return data::Outcome::Failure((
+                    Status::PayloadTooLarge,
+                    "Payload too large".to_string(),
+                ))
+            }
+            Err(e) => return data::Outcome::Failure((Status::InternalServerError, e.to_string())),
+        };
 
         let data = match from_str::<WebHookInfo>(&body) {
             Ok(v) => v,
             Err(err) => {
-                return Failure((
+                return data::Outcome::Failure((
                     Status::BadRequest,
                     format!("Cannot read body as JSON: {:?}", err),
                 ));
             }
         };
 
-        Success(data)
+        data::Outcome::Success(data)
     }
 }

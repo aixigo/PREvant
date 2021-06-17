@@ -29,7 +29,6 @@ use crate::apps::Apps;
 use crate::models::service::{Service, ServiceBuilder, ServiceStatus};
 use crate::models::RequestInfo;
 use crate::models::WebHostMeta;
-use crate::RUNTIME as runtime;
 use chrono::{DateTime, Utc};
 use evmap::{ReadHandleFactory, WriteHandle};
 use multimap::MultiMap;
@@ -110,7 +109,7 @@ impl HostMetaCrawler {
     pub fn spawn(mut self, apps: Arc<Apps>) {
         let timestamp_prevant_startup = Utc::now();
 
-        runtime.handle().spawn(async move {
+        tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
                 if let Err(err) = self.crawl(&apps, timestamp_prevant_startup).await {

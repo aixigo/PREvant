@@ -24,9 +24,10 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::http_result::HttpApiError;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use regex::Regex;
-use rocket::http::RawStr;
+use rocket::form::{self, FromFormField, ValueField};
 use rocket::request::FromParam;
 use std::collections::HashSet;
 use std::ops::Deref;
@@ -69,7 +70,7 @@ impl FromStr for AppName {
                     .collect::<Vec<&str>>()
                     .join("");
 
-                return Err(AppNameError::InvalidChars { invalid_chars });
+                Err(AppNameError::InvalidChars { invalid_chars })
             }
         }
     }
@@ -78,8 +79,16 @@ impl FromStr for AppName {
 impl<'r> FromParam<'r> for AppName {
     type Error = AppNameError;
 
-    fn from_param(param: &'r RawStr) -> Result<Self, Self::Error> {
-        AppName::from_str(&param.url_decode()?)
+    fn from_param(param: &'r str) -> Result<Self, Self::Error> {
+        AppName::from_str(param)
+    }
+}
+
+#[rocket::async_trait]
+impl<'r> FromFormField<'r> for AppName {
+    fn from_value(field: ValueField<'r>) -> form::Result<'r, Self> {
+        Ok(AppName::from_str(field.value)
+            .map_err(|err| form::Error::validation(err.to_string()))?)
     }
 }
 
@@ -102,10 +111,11 @@ impl From<Utf8Error> for AppNameError {
     }
 }
 
-impl From<AppNameError> for HttpApiProblem {
+impl From<AppNameError> for HttpApiError {
     fn from(err: AppNameError) -> Self {
-        HttpApiProblem::with_title_from_status(StatusCode::BAD_REQUEST)
-            .set_detail(format!("{}", err))
+        HttpApiProblem::with_title(StatusCode::BAD_REQUEST)
+            .detail(format!("{}", err))
+            .into()
     }
 }
 

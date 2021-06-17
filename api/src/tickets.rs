@@ -24,37 +24,34 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::{Apps, AppsError};
+use crate::apps::Apps;
 use crate::config::Config;
+use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::ticket_info::TicketInfo;
-use crate::RUNTIME as runtime;
 use goji::Error as GojiError;
 use goji::{Credentials, Jira, SearchOptions};
 use http_api_problem::{HttpApiProblem, StatusCode};
+use rocket::serde::json::Json;
 use rocket::State;
-use rocket_contrib::json::Json;
 use std::collections::HashMap;
 use std::convert::From;
 use std::sync::Arc;
-use tokio::runtime::Runtime;
 
 /// Analyzes running containers and returns a map of `review-app-name` with the
 /// corresponding `TicketInfo`.
 #[get("/apps/tickets", format = "application/json")]
-pub fn tickets(
-    config_state: State<Config>,
-    apps_service: State<Arc<Apps>>,
-) -> Result<Json<HashMap<String, TicketInfo>>, HttpApiProblem> {
+pub async fn tickets(
+    config_state: &State<Config>,
+    apps_service: &State<Arc<Apps>>,
+) -> HttpResult<Json<HashMap<String, TicketInfo>>> {
     let mut tickets: HashMap<String, TicketInfo> = HashMap::new();
 
     match config_state.jira_config() {
         None => {
-            return Err(HttpApiProblem::from(
-                ListTicketsError::MissingIssueTrackingConfiguration,
-            ));
+            return Err(ListTicketsError::MissingIssueTrackingConfiguration.into());
         }
         Some(jira_config) => {
-            let services = runtime.block_on(apps_service.get_apps())?;
+            let services = apps_service.get_apps().await?;
 
             let pw = String::from(jira_config.password().unsecure());
             let jira = match Jira::new(
@@ -62,7 +59,7 @@ pub fn tickets(
                 Credentials::Basic(jira_config.user().clone(), pw),
             ) {
                 Ok(jira) => jira,
-                Err(e) => return Err(HttpApiProblem::from(ListTicketsError::from(e))),
+                Err(e) => return Err(ListTicketsError::from(e).into()),
             };
 
             let issue_keys = services
@@ -91,7 +88,7 @@ pub fn tickets(
                     err => {
                         let e = ListTicketsError::from(err);
                         error!("Cannot retrieve ticket information: {}", e);
-                        return Err(HttpApiProblem::from(e));
+                        return Err(e.into());
                     }
                 },
             }
@@ -110,21 +107,20 @@ pub enum ListTicketsError {
         internal_message
     )]
     UnexpectedError { internal_message: String },
-    #[fail(display = "Cannot resolve apps: {}", error)]
-    CannotResolveApps { error: AppsError },
 }
 
-impl From<ListTicketsError> for HttpApiProblem {
+impl From<ListTicketsError> for HttpApiError {
     fn from(error: ListTicketsError) -> Self {
         let status = match error {
             ListTicketsError::MissingIssueTrackingConfiguration => StatusCode::NO_CONTENT,
             ListTicketsError::UnexpectedError {
                 internal_message: _,
             } => StatusCode::INTERNAL_SERVER_ERROR,
-            ListTicketsError::CannotResolveApps { error } => return HttpApiProblem::from(error),
         };
 
-        HttpApiProblem::with_title_and_type_from_status(status).set_detail(format!("{}", error))
+        HttpApiProblem::with_title_and_type(status)
+            .detail(format!("{}", error))
+            .into()
     }
 }
 

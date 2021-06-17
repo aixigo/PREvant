@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant REST API
  * %%
- * Copyright (C) 2018 - 2019 aixigo AG
+ * Copyright (C) 2018 - 2021 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,29 +24,40 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::delete_app_sync;
-use crate::apps::Apps;
-use crate::http_result::HttpResult;
-use crate::models::service::Service;
-use crate::models::web_hook_info::WebHookInfo;
-use crate::models::AppName;
-use rocket::serde::json::Json;
-use rocket::State;
-use std::str::FromStr;
-use std::sync::Arc;
+use http_api_problem::HttpApiProblem;
+use rocket::http::{hyper::header::CONTENT_TYPE, Header, Status};
+use rocket::request::Request;
+use rocket::response::{self, Responder, Response};
+use std::convert::From;
+use std::io::Cursor;
 
-#[post("/webhooks", format = "application/json", data = "<web_hook_info>")]
-pub async fn webhooks(
-    apps: &State<Arc<Apps>>,
-    web_hook_info: WebHookInfo,
-) -> HttpResult<Json<Vec<Service>>> {
-    info!(
-        "Deleting app {:?} through web hook {:?} with event {:?}",
-        web_hook_info.get_app_name(),
-        web_hook_info.get_title(),
-        web_hook_info.get_event_key()
-    );
+pub type HttpResult<T> = Result<T, HttpApiError>;
 
-    let app_name = AppName::from_str(&web_hook_info.get_app_name());
-    delete_app_sync(app_name, apps).await
+#[derive(Debug)]
+pub struct HttpApiError(HttpApiProblem);
+
+impl From<HttpApiProblem> for HttpApiError {
+    fn from(problem: HttpApiProblem) -> Self {
+        Self(problem)
+    }
+}
+
+impl<'r> Responder<'r, 'static> for HttpApiError {
+    fn respond_to(self, _: &'r Request<'_>) -> response::Result<'static> {
+        let paylaod = self.0.json_bytes();
+        Response::build()
+            .header(Header::new(
+                CONTENT_TYPE.as_str(),
+                "application/problem+json",
+            ))
+            .status(
+                self.0
+                    .status
+                    .map(|status| Status::from_code(status.as_u16()))
+                    .flatten()
+                    .unwrap_or_default(),
+            )
+            .sized_body(paylaod.len(), Cursor::new(paylaod))
+            .ok()
+    }
 }
