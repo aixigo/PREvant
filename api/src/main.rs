@@ -24,8 +24,6 @@
  * =========================LICENSE_END==================================
  */
 
-#![feature(proc_macro_hygiene, decl_macro)]
-
 #[macro_use]
 extern crate clap;
 #[macro_use]
