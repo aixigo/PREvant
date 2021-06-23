@@ -24,8 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::apps::AppsServiceError;
-use crate::apps::Apps;
+use crate::apps::{Apps, AppsError};
 use crate::models::service::{Service, ServiceBuilder, ServiceStatus};
 use crate::models::RequestInfo;
 use crate::models::WebHostMeta;
@@ -123,7 +122,7 @@ impl HostMetaCrawler {
         &mut self,
         apps: &Arc<Apps>,
         since_timestamp: DateTime<Utc>,
-    ) -> Result<(), AppsServiceError> {
+    ) -> Result<(), AppsError> {
         debug!("Resolving list of apps for web host meta cache.");
         let apps = apps.get_apps().await?;
 

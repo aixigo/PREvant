@@ -25,6 +25,7 @@
  */
 use crate::models::service::ServiceError;
 use regex::Regex;
+use serde::ser::{Serialize, Serializer};
 use serde::{Deserialize, Deserializer};
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
@@ -85,7 +86,11 @@ impl Image {
                 registry,
                 image_user: _,
                 image_tag: _,
-            } => Some(registry.clone().unwrap_or(String::from("docker.io"))),
+            } => Some(
+                registry
+                    .clone()
+                    .unwrap_or_else(|| String::from("docker.io")),
+            ),
         }
     }
 }
@@ -178,11 +183,20 @@ impl<'de> Deserialize<'de> for Image {
             where
                 E: serde::de::Error,
             {
-                Ok(Image::from_str(v).map_err(serde::de::Error::custom)?)
+                Image::from_str(v).map_err(serde::de::Error::custom)
             }
         }
 
         deserializer.deserialize_string(ImageVisitor)
+    }
+}
+
+impl Serialize for Image {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 

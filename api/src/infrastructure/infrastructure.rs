@@ -87,7 +87,7 @@ pub trait Infrastructure: Send + Sync {
 
 impl dyn Infrastructure {
     /// Returns the configuration of all services running for the given application name.
-    pub async fn get_configs_of_app(&self, app_name: &String) -> Result<Vec<ServiceConfig>, Error> {
+    pub async fn get_configs_of_app(&self, app_name: &str) -> Result<Vec<ServiceConfig>, Error> {
         let services = self.get_services().await?;
         Ok(services
             .get_vec(app_name)

@@ -184,7 +184,7 @@ impl Serialize for Service {
             state: &self.state,
         };
 
-        Ok(s.serialize(serializer)?)
+        s.serialize(serializer)
     }
 }
 
@@ -220,7 +220,7 @@ impl ServiceBuilder {
         let config = self
             .config
             .ok_or(ServiceBuilderError::MissingServiceConfiguration)?;
-        let started_at = self.started_at.unwrap_or(Utc::now());
+        let started_at = self.started_at.unwrap_or_else(Utc::now);
 
         Ok(Service {
             id,
@@ -313,7 +313,7 @@ impl From<Service> for ServiceBuilder {
     }
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, Clone, Eq, Hash, PartialEq, Serialize)]
 pub enum ContainerType {
     #[serde(rename = "instance")]
     Instance,
@@ -350,10 +350,10 @@ impl FromStr for ContainerType {
 impl Display for ContainerType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            &ContainerType::Instance => write!(f, "instance"),
-            &ContainerType::Replica => write!(f, "replica"),
-            &ContainerType::ApplicationCompanion => write!(f, "app-companion"),
-            &ContainerType::ServiceCompanion => write!(f, "service-companion"),
+            ContainerType::Instance => write!(f, "instance"),
+            ContainerType::Replica => write!(f, "replica"),
+            ContainerType::ApplicationCompanion => write!(f, "app-companion"),
+            ContainerType::ServiceCompanion => write!(f, "service-companion"),
         }
     }
 }

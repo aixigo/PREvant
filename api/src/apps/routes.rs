@@ -196,8 +196,9 @@ async fn logs(
             Err(err) => {
                 return Err(
                     HttpApiProblem::with_title(http_api_problem::StatusCode::BAD_REQUEST)
-                        .detail(format!("{}", err)),
-                )?;
+                        .detail(format!("{}", err))
+                        .into(),
+                );
             }
         },
     };
@@ -358,7 +359,8 @@ impl From<AppsError> for HttpApiError {
             AppsError::InfrastructureError { .. }
             | AppsError::InvalidServerConfiguration { .. }
             | AppsError::InvalidTemplateFormat { .. }
-            | AppsError::UnableToResolveImage { .. } => {
+            | AppsError::UnableToResolveImage { .. }
+            | AppsError::InvalidDeploymentHook => {
                 error!("Internal server error: {}", error);
                 StatusCode::INTERNAL_SERVER_ERROR
             }

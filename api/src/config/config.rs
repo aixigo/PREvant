@@ -32,6 +32,7 @@ use std::convert::From;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::Error as IOError;
+use std::path::PathBuf;
 use toml::de::Error as TomlError;
 use toml::from_str;
 
@@ -54,6 +55,7 @@ pub struct Config {
     jira: Option<JiraConfig>,
     companions: Option<BTreeMap<String, Companion>>,
     services: Option<BTreeMap<String, Service>>,
+    hooks: Option<BTreeMap<String, PathBuf>>,
 }
 
 impl Config {
@@ -121,6 +123,13 @@ impl Config {
                 service.add_secrets_to(service_config, app_name);
             }
         }
+    }
+
+    pub fn hook(&self, hook_name: &str) -> Option<&PathBuf> {
+        self.hooks
+            .as_ref()
+            .map(|hooks| hooks.get(hook_name))
+            .flatten()
     }
 }
 

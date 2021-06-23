@@ -41,12 +41,17 @@ impl Environment {
         Environment { values }
     }
 
+    #[cfg(test)]
     pub fn get<'a, 'b: 'a>(&'b self, index: usize) -> Option<&'a EnvironmentVariable> {
         self.values.get(index)
     }
 
     pub fn iter<'a, 'b: 'a>(&'b self) -> std::slice::Iter<'a, EnvironmentVariable> {
         self.values.iter()
+    }
+
+    pub fn into_iter(self) -> std::vec::IntoIter<EnvironmentVariable> {
+        self.values.into_iter()
     }
 
     pub fn variable<'a, 'b: 'a>(&'b self, env_name: &str) -> Option<&'a EnvironmentVariable> {
@@ -166,6 +171,11 @@ impl EnvironmentVariable {
 
     pub fn key(&self) -> &String {
         &self.key
+    }
+
+    pub fn with_value(mut self, value: SecUtf8) -> Self {
+        self.value = value;
+        self
     }
 
     pub fn value(&self) -> &SecUtf8 {
