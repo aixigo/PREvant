@@ -277,7 +277,7 @@ macro_rules! sc {
         hasher.input($name);
         let img_hash = &format!("sha256:{:x}", hasher.result_reset());
 
-        sc!($name, img_hash)
+        crate::sc!($name, img_hash)
     }};
 
     ( $name:expr, $img:expr ) => {{

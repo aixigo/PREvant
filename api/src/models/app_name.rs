@@ -63,7 +63,7 @@ impl FromStr for AppName {
             Some(captures) => {
                 let invalid_chars = captures
                     .iter()
-                    .filter_map(|c| c)
+                    .flatten()
                     .map(|c| c.as_str())
                     .collect::<HashSet<&str>>()
                     .into_iter()

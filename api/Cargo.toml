@@ -5,9 +5,12 @@ authors = ["Marc Schreiber <marc.schreiber@aixigo.de>"]
 repository = "https://github.com/aixigo/PREvant/"
 edition = "2018"
 
+resolver = "2"
+
 [dependencies]
 async-trait = "0.1"
 base64 = "0.13"
+Boa = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 clap = "2.33"
 env_logger = "0.8"
@@ -57,3 +60,4 @@ features = ["unix-socket", "chrono"]
 [dev-dependencies]
 sha2 = "0.8"
 assert-json-diff = "1.1"
+tempfile = "3.2"
