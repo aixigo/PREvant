@@ -25,7 +25,7 @@
  */
 
 <template>
-   <dlg ref="dialog" :title="'Duplicate' + duplicateFromAppName" :error-status="errorStatus" :error-status-text="errorStatusText">
+   <dlg ref="dialog" :title="'Duplicate ' + duplicateFromAppName" :error-status="errorStatus" :error-status-text="errorStatusText">
       <template slot="body">
          <div class="form-group">
             <input
