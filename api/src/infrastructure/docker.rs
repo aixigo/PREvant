@@ -440,6 +440,7 @@ impl DockerInfrastructure {
 
         if let Some(memory_limit) = container_config.memory_limit() {
             options.memory(memory_limit.clone());
+            options.memory_swap(memory_limit.clone() as i64);
         }
 
         options.build()
