@@ -274,8 +274,8 @@ macro_rules! sc {
     ( $name:expr ) => {{
         use sha2::Digest;
         let mut hasher = ::sha2::Sha256::new();
-        hasher.input($name);
-        let img_hash = &format!("sha256:{:x}", hasher.result_reset());
+        hasher.update($name);
+        let img_hash = &format!("sha256:{:x}", hasher.finalize());
 
         crate::sc!($name, img_hash)
     }};
@@ -292,8 +292,8 @@ macro_rules! sc {
         use sha2::Digest;
 
         let mut hasher = ::sha2::Sha256::new();
-        hasher.input($name);
-        let img_hash = &format!("sha256:{:x}", hasher.result_reset());
+        hasher.update($name);
+        let img_hash = &format!("sha256:{:x}", hasher.finalize());
 
         let mut config =
             ServiceConfig::new(String::from($name), crate::models::Image::from_str(img_hash).unwrap());
