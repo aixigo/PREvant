@@ -110,11 +110,11 @@ impl ServiceConfig {
         }
 
         if let Some(volumes) = self.volumes() {
-            templated_config.set_volumes(Some(apply_templates(&reg, &parameters, volumes)?));
+            templated_config.set_volumes(Some(apply_templates(&reg, parameters, volumes)?));
         }
 
         if let Some(labels) = self.labels() {
-            templated_config.set_labels(Some(apply_templates(&reg, &parameters, labels)?));
+            templated_config.set_labels(Some(apply_templates(&reg, parameters, labels)?));
         }
 
         if let Some(router) = self.router() {
@@ -125,7 +125,7 @@ impl ServiceConfig {
         if let Some(middlewares) = self.middlewares() {
             templated_config.set_middlewares(apply_templating_to_middlewares(
                 &reg,
-                &parameters,
+                parameters,
                 middlewares,
             )?);
         }
@@ -145,7 +145,7 @@ impl Environment {
         for e in self.iter() {
             let v = if e.templated() {
                 EnvironmentVariable::with_original(
-                    SecUtf8::from(reg.render_template(&e.value().unsecure(), &parameters)?),
+                    SecUtf8::from(reg.render_template(e.value().unsecure(), &parameters)?),
                     e.clone(),
                 )
             } else {

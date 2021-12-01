@@ -84,10 +84,7 @@ impl Config {
     }
 
     pub fn jira_config(&self) -> Option<JiraConfig> {
-        match &self.jira {
-            None => None,
-            Some(j) => Some(j.clone()),
-        }
+        self.jira.as_ref().cloned()
     }
 
     pub fn service_companion_configs(&self, app_name: &str) -> Vec<ServiceConfig> {

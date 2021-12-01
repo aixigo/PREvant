@@ -253,7 +253,7 @@ impl AppsService {
         replicate_from: Option<AppName>,
         service_configs: &[ServiceConfig],
     ) -> Result<Vec<Service>, AppsServiceError> {
-        let mut configs = service_configs.iter().cloned().collect::<Vec<_>>();
+        let mut configs = service_configs.to_vec();
 
         let replicate_from_app_name =
             replicate_from.unwrap_or_else(|| AppName::from_str("master").unwrap());
