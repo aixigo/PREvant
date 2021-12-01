@@ -160,10 +160,7 @@ pub fn deployment_payload(
     let volumes = if let Some(volumes) = service_config.volumes() {
         let volumes = volumes
             .iter()
-            .filter_map(|(path, _)| match path.parent() {
-                Some(parent) => Some((parent, path)),
-                None => None,
-            })
+            .filter_map(|(path, _)| path.parent().map(|parent| (parent, path)))
             .collect::<MultiMap<_, _>>();
 
         volumes

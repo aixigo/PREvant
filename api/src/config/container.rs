@@ -52,9 +52,6 @@ impl ContainerConfig {
     }
 
     pub fn memory_limit(&self) -> Option<u64> {
-        match self.memory_limit {
-            None => None,
-            Some(limit) => Some(limit.clone()),
-        }
+        self.memory_limit
     }
 }

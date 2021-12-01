@@ -62,7 +62,7 @@ impl DummyInfrastructure {
 impl DummyInfrastructure {
     async fn delay_if_configured(&self) {
         if let Some(delay) = &self.delay {
-            tokio::time::sleep(delay.clone()).await;
+            tokio::time::sleep(*delay).await;
         }
     }
 }

@@ -119,10 +119,8 @@ impl KubernetesInfrastructure {
         }
 
         if let Some(certs) = &self.cluster_ca {
-            let result: Result<Vec<Der>, ErrorStack> = certs
-                .into_iter()
-                .map(|cert| Ok(Der(cert.to_der()?)))
-                .collect();
+            let result: Result<Vec<Der>, ErrorStack> =
+                certs.iter().map(|cert| Ok(Der(cert.to_der()?))).collect();
             let ders = result.map_err(|err| KubernetesInfrastructureError::CertificateError {
                 internal_message: format!("{}", err),
             })?;
@@ -192,7 +190,7 @@ impl KubernetesInfrastructure {
                         .unwrap_or(80u16);
 
                     builder = builder.endpoint(
-                        IpAddr::from_str(&ip)
+                        IpAddr::from_str(ip)
                             .expect("Kubernetes API should provide valid IP address"),
                         port,
                     );
@@ -274,21 +272,21 @@ impl KubernetesInfrastructure {
             SERVICE_NAME_LABEL,
             service_config.service_name(),
         ));
-        Api::namespaced(self.client()?, &app_name)
+        Api::namespaced(self.client()?, app_name)
             .create(
                 &PostParams::default(),
                 &service_payload(app_name, service_config),
             )
             .await?;
 
-        Api::namespaced(self.client()?, &app_name)
+        Api::namespaced(self.client()?, app_name)
             .create(
                 &PostParams::default(),
                 &ingress_route_payload(app_name, service_config),
             )
             .await?;
 
-        Api::namespaced(self.client()?, &app_name)
+        Api::namespaced(self.client()?, app_name)
             .create(
                 &PostParams::default(),
                 &middleware_payload(app_name, service_config),
@@ -356,7 +354,7 @@ impl KubernetesInfrastructure {
                 .await?;
         }
 
-        match Api::namespaced(self.client()?, &app_name)
+        match Api::namespaced(self.client()?, app_name)
             .create(
                 &PostParams::default(),
                 &deployment_payload(app_name, service_config, container_config),
@@ -374,7 +372,7 @@ impl KubernetesInfrastructure {
             }
 
             Err(KubeError::Api(ErrorResponse { code, .. })) if code == 409 => {
-                Api::<V1Deployment>::namespaced(self.client()?, &app_name)
+                Api::<V1Deployment>::namespaced(self.client()?, app_name)
                     .patch(
                         &format!("{}-{}-deployment", app_name, service_config.service_name()),
                         &PatchParams::default(),
@@ -406,7 +404,7 @@ impl KubernetesInfrastructure {
             app_name
         );
 
-        match Api::namespaced(self.client()?, &app_name)
+        match Api::namespaced(self.client()?, app_name)
             .create(
                 &PostParams::default(),
                 &secrets_payload(app_name, service_config, volumes),
@@ -421,7 +419,7 @@ impl KubernetesInfrastructure {
                 Ok(())
             }
             Err(KubeError::Api(ErrorResponse { code, .. })) if code == 409 => {
-                Api::<V1Secret>::namespaced(self.client()?, &app_name)
+                Api::<V1Secret>::namespaced(self.client()?, app_name)
                     .patch(
                         &format!("{}-{}-secret", app_name, service_config.service_name()),
                         &PatchParams::default(),
@@ -442,22 +440,22 @@ impl KubernetesInfrastructure {
         app_name: &String,
         service: &'a Service,
     ) -> Result<&'a Service, KubernetesInfrastructureError> {
-        Api::<V1Deployment>::namespaced(self.client()?, &service.app_name())
+        Api::<V1Deployment>::namespaced(self.client()?, service.app_name())
             .delete(
                 &format!("{}-{}-deployment", app_name, service.service_name()),
                 &DeleteParams::default(),
             )
             .await?;
-        Api::<V1Service>::namespaced(self.client()?, &service.app_name())
+        Api::<V1Service>::namespaced(self.client()?, service.app_name())
             .delete(service.service_name(), &DeleteParams::default())
             .await?;
-        Api::<IngressRoute>::namespaced(self.client()?, &service.app_name())
+        Api::<IngressRoute>::namespaced(self.client()?, service.app_name())
             .delete(
                 &format!("{}-{}-ingress-route", app_name, service.service_name()),
                 &DeleteParams::default(),
             )
             .await?;
-        Api::<Middleware>::namespaced(self.client()?, &service.app_name())
+        Api::<Middleware>::namespaced(self.client()?, service.app_name())
             .delete(
                 &format!("{}-{}-middleware", app_name, service.service_name()),
                 &DeleteParams::default(),
@@ -530,7 +528,7 @@ impl Infrastructure for KubernetesInfrastructure {
 
         let futures = services
             .iter()
-            .map(|service| self.stop_service(&app_name, &service))
+            .map(|service| self.stop_service(app_name, service))
             .collect::<Vec<_>>();
 
         for stop_service_result in join_all(futures).await {
@@ -557,7 +555,7 @@ impl Infrastructure for KubernetesInfrastructure {
             "{}={},{}={}",
             APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL, service_name,
         ));
-        let pod = match Api::<V1Pod>::namespaced(self.client()?, &app_name)
+        let pod = match Api::<V1Pod>::namespaced(self.client()?, app_name)
             .list(&p)
             .await?
             .into_iter()
@@ -586,25 +584,25 @@ impl Infrastructure for KubernetesInfrastructure {
             })
             .filter(|since_seconds| since_seconds > &0);
 
-        let logs = Api::<V1Pod>::namespaced(self.client()?, &app_name)
+        let logs = Api::<V1Pod>::namespaced(self.client()?, app_name)
             .logs(&pod.metadata.name.unwrap(), &p)
             .await?;
 
         let logs = logs
-            .split("\n")
+            .split('\n')
             .enumerate()
             // Unfortunately,  API does not support head (also like docker, cf. https://github.com/moby/moby/issues/13096)
             // Until then we have to skip these log messages which is super slow…
             .filter(move |(index, _)| index < &limit)
             .filter(|(_, line)| !line.is_empty())
             .map(|(_, line)| {
-                let mut iter = line.splitn(2, ' ').into_iter();
+                let mut iter = line.splitn(2, ' ');
                 let timestamp = iter.next().expect(
                     "This should never happen: kubernetes should return timestamps, separated by space",
                 );
 
                 let datetime =
-                    DateTime::parse_from_rfc3339(&timestamp).expect("Expecting a valid timestamp");
+                    DateTime::parse_from_rfc3339(timestamp).expect("Expecting a valid timestamp");
 
                 let mut log_line: String = iter.collect::<Vec<&str>>().join(" ");
                 log_line.push('\n');
@@ -630,7 +628,7 @@ impl Infrastructure for KubernetesInfrastructure {
             None => return Ok(None),
         };
 
-        Api::<V1Deployment>::namespaced(self.client()?, &app_name)
+        Api::<V1Deployment>::namespaced(self.client()?, app_name)
             .patch(
                 &format!("{}-{}-deployment", app_name, service_name),
                 &PatchParams::default(),

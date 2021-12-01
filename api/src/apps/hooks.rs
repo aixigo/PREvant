@@ -317,7 +317,7 @@ mod tests {
             .map(|service| service.volumes().cloned())
             .flatten()
             .flatten()
-            .map(|(path, content)| (path.to_str().unwrap().to_string(), content.clone()))
+            .map(|(path, content)| (path.to_str().unwrap().to_string(), content))
             .collect::<Vec<(String, String)>>();
 
         assert_eq!(
@@ -369,7 +369,7 @@ mod tests {
             .map(|service| service.volumes().cloned())
             .flatten()
             .flatten()
-            .map(|(path, content)| (path.to_str().unwrap().to_string(), content.clone()))
+            .map(|(path, content)| (path.to_str().unwrap().to_string(), content))
             .collect::<Vec<(String, String)>>();
 
         assert_eq!(deployed_files, vec![]);
