@@ -387,7 +387,7 @@ impl<'r> FromRequest<'r> for RunOptions {
 
         for header in headers
             .iter()
-            .map(|header| header.split(","))
+            .map(|header| header.split(','))
             .flatten()
             .map(str::trim)
         {

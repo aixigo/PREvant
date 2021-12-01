@@ -113,11 +113,11 @@ impl DockerInfrastructure {
 
         let image = "docker.io/library/busybox:stable";
 
-        pull(&image).await?;
+        pull(image).await?;
 
         let mut labels: HashMap<&str, &str> = HashMap::new();
         labels.insert(APP_NAME_LABEL, app_name);
-        labels.insert(STATUS_ID, &status_id);
+        labels.insert(STATUS_ID, status_id);
 
         let mut options = ContainerOptions::builder(image);
         options.labels(&labels);
@@ -250,7 +250,7 @@ impl DockerInfrastructure {
         let futures = configs
             .iter()
             .map(|service_config| {
-                self.start_container(app_name, &network_id, &service_config, container_config)
+                self.start_container(app_name, &network_id, service_config, container_config)
             })
             .collect::<Vec<_>>();
 
@@ -308,7 +308,7 @@ impl DockerInfrastructure {
         let images = docker.images();
 
         if let Image::Named { .. } = service_config.image() {
-            self.pull_image(app_name, &service_config).await?;
+            self.pull_image(app_name, service_config).await?;
         }
 
         let mut image_to_delete = None;
@@ -344,7 +344,7 @@ impl DockerInfrastructure {
 
         let options = DockerInfrastructure::create_container_options(
             app_name,
-            &service_config,
+            service_config,
             container_config,
         );
 
@@ -419,7 +419,7 @@ impl DockerInfrastructure {
         }
 
         labels.insert(APP_NAME_LABEL, app_name);
-        labels.insert(SERVICE_NAME_LABEL, &service_config.service_name());
+        labels.insert(SERVICE_NAME_LABEL, service_config.service_name());
         let container_type_name = service_config.container_type().to_string();
         labels.insert(CONTAINER_TYPE_LABEL, &container_type_name);
         let image_name = service_config.image().to_string();
@@ -432,15 +432,15 @@ impl DockerInfrastructure {
             .map(|value| value.to_string());
 
         if let Some(replicated_env) = &replicated_env {
-            labels.insert(REPLICATED_ENV_LABEL, &replicated_env);
+            labels.insert(REPLICATED_ENV_LABEL, replicated_env);
         }
 
         options.labels(&labels);
         options.restart_policy("always", 5);
 
         if let Some(memory_limit) = container_config.memory_limit() {
-            options.memory(memory_limit.clone());
-            options.memory_swap(memory_limit.clone() as i64);
+            options.memory(memory_limit);
+            options.memory_swap(memory_limit as i64);
         }
 
         options.build()
@@ -468,7 +468,7 @@ impl DockerInfrastructure {
         for (path, data) in volumes.into_iter() {
             containers
                 .get(&container_info.id)
-                .copy_file_into(path, &data.as_bytes())
+                .copy_file_into(path, data.as_bytes())
                 .await?;
         }
 
@@ -710,11 +710,11 @@ impl Infrastructure for DockerInfrastructure {
                     .map(|chunk| {
                         let line = String::from_utf8_lossy(&chunk.to_vec()).to_string();
 
-                        let mut iter = line.splitn(2, ' ').into_iter();
+                        let mut iter = line.splitn(2, ' ');
                         let timestamp = iter.next()
                             .expect("This should never happen: docker should return timestamps, separated by space");
 
-                        let datetime = DateTime::parse_from_rfc3339(&timestamp).expect("Expecting a valid timestamp");
+                        let datetime = DateTime::parse_from_rfc3339(timestamp).expect("Expecting a valid timestamp");
 
                         let log_line : String = iter
                             .collect::<Vec<&str>>()
@@ -724,7 +724,7 @@ impl Infrastructure for DockerInfrastructure {
                     .filter(move |(timestamp, _)| {
                         // Due to the fact that docker's REST API supports only unix time (cf. since),
                         // it is necessary to filter the timestamps as well.
-                        from.map(|from| timestamp >= &from).unwrap_or_else(|| true)
+                        from.map(|from| timestamp >= &from).unwrap_or(true)
                     })
                     .collect();
 
@@ -889,7 +889,7 @@ impl TryFrom<&ContainerDetails> for Service {
             }
         };
 
-        let started_at = container_details.state.started_at.clone();
+        let started_at = container_details.state.started_at;
         let status = if container_details.state.running {
             ServiceStatus::Running
         } else {

@@ -77,6 +77,6 @@ impl Serialize for TicketInfo {
             status: &self.status,
         };
 
-        Ok(t.serialize(serializer)?)
+        t.serialize(serializer)
     }
 }

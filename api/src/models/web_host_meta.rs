@@ -92,7 +92,7 @@ impl WebHostMeta {
             Some(links) => links
                 .iter()
                 .find(|link| link.rel == "https://github.com/OAI/OpenAPI-Specification")
-                .and_then(|link| Some(link.href.clone())),
+                .map(|link| link.href.clone()),
         }
     }
 
@@ -106,7 +106,7 @@ impl WebHostMeta {
     pub fn date_modified(&self) -> Option<DateTime<Utc>> {
         match &self.properties {
             None => None,
-            Some(properties) => properties.date_modified.clone(),
+            Some(properties) => properties.date_modified,
         }
     }
 

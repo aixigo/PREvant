@@ -98,7 +98,7 @@ impl ServiceConfig {
     pub fn env<'a, 'b: 'a>(&'b self) -> Option<&'a Environment> {
         match &self.env {
             None => None,
-            Some(env) => Some(&env),
+            Some(env) => Some(env),
         }
     }
 
@@ -111,7 +111,7 @@ impl ServiceConfig {
     pub fn labels<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<String, String>> {
         match &self.labels {
             None => None,
-            Some(labels) => Some(&labels),
+            Some(labels) => Some(labels),
         }
     }
 
@@ -151,7 +151,7 @@ impl ServiceConfig {
     pub fn router<'a, 'b: 'a>(&'b self) -> Option<&'a Router> {
         match &self.router {
             None => None,
-            Some(router) => Some(&router),
+            Some(router) => Some(router),
         }
     }
 
@@ -212,30 +212,12 @@ impl ServiceConfig {
             }
         }
 
-        let mut volumes = other
-            .volumes
-            .as_ref()
-            .map(|v| v.clone())
-            .unwrap_or(BTreeMap::new());
-        volumes.extend(
-            self.volumes
-                .as_ref()
-                .map(|v| v.clone())
-                .unwrap_or(BTreeMap::new()),
-        );
+        let mut volumes = other.volumes.as_ref().cloned().unwrap_or_default();
+        volumes.extend(self.volumes.as_ref().cloned().unwrap_or_default());
         self.volumes = Some(volumes);
 
-        let mut labels = other
-            .labels
-            .as_ref()
-            .map(|v| v.clone())
-            .unwrap_or(BTreeMap::new());
-        labels.extend(
-            self.labels
-                .as_ref()
-                .map(|v| v.clone())
-                .unwrap_or(BTreeMap::new()),
-        );
+        let mut labels = other.labels.as_ref().cloned().unwrap_or_default();
+        labels.extend(self.labels.as_ref().cloned().unwrap_or_default());
         self.labels = Some(labels);
     }
 }

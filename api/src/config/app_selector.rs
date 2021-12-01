@@ -48,6 +48,6 @@ impl<'de> serde::Deserialize<'de> for AppSelector {
     where
         D: serde::Deserializer<'de>,
     {
-        serde_regex::deserialize(deserializer).map(|r| AppSelector(r))
+        serde_regex::deserialize(deserializer).map(AppSelector)
     }
 }

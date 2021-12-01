@@ -113,7 +113,7 @@ impl DeploymentUnit {
     {
         for config in configs {
             if let Some(port) = port_mappings.get(config.image()) {
-                config.set_port(port.clone());
+                config.set_port(*port);
             }
         }
     }
@@ -146,7 +146,7 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
         for service in services.values() {
             for service_companion in self.service_companions.iter() {
                 let templated_companion = service_companion
-                    .apply_templating_for_service_companion(&self.app_name, &service)?;
+                    .apply_templating_for_service_companion(&self.app_name, service)?;
 
                 service_companions.push(ServiceCompanion {
                     templated_companion,
