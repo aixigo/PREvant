@@ -178,6 +178,11 @@ impl JsServiceConfig {
                         variables.push(ev.with_value(value));
                     }
                 }
+                variables.extend(
+                    self.env
+                        .into_iter()
+                        .map(|(key, value)| EnvironmentVariable::new(key, value)),
+                );
 
                 Some(Environment::new(variables))
             }
@@ -373,7 +378,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_deployment_hook_with_env_modification() -> Result<(), AppsError> {
+    async fn apply_deployment_hook_add_env() -> Result<(), AppsError> {
         let script = r#"
         function deploymentHook( appName, configs ) {
             return configs.map((config, index) => {
@@ -412,6 +417,60 @@ mod tests {
         assert_eq!(
             deployed_variables,
             vec![(String::from("VARIABLE_X"), String::from("service-a0"))]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn apply_deployment_hook_with_env_modification() -> Result<(), AppsError> {
+        let script = r#"
+        function deploymentHook( appName, configs ) {
+            return configs.map((config, index) => {
+                config.env['VARIABLE_Y'] = config.name + index;
+                return config;
+            });
+        }
+        "#;
+
+        let (_temp_js_file, config) = config_with_deployment_hook(script);
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        let mut service_config = crate::sc!("service-a");
+        service_config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
+            String::from("VARIABLE_X"),
+            SecUtf8::from("Hello"),
+        )])));
+
+        apps.create_or_update(
+            &AppName::from_str("master").unwrap(),
+            &AppStatusChangeId::new(),
+            None,
+            &[service_config],
+        )
+        .await?;
+
+        let services = apps
+            .infrastructure
+            .get_configs_of_app("master")
+            .await
+            .unwrap();
+        let deployed_variables = services
+            .into_iter()
+            .map(|service| service.env().cloned())
+            .flatten()
+            .map(|env| env.into_iter())
+            .flatten()
+            .map(|env| (env.key().clone(), env.value().unsecure().to_string()))
+            .collect::<Vec<(String, String)>>();
+
+        assert_eq!(
+            deployed_variables,
+            vec![
+                (String::from("VARIABLE_X"), String::from("Hello")),
+                (String::from("VARIABLE_Y"), String::from("service-a0"))
+            ]
         );
 
         Ok(())
