@@ -24,7 +24,9 @@
  * =========================LICENSE_END==================================
  */
 use crate::config::Config;
+use crate::infrastructure::DeploymentStrategy;
 use crate::models::{AppName, ContainerType, Image, ServiceConfig};
+use crate::registry::ImageInfo;
 use handlebars::TemplateRenderError;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
@@ -32,9 +34,10 @@ use std::convert::TryInto;
 pub(super) struct DeploymentUnit {
     app_name: AppName,
     configs: Vec<ServiceConfig>,
-    service_companions: Vec<ServiceConfig>,
-    app_companions: Vec<ServiceConfig>,
+    service_companions: Vec<(ServiceConfig, crate::config::DeploymentStrategy)>,
+    app_companions: Vec<(ServiceConfig, crate::config::DeploymentStrategy)>,
     templating_only_service_configs: Vec<ServiceConfig>,
+    image_infos: HashMap<Image, ImageInfo>,
 }
 
 impl DeploymentUnit {
@@ -45,6 +48,7 @@ impl DeploymentUnit {
             service_companions: Vec::new(),
             app_companions: Vec::new(),
             templating_only_service_configs: Vec::new(),
+            image_infos: HashMap::new(),
         }
     }
 
@@ -81,12 +85,12 @@ impl DeploymentUnit {
         images.extend(
             self.service_companions
                 .iter()
-                .map(|config| config.image().clone()),
+                .map(|(config, _)| config.image().clone()),
         );
         images.extend(
             self.app_companions
                 .iter()
-                .map(|config| config.image().clone()),
+                .map(|(config, _)| config.image().clone()),
         );
         images.extend(
             self.templating_only_service_configs
@@ -97,38 +101,76 @@ impl DeploymentUnit {
         images
     }
 
-    pub fn assign_port_mappings(&mut self, port_mappings: &HashMap<Image, u16>) {
-        Self::assign_port_mappings_impl(self.configs.iter_mut(), port_mappings);
-        Self::assign_port_mappings_impl(self.service_companions.iter_mut(), port_mappings);
-        Self::assign_port_mappings_impl(self.app_companions.iter_mut(), port_mappings);
+    pub fn assign_image_infos(&mut self, image_infos: HashMap<Image, ImageInfo>) {
+        self.image_infos.extend(image_infos);
+
+        Self::assign_port_mappings_impl(self.configs.iter_mut(), &self.image_infos);
+        Self::assign_port_mappings_impl(
+            self.service_companions
+                .iter_mut()
+                .map(|(companion, _)| companion),
+            &self.image_infos,
+        );
+        Self::assign_port_mappings_impl(
+            self.app_companions
+                .iter_mut()
+                .map(|(companion, _)| companion),
+            &self.image_infos,
+        );
         Self::assign_port_mappings_impl(
             self.templating_only_service_configs.iter_mut(),
-            port_mappings,
+            &self.image_infos,
         );
     }
 
-    fn assign_port_mappings_impl<'a, Iter>(configs: Iter, port_mappings: &HashMap<Image, u16>)
+    fn assign_port_mappings_impl<'a, Iter>(configs: Iter, image_infos: &HashMap<Image, ImageInfo>)
     where
         Iter: Iterator<Item = &'a mut ServiceConfig>,
     {
         for config in configs {
-            if let Some(port) = port_mappings.get(config.image()) {
-                config.set_port(*port);
+            if let Some(info) = image_infos.get(config.image()) {
+                if let Some(port) = info.exposed_port() {
+                    config.set_port(port);
+                }
             }
         }
     }
 }
 
-impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
+fn resolve_strategy(
+    service_config: ServiceConfig,
+    strategy: &crate::config::DeploymentStrategy,
+    image_infos: &HashMap<Image, ImageInfo>,
+) -> DeploymentStrategy {
+    match strategy {
+        crate::config::DeploymentStrategy::RedeployAlways => {
+            DeploymentStrategy::RedeployAlways(service_config)
+        }
+        crate::config::DeploymentStrategy::RedeployOnImageUpdate => {
+            match image_infos.get(service_config.image()) {
+                Some(image_info) => DeploymentStrategy::RedeployOnImageUpdate(
+                    service_config,
+                    image_info.digest().to_string(),
+                ),
+                None => DeploymentStrategy::RedeployAlways(service_config),
+            }
+        }
+        crate::config::DeploymentStrategy::RedeployNever => {
+            DeploymentStrategy::RedeployNever(service_config)
+        }
+    }
+}
+
+impl TryInto<Vec<DeploymentStrategy>> for DeploymentUnit {
     type Error = TemplateRenderError;
 
-    fn try_into(self) -> Result<Vec<ServiceConfig>, Self::Error> {
-        let mut services = HashMap::new();
+    fn try_into(self) -> Result<Vec<DeploymentStrategy>, Self::Error> {
+        let mut strategies = HashMap::new();
 
         for config in self.configs.into_iter() {
-            services.insert(
+            strategies.insert(
                 config.service_name().clone(),
-                config.apply_templating(&self.app_name)?,
+                DeploymentStrategy::RedeployAlways(config.apply_templating(&self.app_name)?),
             );
         }
 
@@ -137,19 +179,21 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
         // deploying service companions should be avoided for services that override a
         // service companion.
 
-        struct ServiceCompanion {
+        struct ServiceCompanion<'a> {
             templated_companion: ServiceConfig,
+            strategy: &'a crate::config::DeploymentStrategy,
             for_service_name: String,
         }
 
         let mut service_companions = Vec::new();
-        for service in services.values() {
-            for service_companion in self.service_companions.iter() {
+        for service in strategies.values() {
+            for (service_companion, strategy) in self.service_companions.iter() {
                 let templated_companion = service_companion
                     .apply_templating_for_service_companion(&self.app_name, service)?;
 
                 service_companions.push(ServiceCompanion {
                     templated_companion,
+                    strategy,
                     for_service_name: service.service_name().clone(),
                 });
             }
@@ -159,20 +203,22 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
             service_companions
                 .into_iter()
                 .partition(|service_companion| {
-                    services
+                    strategies
                         .get_mut(service_companion.templated_companion.service_name())
                         .is_some()
                 });
 
         for companion in service_companions_of_request.iter() {
-            services
+            strategies
                 .get_mut(companion.templated_companion.service_name())
                 .unwrap()
                 .merge_with(&companion.templated_companion);
         }
 
+        let image_infos = self.image_infos;
+
         // Exclude service_companions that are included in the request
-        services.extend(
+        strategies.extend(
             service_companions_of_config
                 .into_iter()
                 .filter(|service_companion| {
@@ -187,14 +233,22 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
                 .map(|service_companion| {
                     (
                         service_companion.templated_companion.service_name().clone(),
-                        service_companion.templated_companion,
+                        resolve_strategy(
+                            service_companion.templated_companion,
+                            service_companion.strategy,
+                            &image_infos,
+                        ),
                     )
                 }),
         );
 
         let mut templating_only_service_configs = self.templating_only_service_configs;
-        templating_only_service_configs.extend(services.values().cloned());
-        for companion_config in self.app_companions.into_iter() {
+        templating_only_service_configs.extend(
+            strategies
+                .values()
+                .map(|strategy| ServiceConfig::clone(strategy)),
+        );
+        for (companion_config, strategy) in self.app_companions.into_iter() {
             let companion_config = companion_config.apply_templating_for_application_companion(
                 &self.app_name,
                 &templating_only_service_configs,
@@ -202,23 +256,27 @@ impl TryInto<Vec<ServiceConfig>> for DeploymentUnit {
 
             // If a custom application companion was deployed, its config needs to be merged
             // with the companion config
-            let existing_config = services.get_mut(companion_config.service_name());
+            let existing_config = strategies.get_mut(companion_config.service_name());
 
             if let Some(existing_config) = existing_config {
                 existing_config.merge_with(&companion_config);
             } else {
-                services.insert(companion_config.service_name().clone(), companion_config);
+                strategies.insert(
+                    companion_config.service_name().clone(),
+                    resolve_strategy(companion_config, &strategy, &image_infos),
+                );
             }
         }
 
-        let mut configs: Vec<_> = services.into_iter().map(|(_, config)| config).collect();
-        configs.sort_unstable_by(|a, b| {
+        let mut strategies = strategies.into_values().collect::<Vec<_>>();
+
+        strategies.sort_unstable_by(|a, b| {
             let index1 = container_type_index(a.container_type());
             let index2 = container_type_index(b.container_type());
             index1.cmp(&index2)
         });
 
-        Ok(configs)
+        Ok(strategies)
     }
 }
 
@@ -273,9 +331,17 @@ mod tests {
         unit.extend_with_config(&config);
 
         let mut port_mappings = HashMap::new();
-        port_mappings.insert(Image::from_str("nginx:1.13").unwrap(), 4711);
+        port_mappings.insert(
+            Image::from_str("nginx:1.13").unwrap(),
+            ImageInfo::with_exposed_port(
+                String::from(
+                    "sha256:b1d09e9718890e6ebbbd2bc319ef1611559e30ce1b6f56b2e3b479d9da51dc35",
+                ),
+                4711,
+            ),
+        );
 
-        unit.assign_port_mappings(&port_mappings);
+        unit.assign_image_infos(port_mappings);
 
         let configs: Vec<_> = unit.try_into().unwrap();
         assert_eq!(configs[0].port(), 4711);
@@ -643,5 +709,65 @@ mod tests {
                 .map(|config| config.image().to_string()),
             Some("docker.io/library/kafka:latest".to_string())
         );
+    }
+
+    #[test]
+    fn should_determine_deployment_strategy_for_requested_service() {
+        let unit = DeploymentUnit::new(
+            AppName::from_str("master").unwrap(),
+            vec![
+                sc!("wordpress", "wordpress:alpine"),
+                sc!("wordpress-db", "postgres:11-alpine"),
+            ],
+        );
+
+        let strategies: Vec<_> = unit.try_into().unwrap();
+        assert_eq!(strategies.len(), 2);
+
+        for strategy in strategies {
+            if !matches!(strategy, DeploymentStrategy::RedeployAlways(_)) {
+                panic!(
+                    "All services should have a recreation strategy but was {:?}.",
+                    strategy
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn should_determine_deployment_strategy_for_companions() {
+        let config = config_from_str!(
+            r#"
+            [companions.db]
+            serviceName = 'db'
+            type = 'application'
+            image = 'postgres:11'
+            deploymentStrategy = 'redeploy-always'
+
+            [companions.kafka]
+            serviceName = 'kafka'
+            type = 'application'
+            image = 'kafka'
+            deploymentStrategy = 'redeploy-always'
+        "#
+        );
+
+        let mut unit = DeploymentUnit::new(
+            AppName::from_str("master").unwrap(),
+            vec![sc!("wordpress", "wordpress:alpine")],
+        );
+        unit.extend_with_config(&config);
+
+        let strategies: Vec<_> = unit.try_into().unwrap();
+        assert_eq!(strategies.len(), 3);
+
+        for strategy in strategies {
+            if !matches!(strategy, DeploymentStrategy::RedeployAlways(_)) {
+                panic!(
+                    "All services should have a recreation strategy but was {:?}.",
+                    strategy
+                );
+            }
+        }
     }
 }

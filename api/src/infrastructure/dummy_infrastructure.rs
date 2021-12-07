@@ -25,7 +25,7 @@
  */
 
 use crate::config::ContainerConfig;
-use crate::infrastructure::Infrastructure;
+use crate::infrastructure::{DeploymentStrategy, Infrastructure};
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::{ServiceBuilder, ServiceConfig};
 use async_trait::async_trait;
@@ -38,7 +38,7 @@ use std::time::Duration;
 #[cfg(test)]
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
-    services: Mutex<MultiMap<String, ServiceConfig>>,
+    services: Mutex<MultiMap<String, DeploymentStrategy>>,
 }
 
 #[cfg(test)]
@@ -79,7 +79,7 @@ impl Infrastructure for DummyInfrastructure {
                 let service = ServiceBuilder::new()
                     .id(format!("{}-{}", app.clone(), config.service_name()))
                     .app_name(app.clone())
-                    .config(config.clone())
+                    .config(ServiceConfig::clone(config))
                     .service_status(ServiceStatus::Running)
                     .started_at(
                         DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
@@ -100,7 +100,7 @@ impl Infrastructure for DummyInfrastructure {
         &self,
         _status_id: &String,
         app_name: &String,
-        configs: &Vec<ServiceConfig>,
+        configs: &[DeploymentStrategy],
         _container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, failure::Error> {
         self.delay_if_configured().await;
@@ -138,7 +138,7 @@ impl Infrastructure for DummyInfrastructure {
                     ServiceBuilder::new()
                         .app_name(app_name.clone())
                         .id(sc.service_name().clone())
-                        .config(sc)
+                        .config(ServiceConfig::clone(&sc))
                         .started_at(
                             DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
                                 .unwrap()
