@@ -59,7 +59,7 @@ mod config;
 mod http_result;
 mod infrastructure;
 mod models;
-mod services;
+mod registry;
 mod tickets;
 mod webhooks;
 

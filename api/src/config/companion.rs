@@ -37,6 +37,8 @@ pub(super) struct Companion {
     #[serde(rename = "type")]
     companion_type: CompanionType,
     image: Image,
+    #[serde(default)]
+    deployment_strategy: DeploymentStrategy,
     env: Option<Environment>,
     labels: Option<BTreeMap<String, String>>,
     volumes: Option<BTreeMap<PathBuf, String>>,
@@ -54,6 +56,16 @@ pub(super) enum CompanionType {
     Service,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub enum DeploymentStrategy {
+    #[serde(rename = "redeploy-always")]
+    RedeployAlways,
+    #[serde(rename = "redeploy-on-image-update")]
+    RedeployOnImageUpdate,
+    #[serde(rename = "redeploy-never")]
+    RedeployNever,
+}
+
 impl Companion {
     pub fn companion_type(&self) -> &CompanionType {
         &self.companion_type
@@ -61,6 +73,10 @@ impl Companion {
 
     pub fn matches_app_name(&self, app_name: &str) -> bool {
         self.app_selector.matches(app_name)
+    }
+
+    pub fn deployment_strategy(&self) -> &DeploymentStrategy {
+        &self.deployment_strategy
     }
 }
 
@@ -105,6 +121,12 @@ impl From<CompanionType> for ContainerType {
     }
 }
 
+impl Default for DeploymentStrategy {
+    fn default() -> Self {
+        Self::RedeployAlways
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +153,10 @@ mod tests {
         assert_eq!(
             companion.image,
             Image::from_str("private.example.com/library/openid:latest").unwrap()
+        );
+        assert_eq!(
+            companion.deployment_strategy,
+            DeploymentStrategy::RedeployAlways
         );
     }
 }

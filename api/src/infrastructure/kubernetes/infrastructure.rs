@@ -31,7 +31,7 @@ use super::payloads::{
     namespace_payload, secrets_payload, service_payload, IngressRoute, Middleware,
 };
 use crate::config::ContainerConfig;
-use crate::infrastructure::Infrastructure;
+use crate::infrastructure::{DeploymentStrategy, Infrastructure};
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
 use async_trait::async_trait;
@@ -346,18 +346,17 @@ impl KubernetesInfrastructure {
     async fn deploy_service<'a>(
         &self,
         app_name: &String,
-        service_config: &'a ServiceConfig,
+        strategy: &'a DeploymentStrategy,
         container_config: &ContainerConfig,
-    ) -> Result<&'a ServiceConfig, KubernetesInfrastructureError> {
-        if let Some(volumes) = service_config.volumes() {
-            self.deploy_secret(app_name, service_config, volumes)
-                .await?;
+    ) -> Result<&'a DeploymentStrategy, KubernetesInfrastructureError> {
+        if let Some(volumes) = strategy.volumes() {
+            self.deploy_secret(app_name, strategy, volumes).await?;
         }
 
         match Api::namespaced(self.client()?, app_name)
             .create(
                 &PostParams::default(),
-                &deployment_payload(app_name, service_config, container_config),
+                &deployment_payload(app_name, strategy, container_config),
             )
             .await
         {
@@ -366,24 +365,20 @@ impl KubernetesInfrastructure {
                     "Successfully deployed {}",
                     result.metadata.name.unwrap_or(String::from("<unknown>"))
                 );
-                self.post_service_and_custom_resource_definitions(app_name, service_config)
+                self.post_service_and_custom_resource_definitions(app_name, strategy)
                     .await?;
-                Ok(service_config)
+                Ok(strategy)
             }
 
             Err(KubeError::Api(ErrorResponse { code, .. })) if code == 409 => {
                 Api::<V1Deployment>::namespaced(self.client()?, app_name)
                     .patch(
-                        &format!("{}-{}-deployment", app_name, service_config.service_name()),
+                        &format!("{}-{}-deployment", app_name, strategy.service_name()),
                         &PatchParams::default(),
-                        &Patch::Merge(deployment_payload(
-                            app_name,
-                            service_config,
-                            container_config,
-                        )),
+                        &Patch::Merge(deployment_payload(app_name, strategy, container_config)),
                     )
                     .await?;
-                Ok(service_config)
+                Ok(strategy)
             }
             Err(e) => {
                 error!("Cannot deploy service: {}", e);
@@ -497,15 +492,15 @@ impl Infrastructure for KubernetesInfrastructure {
         &self,
         _status_id: &String,
         app_name: &String,
-        configs: &Vec<ServiceConfig>,
+        strategies: &[DeploymentStrategy],
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
         self.create_crds_if_necessary(app_name).await?;
         self.create_namespace_if_necessary(app_name).await?;
 
-        let futures = configs
+        let futures = strategies
             .iter()
-            .map(|config| self.deploy_service(app_name, config, container_config))
+            .map(|strategy| self.deploy_service(app_name, strategy, container_config))
             .collect::<Vec<_>>();
 
         for deploy_result in join_all(futures).await {

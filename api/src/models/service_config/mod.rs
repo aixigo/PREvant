@@ -296,6 +296,20 @@ macro_rules! sc {
     }};
 
     ( $name:expr, $img:expr,
+        env = ($($env_key:expr => $env_value:expr),*)
+        ) => {{
+        use std::str::FromStr;
+        let mut config =
+            ServiceConfig::new(String::from($name), crate::models::Image::from_str($img).unwrap());
+
+        let mut _env = Vec::new();
+        $( _env.push(crate::models::EnvironmentVariable::new(String::from($env_key), secstr::SecUtf8::from($env_value))); )*
+        config.set_env(Some(crate::models::Environment::new(_env)));
+
+        config
+    }};
+
+    ( $name:expr, $img:expr,
         labels = ($($l_key:expr => $l_value:expr),*),
         env = ($($env_key:expr => $env_value:expr),*),
         volumes = ($($v_key:expr => $v_value:expr),*) ) => {{
@@ -387,17 +401,13 @@ mod tests {
         let mut config = sc!(
             "proxy",
             "nginx",
-            labels = (),
-            env = ("VAR_1" => "abcd", "VAR_2" => "1234"),
-            volumes = ()
+            env = ("VAR_1" => "abcd", "VAR_2" => "1234")
         );
 
         let config2 = sc!(
             "proxy",
             "nginx",
-            labels = (),
-            env = ("VAR_1" => "efgh", "VAR_3" => "1234"),
-            volumes = ()
+            env = ("VAR_1" => "efgh", "VAR_3" => "1234")
         );
 
         config.merge_with(&config2);

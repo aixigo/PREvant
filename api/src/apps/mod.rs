@@ -34,7 +34,7 @@ use crate::config::{Config, ConfigError};
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
-use crate::services::images_service::{ImagesService, ImagesServiceError};
+use crate::registry::{ImagesService, ImagesServiceError};
 use chrono::{DateTime, FixedOffset};
 pub(self) use deployment_unit::DeploymentUnit;
 use handlebars::TemplateRenderError;
@@ -282,8 +282,8 @@ impl AppsService {
         deployment_unit.extend_with_templating_only_service_configs(configs_for_templating);
 
         let images = deployment_unit.images();
-        let port_mappings = ImagesService::new().resolve_image_ports(&images).await?;
-        deployment_unit.assign_port_mappings(&port_mappings);
+        let image_infos = ImagesService::new().resolve_image_infos(&images).await?;
+        deployment_unit.assign_image_infos(image_infos);
 
         let configs: Vec<_> = deployment_unit.try_into()?;
         let configs = self.apply_deployment_hook(app_name, configs).await?;

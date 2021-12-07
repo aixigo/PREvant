@@ -27,6 +27,7 @@ use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
 };
 use crate::config::ContainerConfig;
+use crate::infrastructure::DeploymentStrategy;
 use crate::models::service::Service;
 use crate::models::ServiceConfig;
 use base64::encode;
@@ -109,10 +110,10 @@ pub fn namespace_payload(app_name: &String) -> V1Namespace {
 /// Creates a JSON payload suitable for [Kubernetes' Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 pub fn deployment_payload(
     app_name: &str,
-    service_config: &ServiceConfig,
+    strategy: &DeploymentStrategy,
     container_config: &ContainerConfig,
 ) -> V1Deployment {
-    let env = service_config.env().map_or(Vec::new(), |env| {
+    let env = strategy.env().map_or(Vec::new(), |env| {
         env.iter()
             .map(|env| {
                 serde_json::json!({
@@ -123,22 +124,22 @@ pub fn deployment_payload(
             .collect()
     });
 
-    let annotations = if let Some(replicated_env) = service_config
+    let annotations = if let Some(replicated_env) = strategy
         .env()
         .map(super::super::replicated_environment_variable_to_json)
         .flatten()
     {
         serde_json::json!({
-          IMAGE_LABEL: service_config.image().to_string(),
+          IMAGE_LABEL: strategy.image().to_string(),
           REPLICATED_ENV_LABEL: replicated_env.to_string(),
         })
     } else {
         serde_json::json!({
-          IMAGE_LABEL: service_config.image().to_string(),
+          IMAGE_LABEL: strategy.image().to_string(),
         })
     };
 
-    let mounts = if let Some(volumes) = service_config.volumes() {
+    let mounts = if let Some(volumes) = strategy.volumes() {
         let parent_paths = volumes
             .iter()
             .filter_map(|(path, _)| path.parent())
@@ -157,13 +158,14 @@ pub fn deployment_payload(
         Vec::new()
     };
 
-    let volumes = if let Some(volumes) = service_config.volumes() {
-        let volumes = volumes
-            .iter()
-            .filter_map(|(path, _)| path.parent().map(|parent| (parent, path)))
-            .collect::<MultiMap<_, _>>();
+    let volumes =
+        if let Some(volumes) = strategy.volumes() {
+            let volumes = volumes
+                .iter()
+                .filter_map(|(path, _)| path.parent().map(|parent| (parent, path)))
+                .collect::<MultiMap<_, _>>();
 
-        volumes
+            volumes
             .iter_all()
             .map(|(parent, paths)| {
                 let items = paths.iter()
@@ -176,15 +178,15 @@ pub fn deployment_payload(
                 serde_json::json!({
                     "name": secret_name_from_path!(parent),
                     "secret": {
-                        "secretName": format!("{}-{}-secret", app_name, service_config.service_name()),
+                        "secretName": format!("{}-{}-secret", app_name, strategy.service_name()),
                         "items": items
                     }
                 })
             })
             .collect()
-    } else {
-        Vec::new()
-    };
+        } else {
+            Vec::new()
+        };
 
     let resources = container_config
         .memory_limit()
@@ -195,12 +197,12 @@ pub fn deployment_payload(
       "apiVersion": "apps/v1",
       "kind": "Deployment",
       "metadata": {
-        "name": format!("{}-{}-deployment", app_name, service_config.service_name()),
+        "name": format!("{}-{}-deployment", app_name, strategy.service_name()),
         "namespace": app_name,
         "labels": {
           APP_NAME_LABEL: app_name,
-          SERVICE_NAME_LABEL: service_config.service_name(),
-          CONTAINER_TYPE_LABEL: service_config.container_type().to_string(),
+          SERVICE_NAME_LABEL: strategy.service_name(),
+          CONTAINER_TYPE_LABEL: strategy.container_type().to_string(),
         },
         "annotations": annotations,
       },
@@ -209,32 +211,30 @@ pub fn deployment_payload(
         "selector": {
           "matchLabels": {
             APP_NAME_LABEL: app_name,
-            SERVICE_NAME_LABEL: service_config.service_name(),
-            CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
+            SERVICE_NAME_LABEL: strategy.service_name(),
+            CONTAINER_TYPE_LABEL: strategy.container_type().to_string()
           }
         },
         "template": {
           "metadata": {
             "labels": {
               APP_NAME_LABEL: app_name,
-              SERVICE_NAME_LABEL: service_config.service_name(),
-              CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
+              SERVICE_NAME_LABEL: strategy.service_name(),
+              CONTAINER_TYPE_LABEL: strategy.container_type().to_string()
             },
-            "annotations": {
-              "date": Utc::now().to_rfc3339()
-            }
+            "annotations": deployment_annotations(strategy)
           },
           "spec": {
             "containers": [
               {
-                "name": service_config.service_name(),
-                "image": service_config.image().to_string(),
+                "name": strategy.service_name(),
+                "image": strategy.image().to_string(),
                 "imagePullPolicy": "Always",
                 "env": Value::Array(env),
                 "volumeMounts": Value::Array(mounts),
                 "ports": [
                   {
-                    "containerPort": service_config.port()
+                    "containerPort": strategy.port()
                   }
                 ],
                 "resources": resources
@@ -246,6 +246,26 @@ pub fn deployment_payload(
       }
     }))
     .expect("Cannot convert value to apps/v1/Deployment")
+}
+
+/// Creates the value of an [annotations object](https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/)
+/// so that the underlying pod will be deployed according to its [deployment strategy](`DeploymentStrategy`).
+///
+/// For example, this [popular workaround](https://stackoverflow.com/a/55221174/5088458) will be
+/// applied to ensure that a pod will be recreated everytime a deployment with
+/// [`DeploymentStrategy::RedeployAlways`] has been initiated.
+fn deployment_annotations(strategy: &DeploymentStrategy) -> serde_json::Value {
+    match strategy {
+        DeploymentStrategy::RedeployOnImageUpdate(_, image_id) => {
+            serde_json::json!({ "imageHash": image_id })
+        }
+        DeploymentStrategy::RedeployNever(_) => {
+            serde_json::json!({})
+        }
+        DeploymentStrategy::RedeployAlways(_) => serde_json::json!({
+            "date": Utc::now().to_rfc3339()
+        }),
+    }
 }
 
 pub fn deployment_replicas_payload(
@@ -410,7 +430,7 @@ mod tests {
     fn should_create_deployment_payload() {
         let config = sc!("db", "mariadb:10.3.17");
 
-        let payload = deployment_payload("master", &config, &ContainerConfig::default());
+        let payload = deployment_payload("master", &config.into(), &ContainerConfig::default());
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -479,7 +499,7 @@ mod tests {
             SecUtf8::from("example"),
         )])));
 
-        let payload = deployment_payload("master", &config, &ContainerConfig::default());
+        let payload = deployment_payload("master", &config.into(), &ContainerConfig::default());
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -550,7 +570,7 @@ mod tests {
             ),
         ])));
 
-        let payload = deployment_payload("master", &config, &ContainerConfig::default());
+        let payload = deployment_payload("master", &config.into(), &ContainerConfig::default());
 
         assert_json_diff::assert_json_include!(
             actual: payload,

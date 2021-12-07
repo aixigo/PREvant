@@ -24,9 +24,8 @@
  * =========================LICENSE_END==================================
  */
 use crate::apps::{Apps, AppsServiceError};
-use crate::models::{
-    AppName, ContainerType, Environment, EnvironmentVariable, Image, ServiceConfig,
-};
+use crate::infrastructure::DeploymentStrategy;
+use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, Image};
 use boa::exec::Executable;
 use boa::property::Attribute;
 use boa::syntax::ast::node::Node;
@@ -40,8 +39,8 @@ impl Apps {
     pub(super) async fn apply_deployment_hook(
         &self,
         app_name: &AppName,
-        configs: Vec<ServiceConfig>,
-    ) -> Result<Vec<ServiceConfig>, AppsServiceError> {
+        configs: Vec<DeploymentStrategy>,
+    ) -> Result<Vec<DeploymentStrategy>, AppsServiceError> {
         match self.config.hook("deployment") {
             None => Ok(configs),
             Some(hook_path) => self.parse_and_run_hook(app_name, configs, hook_path).await,
@@ -51,9 +50,9 @@ impl Apps {
     async fn parse_and_run_hook(
         &self,
         app_name: &AppName,
-        configs: Vec<ServiceConfig>,
+        configs: Vec<DeploymentStrategy>,
         hook_path: &Path,
-    ) -> Result<Vec<ServiceConfig>, AppsServiceError> {
+    ) -> Result<Vec<DeploymentStrategy>, AppsServiceError> {
         match Self::parse_hook(hook_path).await {
             Some(mut context) => {
                 Self::register_configs_as_global_property(&mut context, &configs);
@@ -111,7 +110,7 @@ impl Apps {
             .map(|_| context)
     }
 
-    fn register_configs_as_global_property(context: &mut Context, configs: &[ServiceConfig]) {
+    fn register_configs_as_global_property(context: &mut Context, configs: &[DeploymentStrategy]) {
         let js_configs = configs
             .iter()
             .map(JsServiceConfig::from)
@@ -126,9 +125,9 @@ impl Apps {
     fn parse_service_config<Iter>(
         configs: Iter,
         transformed_configs: serde_json::value::Value,
-    ) -> Result<Vec<ServiceConfig>, AppsServiceError>
+    ) -> Result<Vec<DeploymentStrategy>, AppsServiceError>
     where
-        Iter: IntoIterator<Item = ServiceConfig>,
+        Iter: IntoIterator<Item = DeploymentStrategy>,
     {
         let mut transformed_configs =
             serde_json::from_value::<Vec<JsServiceConfig>>(transformed_configs).map_err(|err| {
@@ -166,7 +165,7 @@ struct JsServiceConfig {
 }
 
 impl JsServiceConfig {
-    fn apply_to(mut self, mut config: ServiceConfig) -> ServiceConfig {
+    fn apply_to(mut self, mut config: DeploymentStrategy) -> DeploymentStrategy {
         config.set_volumes(Some(self.files));
 
         let env = match config.env().cloned() {
@@ -203,8 +202,8 @@ impl JsServiceConfig {
     }
 }
 
-impl From<&ServiceConfig> for JsServiceConfig {
-    fn from(config: &ServiceConfig) -> Self {
+impl From<&DeploymentStrategy> for JsServiceConfig {
+    fn from(config: &DeploymentStrategy) -> Self {
         Self {
             name: config.service_name().clone(),
             image: config.image().clone(),

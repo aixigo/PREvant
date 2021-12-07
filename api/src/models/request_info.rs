@@ -35,11 +35,6 @@ pub struct RequestInfo {
 }
 
 impl RequestInfo {
-    #[cfg(test)]
-    pub fn new(base_url: Url) -> Self {
-        RequestInfo { base_url }
-    }
-
     /// Returns the value for the `host` value of the
     /// [Forwarded](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Forwarded) header.
     pub fn host(&self) -> String {

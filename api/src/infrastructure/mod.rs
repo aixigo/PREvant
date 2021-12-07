@@ -28,7 +28,7 @@ use crate::models::Environment;
 pub use docker::DockerInfrastructure as Docker;
 #[cfg(test)]
 pub use dummy_infrastructure::DummyInfrastructure as Dummy;
-pub use infrastructure::Infrastructure;
+pub use infrastructure::{DeploymentStrategy, Infrastructure};
 pub use kubernetes::KubernetesInfrastructure as Kubernetes;
 use serde_json::{map::Map, Value};
 

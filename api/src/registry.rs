@@ -43,43 +43,35 @@ impl ImagesService {
 
     /// Inspects all remote images through the docker registry and resolves the exposed ports of
     /// the docker images.
-    pub async fn resolve_image_ports(
+    pub async fn resolve_image_infos(
         &self,
         images: &HashSet<Image>,
-    ) -> Result<HashMap<Image, u16>, ImagesServiceError> {
+    ) -> Result<HashMap<Image, ImageInfo>, ImagesServiceError> {
         let futures = images
             .iter()
             .filter_map(|image| match image {
-                Image::Named { .. } => Some(image),
+                Image::Named { .. } => Some(ImagesService::resolve_image_info(image)),
                 Image::Digest { .. } => None,
             })
-            .map(|image| ImagesService::resolve_image_blob(image))
             .collect::<Vec<_>>();
         let blobs = join_all(futures).await;
 
-        let mut port_mappings = HashMap::new();
-        for blob_result in blobs {
-            let blob = match blob_result {
-                Ok(blob) => blob,
+        Ok(blobs
+            .into_iter()
+            .filter_map(|result| match result {
+                Ok((image, Some(image_info))) => Some((Image::clone(image), image_info)),
+                Ok(_) => None,
                 Err(err) => {
                     warn!("Cannot resolve manifest of image: {}", err);
-                    continue;
+                    None
                 }
-            };
-
-            if let Some((image, blob)) = blob {
-                if let Some(port) = blob.get_exposed_port() {
-                    port_mappings.insert(image.clone(), port);
-                }
-            }
-        }
-
-        Ok(port_mappings)
+            })
+            .collect::<HashMap<Image, ImageInfo>>())
     }
 
-    async fn resolve_image_blob(
+    async fn resolve_image_info(
         image: &Image,
-    ) -> Result<Option<(&Image, ImageBlob)>, ImagesServiceError> {
+    ) -> Result<(&Image, Option<ImageInfo>), ImagesServiceError> {
         debug!("Resolve image manifest for {:?}", image);
 
         let client = dkregistry::v2::Client::configure()
@@ -88,45 +80,81 @@ impl ImagesService {
 
         let (image_name, tag) = (image.name().unwrap(), image.tag().unwrap());
 
-        let digest = match client.get_manifest(&image_name, &tag).await? {
-            Manifest::S2(schema) => schema.manifest_spec.config().digest.clone(),
+        let manifest = client.get_manifest(&image_name, &tag).await?;
+        let blob = match manifest {
+            Manifest::S2(schema) => {
+                let digest = schema.manifest_spec.config().digest.to_string();
+                let raw_blob = client.get_blob(&image_name, &digest).await?;
+                match serde_json::from_str::<ImageBlob>(&String::from_utf8(raw_blob).unwrap()) {
+                    Ok(blob) => Some(ImageInfo {
+                        blob: Some(blob),
+                        digest,
+                    }),
+                    Err(err) => {
+                        warn!("Cannot resolve manifest for {}: {}", image, err);
+                        Some(ImageInfo { blob: None, digest })
+                    }
+                }
+            }
             _ => {
-                return Err(ImagesServiceError::UnknownManifestFormat {
-                    image: image.clone(),
-                })
+                warn!("Image of {} is not stored in Manifest::S2 format", image);
+                None
             }
         };
 
-        let raw_blob = client.get_blob(&image_name, &digest).await?;
-        match serde_json::from_str::<ImageBlob>(&String::from_utf8(raw_blob).unwrap()) {
-            Ok(blob) => Ok(Some((image, blob))),
-            Err(err) => {
-                warn!("Cannot resolve manifest for {}: {}", image_name, err);
-                Ok(None)
-            }
+        Ok((image, blob))
+    }
+}
+
+#[derive(Debug)]
+pub struct ImageInfo {
+    blob: Option<ImageBlob>,
+    digest: String,
+}
+
+impl ImageInfo {
+    pub fn exposed_port(&self) -> Option<u16> {
+        self.blob.as_ref()?.exposed_port()
+    }
+
+    pub fn digest(&self) -> &String {
+        &self.digest
+    }
+
+    #[cfg(test)]
+    pub fn with_exposed_port(digest: String, port: u16) -> Self {
+        let mut exposed_ports = HashMap::new();
+        exposed_ports.insert(format!("{}/tcp", port), serde_json::json!({}));
+        Self {
+            digest,
+            blob: Some(ImageBlob {
+                config: ImageConfig {
+                    exposed_ports: Some(exposed_ports),
+                },
+            }),
         }
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ImageBlob {
     config: ImageConfig,
 }
 
 impl ImageBlob {
-    pub fn get_exposed_port(&self) -> Option<u16> {
-        self.config.get_exposed_port()
+    pub fn exposed_port(&self) -> Option<u16> {
+        self.config.exposed_port()
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ImageConfig {
     #[serde(rename = "ExposedPorts")]
     exposed_ports: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl ImageConfig {
-    fn get_exposed_port(&self) -> Option<u16> {
+    fn exposed_port(&self) -> Option<u16> {
         let regex = Regex::new(r"^(?P<port>\d+)/(tcp|udp)$").unwrap();
 
         let ports = match &self.exposed_ports {
@@ -146,10 +174,6 @@ impl ImageConfig {
 
 #[derive(Debug, Clone, Fail)]
 pub enum ImagesServiceError {
-    #[fail(display = "Unknown manifest format for {}", image)]
-    UnknownManifestFormat { image: Image },
-    #[fail(display = "Could not find image: {}", internal_message)]
-    ImageNotFound { internal_message: String },
     #[fail(display = "Unexpected docker registry error: {}", internal_message)]
     UnexpectedError { internal_message: String },
     #[fail(display = "Unexpected docker image blob format: {}", internal_message)]
@@ -203,7 +227,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(blob.get_exposed_port(), Some(8080u16));
+        assert_eq!(blob.exposed_port(), Some(8080u16));
     }
 
     #[test]
@@ -221,6 +245,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(blob.get_exposed_port(), None);
+        assert_eq!(blob.exposed_port(), None);
     }
 }
