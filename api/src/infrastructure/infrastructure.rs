@@ -32,6 +32,42 @@ use chrono::{DateTime, FixedOffset};
 use failure::Error;
 use multimap::MultiMap;
 
+#[derive(Clone, Debug)]
+pub enum DeploymentStrategy {
+    RedeployAlways(ServiceConfig),
+    RedeployOnImageUpdate(ServiceConfig, String),
+    RedeployNever(ServiceConfig),
+}
+
+impl std::ops::Deref for DeploymentStrategy {
+    type Target = ServiceConfig;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::RedeployAlways(config) => config,
+            Self::RedeployOnImageUpdate(config, _) => config,
+            Self::RedeployNever(config) => config,
+        }
+    }
+}
+
+impl std::ops::DerefMut for DeploymentStrategy {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::RedeployAlways(config) => config,
+            Self::RedeployOnImageUpdate(config, _) => config,
+            Self::RedeployNever(config) => config,
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::convert::From<ServiceConfig> for DeploymentStrategy {
+    fn from(config: ServiceConfig) -> Self {
+        Self::RedeployAlways(config)
+    }
+}
+
 #[async_trait]
 pub trait Infrastructure: Send + Sync {
     /// Returns a `MultiMap` of `app-name` and the running services for this app.
@@ -49,7 +85,7 @@ pub trait Infrastructure: Send + Sync {
         &self,
         status_id: &String,
         app_name: &String,
-        configs: &Vec<ServiceConfig>,
+        strategies: &[DeploymentStrategy],
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error>;
 

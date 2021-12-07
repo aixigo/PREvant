@@ -356,11 +356,6 @@ impl Display for ContainerType {
 pub enum ServiceError {
     #[fail(display = "Invalid service type label: {}", label)]
     InvalidServiceType { label: String },
-    #[fail(
-        display = "Service name {:?} does not match pattern ((.+)-.+).",
-        invalid_name
-    )]
-    InvalidServiceName { invalid_name: String },
     #[fail(display = "Invalid image: {}", invalid_string)]
     InvalidImageString { invalid_string: String },
 }

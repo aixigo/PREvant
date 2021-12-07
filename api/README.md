@@ -144,6 +144,23 @@ The list of available handlebars variables:
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
 
+### Deployment Strategy
+
+Companions offer different deployment strategies so that a companion could be restarted or not under certain conditions. Therefore, PREvant offers following configuration flags:
+
+```toml
+[companions.openid]
+type = 'application'
+image = 'private.example.com/library/openid:latest'
+deploymentStrategy = 'redeploy-on-image-update'
+```
+
+`deploymentStrategy` offers following values and if a companion exists for an app following strategy will be applied:
+
+- `redeploy-always` (_default_): Re-deploys the companion every time there is a new deployment request.
+- `redeploy-on-image-update`: Re-deploys the companion if there is a more rescent image available.
+- `redeploy-never`: Even if there is a new deployment request the companion won't be redeployed and stays running.
+
 ## Hooks
 
 Hooks can be used to manipulate the deployment before handing it over to actual infrastructure and they are able to manipulate all service configurations once for any deployment REST API call. For example, based on the deployment's app name you can decide to reconfigure your services to use a different DBMS so that you are able to verify that your services work with different DBMSs.
