@@ -30,7 +30,7 @@ use serde::{Deserialize, Deserializer};
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash)]
 pub enum Image {
     Named {
         image_repository: String,
@@ -41,6 +41,51 @@ pub enum Image {
     Digest {
         hash: String,
     },
+}
+
+impl PartialEq for Image {
+    fn eq(&self, other: &Self) -> bool {
+        use Image::*;
+        match (self, other) {
+            (
+                Named {
+                    image_repository,
+                    registry,
+                    image_user,
+                    image_tag,
+                },
+                Named {
+                    image_repository: image_repository_other,
+                    registry: registry_other,
+                    image_user: image_user_other,
+                    image_tag: image_tag_other,
+                },
+            ) => {
+                if image_repository != image_repository_other {
+                    return false;
+                }
+
+                (match (registry, registry_other) {
+                    (Some(registry), Some(registry_other)) => registry == registry_other,
+                    (None, None) => true,
+                    (Some(registry), None) => registry == "docker.io",
+                    (None, Some(registry_other)) => registry_other == "docker.io",
+                }) && (match (image_user, image_user_other) {
+                    (Some(image_user), Some(image_user_other)) => image_user == image_user_other,
+                    (None, None) => true,
+                    (Some(image_user), None) => image_user == "library",
+                    (None, Some(image_user_other)) => image_user_other == "library",
+                }) && (match (image_tag, image_tag_other) {
+                    (Some(image_tag), Some(image_tag_other)) => image_tag == image_tag_other,
+                    (None, None) => true,
+                    (Some(image_tag), None) => image_tag == "latest",
+                    (None, Some(image_tag_other)) => image_tag_other == "latest",
+                })
+            }
+            (Digest { hash }, Digest { hash: hash_other }) => hash == hash_other,
+            _ => false,
+        }
+    }
 }
 
 impl Image {
@@ -291,5 +336,21 @@ mod tests {
 
         assert_eq!(&image.to_string(), "localhost:5000/library/nginx:latest");
         assert_eq!(&image.registry().unwrap(), "localhost:5000");
+    }
+
+    #[test]
+    fn should_compare_images() {
+        let image_full = Image::from_str("docker.io/library/nginx:latest").unwrap();
+        let image_partially = Image::from_str("docker.io/library/nginx").unwrap();
+        let image_short = Image::from_str("nginx").unwrap();
+        assert_eq!(image_full, image_partially);
+        assert_eq!(image_partially, image_full);
+        assert_eq!(image_partially, image_short);
+        assert_eq!(image_short, image_partially);
+        assert_eq!(image_full, image_short);
+        assert_eq!(image_short, image_full);
+
+        let image_local_registry = Image::from_str("localhost:5000/library/nginx:latest").unwrap();
+        assert_ne!(image_local_registry, image_short);
     }
 }
