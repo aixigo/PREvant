@@ -18,7 +18,7 @@
     "esprima": "^4.0.1",
     "jquery": "^3.5.1",
     "moment": "^2.27.0",
-    "parse-link-header": "^1.0.1",
+    "parse-link-header": "^2.0.0",
     "swagger-ui-dist": "^3.32.3",
     "v-tooltip": "^2.0.3",
     "vue": "^2.6.11",
