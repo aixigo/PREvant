@@ -193,15 +193,15 @@ macro_rules! config_from_str {
 mod tests {
     use super::*;
     use crate::models::{service::ContainerType, Image};
-    use sha2::{Digest, Sha256};
     use std::path::PathBuf;
     use std::str::FromStr;
 
     macro_rules! service_config {
         ( $name:expr ) => {{
+            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
-            hasher.input($name);
-            let img_hash = &format!("sha256:{:x}", hasher.result_reset());
+            hasher.update($name);
+            let img_hash = &format!("sha256:{:x}", hasher.finalize());
 
             ServiceConfig::new(String::from($name), Image::from_str(&img_hash).unwrap())
         }};

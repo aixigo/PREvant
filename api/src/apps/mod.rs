@@ -432,7 +432,6 @@ mod tests {
     use crate::infrastructure::Dummy;
     use crate::models::{EnvironmentVariable, Image, ServiceBuilder};
     use chrono::Utc;
-    use sha2::{Digest, Sha256};
     use std::path::PathBuf;
     use std::str::FromStr;
     use tokio::runtime;
@@ -446,11 +445,12 @@ mod tests {
     macro_rules! service_configs {
         ( $( $x:expr ),* ) => {
             {
-                let mut hasher = Sha256::new();
+                use sha2::{Digest, Sha256};
                 let mut temp_vec: Vec<ServiceConfig> = Vec::new();
                 $(
-                    hasher.input($x);
-                    let img_hash = &format!("sha256:{:x}", hasher.result_reset());
+                    let mut hasher = Sha256::new();
+                    hasher.update($x);
+                    let img_hash = &format!("sha256:{:x}", hasher.finalize());
 
                     temp_vec.push(ServiceConfig::new(
                         String::from($x),
