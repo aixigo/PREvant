@@ -36,7 +36,7 @@ serde-value = "0.7"
 serde_yaml = "0.8"
 tokio = { version = "1.14", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 toml = "0.5"
-regex = "1.5.1"
+regex = "1.5.5"
 reqwest = { version = "0.11", features = ["json"] }
 rocket = { version = "0.5.0-rc.1", features = ["json"] }
 url = { version = "2.1", features = ["serde"] }
