@@ -6,7 +6,6 @@ use crate::container::{
     delete_app, deploy_app, logs, make_request, replicate_app, PREvant, Traefik,
 };
 use std::time::Duration;
-use testcontainers::Docker;
 
 #[tokio::test]
 async fn should_deploy_nginx() {

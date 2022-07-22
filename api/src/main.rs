@@ -201,7 +201,7 @@ async fn main() -> Result<(), StartUpError> {
         .author(crate_authors!())
         .arg(
             Arg::with_name("config")
-                .short("c")
+                .short('c')
                 .long("config")
                 .value_name("FILE")
                 .help("The path to the configuration file")
@@ -232,7 +232,7 @@ async fn main() -> Result<(), StartUpError> {
     let apps = Arc::new(apps);
     host_meta_crawler.spawn(apps.clone());
 
-    rocket::build()
+    let _rocket = rocket::build()
         .manage(config)
         .manage(apps)
         .manage(host_meta_cache)

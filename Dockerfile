@@ -1,5 +1,5 @@
 # Build Frontend
-FROM node:10-alpine as frontend-builder
+FROM node:16-alpine as frontend-builder
 RUN apk add --no-cache python3 make g++
 WORKDIR /usr/src/frontend/
 COPY frontend/package.json frontend/package-lock.json frontend/*.config.js /usr/src/frontend/

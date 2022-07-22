@@ -1,61 +1,57 @@
 use crate::common::Service;
 use reqwest::{Client, Response, StatusCode};
 use std::collections::HashMap;
-use testcontainers::{Container, Docker, Image, WaitForMessage};
+use testcontainers::{core::WaitFor, Container, Image};
 use uuid::Uuid;
 
-#[derive(Default)]
-pub struct PREvant;
+pub struct PREvant {
+    env_vars: HashMap<String, String>,
+    volumes: HashMap<String, String>,
+}
 
-impl Image for PREvant {
-    type Args = Vec<String>;
-    type EnvVars = HashMap<String, String>;
-    type Volumes = HashMap<String, String>;
+impl Default for PREvant {
+    fn default() -> Self {
+        let mut env_vars = HashMap::new();
+        env_vars.insert(String::from("ROCKET_CLI_COLORS"), String::from("false"));
 
-    fn descriptor(&self) -> String {
-        "aixigo/prevant".to_string()
-    }
-
-    fn wait_until_ready<D: Docker>(&self, container: &Container<'_, D, Self>) {
-        container
-            .logs()
-            .stderr
-            .wait_for_message("launched")
-            .unwrap();
-    }
-
-    fn args(&self) -> Self::Args {
-        Vec::with_capacity(0)
-    }
-
-    fn env_vars(&self) -> Self::EnvVars {
-        HashMap::new()
-    }
-
-    fn volumes(&self) -> <Self as Image>::Volumes {
         let mut volumes = HashMap::new();
         volumes.insert(
             String::from("/var/run/docker.sock"),
             String::from("/var/run/docker.sock"),
         );
-        volumes
-    }
 
-    fn with_args(self, _arguments: Self::Args) -> Self {
-        self
+        Self { volumes, env_vars }
     }
 }
 
-pub async fn deploy_app<D>(
-    prevant: &Container<'_, D, PREvant>,
+impl Image for PREvant {
+    type Args = Vec<String>;
+
+    fn name(&self) -> String {
+        "aixigo/prevant".to_string()
+    }
+    fn tag(&self) -> String {
+        "latest".to_string()
+    }
+
+    fn ready_conditions(&self) -> Vec<WaitFor> {
+        vec![WaitFor::message_on_stderr("Rocket has launched from")]
+    }
+
+    fn volumes(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
+        Box::new(self.volumes.iter())
+    }
+
+    fn env_vars(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
+        Box::new(self.env_vars.iter())
+    }
+}
+
+pub async fn deploy_app(
+    prevant: &Container<'_, PREvant>,
     services: &Vec<Service>,
-) -> Result<Uuid, Response>
-where
-    D: Docker,
-{
-    let port = prevant
-        .get_host_port(80)
-        .expect("PREvant should expose port 80");
+) -> Result<Uuid, Response> {
+    let port = prevant.get_host_port_ipv4(80);
 
     let app_name = Uuid::new_v4();
 
@@ -72,16 +68,11 @@ where
     }
 }
 
-pub async fn replicate_app<D>(
-    prevant: &Container<'_, D, PREvant>,
+pub async fn replicate_app(
+    prevant: &Container<'_, PREvant>,
     from_app_name: &Uuid,
-) -> Result<Uuid, Response>
-where
-    D: Docker,
-{
-    let port = prevant
-        .get_host_port(80)
-        .expect("PREvant should expose port 80");
+) -> Result<Uuid, Response> {
+    let port = prevant.get_host_port_ipv4(80);
 
     let app_name = Uuid::new_v4();
 
@@ -101,16 +92,8 @@ where
     }
 }
 
-pub async fn delete_app<D>(
-    prevant: &Container<'_, D, PREvant>,
-    app_name: &Uuid,
-) -> Result<(), Response>
-where
-    D: Docker,
-{
-    let port = prevant
-        .get_host_port(80)
-        .expect("PREvant should expose port 80");
+pub async fn delete_app(prevant: &Container<'_, PREvant>, app_name: &Uuid) -> Result<(), Response> {
+    let port = prevant.get_host_port_ipv4(80);
 
     let res = Client::new()
         .delete(&format!("http://localhost:{}/api/apps/{}", port, app_name))
@@ -124,17 +107,12 @@ where
     }
 }
 
-pub async fn logs<D>(
-    prevant: &Container<'_, D, PREvant>,
+pub async fn logs(
+    prevant: &Container<'_, PREvant>,
     app_name: &Uuid,
     service_name: &str,
-) -> Result<String, Response>
-where
-    D: Docker,
-{
-    let port = prevant
-        .get_host_port(80)
-        .expect("PREvant should expose port 80");
+) -> Result<String, Response> {
+    let port = prevant.get_host_port_ipv4(80);
 
     let res = Client::new()
         .get(&format!(
