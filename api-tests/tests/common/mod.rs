@@ -51,8 +51,8 @@ lazy_static! {
 }
 
 pub fn docker() -> Cli {
-    if INIT_LOGGER.compare_and_swap(true, false, Ordering::Relaxed) {
-        env_logger::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    if let Ok(_) = INIT_LOGGER.compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed) {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     }
 
     Cli::default()
