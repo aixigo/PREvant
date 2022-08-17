@@ -27,10 +27,11 @@ use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
 };
 use super::payloads::{
-    deployment_payload, deployment_replicas_payload, ingress_route_payload, middleware_payload,
-    namespace_payload, secrets_payload, service_payload, IngressRoute, Middleware,
+    deployment_payload, deployment_replicas_payload, image_pull_secret_payload,
+    ingress_route_payload, middleware_payload, namespace_payload, secrets_payload, service_payload,
+    IngressRoute, Middleware,
 };
-use crate::config::ContainerConfig;
+use crate::config::{Config as PREvantConfig, ContainerConfig};
 use crate::infrastructure::{DeploymentStrategy, Infrastructure};
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
@@ -42,28 +43,22 @@ use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
     core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
 };
-use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1beta1::CustomResourceDefinition;
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     client::Client,
-    config::{Config, Der},
+    config::Config,
     error::{Error as KubeError, ErrorResponse},
 };
 use multimap::MultiMap;
-use openssl::error::ErrorStack;
-use openssl::x509::X509;
 use secstr::SecUtf8;
 use std::collections::BTreeMap;
 use std::convert::{From, TryFrom};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
-use url::Url;
 
 pub struct KubernetesInfrastructure {
-    cluster_endpoint: Url,
-    cluster_ca: Option<Vec<X509>>,
-    cluster_token: Option<SecUtf8>,
+    config: PREvantConfig,
 }
 
 #[derive(Debug, Fail, PartialEq)]
@@ -90,48 +85,21 @@ pub enum KubernetesInfrastructureError {
         deployment_name
     )]
     MissingImageLabel { deployment_name: String },
-    #[fail(display = "Could not convert certificate: {}", internal_message)]
-    CertificateError { internal_message: String },
 }
 
 impl KubernetesInfrastructure {
-    pub fn new(
-        cluster_endpoint: Url,
-        cluster_ca: Option<Vec<X509>>,
-        cluster_token: Option<SecUtf8>,
-    ) -> Self {
-        KubernetesInfrastructure {
-            cluster_endpoint,
-            cluster_ca,
-            cluster_token,
-        }
+    pub fn new(config: PREvantConfig) -> Self {
+        Self { config }
     }
 
-    fn client(&self) -> Result<Client, KubernetesInfrastructureError> {
-        use reqwest::header::{self, HeaderValue};
-        let mut headers = header::HeaderMap::new();
-        let mut root_cert: Option<Vec<Der>> = None;
-
-        if let Some(token) = &self.cluster_token {
-            let token_header_value =
-                HeaderValue::from_str(&format!("Bearer {}", token.unsecure())).unwrap();
-            headers.insert(header::AUTHORIZATION, token_header_value);
-        }
-
-        if let Some(certs) = &self.cluster_ca {
-            let result: Result<Vec<Der>, ErrorStack> =
-                certs.iter().map(|cert| Ok(Der(cert.to_der()?))).collect();
-            let ders = result.map_err(|err| KubernetesInfrastructureError::CertificateError {
-                internal_message: format!("{}", err),
-            })?;
-
-            root_cert = Some(ders);
-        }
-
-        let mut configuration = Config::new(self.cluster_endpoint.clone());
-        configuration.default_ns = String::from("default");
-        configuration.root_cert = root_cert;
-        configuration.headers = headers;
+    async fn client(&self) -> Result<Client, KubernetesInfrastructureError> {
+        let configuration = Config::infer().await.map_err(|err| {
+            KubernetesInfrastructureError::UnexpectedError {
+                internal_message: format!(
+                    "Failed to read Kube configuration from cluster env: {err}"
+                ),
+            }
+        })?;
 
         Client::try_from(configuration).map_err(|err| {
             KubernetesInfrastructureError::UnexpectedError {
@@ -151,19 +119,21 @@ impl KubernetesInfrastructure {
             .unwrap_or_else(|| "".to_string());
         let mut builder = ServiceBuilder::try_from(deployment)?;
 
-        let mut p = ListParams::default();
-        p.label_selector = Some(format!(
-            "{}={},{}={}",
-            APP_NAME_LABEL,
-            builder
-                .current_app_name()
-                .map_or_else(|| "", |name| name.as_str()),
-            SERVICE_NAME_LABEL,
-            builder
-                .current_config()
-                .map_or_else(|| "", |config| config.service_name()),
-        ));
-        if let Some(pod) = Api::<V1Pod>::namespaced(self.client()?, &namespace)
+        let p = ListParams {
+            label_selector: Some(format!(
+                "{}={},{}={}",
+                APP_NAME_LABEL,
+                builder
+                    .current_app_name()
+                    .map_or_else(|| "", |name| name.as_str()),
+                SERVICE_NAME_LABEL,
+                builder
+                    .current_config()
+                    .map_or_else(|| "", |config| config.service_name()),
+            )),
+            ..Default::default()
+        };
+        if let Some(pod) = Api::<V1Pod>::namespaced(self.client().await?, &namespace)
             .list(&p)
             .await?
             .items
@@ -174,8 +144,7 @@ impl KubernetesInfrastructure {
                 builder = builder.started_at(
                     pod.status
                         .as_ref()
-                        .map(|s| s.start_time.as_ref())
-                        .flatten()
+                        .and_then(|s| s.start_time.as_ref())
                         .map(|t| t.0)
                         .unwrap_or_else(Utc::now),
                 );
@@ -184,8 +153,7 @@ impl KubernetesInfrastructure {
                     let port = container
                         .ports
                         .as_ref()
-                        .map(|ports| ports.first())
-                        .flatten()
+                        .and_then(|ports| ports.first())
                         .map(|port| port.container_port as u16)
                         .unwrap_or(80u16);
 
@@ -205,14 +173,16 @@ impl KubernetesInfrastructure {
         &self,
         app_name: &String,
     ) -> Result<Vec<Service>, KubernetesInfrastructureError> {
-        let mut p = ListParams::default();
-        p.label_selector = Some(format!(
-            "{}={},{}",
-            APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL
-        ));
+        let p = ListParams {
+            label_selector: Some(format!(
+                "{}={},{}",
+                APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL
+            )),
+            ..Default::default()
+        };
 
         let mut services = Vec::new();
-        let futures = Api::<V1Deployment>::all(self.client()?)
+        let futures = Api::<V1Deployment>::all(self.client().await?)
             .list(&p)
             .await?
             .items
@@ -240,13 +210,15 @@ impl KubernetesInfrastructure {
         app_name: &String,
         service_name: &String,
     ) -> Result<Option<Service>, KubernetesInfrastructureError> {
-        let mut p = ListParams::default();
-        p.label_selector = Some(format!(
-            "{}={},{}={}",
-            APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL, service_name
-        ));
+        let p = ListParams {
+            label_selector: Some(format!(
+                "{}={},{}={}",
+                APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL, service_name
+            )),
+            ..Default::default()
+        };
 
-        match Api::<V1Deployment>::all(self.client()?)
+        match Api::<V1Deployment>::all(self.client().await?)
             .list(&p)
             .await?
             .items
@@ -264,29 +236,23 @@ impl KubernetesInfrastructure {
         app_name: &String,
         service_config: &ServiceConfig,
     ) -> Result<(), KubernetesInfrastructureError> {
-        let mut p = ListParams::default();
-        p.label_selector = Some(format!(
-            "{}={},{}={}",
-            APP_NAME_LABEL,
-            app_name,
-            SERVICE_NAME_LABEL,
-            service_config.service_name(),
-        ));
-        Api::namespaced(self.client()?, app_name)
+        let client = self.client().await?;
+
+        Api::namespaced(client.clone(), app_name)
             .create(
                 &PostParams::default(),
                 &service_payload(app_name, service_config),
             )
             .await?;
 
-        Api::namespaced(self.client()?, app_name)
+        Api::namespaced(client.clone(), app_name)
             .create(
                 &PostParams::default(),
                 &ingress_route_payload(app_name, service_config),
             )
             .await?;
 
-        Api::namespaced(self.client()?, app_name)
+        Api::namespaced(client.clone(), app_name)
             .create(
                 &PostParams::default(),
                 &middleware_payload(app_name, service_config),
@@ -296,44 +262,70 @@ impl KubernetesInfrastructure {
         Ok(())
     }
 
-    async fn create_crds_if_necessary(
-        &self,
-        _app_name: &String,
-    ) -> Result<(), KubernetesInfrastructureError> {
-        let pp = PatchParams::default();
-        let api: Api<CustomResourceDefinition> = Api::all(self.client()?);
-        api.patch(
-            "ingressroutes.traefik.containo.us",
-            &pp,
-            &Patch::Merge(IngressRoute::crd()),
-        )
-        .await?;
-        api.patch(
-            "middlewares.traefik.containo.us",
-            &pp,
-            &Patch::Merge(Middleware::crd()),
-        )
-        .await?;
-        Ok(())
-    }
-
     async fn create_namespace_if_necessary(
         &self,
         app_name: &String,
     ) -> Result<(), KubernetesInfrastructureError> {
-        match Api::all(self.client()?)
+        match Api::all(self.client().await?)
             .create(&PostParams::default(), &namespace_payload(app_name))
             .await
         {
             Ok(result) => {
                 debug!(
                     "Successfully created namespace {}",
-                    result.metadata.name.unwrap_or(String::from("<unknown>"))
+                    result
+                        .metadata
+                        .name
+                        .unwrap_or_else(|| String::from("<unknown>"))
                 );
                 Ok(())
             }
             Err(KubeError::Api(ErrorResponse { code, .. })) if code == 409 => {
                 debug!("Namespace {} already exists.", app_name);
+                Ok(())
+            }
+            Err(e) => {
+                error!("Cannot deploy namespace: {}", e);
+                Err(e.into())
+            }
+        }
+    }
+
+    async fn create_pull_secrets_if_necessary(
+        &self,
+        app_name: &String,
+        strategies: &[DeploymentStrategy],
+    ) -> Result<(), KubernetesInfrastructureError> {
+        let registries_and_credentials: BTreeMap<String, (&str, &SecUtf8)> = strategies
+            .iter()
+            .filter_map(|strategy| {
+                strategy.image().registry().and_then(|registry| {
+                    self.config
+                        .registry_credentials(&registry)
+                        .map(|(username, password)| (registry, (username, password)))
+                })
+            })
+            .collect();
+
+        if registries_and_credentials.is_empty() {
+            return Ok(());
+        }
+
+        match Api::namespaced(self.client().await?, app_name)
+            .create(
+                &PostParams::default(),
+                &image_pull_secret_payload(app_name, registries_and_credentials),
+            )
+            .await
+        {
+            Ok(result) => {
+                debug!(
+                    "Successfully created image pull secret {}",
+                    result
+                        .metadata
+                        .name
+                        .unwrap_or_else(|| String::from("<unknown>"))
+                );
                 Ok(())
             }
             Err(e) => {
@@ -353,17 +345,29 @@ impl KubernetesInfrastructure {
             self.deploy_secret(app_name, strategy, volumes).await?;
         }
 
-        match Api::namespaced(self.client()?, app_name)
+        let client = self.client().await?;
+
+        match Api::namespaced(client.clone(), app_name)
             .create(
                 &PostParams::default(),
-                &deployment_payload(app_name, strategy, container_config),
+                &deployment_payload(
+                    app_name,
+                    strategy,
+                    container_config,
+                    self.config
+                        .registry_credentials(&strategy.image().registry().unwrap_or_default())
+                        .is_some(),
+                ),
             )
             .await
         {
             Ok(result) => {
                 debug!(
                     "Successfully deployed {}",
-                    result.metadata.name.unwrap_or(String::from("<unknown>"))
+                    result
+                        .metadata
+                        .name
+                        .unwrap_or_else(|| String::from("<unknown>"))
                 );
                 self.post_service_and_custom_resource_definitions(app_name, strategy)
                     .await?;
@@ -371,11 +375,20 @@ impl KubernetesInfrastructure {
             }
 
             Err(KubeError::Api(ErrorResponse { code, .. })) if code == 409 => {
-                Api::<V1Deployment>::namespaced(self.client()?, app_name)
+                Api::<V1Deployment>::namespaced(client.clone(), app_name)
                     .patch(
                         &format!("{}-{}-deployment", app_name, strategy.service_name()),
                         &PatchParams::default(),
-                        &Patch::Merge(deployment_payload(app_name, strategy, container_config)),
+                        &Patch::Merge(deployment_payload(
+                            app_name,
+                            strategy,
+                            container_config,
+                            self.config
+                                .registry_credentials(
+                                    &strategy.image().registry().unwrap_or_default(),
+                                )
+                                .is_some(),
+                        )),
                     )
                     .await?;
                 Ok(strategy)
@@ -399,7 +412,9 @@ impl KubernetesInfrastructure {
             app_name
         );
 
-        match Api::namespaced(self.client()?, app_name)
+        let client = self.client().await?;
+
+        match Api::namespaced(client.clone(), app_name)
             .create(
                 &PostParams::default(),
                 &secrets_payload(app_name, service_config, volumes),
@@ -409,12 +424,15 @@ impl KubernetesInfrastructure {
             Ok(result) => {
                 debug!(
                     "Successfully deployed {}",
-                    result.metadata.name.unwrap_or(String::from("<unknown>"))
+                    result
+                        .metadata
+                        .name
+                        .unwrap_or_else(|| String::from("<unknown>"))
                 );
                 Ok(())
             }
             Err(KubeError::Api(ErrorResponse { code, .. })) if code == 409 => {
-                Api::<V1Secret>::namespaced(self.client()?, app_name)
+                Api::<V1Secret>::namespaced(client.clone(), app_name)
                     .patch(
                         &format!("{}-{}-secret", app_name, service_config.service_name()),
                         &PatchParams::default(),
@@ -435,22 +453,24 @@ impl KubernetesInfrastructure {
         app_name: &String,
         service: &'a Service,
     ) -> Result<&'a Service, KubernetesInfrastructureError> {
-        Api::<V1Deployment>::namespaced(self.client()?, service.app_name())
+        let client = self.client().await?;
+
+        Api::<V1Deployment>::namespaced(client.clone(), service.app_name())
             .delete(
                 &format!("{}-{}-deployment", app_name, service.service_name()),
                 &DeleteParams::default(),
             )
             .await?;
-        Api::<V1Service>::namespaced(self.client()?, service.app_name())
+        Api::<V1Service>::namespaced(client.clone(), service.app_name())
             .delete(service.service_name(), &DeleteParams::default())
             .await?;
-        Api::<IngressRoute>::namespaced(self.client()?, service.app_name())
+        Api::<IngressRoute>::namespaced(client.clone(), service.app_name())
             .delete(
                 &format!("{}-{}-ingress-route", app_name, service.service_name()),
                 &DeleteParams::default(),
             )
             .await?;
-        Api::<Middleware>::namespaced(self.client()?, service.app_name())
+        Api::<Middleware>::namespaced(client.clone(), service.app_name())
             .delete(
                 &format!("{}-{}-middleware", app_name, service.service_name()),
                 &DeleteParams::default(),
@@ -464,11 +484,13 @@ impl KubernetesInfrastructure {
 #[async_trait]
 impl Infrastructure for KubernetesInfrastructure {
     async fn get_services(&self) -> Result<MultiMap<String, Service>, Error> {
-        let mut p = ListParams::default();
-        p.label_selector = Some(format!("{},{}", APP_NAME_LABEL, SERVICE_NAME_LABEL));
+        let p = ListParams {
+            label_selector: Some(format!("{},{}", APP_NAME_LABEL, SERVICE_NAME_LABEL)),
+            ..Default::default()
+        };
 
         let mut apps = MultiMap::new();
-        for deployment in Api::<V1Deployment>::all(self.client()?)
+        for deployment in Api::<V1Deployment>::all(self.client().await?)
             .list(&p)
             .await?
             .items
@@ -495,8 +517,9 @@ impl Infrastructure for KubernetesInfrastructure {
         strategies: &[DeploymentStrategy],
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
-        self.create_crds_if_necessary(app_name).await?;
         self.create_namespace_if_necessary(app_name).await?;
+        self.create_pull_secrets_if_necessary(app_name, strategies)
+            .await?;
 
         let futures = strategies
             .iter()
@@ -531,7 +554,7 @@ impl Infrastructure for KubernetesInfrastructure {
             stop_service_result?;
         }
 
-        Api::<V1Namespace>::all(self.client()?)
+        Api::<V1Namespace>::all(self.client().await?)
             .delete(app_name, &DeleteParams::default())
             .await?;
 
@@ -545,12 +568,14 @@ impl Infrastructure for KubernetesInfrastructure {
         from: &Option<DateTime<FixedOffset>>,
         limit: usize,
     ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error> {
-        let mut p = ListParams::default();
-        p.label_selector = Some(format!(
-            "{}={},{}={}",
-            APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL, service_name,
-        ));
-        let pod = match Api::<V1Pod>::namespaced(self.client()?, app_name)
+        let p = ListParams {
+            label_selector: Some(format!(
+                "{}={},{}={}",
+                APP_NAME_LABEL, app_name, SERVICE_NAME_LABEL, service_name,
+            )),
+            ..Default::default()
+        };
+        let pod = match Api::<V1Pod>::namespaced(self.client().await?, app_name)
             .list(&p)
             .await?
             .into_iter()
@@ -562,24 +587,26 @@ impl Infrastructure for KubernetesInfrastructure {
             }
         };
 
-        let mut p = LogParams::default();
-        p.timestamps = true;
-        p.since_seconds = from
-            .map(|from| {
-                from.timestamp()
-                    - pod
-                        .status
-                        .as_ref()
-                        .unwrap()
-                        .start_time
-                        .as_ref()
-                        .unwrap()
-                        .0
-                        .timestamp()
-            })
-            .filter(|since_seconds| since_seconds > &0);
+        let p = LogParams {
+            timestamps: true,
+            since_seconds: from
+                .map(|from| {
+                    from.timestamp()
+                        - pod
+                            .status
+                            .as_ref()
+                            .unwrap()
+                            .start_time
+                            .as_ref()
+                            .unwrap()
+                            .0
+                            .timestamp()
+                })
+                .filter(|since_seconds| since_seconds > &0),
+            ..Default::default()
+        };
 
-        let logs = Api::<V1Pod>::namespaced(self.client()?, app_name)
+        let logs = Api::<V1Pod>::namespaced(self.client().await?, app_name)
             .logs(&pod.metadata.name.unwrap(), &p)
             .await?;
 
@@ -623,7 +650,7 @@ impl Infrastructure for KubernetesInfrastructure {
             None => return Ok(None),
         };
 
-        Api::<V1Deployment>::namespaced(self.client()?, app_name)
+        Api::<V1Deployment>::namespaced(self.client().await?, app_name)
             .patch(
                 &format!("{}-{}-deployment", app_name, service_name),
                 &PatchParams::default(),
@@ -768,6 +795,7 @@ mod tests {
     use crate::models::EnvironmentVariable;
     use k8s_openapi::api::apps::v1::DeploymentSpec;
     use kube::api::ObjectMeta;
+    use secstr::SecUtf8;
     use std::collections::BTreeMap;
 
     macro_rules! deployment_object {
@@ -794,25 +822,12 @@ mod tests {
             V1Deployment {
                 metadata: ObjectMeta {
                     name: Some(String::from($deployment_name)),
-                    namespace: None,
                     labels: Some(labels),
                     annotations: Some(annotations),
-                    resource_version: None,
-                    owner_references: Some(vec![]),
-                    uid: None,
-                    generation: None,
-                    generate_name: None,
-                    initializers: None,
-                    finalizers: Some(vec![]),
-                    creation_timestamp: None,
-                    deletion_timestamp: None,
-                    cluster_name: None,
-                    deletion_grace_period_seconds: None,
-                    managed_fields: None,
-                    self_link: None,
+                    ..Default::default()
                 },
                 spec: Some(DeploymentSpec::default()),
-                status: None,
+                ..Default::default()
             }
         }};
     }

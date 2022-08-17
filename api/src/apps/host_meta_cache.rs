@@ -260,7 +260,7 @@ impl HostMetaCrawler {
         let get_request = reqwest::Client::builder()
             .connect_timeout(Duration::from_millis(500))
             .timeout(Duration::from_millis(750))
-            .user_agent(format!("PREvant/{}", crate_version!()))
+            .user_agent(format!("PREvant/{}", clap::crate_version!()))
             .build()
             .unwrap()
             .get(&url.to_string())

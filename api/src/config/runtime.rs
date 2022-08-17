@@ -23,124 +23,49 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use secstr::SecUtf8;
-use std::path::PathBuf;
-use url::Url;
+use std::{fmt::Display, str::FromStr};
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Runtime {
+    #[serde(rename = "type")]
+    r#type: Type,
+}
+
+impl Runtime {
+    pub fn r#type(&self) -> &Type {
+        &self.r#type
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(tag = "type")]
-pub enum Runtime {
+pub enum Type {
     Docker,
-    Kubernetes(KubernetesRuntimeConfig),
+    Kubernetes,
 }
 
-impl Default for Runtime {
+impl Default for Type {
     fn default() -> Self {
-        Runtime::Docker
+        Type::Docker
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct KubernetesRuntimeConfig {
-    endpoint: Option<Url>,
-    token: Option<SecUtf8>,
-    cert_auth_file_path: Option<PathBuf>,
-}
+impl FromStr for Type {
+    type Err = &'static str;
 
-impl KubernetesRuntimeConfig {
-    pub fn endpoint(&self) -> &Option<Url> {
-        &self.endpoint
-    }
-
-    pub fn token(&self) -> &Option<SecUtf8> {
-        &self.token
-    }
-
-    pub fn cert_auth_file_path(&self) -> &Option<PathBuf> {
-        &self.cert_auth_file_path
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Docker" => Ok(Self::Docker),
+            "Kubernetes" => Ok(Self::Kubernetes),
+            _ => Err("Unknown type"),
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    macro_rules! parse_as_kubernetes_config {
-        ($toml:expr) => {
-            match toml::de::from_str::<Runtime>($toml).unwrap() {
-                Runtime::Kubernetes(kubernetes) => kubernetes,
-                _ => panic!("Should be a kubernetes config"),
-            }
-        };
-    }
-
-    #[test]
-    fn should_parse_as_docker_runtime() {
-        let runtime_toml = r#"
-        type = 'Docker'
-        "#;
-
-        let runtime = toml::de::from_str::<Runtime>(runtime_toml).unwrap();
-
-        assert_eq!(runtime, Runtime::Docker);
-    }
-
-    #[test]
-    fn should_parse_as_kubernetes_runtime_without_endpoint() {
-        let runtime_toml = r#"
-        type = 'Kubernetes'
-        "#;
-
-        let kubernetes = parse_as_kubernetes_config!(runtime_toml);
-
-        assert!(kubernetes.endpoint().is_none());
-    }
-
-    #[test]
-    fn should_parse_as_kubernetes_runtime_with_endpoint() {
-        let runtime_toml = r#"
-        type = 'Kubernetes'
-        endpoint = 'http://cluster.localhost:8080'
-        "#;
-
-        let kubernetes = parse_as_kubernetes_config!(runtime_toml);
-
-        assert_eq!(
-            kubernetes
-                .endpoint()
-                .as_ref()
-                .map(|endpoint| endpoint.clone().to_string()),
-            Some(String::from("http://cluster.localhost:8080/"))
-        );
-    }
-
-    #[test]
-    fn should_parse_as_kubernetes_runtime_without_token() {
-        let runtime_toml = r#"
-        type = 'Kubernetes'
-        "#;
-
-        let kubernetes = parse_as_kubernetes_config!(runtime_toml);
-
-        assert!(kubernetes.token().is_none());
-    }
-
-    #[test]
-    fn should_parse_as_kubernetes_runtime_with_token() {
-        let runtime_toml = r#"
-        type = 'Kubernetes'
-        token = 'somethingrandom'
-        "#;
-
-        let kubernetes = parse_as_kubernetes_config!(runtime_toml);
-
-        assert_eq!(
-            kubernetes
-                .token()
-                .as_ref()
-                .map(|token| String::from(token.unsecure())),
-            Some(String::from("somethingrandom"))
-        );
+impl Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Docker => write!(f, "Docker"),
+            Self::Kubernetes => write!(f, "Kubernetes"),
+        }
     }
 }

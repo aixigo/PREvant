@@ -28,9 +28,10 @@ use regex::Regex;
 use serde::ser::{Serialize, Serializer};
 use serde::{Deserialize, Deserializer};
 use std::fmt::{Display, Formatter};
+use std::hash::Hash;
 use std::str::FromStr;
 
-#[derive(Clone, Debug, Eq, Hash)]
+#[derive(Clone, Debug, Eq)]
 pub enum Image {
     Named {
         image_repository: String,
@@ -41,6 +42,42 @@ pub enum Image {
     Digest {
         hash: String,
     },
+}
+
+impl Hash for Image {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Image::Named {
+                image_repository,
+                registry,
+                image_user,
+                image_tag,
+            } => {
+                state.write(
+                    registry
+                        .as_ref()
+                        .map_or("docker.io", |registry| registry.as_str())
+                        .as_bytes(),
+                );
+                state.write(
+                    image_user
+                        .as_ref()
+                        .map_or("library", |image_user| image_user.as_str())
+                        .as_bytes(),
+                );
+                state.write(image_repository.as_bytes());
+                state.write(
+                    image_tag
+                        .as_ref()
+                        .map_or("latest", |image_tag| image_tag.as_str())
+                        .as_bytes(),
+                );
+            }
+            Image::Digest { hash } => {
+                state.write(hash.as_bytes());
+            }
+        }
+    }
 }
 
 impl PartialEq for Image {
@@ -153,7 +190,7 @@ impl FromStr for Image {
         }
 
         regex = Regex::new(
-            r"^(((?P<registry>.+)/)?(?P<user>[\w-]+)/)?(?P<repo>[\w-]+)(:(?P<tag>[\w\.-]+))?$",
+            r"^(((?P<registry>([\w\.-]|:)+)/)?(?P<user>[\w/-]+)/)?(?P<repo>[\w-]+)(:(?P<tag>[\w\.-]+))?$",
         )
         .unwrap();
         let captures = match regex.captures(s) {
@@ -248,7 +285,7 @@ impl Serialize for Image {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
+    use std::{collections::HashMap, str::FromStr};
 
     #[test]
     fn should_parse_image_id_with_sha_prefix() {
@@ -352,5 +389,30 @@ mod tests {
 
         let image_local_registry = Image::from_str("localhost:5000/library/nginx:latest").unwrap();
         assert_ne!(image_local_registry, image_short);
+    }
+
+    #[test]
+    fn should_hash_images() {
+        let image_full = Image::from_str("docker.io/library/nginx:latest").unwrap();
+        let image_partially = Image::from_str("docker.io/library/nginx").unwrap();
+        let image_short = Image::from_str("nginx").unwrap();
+
+        let map = HashMap::from([(image_full, "Hello Image")]);
+
+        assert_eq!(map.get(&image_partially), Some(&"Hello Image"));
+        assert_eq!(map.get(&image_short), Some(&"Hello Image"));
+    }
+
+    #[test]
+    fn should_parse_image_with_multilevel_user() {
+        let image =
+            Image::from_str("registry.gitlab.com/some-group/zammad/zammad-docker-compose").unwrap();
+
+        assert_eq!(&image.registry().unwrap(), "registry.gitlab.com");
+        assert_eq!(
+            &image.name().unwrap(),
+            "some-group/zammad/zammad-docker-compose"
+        );
+        assert_eq!(&image.tag().unwrap(), "latest");
     }
 }

@@ -25,8 +25,6 @@
  */
 
 #[macro_use]
-extern crate clap;
-#[macro_use]
 extern crate failure;
 #[macro_use]
 extern crate lazy_static;
@@ -37,22 +35,16 @@ extern crate serde_derive;
 
 use crate::apps::host_meta_crawling;
 use crate::apps::Apps;
-use crate::config::{Config, Runtime};
+use crate::config::{Config, Type};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
-use clap::{App, Arg};
-use env_logger::Env;
-use openssl::x509::X509;
+use clap::Parser;
 use rocket::fs::NamedFile;
-use secstr::SecUtf8;
 use serde_yaml::{from_reader, to_string, Value};
 use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::str::FromStr;
 use std::sync::Arc;
-use url::Url;
 
 mod apps;
 mod config;
@@ -94,132 +86,30 @@ fn openapi(request_info: RequestInfo) -> Option<String> {
     Some(to_string(&v).unwrap())
 }
 
-fn create_infrastructure(config: &Config) -> Result<Box<dyn Infrastructure>, StartUpError> {
+fn create_infrastructure(config: &Config) -> Box<dyn Infrastructure> {
     match config.runtime_config() {
-        Runtime::Docker => Ok(Box::new(Docker::new())),
-        Runtime::Kubernetes(kubernetes_config) => {
-            let cluster_endpoint = match kubernetes_config.endpoint() {
-                Some(endpoint) => endpoint.clone(),
-                None => Url::from_str(&format!(
-                    "https://{}:{}",
-                    std::env::var("KUBERNETES_SERVICE_HOST").unwrap(),
-                    std::env::var("KUBERNETES_SERVICE_PORT").unwrap()
-                ))
-                .unwrap(),
-            };
-
-            let cluster_ca = match kubernetes_config.cert_auth_file_path() {
-                Some(path) => Some(read_ca_file(path)?),
-                None => {
-                    let container_secret =
-                        Path::new("/run/secrets/kubernetes.io/serviceaccount/ca.crt");
-                    if container_secret.exists() {
-                        Some(read_ca_file(container_secret)?)
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            let cluster_token = match kubernetes_config.token() {
-                Some(token) => Some(token.clone()),
-                None => {
-                    let container_secret =
-                        Path::new("/run/secrets/kubernetes.io/serviceaccount/token");
-                    if container_secret.exists() {
-                        Some(read_token_file(container_secret)?)
-                    } else {
-                        None
-                    }
-                }
-            };
-
-            Ok(Box::new(Kubernetes::new(
-                cluster_endpoint,
-                cluster_ca,
-                cluster_token,
-            )))
+        Type::Docker => {
+            log::info!("Using Docker backend");
+            Box::new(Docker::new(config.clone()))
+        }
+        Type::Kubernetes => {
+            log::info!("Using Kubernetes backend");
+            Box::new(Kubernetes::new(config.clone()))
         }
     }
-}
-
-fn read_token_file(path: &Path) -> Result<SecUtf8, StartUpError> {
-    debug!("Reading token from {}.", path.to_str().unwrap());
-
-    let mut f = match File::open(path) {
-        Ok(f) => f,
-        Err(e) => {
-            return Err(StartUpError::CannotReadToken {
-                path: String::from(path.to_str().unwrap()),
-                err: format!("{}", e),
-            });
-        }
-    };
-
-    let mut token = String::new();
-    if let Err(e) = f.read_to_string(&mut token) {
-        return Err(StartUpError::CannotReadToken {
-            path: String::from(path.to_str().unwrap()),
-            err: format!("{}", e),
-        });
-    }
-
-    Ok(SecUtf8::from(token))
-}
-
-fn read_ca_file(path: &Path) -> Result<Vec<X509>, StartUpError> {
-    debug!(
-        "Reading certificate authority from {}.",
-        path.to_str().unwrap()
-    );
-
-    let mut file =
-        File::open(path).map_err(|err| StartUpError::CannotReadCertificateAuthority {
-            path: String::from(path.to_str().unwrap()),
-            err: format!("{}", err),
-        })?;
-
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .map_err(|err| StartUpError::CannotReadCertificateAuthority {
-            path: String::from(path.to_str().unwrap()),
-            err: format!("{}", err),
-        })?;
-
-    X509::stack_from_pem(buffer.as_slice()).map_err(|err| {
-        StartUpError::CannotReadCertificateAuthority {
-            path: String::from(path.to_str().unwrap()),
-            err: format!("{}", err),
-        }
-    })
 }
 
 #[rocket::main]
 async fn main() -> Result<(), StartUpError> {
-    let argument_matches = App::new(crate_name!())
-        .version(crate_version!())
-        .author(crate_authors!())
-        .arg(
-            Arg::with_name("config")
-                .short('c')
-                .long("config")
-                .value_name("FILE")
-                .help("The path to the configuration file")
-                .takes_value(true),
-        )
-        .get_matches();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    let cli = crate::config::CliArgs::parse();
 
-    let config = match Config::load(argument_matches.value_of("config").unwrap_or("config.toml")) {
-        Ok(config) => config,
-        Err(e) => {
-            error!("Cannot load config: {}", e);
-            process::exit(0x0100);
-        }
-    };
+    let config = Config::from_figment(&cli).map_err(|err| StartUpError::InvalidConfiguration {
+        err: err.to_string(),
+    })?;
 
-    let infrastructure = create_infrastructure(&config)?;
+    let infrastructure = create_infrastructure(&config);
     let apps = match Apps::new(config.clone(), infrastructure) {
         Ok(apps_service) => apps_service,
         Err(e) => {
@@ -250,10 +140,8 @@ async fn main() -> Result<(), StartUpError> {
 
 #[derive(Debug, Fail)]
 enum StartUpError {
-    #[fail(display = "Cannot read certificate authority from {}: {}", path, err)]
-    CannotReadCertificateAuthority { path: String, err: String },
-    #[fail(display = "Cannot read API token from {}: {}", path, err)]
-    CannotReadToken { path: String, err: String },
+    #[fail(display = "Cannot read configuration: {}", err)]
+    InvalidConfiguration { err: String },
     #[fail(display = "Cannot start HTTP server: {}", err)]
     CannotStartWebServer { err: String },
 }

@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::config::ContainerConfig;
+use crate::config::{Config, ContainerConfig};
 use crate::infrastructure::{
     DeploymentStrategy, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
@@ -43,7 +43,7 @@ use shiplift::errors::Error as ShipLiftError;
 use shiplift::tty::TtyChunk;
 use shiplift::{
     ContainerConnectionOptions, ContainerFilter, ContainerListOptions, ContainerOptions, Docker,
-    LogsOptions, NetworkCreateOptions, PullOptions,
+    LogsOptions, NetworkCreateOptions, PullOptions, RegistryAuth,
 };
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
@@ -52,7 +52,9 @@ use std::str::FromStr;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
-pub struct DockerInfrastructure {}
+pub struct DockerInfrastructure {
+    config: Config,
+}
 
 #[derive(Debug, Fail, PartialEq)]
 pub enum DockerInfrastructureError {
@@ -79,8 +81,8 @@ pub enum DockerInfrastructureError {
 }
 
 impl DockerInfrastructure {
-    pub fn new() -> DockerInfrastructure {
-        DockerInfrastructure {}
+    pub fn new(config: Config) -> Self {
+        Self { config }
     }
 
     async fn find_status_change_container(
@@ -111,15 +113,15 @@ impl DockerInfrastructure {
             ));
         }
 
-        let image = "docker.io/library/busybox:stable";
+        let image = Image::from_str("docker.io/library/busybox:stable").unwrap();
 
-        pull(image).await?;
+        pull(&image, &self.config).await?;
 
         let mut labels: HashMap<&str, &str> = HashMap::new();
         labels.insert(APP_NAME_LABEL, app_name);
         labels.insert(STATUS_ID, status_id);
 
-        let mut options = ContainerOptions::builder(image);
+        let mut options = ContainerOptions::builder(&image.to_string());
         options.labels(&labels);
 
         let docker = Docker::new();
@@ -492,7 +494,7 @@ impl DockerInfrastructure {
         app_name: &String,
         config: &ServiceConfig,
     ) -> Result<(), ShipLiftError> {
-        let image = config.image().to_string();
+        let image = config.image();
 
         info!(
             "Pulling {:?} for {:?} of app {:?}",
@@ -501,7 +503,7 @@ impl DockerInfrastructure {
             app_name
         );
 
-        let pull_results = pull(&image).await?;
+        let pull_results = pull(image, &self.config).await?;
 
         for pull_result in pull_results {
             debug!("{:?}", pull_result);
@@ -818,13 +820,28 @@ fn not_found_to_none<T>(result: Result<T, ShipLiftError>) -> Result<Option<T>, S
 }
 
 /// Helper function to pull images
-async fn pull(image: &str) -> Result<Vec<serde_json::Value>, ShipLiftError> {
-    let pull_options = PullOptions::builder().image(image).build();
+async fn pull(image: &Image, config: &Config) -> Result<Vec<serde_json::Value>, ShipLiftError> {
+    let mut pull_options_builder = PullOptions::builder();
+    pull_options_builder.image(&image.to_string());
+
+    if let Some(registry) = image.registry() {
+        if let Some((username, password)) = config.registry_credentials(&registry) {
+            pull_options_builder.auth(
+                RegistryAuth::builder()
+                    .username(username)
+                    .password(password.unsecure())
+                    .build(),
+            );
+        }
+    }
 
     let docker = Docker::new();
     let images = docker.images();
 
-    images.pull(&pull_options).try_collect().await
+    images
+        .pull(&pull_options_builder.build())
+        .try_collect()
+        .await
 }
 
 /// Helper function to stop containers with the aid of futures::future::join_all

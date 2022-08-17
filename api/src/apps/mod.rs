@@ -282,7 +282,9 @@ impl AppsService {
         deployment_unit.extend_with_templating_only_service_configs(configs_for_templating);
 
         let images = deployment_unit.images();
-        let image_infos = ImagesService::new().resolve_image_infos(&images).await?;
+        let image_infos = ImagesService::new(&self.config)
+            .resolve_image_infos(&images)
+            .await?;
         deployment_unit.assign_image_infos(image_infos);
 
         let configs: Vec<_> = deployment_unit.try_into()?;

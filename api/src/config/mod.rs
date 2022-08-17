@@ -26,26 +26,65 @@
 pub use self::companion::DeploymentStrategy;
 use self::companion::{Companion, CompanionType};
 pub use self::container::ContainerConfig;
-pub use self::runtime::Runtime;
+pub use self::runtime::{Runtime, Type};
 use crate::models::ServiceConfig;
 pub(self) use app_selector::AppSelector;
+use clap::Parser;
+use figment::providers::{Env, Format, Toml};
+use figment::value::{Dict, Map, Tag, Value};
+use figment::{Metadata, Profile};
 pub(self) use secret::Secret;
 use secstr::SecUtf8;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::convert::From;
-use std::fs::File;
-use std::io::prelude::*;
 use std::io::Error as IOError;
 use std::path::PathBuf;
+use std::str::FromStr;
 use toml::de::Error as TomlError;
-use toml::from_str;
 
 mod app_selector;
 mod companion;
 mod container;
 mod runtime;
 mod secret;
+
+#[derive(Default, Parser)]
+#[clap(author, version, about, long_about = None)]
+pub struct CliArgs {
+    /// Sets a custom config file
+    #[clap(short, long, value_parser, value_name = "FILE")]
+    config: Option<PathBuf>,
+
+    /// Sets the container backend type, e.g. Docker or Kubernetes
+    #[clap(short, long)]
+    runtime_type: Option<Type>,
+}
+
+impl figment::Provider for CliArgs {
+    fn metadata(&self) -> Metadata {
+        Metadata::named("cli arguments")
+    }
+
+    fn data(&self) -> Result<Map<Profile, Dict>, figment::Error> {
+        let mut dict = Dict::new();
+
+        if let Some(runtime_type) = &self.runtime_type {
+            dict.insert(
+                String::from("runtime"),
+                figment::util::nest(
+                    "type",
+                    Value::String(Tag::Default, runtime_type.to_string()),
+                ),
+            );
+        }
+
+        let mut data = Map::new();
+        data.insert(Profile::Default, dict);
+
+        Ok(data)
+    }
+}
 
 #[derive(Clone, Deserialize)]
 pub struct JiraConfig {
@@ -61,30 +100,38 @@ struct Service {
 
 #[derive(Clone, Default, Deserialize)]
 pub struct Config {
-    runtime: Option<Runtime>,
+    #[serde(default)]
+    runtime: Runtime,
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
     companions: Option<BTreeMap<String, Companion>>,
     services: Option<BTreeMap<String, Service>>,
     hooks: Option<BTreeMap<String, PathBuf>>,
+    #[serde(default)]
+    registries: BTreeMap<String, Registry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct Registry {
+    username: String,
+    password: SecUtf8,
 }
 
 impl Config {
-    pub fn load(path: &str) -> Result<Config, ConfigError> {
-        let mut f = File::open(path)?;
-
-        let mut contents = String::new();
-        f.read_to_string(&mut contents)?;
-
-        let config = from_str::<Config>(contents.as_str())?;
-        Ok(config)
+    pub fn from_figment(cli: &CliArgs) -> Result<Self, figment::Error> {
+        figment::Figment::new()
+            .merge(Toml::file(
+                cli.config
+                    .as_ref()
+                    .unwrap_or(&PathBuf::from_str("config.toml").unwrap()),
+            ))
+            .merge(Env::prefixed("PREVANT_").split("_"))
+            .merge(cli)
+            .extract::<Config>()
     }
 
-    pub fn runtime_config(&self) -> Runtime {
-        match &self.runtime {
-            Some(runtime) => runtime.clone(),
-            None => Runtime::default(),
-        }
+    pub fn runtime_config(&self) -> &Type {
+        self.runtime.r#type()
     }
 
     pub fn container_config(&self) -> ContainerConfig {
@@ -151,8 +198,16 @@ impl Config {
     pub fn hook(&self, hook_name: &str) -> Option<&PathBuf> {
         self.hooks
             .as_ref()
-            .map(|hooks| hooks.get(hook_name))
-            .flatten()
+            .and_then(|hooks| hooks.get(hook_name))
+    }
+
+    pub fn registry_credentials<'a, 'b: 'a>(
+        &'b self,
+        registry_host: &str,
+    ) -> Option<(&'a str, &'a SecUtf8)> {
+        self.registries
+            .get(registry_host)
+            .map(|registry| (registry.username.as_str(), &registry.password))
     }
 }
 
@@ -207,9 +262,13 @@ impl From<TomlError> for ConfigError {
 #[cfg(test)]
 #[macro_export]
 macro_rules! config_from_str {
-    ( $config_str:expr ) => {
-        toml::from_str::<Config>($config_str).unwrap()
-    };
+    ( $config_str:expr ) => {{
+        use figment::providers::Format;
+        let provider = figment::providers::Toml::string($config_str);
+        figment::Figment::from(provider)
+            .extract::<crate::config::Config>()
+            .unwrap()
+    }};
 }
 
 #[cfg(test)]
@@ -519,11 +578,45 @@ mod tests {
 
     #[test]
     fn should_parse_config_with_default_container_runtime() {
-        let config_str = "";
+        let config = config_from_str!("");
 
-        let config = from_str::<Config>(config_str).unwrap();
+        assert_eq!(config.runtime.r#type(), &Type::Docker);
+    }
 
-        let runtime = config.runtime_config();
-        assert_eq!(runtime, Runtime::Docker);
+    #[test]
+    fn should_convert_cli_to_config_via_figment() {
+        let args = CliArgs {
+            runtime_type: Some(Type::Kubernetes),
+            ..Default::default()
+        };
+
+        let config = figment::Figment::new()
+            .merge(args)
+            .extract::<Config>()
+            .unwrap();
+
+        assert_eq!(config.runtime_config(), &Type::Kubernetes);
+    }
+
+    #[test]
+    fn should_parse_registry_credentials() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.toml",
+                r#"
+                [registries.'docker.io']
+                username = "user"
+                password = "pass"
+                "#,
+            )?;
+
+            let config = Config::from_figment(&Default::default())?;
+
+            assert_eq!(
+                config.registry_credentials("docker.io"),
+                Some(("user", &SecUtf8::from_str("pass").unwrap()))
+            );
+            Ok(())
+        })
     }
 }
