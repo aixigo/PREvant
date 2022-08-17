@@ -63,17 +63,23 @@ pub async fn make_request(
 ) -> Response {
     let port = traefik.get_host_port_ipv4(80);
 
-    let client = ClientBuilder::new()
-        .connect_timeout(Duration::from_millis(2_000))
-        .build()
-        .expect("reqwest client should be buildable");
+    backoff::future::retry(
+        backoff::ExponentialBackoffBuilder::new()
+            .with_max_elapsed_time(Some(std::time::Duration::from_secs(60)))
+            .build(),
+        || async {
+            let client = ClientBuilder::new()
+                .connect_timeout(Duration::from_millis(2_000))
+                .build()?;
 
-    client
-        .get(&format!(
-            "http://localhost:{}/{}/{}/",
-            port, app_name, service_name
-        ))
-        .send()
-        .await
-        .expect("a response")
+            Ok(client
+                .get(&format!(
+                    "http://localhost:{port}/{app_name}/{service_name}/",
+                ))
+                .send()
+                .await?)
+        },
+    )
+    .await
+    .expect("a response")
 }

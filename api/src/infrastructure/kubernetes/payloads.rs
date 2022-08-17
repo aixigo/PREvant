@@ -32,31 +32,59 @@ use crate::models::service::Service;
 use crate::models::ServiceConfig;
 use base64::encode;
 use chrono::Utc;
+use k8s_openapi::api::apps::v1::DeploymentSpec;
+use k8s_openapi::api::core::v1::{
+    Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PodSpec, PodTemplateSpec,
+    ResourceRequirements, SecretVolumeSource, Volume, VolumeMount,
+};
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
     core::v1::Secret as V1Secret, core::v1::Service as V1Service,
 };
-use kube_derive::CustomResource;
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
+use k8s_openapi::ByteString;
+use kube::core::ObjectMeta;
+use kube::CustomResource;
 use multimap::MultiMap;
 use schemars::JsonSchema;
+use secstr::SecUtf8;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, PathBuf};
 use std::string::ToString;
 
-#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(CustomResource, Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[kube(
     group = "traefik.containo.us",
     version = "v1alpha1",
     kind = "IngressRoute",
-    apiextensions = "v1beta1",
     namespaced
 )]
 #[serde(rename_all = "camelCase")]
 pub struct IngressRouteSpec {
-    entry_points: Option<Vec<String>>,
-    routes: Option<Vec<Value>>,
+    routes: Option<Vec<TraefikRuleSpec>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct TraefikRuleSpec {
+    kind: String,
+    r#match: String,
+    services: Vec<TraefikRuleService>,
+    middlewares: Vec<TraefikRuleMiddleware>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct TraefikRuleService {
+    kind: String,
+    name: String,
+    port: u16,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+pub struct TraefikRuleMiddleware {
+    name: String,
 }
 
 #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -64,7 +92,6 @@ pub struct IngressRouteSpec {
     group = "traefik.containo.us",
     version = "v1alpha1",
     kind = "Middleware",
-    apiextensions = "v1beta1",
     namespaced
 )]
 #[serde(rename_all = "camelCase")]
@@ -112,34 +139,31 @@ pub fn deployment_payload(
     app_name: &str,
     strategy: &DeploymentStrategy,
     container_config: &ContainerConfig,
+    use_image_pull_secret: bool,
 ) -> V1Deployment {
-    let env = strategy.env().map_or(Vec::new(), |env| {
+    let env = strategy.env().map(|env| {
         env.iter()
-            .map(|env| {
-                serde_json::json!({
-                  "name": env.key(),
-                  "value": env.value().unsecure()
-                })
+            .map(|env| EnvVar {
+                name: env.key().to_string(),
+                value: Some(env.value().unsecure().to_string()),
+                ..Default::default()
             })
             .collect()
     });
 
     let annotations = if let Some(replicated_env) = strategy
         .env()
-        .map(super::super::replicated_environment_variable_to_json)
-        .flatten()
+        .and_then(super::super::replicated_environment_variable_to_json)
     {
-        serde_json::json!({
-          IMAGE_LABEL: strategy.image().to_string(),
-          REPLICATED_ENV_LABEL: replicated_env.to_string(),
-        })
+        BTreeMap::from([
+            (IMAGE_LABEL.to_string(), strategy.image().to_string()),
+            (REPLICATED_ENV_LABEL.to_string(), replicated_env.to_string()),
+        ])
     } else {
-        serde_json::json!({
-          IMAGE_LABEL: strategy.image().to_string(),
-        })
+        BTreeMap::from([(IMAGE_LABEL.to_string(), strategy.image().to_string())])
     };
 
-    let mounts = if let Some(volumes) = strategy.volumes() {
+    let volume_mounts = strategy.volumes().map(|volumes| {
         let parent_paths = volumes
             .iter()
             .filter_map(|(path, _)| path.parent())
@@ -147,105 +171,126 @@ pub fn deployment_payload(
 
         parent_paths
             .iter()
-            .map(|path| {
-                serde_json::json!({
-                    "name": secret_name_from_path!(path),
-                    "mountPath": path
-                })
+            .map(|path| VolumeMount {
+                name: secret_name_from_path!(path),
+                mount_path: path.to_string_lossy().to_string(),
+                ..Default::default()
             })
             .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    });
 
-    let volumes =
-        if let Some(volumes) = strategy.volumes() {
-            let volumes = volumes
-                .iter()
-                .filter_map(|(path, _)| path.parent().map(|parent| (parent, path)))
-                .collect::<MultiMap<_, _>>();
+    let volumes = strategy.volumes().map(|volumes| {
+        let volumes = volumes
+            .iter()
+            .filter_map(|(path, _)| path.parent().map(|parent| (parent, path)))
+            .collect::<MultiMap<_, _>>();
 
-            volumes
+        volumes
             .iter_all()
             .map(|(parent, paths)| {
-                let items = paths.iter()
-                    .map(|path| serde_json::json!({
-                        "key": secret_name_from_name!(path),
-                        "path": path.file_name().map_or("", |name| name.to_str().unwrap())
-                    }))
+                let items = paths
+                    .iter()
+                    .map(|path| KeyToPath {
+                        key: secret_name_from_name!(path),
+                        path: path
+                            .file_name()
+                            .map_or(String::new(), |name| name.to_string_lossy().to_string()),
+                        ..Default::default()
+                    })
                     .collect::<Vec<_>>();
 
-                serde_json::json!({
-                    "name": secret_name_from_path!(parent),
-                    "secret": {
-                        "secretName": format!("{}-{}-secret", app_name, strategy.service_name()),
-                        "items": items
-                    }
-                })
+                Volume {
+                    name: secret_name_from_path!(parent),
+                    secret: Some(SecretVolumeSource {
+                        secret_name: Some(format!(
+                            "{}-{}-secret",
+                            app_name,
+                            strategy.service_name()
+                        )),
+                        items: Some(items),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
             })
             .collect()
-        } else {
-            Vec::new()
-        };
+    });
 
     let resources = container_config
         .memory_limit()
-        .map(|mem_limit| serde_json::json!({ "limits": {"memory": format!("{}", mem_limit) }}))
-        .unwrap_or(serde_json::json!(null));
+        .map(|mem_limit| ResourceRequirements {
+            limits: Some(BTreeMap::from([(
+                String::from("memory"),
+                Quantity(format!("{mem_limit}")),
+            )])),
+            ..Default::default()
+        });
 
-    serde_json::from_value(serde_json::json!({
-      "apiVersion": "apps/v1",
-      "kind": "Deployment",
-      "metadata": {
-        "name": format!("{}-{}-deployment", app_name, strategy.service_name()),
-        "namespace": app_name,
-        "labels": {
-          APP_NAME_LABEL: app_name,
-          SERVICE_NAME_LABEL: strategy.service_name(),
-          CONTAINER_TYPE_LABEL: strategy.container_type().to_string(),
+    let labels = BTreeMap::from([
+        (APP_NAME_LABEL.to_string(), app_name.to_string()),
+        (
+            SERVICE_NAME_LABEL.to_string(),
+            strategy.service_name().to_string(),
+        ),
+        (
+            CONTAINER_TYPE_LABEL.to_string(),
+            strategy.container_type().to_string(),
+        ),
+    ]);
+
+    V1Deployment {
+        metadata: ObjectMeta {
+            name: Some(format!(
+                "{}-{}-deployment",
+                app_name,
+                strategy.service_name()
+            )),
+            namespace: Some(app_name.to_string()),
+            labels: Some(labels.clone()),
+            annotations: Some(annotations),
+            ..Default::default()
         },
-        "annotations": annotations,
-      },
-      "spec": {
-        "replicas": 1,
-        "selector": {
-          "matchLabels": {
-            APP_NAME_LABEL: app_name,
-            SERVICE_NAME_LABEL: strategy.service_name(),
-            CONTAINER_TYPE_LABEL: strategy.container_type().to_string()
-          }
-        },
-        "template": {
-          "metadata": {
-            "labels": {
-              APP_NAME_LABEL: app_name,
-              SERVICE_NAME_LABEL: strategy.service_name(),
-              CONTAINER_TYPE_LABEL: strategy.container_type().to_string()
+        spec: Some(DeploymentSpec {
+            replicas: Some(1),
+            selector: LabelSelector {
+                match_labels: Some(labels.clone()),
+                ..Default::default()
             },
-            "annotations": deployment_annotations(strategy)
-          },
-          "spec": {
-            "containers": [
-              {
-                "name": strategy.service_name(),
-                "image": strategy.image().to_string(),
-                "imagePullPolicy": "Always",
-                "env": Value::Array(env),
-                "volumeMounts": Value::Array(mounts),
-                "ports": [
-                  {
-                    "containerPort": strategy.port()
-                  }
-                ],
-                "resources": resources
-              }
-            ],
-            "volumes": volumes
-          }
-        }
-      }
-    }))
-    .expect("Cannot convert value to apps/v1/Deployment")
+            template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(labels),
+                    annotations: Some(deployment_annotations(strategy)),
+                    ..Default::default()
+                }),
+                spec: Some(PodSpec {
+                    containers: vec![Container {
+                        name: strategy.service_name().to_string(),
+                        image: Some(strategy.image().to_string()),
+                        image_pull_policy: Some(String::from("Always")),
+                        env,
+                        volume_mounts,
+                        ports: Some(vec![ContainerPort {
+                            container_port: strategy.port() as i32,
+                            ..Default::default()
+                        }]),
+                        resources,
+                        ..Default::default()
+                    }],
+                    volumes,
+                    image_pull_secrets: if use_image_pull_secret {
+                        Some(vec![LocalObjectReference {
+                            name: Some(format!("{app_name}-image-pull-secret")),
+                        }])
+                    } else {
+                        None
+                    },
+                    ..Default::default()
+                }),
+            },
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 /// Creates the value of an [annotations object](https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/)
@@ -254,17 +299,15 @@ pub fn deployment_payload(
 /// For example, this [popular workaround](https://stackoverflow.com/a/55221174/5088458) will be
 /// applied to ensure that a pod will be recreated everytime a deployment with
 /// [`DeploymentStrategy::RedeployAlways`] has been initiated.
-fn deployment_annotations(strategy: &DeploymentStrategy) -> serde_json::Value {
+fn deployment_annotations(strategy: &DeploymentStrategy) -> BTreeMap<String, String> {
     match strategy {
         DeploymentStrategy::RedeployOnImageUpdate(_, image_id) => {
-            serde_json::json!({ "imageHash": image_id })
+            BTreeMap::from([(String::from("imageHash"), image_id.clone())])
         }
-        DeploymentStrategy::RedeployNever(_) => {
-            serde_json::json!({})
+        DeploymentStrategy::RedeployNever(_) => BTreeMap::new(),
+        DeploymentStrategy::RedeployAlways(_) => {
+            BTreeMap::from([(String::from("date"), Utc::now().to_rfc3339())])
         }
-        DeploymentStrategy::RedeployAlways(_) => serde_json::json!({
-            "date": Utc::now().to_rfc3339()
-        }),
     }
 }
 
@@ -331,6 +374,47 @@ pub fn secrets_payload(
     .expect("Cannot convert value to core/v1/Secret")
 }
 
+pub fn image_pull_secret_payload(
+    app_name: &str,
+    registries_and_credentials: BTreeMap<String, (&str, &SecUtf8)>,
+) -> V1Secret {
+    use core::iter::FromIterator;
+    let data = ByteString(
+        serde_json::json!({
+            "auths":
+            serde_json::Map::from_iter(registries_and_credentials.into_iter().map(
+                |(registry, (username, password))| {
+                    (
+                        registry,
+                        serde_json::json!({
+                            "username": username.to_string(),
+                            "password": password.unsecure().to_string(),
+                        }),
+                    )
+                },
+            ))
+        })
+        .to_string()
+        .into_bytes(),
+    );
+
+    V1Secret {
+        metadata: ObjectMeta {
+            name: Some(format!("{app_name}-image-pull-secret")),
+            namespace: Some(app_name.to_string()),
+            labels: Some(BTreeMap::from([(
+                APP_NAME_LABEL.to_string(),
+                app_name.to_string(),
+            )])),
+            ..Default::default()
+        },
+        immutable: Some(true),
+        data: Some(BTreeMap::from([(String::from(".dockerconfigjson"), data)])),
+        type_: Some(String::from("kubernetes.io/dockerconfigjson")),
+        ..Default::default()
+    }
+}
+
 /// Creates a JSON payload suitable for [Kubernetes' Services](https://kubernetes.io/docs/concepts/services-networking/service/)
 pub fn service_payload(app_name: &String, service_config: &ServiceConfig) -> V1Service {
     serde_json::from_value(serde_json::json!({
@@ -366,40 +450,46 @@ pub fn service_payload(app_name: &String, service_config: &ServiceConfig) -> V1S
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
 pub fn ingress_route_payload(app_name: &String, service_config: &ServiceConfig) -> IngressRoute {
-    serde_json::from_value(serde_json::json!({
-      "apiVersion": "traefik.containo.us/v1alpha1",
-      "kind": "IngressRoute",
-      "metadata": {
-        "name": format!("{}-{}-ingress-route", app_name, service_config.service_name()),
-        "namespace": app_name,
-        APP_NAME_LABEL: app_name,
-        SERVICE_NAME_LABEL: service_config.service_name(),
-        CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
-      },
-      "spec": {
-        "entryPoints": [
-          "http"
-        ],
-        "routes": [
-          {
-            "match": service_config.traefik_rule(app_name),
-            "kind": "Rule",
-            "services": [
-              {
-                "name": service_config.service_name(),
-                "port": service_config.port()
-              }
-            ],
-            "middlewares": [
-              {
-                "name": format!("{}-{}-middleware", app_name, service_config.service_name())
-              }
-            ]
-          }
-        ]
-      }
-    }))
-    .expect("Cannot convert value to traefik.containo.us/v1alpha1/IngressRoute")
+    IngressRoute {
+        metadata: ObjectMeta {
+            name: Some(format!(
+                "{}-{}-ingress-route",
+                app_name,
+                service_config.service_name()
+            )),
+            namespace: Some(app_name.to_string()),
+            annotations: Some(BTreeMap::from([
+                (APP_NAME_LABEL.to_string(), app_name.to_string()),
+                (
+                    SERVICE_NAME_LABEL.to_string(),
+                    service_config.service_name().to_string(),
+                ),
+                (
+                    CONTAINER_TYPE_LABEL.to_string(),
+                    service_config.container_type().to_string(),
+                ),
+                (
+                    String::from("traefik.ingress.kubernetes.io/router.entrypoints"),
+                    String::from("web"),
+                ),
+            ])),
+            ..Default::default()
+        },
+        spec: IngressRouteSpec {
+            routes: Some(vec![TraefikRuleSpec {
+                kind: String::from("Rule"),
+                r#match: service_config.traefik_rule(app_name),
+                services: vec![TraefikRuleService {
+                    kind: String::from("Service"),
+                    name: service_config.service_name().to_string(),
+                    port: service_config.port(),
+                }],
+                middlewares: vec![TraefikRuleMiddleware {
+                    name: format!("{}-{}-middleware", app_name, service_config.service_name()),
+                }],
+            }]),
+        },
+    }
 }
 
 /// Creates a payload that ensures that Traefik strips out the path prefix.
@@ -430,7 +520,8 @@ mod tests {
     fn should_create_deployment_payload() {
         let config = sc!("db", "mariadb:10.3.17");
 
-        let payload = deployment_payload("master", &config.into(), &ContainerConfig::default());
+        let payload =
+            deployment_payload("master", &config.into(), &ContainerConfig::default(), false);
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -471,7 +562,6 @@ mod tests {
                   "spec": {
                     "containers": [
                       {
-                        "env": [],
                         "image": "docker.io/library/mariadb:10.3.17",
                         "imagePullPolicy": "Always",
                         "name": "db",
@@ -479,11 +569,9 @@ mod tests {
                           {
                             "containerPort": 80
                           }
-                        ],
-                        "volumeMounts": []
+                        ]
                       }
-                    ],
-                    "volumes": []
+                    ]
                   }
                 }
               }
@@ -499,7 +587,8 @@ mod tests {
             SecUtf8::from("example"),
         )])));
 
-        let payload = deployment_payload("master", &config.into(), &ContainerConfig::default());
+        let payload =
+            deployment_payload("master", &config.into(), &ContainerConfig::default(), false);
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -549,10 +638,8 @@ mod tests {
                             "containerPort": 80
                           }
                         ],
-                        "volumeMounts": []
                       }
                     ],
-                    "volumes": []
                   }
                 }
               }
@@ -570,7 +657,8 @@ mod tests {
             ),
         ])));
 
-        let payload = deployment_payload("master", &config.into(), &ContainerConfig::default());
+        let payload =
+            deployment_payload("master", &config.into(), &ContainerConfig::default(), false);
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -626,11 +714,9 @@ mod tests {
                           {
                             "containerPort": 80
                           }
-                        ],
-                        "volumeMounts": []
+                        ]
                       }
-                    ],
-                    "volumes": []
+                    ]
                   }
                 }
               }
@@ -656,7 +742,6 @@ mod tests {
                 "namespace": "master",
               },
               "spec": {
-                "entryPoints": [ "http" ],
                 "routes": [
                   {
                     "match": "PathPrefix(`/master/db/`)",

@@ -193,3 +193,18 @@ PREvant calls this function with the app name (see `appName`) and an array of se
 | `type`        | The type of the service, e.g. `instance`, `replica`, etc. (readonly).                                      |
 | `env`         | A map of key and value containing the environment variables that will be used when creating the container. |
 | `files`       | A map of key and value containing the files that will be mounted into the container.                       |
+
+## Registries
+
+Private registries require login information, therefore, PREvant offers authentication for secured registries. Add following block to your configuration file:
+
+```toml
+[registries.'docker.io']
+username = "user"
+password = "pass"
+
+[registries.'registry.gitlab.com']
+username = "oauth2"
+password = "your-private-token"
+```
+

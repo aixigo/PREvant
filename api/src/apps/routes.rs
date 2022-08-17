@@ -398,7 +398,8 @@ impl<'r> FromRequest<'r> for RunOptions {
 
             if let Some(wait_capture) = RE.captures(header) {
                 wait = Some(Duration::from_secs(
-                    dbg!(wait_capture.get(1))
+                    wait_capture
+                        .get(1)
                         .unwrap()
                         .as_str()
                         .parse::<u64>()

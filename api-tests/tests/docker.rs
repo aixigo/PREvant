@@ -1,6 +1,8 @@
 mod common;
 mod container;
 
+use testcontainers::RunnableImage;
+
 use crate::common::{docker, Service};
 use crate::container::{
     delete_app, deploy_app, logs, make_request, replicate_app, PREvant, Traefik,
@@ -10,7 +12,13 @@ use std::time::Duration;
 #[tokio::test]
 async fn should_deploy_nginx() {
     let docker = docker();
-    let traefik = docker.run(Traefik::default());
+
+    let traefik = docker.run(
+        RunnableImage::from(Traefik::default())
+            // Workaround for:
+            // https://github.com/testcontainers/testcontainers-rs/issues/392
+            .with_mapped_port((9789, 80)),
+    );
     let prevant = docker.run(PREvant::default());
 
     let app_name = deploy_app(
@@ -44,7 +52,12 @@ async fn should_deploy_nginx() {
 #[tokio::test]
 async fn should_replicate_mariadb_with_replicated_env() {
     let docker = docker();
-    let _traefik = docker.run(Traefik::default());
+    let _traefik = docker.run(
+        RunnableImage::from(Traefik::default())
+            // Workaround for:
+            // https://github.com/testcontainers/testcontainers-rs/issues/392
+            .with_mapped_port((9789, 80)),
+    );
     let prevant = docker.run(PREvant::default());
 
     let db_service = Service::new(String::from("db"), String::from("mariadb:10.3.17"))

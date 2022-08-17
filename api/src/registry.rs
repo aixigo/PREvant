@@ -24,9 +24,11 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::config::Config;
 use crate::models::Image;
 use dkregistry::errors::Error as DKRegistryError;
 use dkregistry::v2::manifest::Manifest;
+use dkregistry::v2::Client;
 use futures::future::join_all;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -34,11 +36,13 @@ use std::convert::From;
 use std::io::Error as IOError;
 use std::str::FromStr;
 
-pub struct ImagesService {}
+pub struct ImagesService<'a> {
+    config: &'a Config,
+}
 
-impl ImagesService {
-    pub fn new() -> ImagesService {
-        ImagesService {}
+impl<'a> ImagesService<'a> {
+    pub fn new<'b: 'a>(config: &'b Config) -> Self {
+        Self { config }
     }
 
     /// Inspects all remote images through the docker registry and resolves the exposed ports of
@@ -50,7 +54,7 @@ impl ImagesService {
         let futures = images
             .iter()
             .filter_map(|image| match image {
-                Image::Named { .. } => Some(ImagesService::resolve_image_info(image)),
+                Image::Named { .. } => Some(ImagesService::resolve_image_info(self.config, image)),
                 Image::Digest { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -61,30 +65,37 @@ impl ImagesService {
             .filter_map(|result| match result {
                 Ok((image, Some(image_info))) => Some((Image::clone(image), image_info)),
                 Ok(_) => None,
-                Err(err) => {
-                    warn!("Cannot resolve manifest of image: {}", err);
+                Err((image, err)) => {
+                    warn!("Cannot resolve manifest of image {image}: {err}");
                     None
                 }
             })
             .collect::<HashMap<Image, ImageInfo>>())
     }
 
-    async fn resolve_image_info(
-        image: &Image,
-    ) -> Result<(&Image, Option<ImageInfo>), ImagesServiceError> {
+    async fn resolve_image_info<'i>(
+        config: &Config,
+        image: &'i Image,
+    ) -> Result<(&'i Image, Option<ImageInfo>), (&'i Image, ImagesServiceError)> {
         debug!("Resolve image manifest for {:?}", image);
 
-        let client = dkregistry::v2::Client::configure()
-            .registry(&image.registry().unwrap())
-            .build()?;
+        let client = Self::create_client(config, image)
+            .await
+            .map_err(|err| (image, err))?;
 
         let (image_name, tag) = (image.name().unwrap(), image.tag().unwrap());
 
-        let manifest = client.get_manifest(&image_name, &tag).await?;
+        let manifest = client
+            .get_manifest(&image_name, &tag)
+            .await
+            .map_err(|err| (image, err.into()))?;
         let blob = match manifest {
             Manifest::S2(schema) => {
                 let digest = schema.manifest_spec.config().digest.to_string();
-                let raw_blob = client.get_blob(&image_name, &digest).await?;
+                let raw_blob = client
+                    .get_blob(&image_name, &digest)
+                    .await
+                    .map_err(|err| (image, err.into()))?;
                 match serde_json::from_str::<ImageBlob>(&String::from_utf8(raw_blob).unwrap()) {
                     Ok(blob) => Some(ImageInfo {
                         blob: Some(blob),
@@ -103,6 +114,30 @@ impl ImagesService {
         };
 
         Ok((image, blob))
+    }
+
+    async fn create_client(config: &Config, image: &Image) -> Result<Client, ImagesServiceError> {
+        let registry = image.registry().unwrap();
+        let name = image.name().unwrap();
+        let dk_config = dkregistry::v2::Client::configure().registry(&registry);
+
+        match config.registry_credentials(&registry) {
+            Some((username, password)) => {
+                let client = dk_config
+                    .username(Some(String::from(username)))
+                    .password(Some(password.unsecure().to_string()))
+                    .build()?;
+
+                debug!("Login to registry: {registry}");
+                let client = client
+                    .authenticate(&[&format!("repository:{name}:pull")])
+                    .await?;
+                debug!("Logged in to registry: {registry}");
+
+                Ok(client)
+            }
+            None => Ok(dk_config.build()?),
+        }
     }
 }
 
