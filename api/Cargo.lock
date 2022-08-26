@@ -647,6 +647,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790b4292c72618abbab50f787a477014fe15634f96291de45672ce46afe122df"
 dependencies = [
  "atomic",
+ "pear",
+ "serde",
+ "toml",
+ "uncased",
+ "version_check",
+]
+
+[[package]]
+name = "figment"
+version = "0.10.6"
+source = "git+https://github.com/schrieveslaach/Figment.git?branch=dot-in-map-keys#1ad73689f206f8e58849cfe815dcdad5aa64384c"
+dependencies = [
+ "atomic",
  "parking_lot 0.11.2",
  "pear",
  "serde",
@@ -2032,7 +2045,7 @@ dependencies = [
  "env_logger",
  "evmap",
  "failure",
- "figment",
+ "figment 0.10.6 (git+https://github.com/schrieveslaach/Figment.git?branch=dot-in-map-keys)",
  "futures 0.3.23",
  "goji",
  "handlebars",
@@ -2332,7 +2345,7 @@ dependencies = [
  "binascii",
  "bytes 1.2.1",
  "either",
- "figment",
+ "figment 0.10.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures 0.3.23",
  "indexmap",
  "log",
