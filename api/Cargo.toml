@@ -16,6 +16,7 @@ clap = { version = "3.2", features = ["derive", "cargo"] }
 env_logger = "0.9"
 evmap = "10.0"
 failure = "0.1"
+figment = { version = "0.10", features = ["env", "toml"] }
 futures = { version = "0.3", features = ["compat"] }
 handlebars = "2"
 http-api-problem = "0.51"
@@ -50,11 +51,6 @@ rev = "5916526332951a144b6f6fd7c94d02ea56fdad31"
 git = "https://github.com/camallo/dkregistry-rs.git"
 rev = "37acecb4b8139dd1b1cc83795442f94f90e1ffc5"
 
-[dependencies.figment]
-git = "https://github.com/schrieveslaach/Figment.git"
-branch = "dot-in-map-keys"
-features = ["env", "toml"]
-
 [dependencies.shiplift]
 git = "https://github.com/softprops/shiplift.git"
 rev = "3a7c1dc3ae388b6a9f0a8f724fabff30953bcc5b"
@@ -63,11 +59,7 @@ features = ["unix-socket", "chrono"]
 
 [dev-dependencies]
 assert-json-diff = "2.0"
+figment = { version = "0.10", features = ["test"] }
 sha2 = "0.9"
 tempfile = "3.2"
-
-[dev-dependencies.figment]
-git = "https://github.com/schrieveslaach/Figment.git"
-branch = "dot-in-map-keys"
-features = ["test"]
 
