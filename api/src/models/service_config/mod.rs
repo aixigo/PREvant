@@ -156,13 +156,6 @@ impl ServiceConfig {
         }
     }
 
-    pub fn traefik_rule(&self, app_name: &String) -> String {
-        match &self.router {
-            None => format!("PathPrefix(`/{}/{}/`)", app_name, &self.service_name),
-            Some(router) => router.rule.clone(),
-        }
-    }
-
     pub fn set_middlewares(&mut self, middlewares: BTreeMap<String, Value>) {
         self.middlewares = Some(middlewares);
     }
@@ -171,27 +164,6 @@ impl ServiceConfig {
         match &self.middlewares {
             None => None,
             Some(middlewares) => Some(middlewares),
-        }
-    }
-
-    pub fn traefik_middlewares<'a, 'b: 'a>(&'b self, app_name: &String) -> BTreeMap<String, Value> {
-        match &self.middlewares {
-            None => {
-                let mut prefixes = BTreeMap::new();
-                prefixes.insert(
-                    Value::String("prefixes".to_string()),
-                    Value::Seq(vec![Value::String(format!(
-                        "/{}/{}/",
-                        app_name, self.service_name
-                    ))]),
-                );
-
-                let mut middlewares = BTreeMap::new();
-                middlewares.insert("stripPrefix".to_string(), Value::Map(prefixes));
-
-                middlewares
-            }
-            Some(middlewares) => middlewares.clone(),
         }
     }
 
@@ -232,16 +204,13 @@ pub struct Router {
 }
 
 impl Router {
+    #[cfg(test)]
     pub fn new(rule: String, priority: Option<i32>) -> Self {
         Router { rule, priority }
     }
 
     pub fn rule(&self) -> &String {
         &self.rule
-    }
-
-    pub fn priority(&self) -> &Option<i32> {
-        &self.priority
     }
 
     pub fn with_rule(&self, rule: String) -> Self {

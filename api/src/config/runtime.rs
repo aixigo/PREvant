@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 /*-
  * ========================LICENSE_START=================================
  * PREvant REST API
@@ -23,49 +25,109 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use std::{fmt::Display, str::FromStr};
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
-pub struct Runtime {
-    #[serde(rename = "type")]
-    r#type: Type,
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum Runtime {
+    Docker,
+    Kubernetes(KubernetesRuntimeConfig),
 }
 
-impl Runtime {
-    pub fn r#type(&self) -> &Type {
-        &self.r#type
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::Docker
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesRuntimeConfig {
+    #[serde(default)]
+    downward_api: KubernetesDownwardApiConfig,
+}
+
+impl KubernetesRuntimeConfig {
+    pub fn downward_api(&self) -> &KubernetesDownwardApiConfig {
+        &self.downward_api
     }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
-pub enum Type {
-    Docker,
-    Kubernetes,
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesDownwardApiConfig {
+    labels_path: PathBuf,
 }
 
-impl Default for Type {
+impl KubernetesDownwardApiConfig {
+    pub fn labels_path(&self) -> &PathBuf {
+        &self.labels_path
+    }
+}
+
+impl Default for KubernetesDownwardApiConfig {
     fn default() -> Self {
-        Type::Docker
-    }
-}
-
-impl FromStr for Type {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Docker" => Ok(Self::Docker),
-            "Kubernetes" => Ok(Self::Kubernetes),
-            _ => Err("Unknown type"),
+        Self {
+            labels_path: PathBuf::from("/run/podinfo/labels"),
         }
     }
 }
 
-impl Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Docker => write!(f, "Docker"),
-            Self::Kubernetes => write!(f, "Kubernetes"),
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_from_minimal_config_as_docker_runtime() {
+        let runtime_toml = r#"
+        type = 'Docker'
+        "#;
+
+        let runtime = toml::de::from_str::<Runtime>(runtime_toml).unwrap();
+
+        assert_eq!(runtime, Runtime::Docker);
+    }
+
+    #[test]
+    fn parse_form_minimal_config_as_kubernetes_runtime() {
+        let runtime_toml = r#"
+        type = 'Kubernetes'
+        "#;
+
+        let runtime = toml::de::from_str::<Runtime>(runtime_toml).unwrap();
+
+        assert_eq!(runtime, Runtime::Kubernetes(Default::default()));
+    }
+
+    #[test]
+    fn parse_as_kubernetes_runtime_with_label_downward_path() {
+        let runtime_toml = r#"
+        type = 'Kubernetes'
+        [downwardApi]
+        labelsPath = '/some/path'
+        "#;
+
+        let runtime = toml::de::from_str::<Runtime>(runtime_toml).unwrap();
+
+        assert_eq!(
+            runtime,
+            Runtime::Kubernetes(KubernetesRuntimeConfig {
+                downward_api: KubernetesDownwardApiConfig {
+                    labels_path: PathBuf::from("/some/path")
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn provide_default_labels_path() {
+        let runtime_toml = r#"
+        type = 'Kubernetes'
+        "#;
+
+        let Runtime::Kubernetes(config) = toml::de::from_str::<Runtime>(runtime_toml).unwrap() else { panic!("Need a K8s config") };
+
+        assert_eq!(
+            config.downward_api.labels_path(),
+            &PathBuf::from("/run/podinfo/labels")
+        )
     }
 }

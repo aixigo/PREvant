@@ -27,7 +27,7 @@
 pub use self::companion::DeploymentStrategy;
 use self::companion::{Companion, CompanionType};
 pub use self::container::ContainerConfig;
-pub use self::runtime::{Runtime, Type};
+pub use self::runtime::Runtime;
 use crate::models::ServiceConfig;
 pub(self) use app_selector::AppSelector;
 use clap::Parser;
@@ -38,6 +38,7 @@ pub(self) use secret::Secret;
 use secstr::SecUtf8;
 use std::collections::BTreeMap;
 use std::convert::From;
+use std::fmt::Display;
 use std::io::Error as IOError;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -58,7 +59,33 @@ pub struct CliArgs {
 
     /// Sets the container backend type, e.g. Docker or Kubernetes
     #[clap(short, long)]
-    runtime_type: Option<Type>,
+    runtime_type: Option<RuntimeTypeCliFlag>,
+}
+
+enum RuntimeTypeCliFlag {
+    Docker,
+    Kubernetes,
+}
+
+impl FromStr for RuntimeTypeCliFlag {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Docker" => Ok(Self::Docker),
+            "Kubernetes" => Ok(Self::Kubernetes),
+            _ => Err("Unknown type"),
+        }
+    }
+}
+
+impl Display for RuntimeTypeCliFlag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            RuntimeTypeCliFlag::Docker => write!(f, "Docker"),
+            RuntimeTypeCliFlag::Kubernetes => write!(f, "Kubernetes"),
+        }
+    }
 }
 
 impl figment::Provider for CliArgs {
@@ -130,8 +157,8 @@ impl Config {
             .extract::<Config>()
     }
 
-    pub fn runtime_config(&self) -> &Type {
-        self.runtime.r#type()
+    pub fn runtime_config(&self) -> &Runtime {
+        &self.runtime
     }
 
     pub fn container_config(&self) -> ContainerConfig {
@@ -572,22 +599,22 @@ mod tests {
     fn should_parse_config_with_default_container_runtime() {
         let config = config_from_str!("");
 
-        assert_eq!(config.runtime.r#type(), &Type::Docker);
+        assert_eq!(config.runtime_config(), &Runtime::Docker);
     }
 
     #[test]
     fn should_convert_cli_to_config_via_figment() {
-        let args = CliArgs {
-            runtime_type: Some(Type::Kubernetes),
-            ..Default::default()
-        };
+        let args = CliArgs::parse_from(["", "--runtime-type", "Kubernetes"]);
 
         let config = figment::Figment::new()
             .merge(args)
             .extract::<Config>()
             .unwrap();
 
-        assert_eq!(config.runtime_config(), &Type::Kubernetes);
+        assert_eq!(
+            config.runtime_config(),
+            &Runtime::Kubernetes(Default::default())
+        );
     }
 
     #[test]

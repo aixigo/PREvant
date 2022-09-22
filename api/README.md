@@ -2,7 +2,22 @@ The image `aixigo/prevant` provides the REST-API in order to deploy containers a
 
 # Configuration
 
-In order to configure PREvant create a [TOML](https://github.com/toml-lang/toml) file that is mounted to the container's path `/app/config.toml`.
+In order to configure PREvant create a [TOML](https://github.com/toml-lang/toml) file that is mounted to the container's path `/app/config.toml` (path can be changed by the CLI option `--config`). Additionally, PREvant utilizes [figment][1] to read configuration options from file, environment variable, and from some CLI options.
+
+## Runtime Configuration
+
+### Kubernetes
+
+```toml
+[runtime]
+type = 'Kubernetes'
+
+[runtime.downwardApi]
+# Path to the file that contains the labels that have been assigned to the PREvant deployemnt itself.
+# This information is crucial if you run PREvant behind a Traefik instance that enforces the user ot be
+# logged in.
+labelsPath = '/run/podinfo/labels'
+```
 
 ## Container Options
 
@@ -49,7 +64,7 @@ data = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS…FUlRJRklDQVRFLS0tLS0K"
 # mounted for this service. Default is ".+" (any app)
 appSelector = "master"
 # An optional path that points to the secret's parent directory.
-# Default is "/run/secrets" 
+# Default is "/run/secrets"
 path = "/run/secrets"
 
 [[services.nginx.secrets]]
@@ -180,7 +195,7 @@ function deploymentHook(appName, serviceConfigs) {
 }
 ```
 
-Note: the templating has been already applied and the hook has only access to the final value and it cannot modify the original values. 
+Note: the templating has been already applied and the hook has only access to the final value and it cannot modify the original values.
 
 Note: the hook's Javascript engine is based on [Boa](https://github.com/boa-dev/boa) and this engine does not implement all ECMAScript features yet.
 
@@ -208,3 +223,16 @@ username = "oauth2"
 password = "your-private-token"
 ```
 
+## Configure With Environment Variables
+
+As stated above, PREvant utilizes [figment][1] to resolve configuration values from file, environment variables, and CLI options. The following examples provide a reference how to use environment variables to configure PREvant:
+
+```bash
+# Configure downwardApi label path
+export PREVANT_RUNTIME='{downwardApi={labelsPath="/random"}}'
+
+# Use GitLab token to pull images from a private registry
+export PREVANT_REGISTRIES='{"registry.gitlab.com"={username="oauth2",password="your-private-token"}}'
+```
+
+[1]: https://docs.rs/figment/latest/figment/#overview

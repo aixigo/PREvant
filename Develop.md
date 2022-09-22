@@ -4,6 +4,8 @@ This file provides some hints and examples how to develop PREvant.
 
 You can build PREvant's backend API with [`cargo`](https://doc.rust-lang.org/cargo/) in the sub directory `/api`. For example, `cargo run` build and starts the backend so that it will be available at `http://localhost:8000`. 
 
+When you than interact with the REST API to deploy service, it is worthwhile to have a look into the [Traefik dashboard](https://doc.traefik.io/traefik/operations/dashboard/#the-dashboard) to double check if PREvant exposes the services as expected.
+
 If you want to use PREvant's frontend during development, head over to the [Frontend Development section](#fe-dev).
 
 Without any CLI options, PREvant will use the Docker API. If you want to develop with against Kubernetes, have a look into the [Kubernetes section](#k8s-dev).
@@ -27,9 +29,17 @@ For developing against a local Kubernetes cluster you can use [k3d](https://k3d.
 3. Deploy some containers and observe the result [here](http://localhost/master/whoami/):
 
    ```bash
-   curl -X POST -d '[{"serviceName": "whoami", "image": "quay.io/truecharts/whoami"}]' \
+   # PREvant can't handle multi arch images, yet (see https://github.com/aixigo/PREvant/issues/125)
+   # Therefore, the example uses 1.8.1 which hasn't multi arch versions
+   curl -X POST -d '[{"serviceName": "whoami", "image": "quay.io/truecharts/whoami:1.8.1"}]' \
       -H "Content-type: application/json" \
       http://localhost:8000/api/apps/master
+   ```
+
+4. Check Traefik's dashboard by exposing the port (see command below and detail [here](https://stackoverflow.com/q/68565048/5088458)) and visit [`http://localhost:9000/dashboard`](http://localhost:9000/dashboard).
+
+   ```bash
+   kubectl -n kube-system port-forward $(kubectl -n kube-system get pods --selector "app.kubernetes.io/name=traefik" --output name) 9000:9000
    ```
 
 # <a name="fe-dev"></a>Frontend Development

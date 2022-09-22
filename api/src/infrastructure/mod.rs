@@ -28,15 +28,17 @@ use crate::models::Environment;
 pub use docker::DockerInfrastructure as Docker;
 #[cfg(test)]
 pub use dummy_infrastructure::DummyInfrastructure as Dummy;
-pub use infrastructure::{DeploymentStrategy, Infrastructure};
+pub use infrastructure::Infrastructure;
 pub use kubernetes::KubernetesInfrastructure as Kubernetes;
 use serde_json::{map::Map, Value};
+pub use traefik::{TraefikIngressRoute, TraefikRouterRule};
 
 mod docker;
 #[cfg(test)]
 mod dummy_infrastructure;
 mod infrastructure;
 mod kubernetes;
+mod traefik;
 
 static APP_NAME_LABEL: &str = "com.aixigo.preview.servant.app-name";
 static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";

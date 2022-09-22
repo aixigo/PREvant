@@ -8,11 +8,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
-        
-      - name: Install latest nightly
+
+      - name: Install latest stable
         uses: actions-rs/toolchain@v1
         with:
-            toolchain: nightly
+            toolchain: stable
             override: true
 
       - name: Run cargo test
@@ -30,10 +30,10 @@ jobs:
       - name: Build Docker Image
         run: docker build --pull -t aixigo/prevant .
 
-      - name: Install latest nightly
+      - name: Install latest stable
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
           override: true
 
       - name: Run cargo test

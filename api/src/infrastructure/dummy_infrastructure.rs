@@ -25,8 +25,9 @@
  */
 
 use crate::config::ContainerConfig;
+use crate::deployment::deployment_unit::DeployableService;
 use crate::deployment::DeploymentUnit;
-use crate::infrastructure::{DeploymentStrategy, Infrastructure};
+use crate::infrastructure::Infrastructure;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::{ServiceBuilder, ServiceConfig};
 use async_trait::async_trait;
@@ -36,26 +37,48 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use super::TraefikIngressRoute;
+
 #[cfg(test)]
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
-    services: Mutex<MultiMap<String, DeploymentStrategy>>,
+    services: Mutex<MultiMap<String, DeployableService>>,
+    base_ingress_route: Option<TraefikIngressRoute>,
 }
 
 #[cfg(test)]
 impl DummyInfrastructure {
     pub fn new() -> Self {
-        DummyInfrastructure {
+        Self {
             delay: None,
             services: Mutex::new(MultiMap::new()),
+            base_ingress_route: None,
         }
     }
 
     pub fn with_delay(delay: Duration) -> Self {
-        DummyInfrastructure {
+        Self {
             delay: Some(delay),
             services: Mutex::new(MultiMap::new()),
+            base_ingress_route: None,
         }
+    }
+
+    pub fn with_base_route(base_ingress_route: TraefikIngressRoute) -> Self {
+        Self {
+            delay: None,
+            services: Mutex::new(MultiMap::new()),
+            base_ingress_route: Some(base_ingress_route),
+        }
+    }
+
+    pub fn services(&self) -> Vec<DeployableService> {
+        self.services
+            .lock()
+            .unwrap()
+            .iter_all()
+            .flat_map(|(_, v)| v.iter().cloned())
+            .collect::<Vec<_>>()
     }
 }
 
@@ -107,9 +130,9 @@ impl Infrastructure for DummyInfrastructure {
 
         let mut services = self.services.lock().unwrap();
         let app_name = deployment_unit.app_name().to_string();
-        let strategies = deployment_unit.strategies();
+        let deployable_services = deployment_unit.services();
         if let Some(running_services) = services.get_vec_mut(&app_name) {
-            let service_names = strategies
+            let service_names = deployable_services
                 .iter()
                 .map(|c| c.service_name())
                 .collect::<HashSet<&String>>();
@@ -117,7 +140,7 @@ impl Infrastructure for DummyInfrastructure {
             running_services.retain(|config| !service_names.contains(config.service_name()));
         }
 
-        for config in strategies {
+        for config in deployable_services {
             info!("started {} for {}.", config.service_name(), app_name);
             services.insert(app_name.clone(), config.clone());
         }
@@ -183,5 +206,15 @@ impl Infrastructure for DummyInfrastructure {
         _status: ServiceStatus,
     ) -> Result<Option<Service>, failure::Error> {
         Ok(None)
+    }
+
+    async fn base_traefik_ingress_route(
+        &self,
+    ) -> Result<Option<TraefikIngressRoute>, failure::Error> {
+        Ok(self.base_ingress_route.clone())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
