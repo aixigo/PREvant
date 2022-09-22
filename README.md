@@ -1,5 +1,5 @@
 ![](https://github.com/aixigo/PREvant/workflows/Build%20and%20test%20API/badge.svg)
-[![Docker Image](https://images.microbadger.com/badges/image/aixigo/prevant.svg)](https://microbadger.com/images/aixigo/prevant)
+[![Docker Image](https://img.shields.io/docker/pulls/aixigo/prevant?color=yellow&label=Docker%20Image)](https://hub.docker.com/r/aixigo/prevant)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 # PREvant In a Nutshell

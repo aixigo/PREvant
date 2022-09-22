@@ -1,68 +1,8 @@
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: traefik
-  namespace: default
-spec:
-  ports:
-    - protocol: TCP
-      name: web
-      port: 80
-    - protocol: TCP
-      name: admin
-      port: 8080
-  selector:
-    app: traefik
----
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   namespace: default
-  name: prevant-ingress-controller
----
-kind: Deployment
-apiVersion: apps/v1
-metadata:
-  namespace: default
-  name: traefik
-  labels:
-    app: traefik
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: traefik
-  template:
-    metadata:
-      labels:
-        app: traefik
-    spec:
-      serviceAccountName: prevant-ingress-controller
-      containers:
-        - name: traefik
-          image: traefik:v2.0
-          args:
-            - --api.insecure
-            - --accesslog
-            - --providers.kubernetescrd
-          ports:
-            - name: web
-              containerPort: 80
-            - name: admin
-              containerPort: 8080
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: prevant-config
-  namespace: default
-type: Opaque
-stringData:
-  config.toml: |-
-    [runtime]
-    type = 'Kubernetes'
+  name: prevant
 ---
 apiVersion: v1
 kind: Service
@@ -94,26 +34,18 @@ spec:
       labels:
         app: prevant
     spec:
-      serviceAccountName: prevant-ingress-controller
+      serviceAccountName: prevant
       containers:
         - name: prevant
           image: aixigo/prevant
           command:
             - /app/prevant
           args:
-            - --config
-            - /config/config.toml
+            - --runtime-type
+            - Kubernetes
           ports:
             - name: web
               containerPort: 80
-          volumeMounts:
-            - name: config
-              mountPath: "/config"
-              readOnly: true
-      volumes:
-        - name: config
-          secret:
-            secretName: prevant-config
 ---
 apiVersion: traefik.containo.us/v1alpha1
 kind: IngressRoute
