@@ -27,7 +27,9 @@ use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
 };
 use crate::config::ContainerConfig;
-use crate::infrastructure::DeploymentStrategy;
+use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
+use crate::infrastructure::traefik::TraefikMiddleware;
+use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
 use crate::models::service::Service;
 use crate::models::ServiceConfig;
 use base64::encode;
@@ -52,6 +54,7 @@ use secstr::SecUtf8;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
+use std::convert::TryFrom;
 use std::path::{Component, PathBuf};
 use std::string::ToString;
 
@@ -64,27 +67,35 @@ use std::string::ToString;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct IngressRouteSpec {
-    routes: Option<Vec<TraefikRuleSpec>>,
+    pub entrypoints: Option<Vec<String>>,
+    pub routes: Option<Vec<TraefikRuleSpec>>,
+    pub tls: Option<TraefikTls>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TraefikRuleSpec {
-    kind: String,
-    r#match: String,
-    services: Vec<TraefikRuleService>,
-    middlewares: Vec<TraefikRuleMiddleware>,
+    pub kind: String,
+    pub r#match: String,
+    pub services: Vec<TraefikRuleService>,
+    pub middlewares: Option<Vec<TraefikRuleMiddleware>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TraefikRuleService {
-    kind: String,
-    name: String,
-    port: u16,
+    pub kind: Option<String>,
+    pub name: String,
+    pub port: Option<u16>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TraefikRuleMiddleware {
     name: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TraefikTls {
+    cert_resolver: Option<String>,
 }
 
 #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -95,7 +106,7 @@ pub struct TraefikRuleMiddleware {
     namespaced
 )]
 #[serde(rename_all = "camelCase")]
-pub struct MiddlewareSpec(BTreeMap<String, Value>);
+pub struct MiddlewareSpec(Value);
 
 macro_rules! secret_name_from_path {
     ($path:expr) => {{
@@ -122,6 +133,29 @@ macro_rules! secret_name_from_name {
     }};
 }
 
+impl TryFrom<IngressRoute> for TraefikIngressRoute {
+    type Error = &'static str;
+
+    fn try_from(value: IngressRoute) -> Result<Self, Self::Error> {
+        use std::str::FromStr;
+
+        let k8s_route = value.spec.routes.unwrap().into_iter().next().unwrap();
+        let rule = TraefikRouterRule::from_str(&k8s_route.r#match).unwrap();
+
+        Ok(TraefikIngressRoute::with_existing_routing_rules(
+            value.spec.entrypoints.unwrap_or_default(),
+            rule,
+            k8s_route
+                .middlewares
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| m.name)
+                .collect(),
+            value.spec.tls.unwrap_or_default().cert_resolver,
+        ))
+    }
+}
+
 /// Creates a JSON payload suitable for [Kubernetes' Namespaces](https://kubernetes.io/docs/tasks/administer-cluster/namespaces/)
 pub fn namespace_payload(app_name: &String) -> V1Namespace {
     serde_json::from_value(serde_json::json!({
@@ -137,11 +171,11 @@ pub fn namespace_payload(app_name: &String) -> V1Namespace {
 /// Creates a JSON payload suitable for [Kubernetes' Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 pub fn deployment_payload(
     app_name: &str,
-    strategy: &DeploymentStrategy,
+    service: &DeployableService,
     container_config: &ContainerConfig,
     use_image_pull_secret: bool,
 ) -> V1Deployment {
-    let env = strategy.env().map(|env| {
+    let env = service.env().map(|env| {
         env.iter()
             .map(|env| EnvVar {
                 name: env.key().to_string(),
@@ -151,19 +185,19 @@ pub fn deployment_payload(
             .collect()
     });
 
-    let annotations = if let Some(replicated_env) = strategy
+    let annotations = if let Some(replicated_env) = service
         .env()
         .and_then(super::super::replicated_environment_variable_to_json)
     {
         BTreeMap::from([
-            (IMAGE_LABEL.to_string(), strategy.image().to_string()),
+            (IMAGE_LABEL.to_string(), service.image().to_string()),
             (REPLICATED_ENV_LABEL.to_string(), replicated_env.to_string()),
         ])
     } else {
-        BTreeMap::from([(IMAGE_LABEL.to_string(), strategy.image().to_string())])
+        BTreeMap::from([(IMAGE_LABEL.to_string(), service.image().to_string())])
     };
 
-    let volume_mounts = strategy.files().map(|files| {
+    let volume_mounts = service.files().map(|files| {
         let parent_paths = files
             .iter()
             .filter_map(|(path, _)| path.parent())
@@ -179,7 +213,7 @@ pub fn deployment_payload(
             .collect::<Vec<_>>()
     });
 
-    let volumes = strategy.files().map(|files| {
+    let volumes = service.files().map(|files| {
         let files = files
             .iter()
             .filter_map(|(path, _)| path.parent().map(|parent| (parent, path)))
@@ -205,7 +239,7 @@ pub fn deployment_payload(
                         secret_name: Some(format!(
                             "{}-{}-secret",
                             app_name,
-                            strategy.service_name()
+                            service.service_name()
                         )),
                         items: Some(items),
                         ..Default::default()
@@ -230,11 +264,11 @@ pub fn deployment_payload(
         (APP_NAME_LABEL.to_string(), app_name.to_string()),
         (
             SERVICE_NAME_LABEL.to_string(),
-            strategy.service_name().to_string(),
+            service.service_name().to_string(),
         ),
         (
             CONTAINER_TYPE_LABEL.to_string(),
-            strategy.container_type().to_string(),
+            service.container_type().to_string(),
         ),
     ]);
 
@@ -243,7 +277,7 @@ pub fn deployment_payload(
             name: Some(format!(
                 "{}-{}-deployment",
                 app_name,
-                strategy.service_name()
+                service.service_name()
             )),
             namespace: Some(app_name.to_string()),
             labels: Some(labels.clone()),
@@ -259,18 +293,18 @@ pub fn deployment_payload(
             template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
                     labels: Some(labels),
-                    annotations: Some(deployment_annotations(strategy)),
+                    annotations: Some(deployment_annotations(service)),
                     ..Default::default()
                 }),
                 spec: Some(PodSpec {
                     containers: vec![Container {
-                        name: strategy.service_name().to_string(),
-                        image: Some(strategy.image().to_string()),
+                        name: service.service_name().to_string(),
+                        image: Some(service.image().to_string()),
                         image_pull_policy: Some(String::from("Always")),
                         env,
                         volume_mounts,
                         ports: Some(vec![ContainerPort {
-                            container_port: strategy.port() as i32,
+                            container_port: service.port() as i32,
                             ..Default::default()
                         }]),
                         resources,
@@ -299,13 +333,13 @@ pub fn deployment_payload(
 /// For example, this [popular workaround](https://stackoverflow.com/a/55221174/5088458) will be
 /// applied to ensure that a pod will be recreated everytime a deployment with
 /// [`DeploymentStrategy::RedeployAlways`] has been initiated.
-fn deployment_annotations(strategy: &DeploymentStrategy) -> BTreeMap<String, String> {
-    match strategy {
-        DeploymentStrategy::RedeployOnImageUpdate(_, image_id) => {
+fn deployment_annotations(service: &DeployableService) -> BTreeMap<String, String> {
+    match service.strategy() {
+        DeploymentStrategy::RedeployOnImageUpdate(image_id) => {
             BTreeMap::from([(String::from("imageHash"), image_id.clone())])
         }
-        DeploymentStrategy::RedeployNever(_) => BTreeMap::new(),
-        DeploymentStrategy::RedeployAlways(_) => {
+        DeploymentStrategy::RedeployNever => BTreeMap::new(),
+        DeploymentStrategy::RedeployAlways => {
             BTreeMap::from([(String::from("date"), Utc::now().to_rfc3339())])
         }
     }
@@ -449,24 +483,59 @@ pub fn service_payload(app_name: &String, service_config: &ServiceConfig) -> V1S
 ///
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
-pub fn ingress_route_payload(app_name: &String, service_config: &ServiceConfig) -> IngressRoute {
+pub fn ingress_route_payload(app_name: &String, service: &DeployableService) -> IngressRoute {
+    let rules = service
+        .ingress_route()
+        .routes()
+        .iter()
+        .map(|route| {
+            let middlewares = route
+                .middlewares()
+                .iter()
+                .map(|middleware| {
+                    let name = match middleware {
+                        crate::infrastructure::traefik::TraefikMiddleware::Ref(name) => {
+                            name.clone()
+                        }
+                        crate::infrastructure::traefik::TraefikMiddleware::Spec {
+                            name,
+                            spec: _,
+                        } => name.clone(),
+                    };
+                    TraefikRuleMiddleware { name }
+                })
+                .collect::<Vec<_>>();
+
+            TraefikRuleSpec {
+                kind: String::from("Rule"),
+                r#match: route.rule().to_string(),
+                middlewares: Some(middlewares),
+                services: vec![TraefikRuleService {
+                    kind: Some(String::from("Service")),
+                    name: service.service_name().to_string(),
+                    port: Some(service.port()),
+                }],
+            }
+        })
+        .collect::<Vec<_>>();
+
     IngressRoute {
         metadata: ObjectMeta {
             name: Some(format!(
                 "{}-{}-ingress-route",
                 app_name,
-                service_config.service_name()
+                service.service_name()
             )),
             namespace: Some(app_name.to_string()),
             annotations: Some(BTreeMap::from([
                 (APP_NAME_LABEL.to_string(), app_name.to_string()),
                 (
                     SERVICE_NAME_LABEL.to_string(),
-                    service_config.service_name().to_string(),
+                    service.service_name().to_string(),
                 ),
                 (
                     CONTAINER_TYPE_LABEL.to_string(),
-                    service_config.container_type().to_string(),
+                    service.container_type().to_string(),
                 ),
                 (
                     String::from("traefik.ingress.kubernetes.io/router.entrypoints"),
@@ -476,18 +545,8 @@ pub fn ingress_route_payload(app_name: &String, service_config: &ServiceConfig) 
             ..Default::default()
         },
         spec: IngressRouteSpec {
-            routes: Some(vec![TraefikRuleSpec {
-                kind: String::from("Rule"),
-                r#match: service_config.traefik_rule(app_name),
-                services: vec![TraefikRuleService {
-                    kind: String::from("Service"),
-                    name: service_config.service_name().to_string(),
-                    port: service_config.port(),
-                }],
-                middlewares: vec![TraefikRuleMiddleware {
-                    name: format!("{}-{}-middleware", app_name, service_config.service_name()),
-                }],
-            }]),
+            routes: Some(rules),
+            ..Default::default()
         },
     }
 }
@@ -496,31 +555,55 @@ pub fn ingress_route_payload(app_name: &String, service_config: &ServiceConfig) 
 ///
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
-pub fn middleware_payload(app_name: &String, service_config: &ServiceConfig) -> Middleware {
-    serde_json::from_value(serde_json::json!({
-      "apiVersion": "traefik.containo.us/v1alpha1",
-      "kind": "Middleware",
-      "metadata": {
-        "name": format!("{}-{}-middleware", app_name, service_config.service_name()),
-        "namespace": app_name,
-      },
-       "spec": service_config.traefik_middlewares(app_name)
-    }))
-    .expect("Cannot convert value to traefik.containo.us/v1alpha1/MiddleWare")
+pub fn middleware_payload(app_name: &String, service: &DeployableService) -> Vec<Middleware> {
+    service
+        .ingress_route()
+        .routes()
+        .iter()
+        .flat_map(|r| {
+            r.middlewares()
+                .iter()
+                .filter_map(|middleware| match middleware {
+                    TraefikMiddleware::Ref(_) => None,
+                    TraefikMiddleware::Spec { name, spec } => Some((name, spec)),
+                })
+        })
+        .map(|(name, spec)| Middleware {
+            metadata: ObjectMeta {
+                name: Some(name.clone()),
+                namespace: Some(app_name.clone()),
+                ..Default::default()
+            },
+            spec: MiddlewareSpec(serde_json::json!(spec)),
+        })
+        .collect::<Vec<_>>()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
-    use crate::models::{Environment, EnvironmentVariable};
+    use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
+    use crate::models::{AppName, Environment, EnvironmentVariable};
     use crate::sc;
 
     #[test]
     fn should_create_deployment_payload() {
         let config = sc!("db", "mariadb:10.3.17");
 
-        let payload =
-            deployment_payload("master", &config.into(), &ContainerConfig::default(), false);
+        let payload = deployment_payload(
+            "master",
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
+                    "master", "db",
+                ])),
+            ),
+            &ContainerConfig::default(),
+            false,
+        );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -586,8 +669,18 @@ mod tests {
             SecUtf8::from("example"),
         )])));
 
-        let payload =
-            deployment_payload("master", &config.into(), &ContainerConfig::default(), false);
+        let payload = deployment_payload(
+            "master",
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
+                    "master", "db",
+                ])),
+            ),
+            &ContainerConfig::default(),
+            false,
+        );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -656,8 +749,18 @@ mod tests {
             ),
         ])));
 
-        let payload =
-            deployment_payload("master", &config.into(), &ContainerConfig::default(), false);
+        let payload = deployment_payload(
+            "master",
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
+                    "master", "db",
+                ])),
+            ),
+            &ContainerConfig::default(),
+            false,
+        );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -725,11 +828,16 @@ mod tests {
 
     #[test]
     fn should_create_ingress_route() {
+        let app_name = "master".parse::<AppName>().unwrap();
         let mut config = sc!("db", "mariadb:10.3.17");
         let port = 1234;
         config.set_port(port);
-
-        let payload = ingress_route_payload(&String::from("master"), &config);
+        let config = DeployableService::new(
+            config,
+            DeploymentStrategy::RedeployAlways,
+            TraefikIngressRoute::with_defaults(&AppName::from_str("master").unwrap(), "db"),
+        );
+        let payload = ingress_route_payload(&app_name, &config);
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -766,12 +874,17 @@ mod tests {
     #[test]
     fn should_create_middleware_with_default_prefix() {
         let config = sc!("db", "mariadb:10.3.17");
+        let service = DeployableService::new(
+            config,
+            DeploymentStrategy::RedeployAlways,
+            TraefikIngressRoute::with_defaults(&AppName::from_str("master").unwrap(), "db"),
+        );
 
-        let payload = middleware_payload(&String::from("master"), &config);
+        let payload = middleware_payload(&String::from("master"), &service);
 
         assert_json_diff::assert_json_include!(
             actual: payload,
-            expected: serde_json::json!({
+            expected: serde_json::json!([{
               "apiVersion": "traefik.containo.us/v1alpha1",
               "kind": "Middleware",
               "metadata": {
@@ -785,43 +898,7 @@ mod tests {
                   ]
                 }
               },
-            }),
-        );
-    }
-
-    #[test]
-    fn should_create_middleware_with_extra_config() {
-        let mut middlewares: BTreeMap<String, serde_value::Value> = BTreeMap::new();
-        middlewares.insert(
-            String::from("compress"),
-            serde_value::to_value(serde_json::json!({})).expect("Should create value"),
-        );
-        middlewares.insert(
-            String::from("rateLimit"),
-            serde_value::to_value(serde_json::json!({"average": 100}))
-                .expect("Should create value"),
-        );
-        let mut config = sc!("db", "mariadb:10.3.17");
-        config.set_middlewares(middlewares);
-
-        let payload = middleware_payload(&String::from("master"), &config);
-
-        assert_json_diff::assert_json_include!(
-            actual: payload,
-            expected: serde_json::json!({
-              "apiVersion": "traefik.containo.us/v1alpha1",
-              "kind": "Middleware",
-              "metadata": {
-                "name": "master-db-middleware",
-                "namespace": "master",
-              },
-              "spec": {
-                "compress": {},
-                "rateLimit": {
-                  "average": 100
-                },
-              },
-            }),
+            }]),
         );
     }
 }

@@ -25,10 +25,11 @@
  */
 
 use crate::config::{Config, ContainerConfig};
+use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::{
-    DeploymentStrategy, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
-    REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
+    Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL,
+    SERVICE_NAME_LABEL, STATUS_ID,
 };
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
@@ -243,16 +244,16 @@ impl DockerInfrastructure {
     async fn deploy_services_impl(
         &self,
         app_name: &String,
-        strategies: &[DeploymentStrategy],
+        services: &[DeployableService],
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
         let network_id = self.create_or_get_network_id(app_name).await?;
 
         self.connect_traefik(&network_id).await?;
 
-        let futures = strategies
+        let futures = services
             .iter()
-            .map(|strategy| self.start_container(app_name, &network_id, strategy, container_config))
+            .map(|service| self.start_container(app_name, &network_id, service, container_config))
             .collect::<Vec<_>>();
 
         let mut services: Vec<Service> = Vec::new();
@@ -301,41 +302,41 @@ impl DockerInfrastructure {
         &self,
         app_name: &String,
         network_id: &String,
-        strategy: &DeploymentStrategy,
+        service: &DeployableService,
         container_config: &ContainerConfig,
     ) -> Result<Service, Error> {
         let docker = Docker::new();
         let containers = docker.containers();
         let images = docker.images();
 
-        if let Image::Named { .. } = strategy.image() {
-            self.pull_image(app_name, strategy).await?;
+        if let Image::Named { .. } = service.image() {
+            self.pull_image(app_name, service).await?;
         }
 
         let mut image_to_delete = None;
         if let Some(ref container_info) = self
-            .get_app_container(app_name, strategy.service_name())
+            .get_app_container(app_name, service.service_name())
             .await?
         {
             let container = containers.get(&container_info.id);
             let container_details = container.inspect().await?;
 
-            match strategy {
-                DeploymentStrategy::RedeployOnImageUpdate(_, image_id)
+            match service.strategy() {
+                DeploymentStrategy::RedeployOnImageUpdate(image_id)
                     if &container_details.image == image_id =>
                 {
                     debug!("Container {:?} of review app {:?} is still running with the desired image id {}", container_info, app_name, image_id);
                     return Ok(Service::try_from(&container_details)?);
                 }
-                DeploymentStrategy::RedeployNever(_) => {
+                DeploymentStrategy::RedeployNever => {
                     debug!(
                         "Container {:?} of review app {:?} already deployed.",
                         container_info, app_name
                     );
                     return Ok(Service::try_from(&container_details)?);
                 }
-                DeploymentStrategy::RedeployAlways(_)
-                | DeploymentStrategy::RedeployOnImageUpdate(_, _) => {}
+                DeploymentStrategy::RedeployAlways
+                | DeploymentStrategy::RedeployOnImageUpdate(_) => {}
             };
 
             info!(
@@ -356,18 +357,18 @@ impl DockerInfrastructure {
         info!(
             "Creating new review app container for {:?}: service={:?} with image={:?} ({:?})",
             app_name,
-            strategy.service_name(),
-            strategy.image(),
-            strategy.container_type(),
+            service.service_name(),
+            service.image(),
+            service.container_type(),
         );
 
         let options =
-            DockerInfrastructure::create_container_options(app_name, strategy, container_config);
+            DockerInfrastructure::create_container_options(app_name, service, container_config);
 
         let container_info = containers.create(&options).await?;
         debug!("Created container: {:?}", container_info);
 
-        self.copy_file_data(&container_info, strategy).await?;
+        self.copy_file_data(&container_info, service).await?;
 
         containers.get(&container_info.id).start().await?;
         debug!("Started container: {:?}", container_info);
@@ -377,7 +378,7 @@ impl DockerInfrastructure {
             .get(network_id)
             .connect(
                 &ContainerConnectionOptions::builder(&container_info.id)
-                    .aliases(vec![strategy.service_name().as_str()])
+                    .aliases(vec![service.service_name().as_str()])
                     .build(),
             )
             .await?;
@@ -625,7 +626,7 @@ impl Infrastructure for DockerInfrastructure {
             .await?;
 
         let result = self
-            .deploy_services_impl(app_name, deployment_unit.strategies(), container_config)
+            .deploy_services_impl(app_name, deployment_unit.services(), container_config)
             .await;
 
         delete(deployment_container).await?;

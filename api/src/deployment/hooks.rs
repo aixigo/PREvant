@@ -25,7 +25,6 @@
  */
 use crate::apps::AppsServiceError;
 use crate::config::Config;
-use crate::infrastructure::DeploymentStrategy;
 use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, Image};
 use boa_engine::property::Attribute;
 use boa_engine::syntax::ast::node::Node;
@@ -35,37 +34,37 @@ use std::collections::BTreeMap;
 use std::iter::IntoIterator;
 use std::path::{Path, PathBuf};
 
-pub struct Hooks {
-    hook_config: Config,
+use super::deployment_unit::DeployableService;
+
+pub struct Hooks<'a> {
+    hook_config: &'a Config,
 }
 
-impl Hooks {
-    pub fn new(hook_configs: &Config) -> Self {
-        Hooks {
-            hook_config: hook_configs.clone(),
-        }
+impl<'a> Hooks<'a> {
+    pub fn new(hook_config: &'a Config) -> Self {
+        Hooks { hook_config }
     }
 
     pub async fn apply_deployment_hook(
         &self,
         app_name: &AppName,
-        configs: Vec<DeploymentStrategy>,
-    ) -> Result<Vec<DeploymentStrategy>, AppsServiceError> {
+        services: Vec<DeployableService>,
+    ) -> Result<Vec<DeployableService>, AppsServiceError> {
         match self.hook_config.hook("deployment") {
-            None => Ok(configs),
-            Some(hook_path) => self.parse_and_run_hook(app_name, configs, hook_path).await,
+            None => Ok(services),
+            Some(hook_path) => self.parse_and_run_hook(app_name, services, hook_path).await,
         }
     }
 
     async fn parse_and_run_hook(
         &self,
         app_name: &AppName,
-        configs: Vec<DeploymentStrategy>,
+        services: Vec<DeployableService>,
         hook_path: &Path,
-    ) -> Result<Vec<DeploymentStrategy>, AppsServiceError> {
+    ) -> Result<Vec<DeployableService>, AppsServiceError> {
         match Self::parse_hook(hook_path).await {
             Some(mut context) => {
-                Self::register_configs_as_global_property(&mut context, &configs);
+                Self::register_configs_as_global_property(&mut context, &services);
                 context.register_global_property(
                     "appName",
                     JsValue::String(app_name.to_string().into()),
@@ -78,9 +77,9 @@ impl Hooks {
 
                 let transformed_configs = transformed_configs.to_json(&mut context).unwrap();
 
-                Self::parse_service_config(configs, transformed_configs)
+                Self::parse_service_config(services, transformed_configs)
             }
-            None => Ok(configs),
+            None => Ok(services),
         }
     }
 
@@ -126,9 +125,9 @@ impl Hooks {
 
     fn register_configs_as_global_property(
         mut context: &mut Context,
-        configs: &[DeploymentStrategy],
+        services: &[DeployableService],
     ) {
-        let js_configs = configs
+        let js_configs = services
             .iter()
             .map(JsServiceConfig::from)
             .collect::<Vec<_>>();
@@ -141,11 +140,11 @@ impl Hooks {
     }
 
     fn parse_service_config<Iter>(
-        configs: Iter,
+        services: Iter,
         transformed_configs: serde_json::value::Value,
-    ) -> Result<Vec<DeploymentStrategy>, AppsServiceError>
+    ) -> Result<Vec<DeployableService>, AppsServiceError>
     where
-        Iter: IntoIterator<Item = DeploymentStrategy>,
+        Iter: IntoIterator<Item = DeployableService>,
     {
         let mut transformed_configs =
             serde_json::from_value::<Vec<JsServiceConfig>>(transformed_configs).map_err(|err| {
@@ -153,18 +152,18 @@ impl Hooks {
                 AppsServiceError::InvalidDeploymentHook
             })?;
 
-        Ok(configs
+        Ok(services
             .into_iter()
-            .filter_map(move |config| {
+            .filter_map(move |service| {
                 let index = transformed_configs.iter().position(|transformed_config| {
-                    &transformed_config.name == config.service_name()
-                        && &transformed_config.r#type == config.container_type()
-                        && &transformed_config.image == config.image()
+                    &transformed_config.name == service.service_name()
+                        && &transformed_config.r#type == service.container_type()
+                        && &transformed_config.image == service.image()
                 })?;
 
                 let transformed_config = transformed_configs.swap_remove(index);
 
-                Some(transformed_config.apply_to(config))
+                Some(transformed_config.apply_to(service))
             })
             .collect::<Vec<_>>())
     }
@@ -183,10 +182,10 @@ struct JsServiceConfig {
 }
 
 impl JsServiceConfig {
-    fn apply_to(mut self, mut config: DeploymentStrategy) -> DeploymentStrategy {
-        config.set_files(Some(self.files));
+    fn apply_to(mut self, mut service: DeployableService) -> DeployableService {
+        service.set_files(Some(self.files));
 
-        let env = match config.env().cloned() {
+        let env = match service.env().cloned() {
             Some(env) => {
                 let mut variables = Vec::new();
 
@@ -214,14 +213,14 @@ impl JsServiceConfig {
             env => env,
         };
 
-        config.set_env(env);
+        service.set_env(env);
 
-        config
+        service
     }
 }
 
-impl From<&DeploymentStrategy> for JsServiceConfig {
-    fn from(config: &DeploymentStrategy) -> Self {
+impl From<&DeployableService> for JsServiceConfig {
+    fn from(config: &DeployableService) -> Self {
         Self {
             name: config.service_name().clone(),
             image: config.image().clone(),
@@ -286,12 +285,13 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
         let deployed_files = unit
-            .strategies()
+            .services()
             .into_iter()
             .map(|service| service.files().cloned())
             .flatten()
@@ -338,12 +338,13 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
         let deployed_files = unit
-            .strategies()
+            .services()
             .into_iter()
             .map(|service| service.files().cloned())
             .flatten()
@@ -376,12 +377,13 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
         let deployed_variables = unit
-            .strategies()
+            .services()
             .into_iter()
             .map(|service| service.env().cloned())
             .flatten()
@@ -423,12 +425,13 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
         let deployed_variables = unit
-            .strategies()
+            .services()
             .into_iter()
             .map(|service| service.env().cloned())
             .flatten()
@@ -473,12 +476,13 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
         let deployed_variables = unit
-            .strategies()
+            .services()
             .into_iter()
             .map(|service| service.env().cloned())
             .flatten()
@@ -513,12 +517,13 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
         let deployed_services = unit
-            .strategies()
+            .services()
             .into_iter()
             .map(|services| services.service_name().clone())
             .collect::<Vec<_>>();
@@ -549,11 +554,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let deployed_services = unit.strategies();
+        let deployed_services = unit.services();
 
         assert!(deployed_services.is_empty());
 
@@ -576,6 +582,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await
         {

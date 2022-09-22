@@ -46,6 +46,17 @@ spec:
           ports:
             - name: web
               containerPort: 80
+          volumeMounts:
+            - name: podinfo
+              mountPath: /run/podinfo/
+              readOnly: true
+      volumes:
+        - name: podinfo
+          downwardAPI:
+             items:
+               - path: "labels"
+                 fieldRef:
+                    fieldPath: metadata.labels
 ---
 apiVersion: traefik.containo.us/v1alpha1
 kind: IngressRoute

@@ -11,8 +11,15 @@ RUN npm ci && npm run build
 # Build Backend
 FROM rust:1 as backend-builder
 COPY api/Cargo.toml api/Cargo.lock /usr/src/api/
-COPY api/src /usr/src/api/src
 WORKDIR /usr/src/api
+
+# Improves build caching, see https://stackoverflow.com/a/58474618/5088458
+RUN sed -i 's#src/main.rs#src/dummy.rs#' Cargo.toml
+RUN mkdir src && echo "fn main() {}" > src/dummy.rs
+RUN cargo build --release
+
+RUN sed -i 's#src/dummy.rs#src/main.rs#' Cargo.toml && rm src/dummy.rs
+COPY api/src /usr/src/api/src
 RUN cargo build --release
 
 

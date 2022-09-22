@@ -35,7 +35,7 @@ extern crate serde_derive;
 
 use crate::apps::host_meta_crawling;
 use crate::apps::Apps;
-use crate::config::{Config, Type};
+use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
 use clap::Parser;
@@ -78,11 +78,11 @@ fn openapi(request_info: RequestInfo) -> Option<String> {
 
 fn create_infrastructure(config: &Config) -> Box<dyn Infrastructure> {
     match config.runtime_config() {
-        Type::Docker => {
+        Runtime::Docker => {
             log::info!("Using Docker backend");
             Box::new(Docker::new(config.clone()))
         }
-        Type::Kubernetes => {
+        Runtime::Kubernetes(_config) => {
             log::info!("Using Kubernetes backend");
             Box::new(Kubernetes::new(config.clone()))
         }

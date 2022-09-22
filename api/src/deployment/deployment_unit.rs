@@ -26,7 +26,7 @@
 use crate::apps::AppsServiceError;
 use crate::config::Config;
 use crate::deployment::hooks::Hooks;
-use crate::infrastructure::DeploymentStrategy;
+use crate::infrastructure::TraefikIngressRoute;
 use crate::models::{AppName, ContainerType, Image, ServiceConfig};
 use crate::registry::{ImageInfo, ImagesService, ImagesServiceError};
 use std::collections::{HashMap, HashSet};
@@ -60,9 +60,19 @@ pub struct WithResolvedImages {
     image_infos: HashMap<Image, ImageInfo>,
 }
 
+pub struct WithAppliedTemplating {
+    app_name: AppName,
+    services: Vec<DeployableService>,
+}
+
 pub struct WithAppliedHooks {
     app_name: AppName,
-    strategies: Vec<DeploymentStrategy>,
+    services: Vec<DeployableService>,
+}
+
+pub struct WithAppliedIngressRoute {
+    app_name: AppName,
+    services: Vec<DeployableService>,
 }
 
 pub struct DeploymentUnitBuilder<Stage> {
@@ -71,12 +81,63 @@ pub struct DeploymentUnitBuilder<Stage> {
 
 pub struct DeploymentUnit {
     app_name: AppName,
-    strategies: Vec<DeploymentStrategy>,
+    services: Vec<DeployableService>,
+}
+
+#[derive(Clone, Debug)]
+pub enum DeploymentStrategy {
+    RedeployAlways,
+    RedeployOnImageUpdate(String),
+    RedeployNever,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeployableService {
+    raw_service_config: ServiceConfig,
+    strategy: DeploymentStrategy,
+    ingress_route: TraefikIngressRoute,
+}
+
+impl DeployableService {
+    #[cfg(test)]
+    pub fn new(
+        raw_service_config: ServiceConfig,
+        strategy: DeploymentStrategy,
+        ingress_route: TraefikIngressRoute,
+    ) -> Self {
+        Self {
+            raw_service_config,
+            strategy,
+            ingress_route,
+        }
+    }
+
+    pub fn strategy(&self) -> &DeploymentStrategy {
+        &self.strategy
+    }
+
+    pub fn ingress_route(&self) -> &TraefikIngressRoute {
+        &self.ingress_route
+    }
+}
+
+impl std::ops::Deref for DeployableService {
+    type Target = ServiceConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.raw_service_config
+    }
+}
+
+impl std::ops::DerefMut for DeployableService {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.raw_service_config
+    }
 }
 
 impl DeploymentUnit {
-    pub fn strategies(&self) -> &Vec<DeploymentStrategy> {
-        &self.strategies
+    pub fn services(&self) -> &[DeployableService] {
+        &self.services
     }
 
     pub fn app_name(&self) -> &AppName {
@@ -90,10 +151,7 @@ impl DeploymentUnitBuilder<Initialized> {
         configs: Vec<ServiceConfig>,
     ) -> DeploymentUnitBuilder<Initialized> {
         DeploymentUnitBuilder {
-            stage: Initialized {
-                app_name: app_name,
-                configs: configs,
-            },
+            stage: Initialized { app_name, configs },
         }
     }
 }
@@ -111,8 +169,8 @@ impl DeploymentUnitBuilder<Initialized> {
             stage: WithCompanions {
                 app_name: self.stage.app_name,
                 configs: self.stage.configs,
-                service_companions: service_companions,
-                app_companions: app_companions,
+                service_companions,
+                app_companions,
             },
         }
     }
@@ -203,7 +261,7 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
                 service_companions: self.stage.service_companions,
                 app_companions: self.stage.app_companions,
                 templating_only_service_configs: self.stage.templating_only_service_configs,
-                image_infos: image_infos,
+                image_infos,
             },
         })
     }
@@ -223,16 +281,24 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
 }
 
 impl DeploymentUnitBuilder<WithResolvedImages> {
-    pub async fn apply_hooks(
+    pub fn apply_templating(
         self,
-        config: &Config,
-    ) -> Result<DeploymentUnitBuilder<WithAppliedHooks>, AppsServiceError> {
-        let mut strategies = HashMap::new();
+    ) -> Result<DeploymentUnitBuilder<WithAppliedTemplating>, AppsServiceError> {
+        let mut services = HashMap::new();
 
         for config in self.stage.configs.iter() {
-            strategies.insert(
+            let templated_config = config.apply_templating(&self.stage.app_name)?;
+
+            services.insert(
                 config.service_name().clone(),
-                DeploymentStrategy::RedeployAlways(config.apply_templating(&self.stage.app_name)?),
+                DeployableService {
+                    raw_service_config: templated_config,
+                    strategy: DeploymentStrategy::RedeployAlways,
+                    ingress_route: TraefikIngressRoute::with_defaults(
+                        &self.stage.app_name,
+                        config.service_name(),
+                    ),
+                },
             );
         }
 
@@ -248,10 +314,10 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
         }
 
         let mut service_companions = Vec::new();
-        for service in strategies.values() {
+        for service in services.values() {
             for (service_companion, strategy) in self.stage.service_companions.iter() {
                 let templated_companion = service_companion
-                    .apply_templating_for_service_companion(&self.stage.app_name, service)?;
+                    .apply_templating_for_service_companion(&self.stage.app_name, &service)?;
 
                 service_companions.push(ServiceCompanion {
                     templated_companion,
@@ -265,13 +331,13 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
             service_companions
                 .into_iter()
                 .partition(|service_companion| {
-                    strategies
+                    services
                         .get_mut(service_companion.templated_companion.service_name())
                         .is_some()
                 });
 
         for companion in service_companions_of_request.iter() {
-            strategies
+            services
                 .get_mut(companion.templated_companion.service_name())
                 .unwrap()
                 .merge_with(&companion.templated_companion);
@@ -280,7 +346,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
         let image_infos = &self.stage.image_infos;
 
         // Exclude service_companions that are included in the request
-        strategies.extend(
+        services.extend(
             service_companions_of_config
                 .into_iter()
                 .filter(|service_companion| {
@@ -295,7 +361,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 .map(|service_companion| {
                     (
                         service_companion.templated_companion.service_name().clone(),
-                        Self::resolve_strategy(
+                        self.deployable_service(
                             service_companion.templated_companion,
                             service_companion.strategy,
                             &image_infos,
@@ -307,7 +373,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
         let mut templating_only_service_configs =
             self.stage.templating_only_service_configs.clone();
         templating_only_service_configs.extend(
-            strategies
+            services
                 .values()
                 .map(|strategy| ServiceConfig::clone(strategy)),
         );
@@ -319,19 +385,19 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
 
             // If a custom application companion was deployed, its config needs to be merged
             // with the companion config
-            let existing_config = strategies.get_mut(companion_config.service_name());
+            let existing_config = services.get_mut(companion_config.service_name());
 
-            if let Some(existing_config) = existing_config {
-                existing_config.merge_with(&companion_config);
+            if let Some(existing_strategy) = existing_config {
+                existing_strategy.merge_with(&companion_config);
             } else {
-                strategies.insert(
+                services.insert(
                     companion_config.service_name().clone(),
-                    Self::resolve_strategy(companion_config, &strategy, &image_infos),
+                    self.deployable_service(companion_config, &strategy, &image_infos),
                 );
             }
         }
 
-        let mut strategies = strategies.into_values().collect::<Vec<_>>();
+        let mut strategies = services.into_values().collect::<Vec<_>>();
 
         strategies.sort_unstable_by(|a, b| {
             let index1 = Self::container_type_index(a.container_type());
@@ -339,40 +405,53 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
             index1.cmp(&index2)
         });
 
-        let hooks = Hooks::new(config);
-        let strategies = hooks
-            .apply_deployment_hook(&self.stage.app_name, strategies)
-            .await?;
-
         Ok(DeploymentUnitBuilder {
-            stage: WithAppliedHooks {
+            stage: WithAppliedTemplating {
                 app_name: self.stage.app_name,
-                strategies: strategies,
+                services: strategies,
             },
         })
     }
 
-    fn resolve_strategy(
-        service_config: ServiceConfig,
+    fn deployable_service(
+        &self,
+        raw_service_config: ServiceConfig,
         strategy: &crate::config::DeploymentStrategy,
         image_infos: &HashMap<Image, ImageInfo>,
-    ) -> DeploymentStrategy {
+    ) -> DeployableService {
+        let ingress_route = TraefikIngressRoute::with_defaults(
+            &self.stage.app_name,
+            raw_service_config.service_name(),
+        );
+
         match strategy {
-            crate::config::DeploymentStrategy::RedeployAlways => {
-                DeploymentStrategy::RedeployAlways(service_config)
-            }
+            crate::config::DeploymentStrategy::RedeployAlways => DeployableService {
+                raw_service_config,
+                ingress_route,
+                strategy: DeploymentStrategy::RedeployAlways,
+            },
             crate::config::DeploymentStrategy::RedeployOnImageUpdate => {
-                match image_infos.get(service_config.image()) {
-                    Some(image_info) => DeploymentStrategy::RedeployOnImageUpdate(
-                        service_config,
-                        image_info.digest().to_string(),
-                    ),
-                    None => DeploymentStrategy::RedeployAlways(service_config),
+                match image_infos.get(raw_service_config.image()) {
+                    Some(image_info) => DeployableService {
+                        raw_service_config,
+                        ingress_route,
+                        strategy: DeploymentStrategy::RedeployOnImageUpdate(
+                            image_info.digest().to_string(),
+                        ),
+                    },
+
+                    None => DeployableService {
+                        raw_service_config,
+                        ingress_route,
+                        strategy: DeploymentStrategy::RedeployAlways,
+                    },
                 }
             }
-            crate::config::DeploymentStrategy::RedeployNever => {
-                DeploymentStrategy::RedeployNever(service_config)
-            }
+            crate::config::DeploymentStrategy::RedeployNever => DeployableService {
+                raw_service_config,
+                ingress_route,
+                strategy: DeploymentStrategy::RedeployNever,
+            },
         }
     }
 
@@ -385,11 +464,56 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
     }
 }
 
+impl DeploymentUnitBuilder<WithAppliedTemplating> {
+    pub async fn apply_hooks(
+        self,
+        config: &Config,
+    ) -> Result<DeploymentUnitBuilder<WithAppliedHooks>, AppsServiceError> {
+        let hooks = Hooks::new(config);
+        let services = hooks
+            .apply_deployment_hook(&self.stage.app_name, self.stage.services)
+            .await?;
+
+        Ok(DeploymentUnitBuilder {
+            stage: WithAppliedHooks {
+                app_name: self.stage.app_name,
+                services,
+            },
+        })
+    }
+}
+
 impl DeploymentUnitBuilder<WithAppliedHooks> {
+    pub fn apply_base_traefik_ingress_route(
+        mut self,
+        route: TraefikIngressRoute,
+    ) -> DeploymentUnitBuilder<WithAppliedIngressRoute> {
+        for service in &mut self.stage.services {
+            let service_route = std::mem::replace(&mut service.ingress_route, route.clone());
+            service.ingress_route.merge_with(service_route);
+        }
+
+        DeploymentUnitBuilder {
+            stage: WithAppliedIngressRoute {
+                app_name: self.stage.app_name,
+                services: self.stage.services,
+            },
+        }
+    }
+
     pub fn build(self) -> DeploymentUnit {
         DeploymentUnit {
             app_name: self.stage.app_name,
-            strategies: self.stage.strategies,
+            services: self.stage.services,
+        }
+    }
+}
+
+impl DeploymentUnitBuilder<WithAppliedIngressRoute> {
+    pub fn build(self) -> DeploymentUnit {
+        DeploymentUnit {
+            app_name: self.stage.app_name,
+            services: self.stage.services,
         }
     }
 }
@@ -397,6 +521,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::TraefikRouterRule;
     use crate::models::{Environment, EnvironmentVariable};
     use crate::{config_from_str, sc};
     use secstr::SecUtf8;
@@ -445,11 +570,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let configs: Vec<_> = unit.strategies;
+        let configs: Vec<_> = unit.services;
         assert_eq!(configs[0].port(), 80);
         assert_eq!(configs[1].port(), 80);
         assert_eq!(configs[2].port(), 80);
@@ -483,11 +609,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let openid_configs: Vec<_> = unit.strategies;
+        let openid_configs: Vec<_> = unit.services;
         assert_eq!(openid_configs.len(), 1);
         let openid_env = openid_configs[0].env().unwrap();
 
@@ -538,11 +665,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let openid_configs: Vec<_> = unit.strategies;
+        let openid_configs: Vec<_> = unit.services;
         assert_eq!(openid_configs.len(), 1);
         let openid_env = openid_configs[0].env().unwrap();
 
@@ -585,11 +713,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let configs: Vec<_> = unit.strategies;
+        let configs: Vec<_> = unit.services;
         assert_eq!(configs.len(), 4);
 
         assert_eq!(
@@ -629,11 +758,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let configs: Vec<_> = unit.strategies;
+        let configs: Vec<_> = unit.services;
         assert_eq!(configs.len(), 1);
         let env = configs[0].env().unwrap();
 
@@ -664,11 +794,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let configs: Vec<_> = unit.strategies;
+        let configs: Vec<_> = unit.services;
         assert_eq!(configs.len(), 1);
         let env = configs[0].env().unwrap();
 
@@ -703,11 +834,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let configs: Vec<_> = unit.strategies;
+        let configs: Vec<_> = unit.services;
         assert_eq!(configs.len(), 2);
 
         assert_eq!(
@@ -757,11 +889,12 @@ mod tests {
             .extend_with_templating_only_service_configs(vec![sc!("postgres", "postgres:alpine")])
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let configs: Vec<_> = unit.strategies;
+        let configs: Vec<_> = unit.services;
         assert_eq!(configs.len(), 2);
 
         assert_eq!(
@@ -811,11 +944,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let openid_configs: Vec<_> = unit.strategies;
+        let openid_configs: Vec<_> = unit.services;
         assert_eq!(openid_configs.len(), 1);
         let openid_env = openid_configs[0].env().unwrap();
 
@@ -863,11 +997,12 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let configs: Vec<_> = unit.strategies;
+        let configs: Vec<_> = unit.services;
         assert_eq!(configs.len(), 3);
 
         assert_eq!(
@@ -914,18 +1049,19 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let strategies: Vec<_> = unit.strategies;
-        assert_eq!(strategies.len(), 2);
+        let services: Vec<_> = unit.services;
+        assert_eq!(services.len(), 2);
 
-        for strategy in strategies {
-            if !matches!(strategy, DeploymentStrategy::RedeployAlways(_)) {
+        for services in services {
+            if !matches!(services.strategy, DeploymentStrategy::RedeployAlways) {
                 panic!(
                     "All services should have a recreation strategy but was {:?}.",
-                    strategy
+                    services
                 );
             }
         }
@@ -959,21 +1095,68 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
+            .apply_templating()?
             .apply_hooks(&config)
             .await?
             .build();
 
-        let strategies: Vec<_> = unit.strategies;
-        assert_eq!(strategies.len(), 3);
+        let services: Vec<_> = unit.services;
+        assert_eq!(services.len(), 3);
 
-        for strategy in strategies {
-            if !matches!(strategy, DeploymentStrategy::RedeployAlways(_)) {
+        for service in services {
+            if !matches!(service.strategy, DeploymentStrategy::RedeployAlways) {
                 panic!(
                     "All services should have a recreation strategy but was {:?}.",
-                    strategy
+                    service
                 );
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn apply_base_traefik_router_rule() -> Result<(), AppsServiceError> {
+        let config = config_from_str!("");
+
+        let app_name = AppName::from_str("master").unwrap();
+        let service_configs = vec![sc!("wordpress")];
+
+        let unit = DeploymentUnitBuilder::init(app_name, service_configs)
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .resolve_image_manifest(&config)
+            .await?
+            .apply_templating()?
+            .apply_hooks(&config)
+            .await?
+            .apply_base_traefik_ingress_route(TraefikIngressRoute::with_rule(
+                TraefikRouterRule::path_prefix_rule(vec![String::from("my-path-prefix")]),
+            ))
+            .build();
+
+        let service = unit.services.into_iter().next().unwrap();
+        let rule = service
+            .ingress_route
+            .routes()
+            .iter()
+            .map(|r| r.rule())
+            .next()
+            .unwrap();
+
+        assert_eq!(
+            rule,
+            &TraefikRouterRule::path_prefix_rule(["my-path-prefix", "master", "wordpress"])
+        );
+        assert!(matches!(
+            service
+                .ingress_route
+                .routes()
+                .iter()
+                .flat_map(|r| r.middlewares().iter())
+                .next(),
+            Some(_)
+        ));
+
         Ok(())
     }
 }

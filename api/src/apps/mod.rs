@@ -167,8 +167,8 @@ impl AppsService {
     async fn configs_to_replicate(
         &self,
         services_to_deploy: &[ServiceConfig],
-        app_name: &String,
-        replicate_from_app_name: &String,
+        app_name: &str,
+        replicate_from_app_name: &str,
     ) -> Result<Vec<ServiceConfig>, AppsServiceError> {
         let running_services = self.infrastructure.get_configs_of_app(app_name).await?;
         let running_service_names = running_services
@@ -275,14 +275,24 @@ impl AppsService {
             })
             .collect::<Vec<_>>();
 
-        let deployment_unit = DeploymentUnitBuilder::init(app_name.clone(), configs)
+        let deployment_unit_builder = DeploymentUnitBuilder::init(app_name.clone(), configs)
             .extend_with_config(&self.config)
             .extend_with_templating_only_service_configs(configs_for_templating)
             .resolve_image_manifest(&self.config)
             .await?
+            .apply_templating()?
             .apply_hooks(&self.config)
-            .await?
-            .build();
+            .await?;
+
+        let deployment_unit = if let Ok(Some(base_traefik_ingress_route)) =
+            self.infrastructure.base_traefik_ingress_route().await
+        {
+            deployment_unit_builder
+                .apply_base_traefik_ingress_route(base_traefik_ingress_route)
+                .build()
+        } else {
+            deployment_unit_builder.build()
+        };
 
         let services = self
             .infrastructure
@@ -424,10 +434,12 @@ impl From<ImagesServiceError> for AppsServiceError {
 mod tests {
 
     use super::*;
-    use crate::infrastructure::Dummy;
-    use crate::models::{EnvironmentVariable, Image, ServiceBuilder};
+    use crate::infrastructure::{Dummy, TraefikIngressRoute, TraefikRouterRule};
+    use crate::models::{EnvironmentVariable, ServiceBuilder};
+    use crate::sc;
     use chrono::Utc;
     use secstr::SecUtf8;
+    use std::hash::Hash;
     use std::io::Write;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -437,26 +449,6 @@ mod tests {
     macro_rules! config_from_str {
         ( $config_str:expr ) => {
             toml::from_str::<Config>($config_str).unwrap()
-        };
-    }
-
-    macro_rules! service_configs {
-        ( $( $x:expr ),* ) => {
-            {
-                use sha2::{Digest, Sha256};
-                let mut temp_vec: Vec<ServiceConfig> = Vec::new();
-                $(
-                    let mut hasher = Sha256::new();
-                    hasher.update($x);
-                    let img_hash = &format!("sha256:{:x}", hasher.finalize());
-
-                    temp_vec.push(ServiceConfig::new(
-                        String::from($x),
-                        Image::from_str(&img_hash).unwrap()
-                    ));
-                )*
-                temp_vec
-            }
         };
     }
 
@@ -501,7 +493,7 @@ mod tests {
             &AppName::from_str("master").unwrap(),
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("service-a"),
+            &vec![sc!("service-a")],
         )
         .await?;
 
@@ -524,7 +516,7 @@ mod tests {
             &AppName::from_str("master").unwrap(),
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("service-a", "service-b"),
+            &vec![sc!("service-a"), sc!("service-b")],
         )
         .await?;
 
@@ -532,7 +524,7 @@ mod tests {
             &AppName::from_str("branch").unwrap(),
             &AppStatusChangeId::new(),
             Some(AppName::from_str("master").unwrap()),
-            &service_configs!("service-b"),
+            &vec![sc!("service-b")],
         )
         .await?;
 
@@ -556,7 +548,7 @@ mod tests {
             &AppName::from_str("master").unwrap(),
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("service-a", "service-b"),
+            &vec![sc!("service-a"), sc!("service-b")],
         )
         .await?;
 
@@ -564,7 +556,7 @@ mod tests {
             &AppName::from_str("branch").unwrap(),
             &AppStatusChangeId::new(),
             Some(AppName::from_str("master").unwrap()),
-            &service_configs!("service-b"),
+            &vec![sc!("service-b")],
         )
         .await?;
 
@@ -572,7 +564,7 @@ mod tests {
             &AppName::from_str("branch").unwrap(),
             &AppStatusChangeId::new(),
             Some(AppName::from_str("master").unwrap()),
-            &service_configs!("service-a"),
+            &vec![sc!("service-a")],
         )
         .await?;
 
@@ -605,7 +597,7 @@ mod tests {
             &AppName::from_str("master").unwrap(),
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("mariadb"),
+            &vec![sc!("mariadb")],
         )
         .await?;
 
@@ -644,7 +636,7 @@ mod tests {
             &AppName::from_str("master-1.x").unwrap(),
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("mariadb"),
+            &vec![sc!("mariadb")],
         )
         .await?;
 
@@ -672,7 +664,7 @@ mod tests {
             &app_name,
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("service-a", "service-b"),
+            &vec![sc!("service-a"), sc!("service-b")],
         )
         .await?;
 
@@ -726,7 +718,7 @@ Log msg 3 of service-a of app master
             &app_name,
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("service-a"),
+            &vec![sc!("service-a")],
         )
         .await?;
         let deployed_apps = apps.get_apps().await?;
@@ -760,7 +752,7 @@ Log msg 3 of service-a of app master
         let apps = AppsService::new(config, infrastructure)?;
 
         let app_name = AppName::from_str("master").unwrap();
-        let configs = service_configs!("openid", "db");
+        let configs = vec![sc!("openid"), sc!("db")];
         apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
             .await?;
         let deployed_apps = apps.get_apps().await?;
@@ -916,7 +908,7 @@ Log msg 3 of service-a of app master
             &app_name,
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("service-a"),
+            &vec![sc!("service-a")],
         )
         .await?;
         let deleted_services = apps
@@ -953,7 +945,7 @@ Log msg 3 of service-a of app master
             &app_name,
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("service-a"),
+            &vec![sc!("service-a")],
         )
         .await?;
 
@@ -1004,7 +996,7 @@ Log msg 3 of service-a of app master
         let apps = AppsService::new(config, infrastructure)?;
 
         let app_name = AppName::from_str("master").unwrap();
-        let configs = service_configs!("db1", "db2");
+        let configs = vec![sc!("db1"), sc!("db2")];
         apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
             .await?;
         let deployed_apps = apps.get_apps().await?;
@@ -1069,7 +1061,7 @@ Log msg 3 of service-a of app master
             &app_name,
             &AppStatusChangeId::new(),
             None,
-            &service_configs!("service-a", "service-b"),
+            &vec![sc!("service-a"), sc!("service-b")],
         )
         .await?;
 
@@ -1084,5 +1076,93 @@ Log msg 3 of service-a of app master
         assert_eq!(deployed_services, vec![String::from("service-a")]);
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_create_app_with_base_ingress_route() -> Result<(), AppsServiceError> {
+        let infrastructure = Box::new(Dummy::with_base_route(TraefikIngressRoute::with_rule(
+            TraefikRouterRule::host_rule(vec![String::from("example.com")]),
+        )));
+        let apps = AppsService::new(Config::default(), infrastructure)?;
+
+        let app_name = &AppName::from_str("master").unwrap();
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &vec![sc!("service-a"), sc!("service-b")],
+        )
+        .await?;
+
+        let services = apps
+            .infrastructure
+            .as_any()
+            .downcast_ref::<Dummy>()
+            .unwrap()
+            .services();
+
+        assert!(iters_equal_anyorder(
+            services
+                .iter()
+                .flat_map(|s| s.ingress_route().routes().iter())
+                .map(|route| route.rule()),
+            [
+                TraefikRouterRule::from_str(
+                    "Host(`example.com`) && PathPrefix(`/master/service-b/`)"
+                )
+                .unwrap(),
+                TraefikRouterRule::from_str(
+                    "Host(`example.com`) && PathPrefix(`/master/service-a/`)"
+                )
+                .unwrap()
+            ]
+            .iter()
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_create_app_without_base_ingress_route() -> Result<(), AppsServiceError> {
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(Config::default(), infrastructure)?;
+
+        let app_name = &AppName::from_str("master").unwrap();
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &vec![sc!("service-a"), sc!("service-b")],
+        )
+        .await?;
+
+        let services = apps
+            .infrastructure
+            .as_any()
+            .downcast_ref::<Dummy>()
+            .unwrap()
+            .services();
+
+        assert!(iters_equal_anyorder(
+            services
+                .iter()
+                .flat_map(|s| s.ingress_route().routes().iter())
+                .map(|route| route.rule()),
+            [
+                TraefikRouterRule::path_prefix_rule(["/master/service-a"]),
+                TraefikRouterRule::path_prefix_rule(["/master/service-b"])
+            ]
+            .iter()
+        ));
+
+        Ok(())
+    }
+
+    fn iters_equal_anyorder<T: Eq + Hash>(
+        mut i1: impl Iterator<Item = T>,
+        i2: impl Iterator<Item = T>,
+    ) -> bool {
+        let set: HashSet<T> = i2.collect();
+        i1.all(|x| set.contains(&x))
     }
 }
