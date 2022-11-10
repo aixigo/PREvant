@@ -74,7 +74,7 @@
          open() {
             $(this.$refs.dialog).modal({
                backdrop: 'static',
-               keyboard: false
+               keyboard: true
             });
          },
 
