@@ -391,10 +391,7 @@ components:
         - registry
     EnvironmentConfiguration:
       oneOf:
-        - type: object
-          description: Key value object of enviroment variables
-          example:
-            "MYSQL_USER": "admin"
+        - $ref: '#/components/schemas/EnvironmentValue'
         - type: array
           items:
             type: string
@@ -402,6 +399,25 @@ components:
           example:
             - MYSQL_USER=admin
             - MYSQL_DATABASE=dbname
+    EnvironmentValue:
+      type: object
+      additionalProperties:
+        oneOf:
+          - type: string
+          - type: object
+            properties:
+              value:
+                type: string
+              templated:
+                type: boolean
+              replicated:
+                type: boolean
+            required:
+              - value
+            example: { "value": "admin-{{application.name}}", "templated": true, "replicate": true }
+      description: Key value object of enviroment variables
+      example:
+        "MYSQL_USER": "admin"
     Ticket:
       type: object
       properties:
