@@ -26,10 +26,10 @@
 use crate::apps::{Apps, AppsServiceError};
 use crate::infrastructure::DeploymentStrategy;
 use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, Image};
-use boa::exec::Executable;
-use boa::property::Attribute;
-use boa::syntax::ast::node::Node;
-use boa::{Context, Value};
+
+use boa_engine::property::Attribute;
+use boa_engine::syntax::ast::node::Node;
+use boa_engine::{Context, JsValue};
 use secstr::SecUtf8;
 use std::collections::BTreeMap;
 use std::iter::IntoIterator;
@@ -58,7 +58,7 @@ impl Apps {
                 Self::register_configs_as_global_property(&mut context, &configs);
                 context.register_global_property(
                     "appName",
-                    Value::String(app_name.to_string().into()),
+                    JsValue::String(app_name.to_string().into()),
                     Attribute::READONLY,
                 );
 
@@ -83,7 +83,8 @@ impl Apps {
             }
         };
 
-        let statements = match boa::parse(&hook_content, false) {
+        let mut context = Context::default();
+        let statements = match context.parse(&hook_content) {
             Ok(statements) => statements,
             Err(err) => {
                 error!("Cannot parse hook file {:?}: {}", hook_path, err);
@@ -91,8 +92,7 @@ impl Apps {
             }
         };
 
-        let mut context = Context::new();
-        if let Err(err) = statements.run(&mut context) {
+        if let Err(err) = context.eval(&hook_content) {
             error!(
                 "Cannot populate hook {:?} to Javascript context: {:?}",
                 hook_path, err
@@ -104,20 +104,28 @@ impl Apps {
             .items()
             .iter()
             .find_map(|node| match node {
-                Node::FunctionDecl(decl) if decl.name() == "deploymentHook" => Some(decl),
+                Node::FunctionDecl(decl)
+                    if context.interner().resolve(decl.name()) == Some("deploymentHook") =>
+                {
+                    Some(decl)
+                }
                 _ => None,
             })
             .map(|_| context)
     }
 
-    fn register_configs_as_global_property(context: &mut Context, configs: &[DeploymentStrategy]) {
+    fn register_configs_as_global_property(
+        mut context: &mut Context,
+        configs: &[DeploymentStrategy],
+    ) {
         let js_configs = configs
             .iter()
             .map(JsServiceConfig::from)
             .collect::<Vec<_>>();
 
         let js_configs = serde_json::to_value(js_configs).expect("Should be serializable");
-        let js_configs = Value::from_json(js_configs, context);
+        let js_configs =
+            JsValue::from_json(&js_configs, &mut context).expect("Unable to read JSON value");
 
         context.register_global_property("serviceConfigs", js_configs, Attribute::READONLY);
     }

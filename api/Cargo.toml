@@ -10,7 +10,7 @@ resolver = "2"
 [dependencies]
 async-trait = "0.1"
 base64 = "0.13"
-Boa = "0.11"
+boa_engine = "0.16"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "3.2", features = ["derive", "cargo"] }
 env_logger = "0.9"
