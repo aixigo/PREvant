@@ -43,7 +43,11 @@ impl From<HttpApiProblem> for HttpApiError {
 }
 
 impl<'r> Responder<'r, 'static> for HttpApiError {
-    fn respond_to(self, _: &'r Request<'_>) -> response::Result<'static> {
+    fn respond_to(self, request: &'r Request<'_>) -> response::Result<'static> {
+        if self.0.status == Some(http_api_problem::StatusCode::NO_CONTENT) {
+            return rocket::response::status::NoContent.respond_to(request);
+        }
+
         let paylaod = self.0.json_bytes();
         Response::build()
             .header(Header::new(
