@@ -341,8 +341,8 @@ impl KubernetesInfrastructure {
         strategy: &'a DeploymentStrategy,
         container_config: &ContainerConfig,
     ) -> Result<&'a DeploymentStrategy, KubernetesInfrastructureError> {
-        if let Some(volumes) = strategy.volumes() {
-            self.deploy_secret(app_name, strategy, volumes).await?;
+        if let Some(files) = strategy.files() {
+            self.deploy_secret(app_name, strategy, &files).await?;
         }
 
         let client = self.client().await?;
@@ -404,7 +404,7 @@ impl KubernetesInfrastructure {
         &self,
         app_name: &String,
         service_config: &ServiceConfig,
-        volumes: &BTreeMap<PathBuf, String>,
+        volumes: &BTreeMap<PathBuf, SecUtf8>,
     ) -> Result<(), KubernetesInfrastructureError> {
         debug!(
             "Deploying volumes as secrets for {} in app {}",
@@ -795,8 +795,6 @@ mod tests {
     use crate::models::EnvironmentVariable;
     use k8s_openapi::api::apps::v1::DeploymentSpec;
     use kube::api::ObjectMeta;
-    use secstr::SecUtf8;
-    use std::collections::BTreeMap;
 
     macro_rules! deployment_object {
         ($deployment_name:expr, $app_name:expr, $service_name:expr, $image:expr, $container_type:expr, $($a_key:expr => $a_value:expr),*) => {{

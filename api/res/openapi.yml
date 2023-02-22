@@ -376,10 +376,27 @@ components:
           $ref: '#/components/schemas/EnvironmentConfiguration'
         volumes:
           type: object
+          deprecated: true
           description: >-
             Files to be created in the the container.
             <p>
             The keys of this object are the paths in the container and the values contain the actual file content.
+            <p>
+            This field has been deprecated in favor of `files`. Kindly use `files` for future usage.
+          example:
+            "/etc/mysql/my.cnf": |
+              [client-server]
+              # Uncomment these if you want to use a nonstandard connection to MariaDB
+              #socket=/tmp/mysql.sock
+              #port=3306
+        files:
+          type: object
+          description: >-
+            Files to be created in the the container.
+            <p>
+            The keys of this object are the paths in the container and the values contain the actual file content.
+            <p>
+            This field replaces the deprecated `volumes`.
           example:
             "/etc/mysql/my.cnf": |
               [client-server]

@@ -26,6 +26,7 @@
 use crate::config::AppSelector;
 use crate::models::service::ContainerType;
 use crate::models::{Environment, Image, Router, ServiceConfig};
+use secstr::SecUtf8;
 use serde_value::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -41,7 +42,8 @@ pub(super) struct Companion {
     deployment_strategy: DeploymentStrategy,
     env: Option<Environment>,
     labels: Option<BTreeMap<String, String>>,
-    volumes: Option<BTreeMap<PathBuf, String>>,
+    #[serde(alias = "volumes", alias = "files", default)]
+    files: Option<BTreeMap<PathBuf, SecUtf8>>,
     #[serde(default = "AppSelector::default")]
     app_selector: AppSelector,
     router: Option<Router>,
@@ -94,8 +96,8 @@ impl From<Companion> for ServiceConfig {
         }));
         config.set_labels(companion.labels.clone());
 
-        if let Some(volumes) = &companion.volumes {
-            config.set_volumes(Some(volumes.clone()));
+        if let Some(files) = &companion.files {
+            config.set_files(Some(files.clone()));
         }
 
         if let Some(router) = &companion.router {

@@ -367,7 +367,7 @@ mod tests {
                 "openid",
                 labels = (),
                 env = ("VAR_1" => "efg"),
-                volumes = ()
+                files = ()
             )],
         );
 
@@ -415,7 +415,7 @@ mod tests {
                 "openid",
                 labels = (),
                 env = ("VAR_1" => "efg"),
-                volumes = ()
+                files = ()
             )],
         );
 

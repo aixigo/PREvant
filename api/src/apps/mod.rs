@@ -434,6 +434,7 @@ mod tests {
     use crate::infrastructure::Dummy;
     use crate::models::{EnvironmentVariable, Image, ServiceBuilder};
     use chrono::Utc;
+    use secstr::SecUtf8;
     use std::path::PathBuf;
     use std::str::FromStr;
     use tokio::runtime;
@@ -603,10 +604,10 @@ mod tests {
             .await?;
         assert_eq!(configs.len(), 1);
 
-        let volumes = configs.get(0).unwrap().volumes().unwrap();
+        let files = configs.get(0).unwrap().files().unwrap();
         assert_eq!(
-            volumes.get(&PathBuf::from("/run/secrets/user")).unwrap(),
-            "Hello"
+            files.get(&PathBuf::from("/run/secrets/user")).unwrap(),
+            &SecUtf8::from("Hello")
         );
 
         Ok(())
@@ -642,8 +643,8 @@ mod tests {
             .await?;
         assert_eq!(configs.len(), 1);
 
-        let volumes = configs.get(0).unwrap().volumes();
-        assert_eq!(volumes, None);
+        let files = configs.get(0).unwrap().files();
+        assert_eq!(files, None);
 
         Ok(())
     }
@@ -796,7 +797,7 @@ Log msg 3 of service-a of app master
             "openid",
             labels = (),
             env = ("VAR_1" => "efg"),
-            volumes = ()
+            files = ()
         )];
 
         apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
@@ -963,6 +964,76 @@ Log msg 3 of service-a of app master
         });
 
         assert_eq!(handle1.join().unwrap()?, handle2.join().unwrap()?,);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_deploy_companions_with_file_mount() -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [companions.db1]
+            serviceName = 'db1'
+            type = 'service'
+            image = 'private.example.com/library/db:latest'
+
+            [companions.db1.volumes]
+            '/etc/mysql1/my.cnf' = 'EFGH'
+
+            [companions.db2]
+            serviceName = 'db2'
+            type = 'service'
+            image = 'private.example.com/library/db:latest'
+
+            [companions.db2.files]
+            '/etc/mysql2/my.cnf' = 'ABCD'
+        "#
+        );
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        let app_name = AppName::from_str("master").unwrap();
+        let configs = service_configs!("db1", "db2");
+        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
+            .await?;
+        let deployed_apps = apps.get_apps().await?;
+
+        let db_config1: Vec<ServiceConfig> = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master"))
+            .await?
+            .into_iter()
+            .filter(|config| config.service_name() == "db1")
+            .collect();
+
+        let db_config2: Vec<ServiceConfig> = apps
+            .infrastructure
+            .get_configs_of_app(&String::from("master"))
+            .await?
+            .into_iter()
+            .filter(|config| config.service_name() == "db2")
+            .collect();
+
+        let services = deployed_apps.get_vec("master").unwrap();
+
+        assert_eq!(services.len(), 2);
+        assert_eq!(
+            db_config1[0]
+                .files()
+                .expect("Empty Map")
+                .get(&PathBuf::from("/etc/mysql1/my.cnf"))
+                .expect("Invalid entry in Map"),
+            &SecUtf8::from("EFGH")
+        );
+
+        assert_eq!(
+            db_config2[0]
+                .files()
+                .expect("Empty Map")
+                .get(&PathBuf::from("/etc/mysql2/my.cnf"))
+                .expect("Invalid entry in Map"),
+            &SecUtf8::from("ABCD")
+        );
 
         Ok(())
     }

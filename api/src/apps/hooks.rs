@@ -168,13 +168,13 @@ struct JsServiceConfig {
     #[serde(default)]
     env: BTreeMap<String, SecUtf8>,
     #[serde(default)]
-    files: BTreeMap<PathBuf, String>,
+    files: BTreeMap<PathBuf, SecUtf8>,
     r#type: ContainerType,
 }
 
 impl JsServiceConfig {
     fn apply_to(mut self, mut config: DeploymentStrategy) -> DeploymentStrategy {
-        config.set_volumes(Some(self.files));
+        config.set_files(Some(self.files));
 
         let env = match config.env().cloned() {
             Some(env) => {
@@ -223,7 +223,7 @@ impl From<&DeploymentStrategy> for JsServiceConfig {
                         .collect()
                 })
                 .unwrap_or_default(),
-            files: config.volumes().cloned().unwrap_or_default(),
+            files: config.files().cloned().unwrap_or_default(),
             r#type: config.container_type().clone(),
         }
     }
@@ -235,7 +235,6 @@ mod tests {
     use crate::apps::*;
     use crate::config::Config;
     use crate::infrastructure::Dummy;
-    use std::collections::BTreeMap;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -321,17 +320,17 @@ mod tests {
             .unwrap();
         let deployed_files = services
             .into_iter()
-            .map(|service| service.volumes().cloned())
+            .map(|service| service.files().cloned())
             .flatten()
             .flatten()
-            .map(|(path, content)| (path.to_str().unwrap().to_string(), content))
-            .collect::<Vec<(String, String)>>();
+            .map(|(path, content)| (path.to_str().unwrap().to_string(), content.clone()))
+            .collect::<Vec<(String, SecUtf8)>>();
 
         assert_eq!(
             deployed_files,
             vec![(
                 String::from("/etc/some-config.txt"),
-                String::from("service-a0")
+                SecUtf8::from("service-a0")
             )]
         );
 
@@ -354,9 +353,12 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         let mut service_config = crate::sc!("service-a");
-        let mut volumes = BTreeMap::new();
-        volumes.insert(PathBuf::from("/etc/some-config.txt"), String::from("value"));
-        service_config.set_volumes(Some(volumes));
+        let mut files = BTreeMap::new();
+        files.insert(
+            PathBuf::from("/etc/some-config.txt"),
+            SecUtf8::from("value"),
+        );
+        service_config.set_files(Some(files));
 
         apps.create_or_update(
             &AppName::from_str("master").unwrap(),
@@ -373,11 +375,11 @@ mod tests {
             .unwrap();
         let deployed_files = services
             .into_iter()
-            .map(|service| service.volumes().cloned())
+            .map(|service| service.files().cloned())
             .flatten()
             .flatten()
-            .map(|(path, content)| (path.to_str().unwrap().to_string(), content))
-            .collect::<Vec<(String, String)>>();
+            .map(|(path, content)| (path.to_str().unwrap().to_string(), content.clone()))
+            .collect::<Vec<(String, SecUtf8)>>();
 
         assert_eq!(deployed_files, vec![]);
 

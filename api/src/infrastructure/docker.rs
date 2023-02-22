@@ -366,11 +366,11 @@ impl DockerInfrastructure {
         let container_info = containers.create(&options).await?;
         debug!("Created container: {:?}", container_info);
 
-        self.copy_volume_data(&container_info, strategy).await?;
+        self.copy_file_data(&container_info, strategy).await?;
 
         containers.get(&container_info.id).start().await?;
         debug!("Started container: {:?}", container_info);
-
+        
         docker
             .networks()
             .get(network_id)
@@ -460,14 +460,14 @@ impl DockerInfrastructure {
         options.build()
     }
 
-    async fn copy_volume_data(
+    async fn copy_file_data(
         &self,
         container_info: &ContainerCreateInfo,
         service_config: &ServiceConfig,
     ) -> Result<(), ShipLiftError> {
-        let volumes = match service_config.volumes() {
+        let files = match service_config.files() {
             None => return Ok(()),
-            Some(volumes) => volumes.clone(),
+            Some(files) => files.clone(),
         };
 
         debug!(
@@ -479,10 +479,10 @@ impl DockerInfrastructure {
         let docker = Docker::new();
         let containers = docker.containers();
 
-        for (path, data) in volumes.into_iter() {
+        for (path, data) in files.into_iter() {
             containers
                 .get(&container_info.id)
-                .copy_file_into(path, data.as_bytes())
+                .copy_file_into(path, data.into_unsecure().as_bytes())
                 .await?;
         }
 

@@ -26,6 +26,7 @@
 use crate::models::service::ContainerType;
 use crate::models::Image;
 pub use environment::{Environment, EnvironmentVariable};
+use secstr::SecUtf8;
 use serde::Deserialize;
 use serde_value::Value;
 use std::collections::BTreeMap;
@@ -35,14 +36,14 @@ use std::path::PathBuf;
 mod environment;
 mod templating;
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
     service_name: String,
     image: Image,
     env: Option<Environment>,
-    // TODO: rename this field because it does not match to volumes any more (it is file content, cf. issue #8)
-    volumes: Option<BTreeMap<PathBuf, String>>,
+    #[serde(alias = "volumes", alias = "files", default)]
+    files: Option<BTreeMap<PathBuf, SecUtf8>>,
     #[serde(skip)]
     labels: Option<BTreeMap<String, String>>,
     #[serde(skip, default = "ContainerType::default")]
@@ -61,7 +62,7 @@ impl ServiceConfig {
             service_name,
             image,
             env: None,
-            volumes: None,
+            files: None,
             labels: None,
             container_type: ContainerType::Instance,
             port: 80,
@@ -115,24 +116,24 @@ impl ServiceConfig {
         }
     }
 
-    pub fn add_volume(&mut self, path: PathBuf, data: String) {
-        if let Some(ref mut volumes) = self.volumes {
-            volumes.insert(path, data);
+    pub fn add_file(&mut self, path: PathBuf, data: SecUtf8) {
+        if let Some(ref mut files) = self.files {
+            files.insert(path, data);
         } else {
-            let mut volumes = BTreeMap::new();
-            volumes.insert(path, data);
-            self.volumes = Some(volumes);
+            let mut files = BTreeMap::new();
+            files.insert(path, data);
+            self.files = Some(files);
         }
     }
 
-    pub fn set_volumes(&mut self, volumes: Option<BTreeMap<PathBuf, String>>) {
-        self.volumes = volumes;
+    pub fn set_files(&mut self, files: Option<BTreeMap<PathBuf, SecUtf8>>) {
+        self.files = files
     }
 
-    pub fn volumes<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<PathBuf, String>> {
-        match &self.volumes {
+    pub fn files<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<PathBuf, SecUtf8>> {
+        match &self.files {
             None => None,
-            Some(volumes) => Some(volumes),
+            Some(files) => Some(files),
         }
     }
 
@@ -194,7 +195,7 @@ impl ServiceConfig {
         }
     }
 
-    /// Copy labels, envs and volumes from other into self.
+    /// Copy labels, envs and files from other into self.
     /// If something is defined in self and other, self has precedence.
     pub fn merge_with(&mut self, other: &Self) {
         if let Some(env) = &other.env {
@@ -212,9 +213,9 @@ impl ServiceConfig {
             }
         }
 
-        let mut volumes = other.volumes.as_ref().cloned().unwrap_or_default();
-        volumes.extend(self.volumes.as_ref().cloned().unwrap_or_default());
-        self.volumes = Some(volumes);
+        let mut files = other.files.as_ref().cloned().unwrap_or_default();
+        files.extend(self.files.as_ref().cloned().unwrap_or_default());
+        self.files = Some(files);
 
         let mut labels = other.labels.as_ref().cloned().unwrap_or_default();
         labels.extend(self.labels.as_ref().cloned().unwrap_or_default());
@@ -269,7 +270,7 @@ macro_rules! sc {
 
     ( $name:expr, labels = ($($l_key:expr => $l_value:expr),*),
         env = ($($env_key:expr => $env_value:expr),*),
-        volumes = ($($v_key:expr => $v_value:expr),*) ) => {{
+        files = ($($v_key:expr => $v_value:expr),*) ) => {{
         use std::str::FromStr;
         use sha2::Digest;
 
@@ -284,9 +285,9 @@ macro_rules! sc {
         $( _labels.insert(String::from($l_key), String::from($l_value)); )*
         config.set_labels(Some(_labels));
 
-        let mut _volumes = std::collections::BTreeMap::new();
-        $( _volumes.insert(std::path::PathBuf::from($v_key), String::from($v_value)); )*
-        config.set_volumes(Some(_volumes));
+        let mut _files = std::collections::BTreeMap::new();
+        $( _files.insert(std::path::PathBuf::from($v_key), String::from($v_value)); )*
+        config.set_files(Some(_files));
 
         let mut _env = Vec::new();
         $( _env.push(crate::models::EnvironmentVariable::new(String::from($env_key), secstr::SecUtf8::from($env_value))); )*
@@ -312,7 +313,7 @@ macro_rules! sc {
     ( $name:expr, $img:expr,
         labels = ($($l_key:expr => $l_value:expr),*),
         env = ($($env_key:expr => $env_value:expr),*),
-        volumes = ($($v_key:expr => $v_value:expr),*) ) => {{
+        files = ($($v_key:expr => $v_value:expr),*) ) => {{
         use std::str::FromStr;
         let mut config =
             ServiceConfig::new(String::from($name), crate::models::Image::from_str($img).unwrap());
@@ -321,9 +322,9 @@ macro_rules! sc {
         $( _labels.insert(String::from($l_key), String::from($l_value)); )*
         config.set_labels(Some(_labels));
 
-        let mut _volumes = std::collections::BTreeMap::new();
-        $( _volumes.insert(std::path::PathBuf::from($v_key), String::from($v_value)); )*
-        config.set_volumes(Some(_volumes));
+        let mut _files = std::collections::BTreeMap::new();
+        $( _files.insert(std::path::PathBuf::from($v_key), SecUtf8::from($v_value)); )*
+        config.set_files(Some(_files));
 
         let mut _env = Vec::new();
         $( _env.push(crate::models::EnvironmentVariable::new(String::from($env_key), secstr::SecUtf8::from($env_value))); )*
@@ -336,7 +337,6 @@ macro_rules! sc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secstr::SecUtf8;
     use serde_json::from_value;
 
     #[test]
@@ -369,14 +369,14 @@ mod tests {
             "nginx",
             labels = ("priority" => "1000", "rule" => "some_string"),
             env = (),
-            volumes = ()
+            files = ()
         );
         let config2 = sc!(
             "proxy",
             "nginx",
             labels = ("priority" => "2000", "test_label" => "other_string"),
             env = (),
-            volumes = ()
+            files = ()
         );
 
         config.merge_with(&config2);
@@ -444,39 +444,86 @@ mod tests {
             "nginx",
             labels = (),
             env = (),
-            volumes = ("/etc/mysql/my.cnf" => "ABCD", "/etc/folder/abcd.conf" => "1234")
+            files = ("/etc/mysql/my.cnf" => "ABCD", "/etc/folder/abcd.conf" => "1234")
         );
         let config2 = sc!(
             "proxy",
             "nginx",
             labels = (),
             env = (),
-            volumes = ("/etc/mysql/my.cnf" => "EFGH", "/etc/test.conf" => "5678")
+            files = ("/etc/mysql/my.cnf" => "EFGH", "/etc/test.conf" => "5678")
         );
 
         config.merge_with(&config2);
 
-        assert_eq!(config.volumes().unwrap().len(), 3);
+        assert_eq!(config.files().expect("No value found").len(), 3);
         assert_eq!(
             config
-                .volumes()
+                .files()
                 .unwrap()
                 .get(&PathBuf::from("/etc/mysql/my.cnf")),
-            Some(&String::from("ABCD"))
+            Some(&SecUtf8::from("ABCD"))
         );
         assert_eq!(
             config
-                .volumes()
+                .files()
                 .unwrap()
                 .get(&PathBuf::from("/etc/folder/abcd.conf")),
-            Some(&String::from("1234"))
+            Some(&SecUtf8::from("1234"))
         );
         assert_eq!(
             config
-                .volumes()
+                .files()
                 .unwrap()
                 .get(&PathBuf::from("/etc/test.conf")),
-            Some(&String::from("5678"))
+            Some(&SecUtf8::from("5678"))
+        );
+    }
+
+    #[test]
+    fn should_parse_volume_service_config_json() {
+        let config_string = r#"{
+            "serviceName": "mariadb",
+            "image": "mariadb:10.3",
+            "env": [
+              "MYSQL_USER=admin",
+              "MYSQL_DATABASE=dbname"
+            ],
+            "volumes": {
+                "/etc/mysql/my.cnf": "ABCD"
+            }
+        }"#;
+        let config_volume =
+            from_value::<ServiceConfig>(serde_json::from_slice(config_string.as_bytes()).unwrap())
+                .unwrap();
+
+        let config_file = from_value::<ServiceConfig>(serde_json::json!({
+            "serviceName": "mariadb",
+            "image": "mariadb:10.3",
+            "env": [
+              "MYSQL_USER=admin",
+              "MYSQL_DATABASE=dbname"
+            ],
+            "files": {
+                "/etc/mysql/my.cnf" : "EFGH"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config_volume
+                .files()
+                .unwrap()
+                .get(&PathBuf::from("/etc/mysql/my.cnf")),
+            Some(&SecUtf8::from("ABCD"))
+        );
+
+        assert_eq!(
+            config_file
+                .files()
+                .unwrap()
+                .get(&PathBuf::from("/etc/mysql/my.cnf")),
+            Some(&SecUtf8::from("EFGH"))
         );
     }
 }
