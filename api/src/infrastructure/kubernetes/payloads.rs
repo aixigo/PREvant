@@ -163,8 +163,8 @@ pub fn deployment_payload(
         BTreeMap::from([(IMAGE_LABEL.to_string(), strategy.image().to_string())])
     };
 
-    let volume_mounts = strategy.volumes().map(|volumes| {
-        let parent_paths = volumes
+    let volume_mounts = strategy.files().map(|files| {
+        let parent_paths = files
             .iter()
             .filter_map(|(path, _)| path.parent())
             .collect::<HashSet<_>>();
@@ -179,13 +179,13 @@ pub fn deployment_payload(
             .collect::<Vec<_>>()
     });
 
-    let volumes = strategy.volumes().map(|volumes| {
-        let volumes = volumes
+    let volumes = strategy.files().map(|files| {
+        let files = files
             .iter()
             .filter_map(|(path, _)| path.parent().map(|parent| (parent, path)))
             .collect::<MultiMap<_, _>>();
 
-        volumes
+        files
             .iter_all()
             .map(|(parent, paths)| {
                 let items = paths
@@ -346,14 +346,14 @@ pub fn deployment_replicas_payload(
 pub fn secrets_payload(
     app_name: &String,
     service_config: &ServiceConfig,
-    volumes: &BTreeMap<PathBuf, String>,
+    files: &BTreeMap<PathBuf, SecUtf8>,
 ) -> V1Secret {
-    let secrets = volumes
+    let secrets = files
         .iter()
         .map(|(path, file_content)| {
             (
                 secret_name_from_name!(path),
-                Value::String(encode(file_content)),
+                Value::String(encode(file_content.unsecure())),
             )
         })
         .collect::<Map<String, Value>>();
@@ -514,7 +514,6 @@ mod tests {
     use super::*;
     use crate::models::{Environment, EnvironmentVariable};
     use crate::sc;
-    use secstr::SecUtf8;
 
     #[test]
     fn should_create_deployment_payload() {

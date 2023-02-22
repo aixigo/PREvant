@@ -23,11 +23,12 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+
+use crate::models::ServiceConfig;
 pub use self::companion::DeploymentStrategy;
 use self::companion::{Companion, CompanionType};
 pub use self::container::ContainerConfig;
 pub use self::runtime::{Runtime, Type};
-use crate::models::ServiceConfig;
 pub(self) use app_selector::AppSelector;
 use clap::Parser;
 use figment::providers::{Env, Format, Toml};
@@ -35,7 +36,6 @@ use figment::value::{Dict, Map, Tag, Value};
 use figment::{Metadata, Profile};
 pub(self) use secret::Secret;
 use secstr::SecUtf8;
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::convert::From;
 use std::io::Error as IOError;
@@ -196,9 +196,7 @@ impl Config {
     }
 
     pub fn hook(&self, hook_name: &str) -> Option<&PathBuf> {
-        self.hooks
-            .as_ref()
-            .and_then(|hooks| hooks.get(hook_name))
+        self.hooks.as_ref().and_then(|hooks| hooks.get(hook_name))
     }
 
     pub fn registry_credentials<'a, 'b: 'a>(
@@ -229,10 +227,9 @@ impl Service {
             for s in secrets.iter().filter(|s| s.matches_app_name(app_name)) {
                 let (path, sec) = s.clone().into();
 
-                service_config.add_volume(
+                service_config.add_file(
                     path,
-                    // TODO: use secstr in service_config (see issue #8)
-                    String::from(sec.unsecure()),
+                    sec,
                 );
             }
         }
@@ -275,7 +272,6 @@ macro_rules! config_from_str {
 mod tests {
     use super::*;
     use crate::models::{service::ContainerType, Image};
-    use std::path::PathBuf;
     use std::str::FromStr;
 
     macro_rules! service_config {
@@ -395,7 +391,7 @@ mod tests {
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|(config, _)| {
-            assert_eq!(config.volumes().unwrap().len(), 2);
+            assert_eq!(config.files().unwrap().len(), 2);
         });
     }
 
@@ -485,13 +481,12 @@ mod tests {
 
         let mut service_config = service_config!("mariadb");
         config.add_secrets_to(&mut service_config, &String::from("master"));
-
         let secret_file_content = service_config
-            .volumes()
+            .files()
             .expect("File content is missing")
             .get(&PathBuf::from("/run/secrets/user"))
             .expect("No file for /run/secrets/user");
-        assert_eq!(secret_file_content, "Hello");
+        assert_eq!(secret_file_content, &SecUtf8::from("Hello"));
     }
 
     #[test]
@@ -510,11 +505,11 @@ mod tests {
         config.add_secrets_to(&mut service_config, &String::from("master"));
 
         let secret_file_content = service_config
-            .volumes()
+            .files()
             .expect("File content is missing")
             .get(&PathBuf::from("/run/secrets/user"))
             .expect("No file for /run/secrets/user");
-        assert_eq!(secret_file_content, "Hello");
+        assert_eq!(secret_file_content, &SecUtf8::from("Hello"));
     }
 
     #[test]
@@ -533,11 +528,11 @@ mod tests {
         config.add_secrets_to(&mut service_config, &String::from("master-1.x"));
 
         let secret_file_content = service_config
-            .volumes()
+            .files()
             .expect("File content is missing")
             .get(&PathBuf::from("/run/secrets/user"))
             .expect("No file for /run/secrets/user");
-        assert_eq!(secret_file_content, "Hello");
+        assert_eq!(secret_file_content, &SecUtf8::from("Hello"));
     }
 
     #[test]
@@ -555,7 +550,7 @@ mod tests {
         let mut service_config = service_config!("mariadb");
         config.add_secrets_to(&mut service_config, &String::from("random-app-name"));
 
-        assert!(service_config.volumes().is_none());
+        assert!(service_config.files().is_none());
     }
 
     #[test]
@@ -573,7 +568,7 @@ mod tests {
         let mut service_config = service_config!("mariadb");
         config.add_secrets_to(&mut service_config, &String::from("master-1.x"));
 
-        assert_eq!(service_config.volumes(), None);
+        assert_eq!(service_config.files(), None);
     }
 
     #[test]
@@ -618,5 +613,29 @@ mod tests {
             );
             Ok(())
         })
+    }
+
+    #[test]
+    fn should_return_application_companions_as_service_configs_with_volumes_as_files() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:11-alpine'
+            env = [ 'KEY=VALUE' ]
+
+            [companions.openid.files]
+            '/tmp/test-1.json' = '{}'
+            '/tmp/test-2.json' = '{}'
+            "#
+        );
+
+        let companion_configs = config.application_companion_configs("master");
+
+        assert_eq!(companion_configs.len(), 1);
+        companion_configs.iter().for_each(|(config, _)| {
+            assert_eq!(config.files().unwrap().len(), 2);
+        });
     }
 }

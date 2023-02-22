@@ -109,8 +109,10 @@ impl ServiceConfig {
             templated_config.set_env(Some(env.apply_templating(parameters, &mut reg)?));
         }
 
-        if let Some(volumes) = self.volumes() {
-            templated_config.set_volumes(Some(apply_templates(&reg, parameters, volumes)?));
+        if let Some(files) = self.files() {
+            templated_config.set_files(Some(apply_templates_with_secrets(
+                &reg, parameters, &files,
+            )?));
         }
 
         if let Some(labels) = self.labels() {
@@ -231,6 +233,26 @@ where
     Ok(templated_values)
 }
 
+fn apply_templates_with_secrets<K>(
+    reg: &Handlebars,
+    parameters: &TemplateParameters,
+    original_values: &BTreeMap<K, SecUtf8>,
+) -> Result<BTreeMap<K, SecUtf8>, TemplateRenderError>
+where
+    K: Clone + std::cmp::Ord,
+{
+    let mut templated_values = BTreeMap::new();
+
+    for (k, v) in original_values {
+        templated_values.insert(
+            k.clone(),
+            SecUtf8::from(reg.render_template(v.unsecure(), &parameters)?),
+        );
+    }
+
+    Ok(templated_values)
+}
+
 fn apply_templating_to_middlewares(
     reg: &Handlebars,
     parameters: &TemplateParameters,
@@ -303,7 +325,6 @@ mod tests {
     use crate::models::{Image, Router};
     use crate::sc;
     use std::path::PathBuf;
-    use std::str::FromStr;
 
     #[test]
     fn should_apply_app_companion_templating_with_service_name() {
@@ -421,10 +442,10 @@ mod tests {
         );
 
         let mount_path = PathBuf::from("/etc/ningx/conf.d/default.conf");
-        let mut volumes = BTreeMap::new();
-        volumes.insert(
+        let mut files = BTreeMap::new();
+        files.insert(
             mount_path.clone(),
-            String::from(
+            SecUtf8::from(
                 r#"{{#each services}}
 location /{{name}} {
     proxy_pass http://{{~name~}};
@@ -432,7 +453,7 @@ location /{{name}} {
 {{/each}}"#,
             ),
         );
-        config.set_volumes(Some(volumes));
+        config.set_files(Some(files));
 
         let service_configs = vec![
             ServiceConfig::new(
@@ -450,11 +471,12 @@ location /{{name}} {
 
         assert_eq!(
             templated_config
-                .volumes()
+                .files()
                 .unwrap()
                 .get(&mount_path)
                 .unwrap(),
-            r#"
+            &SecUtf8::from(
+                r#"
 location /service-a {
     proxy_pass http://service-a;
 }
@@ -463,6 +485,7 @@ location /service-b {
     proxy_pass http://service-b;
 }
 "#
+            )
         );
     }
 
@@ -496,10 +519,10 @@ location /service-b {
             Image::from_str("nginx").unwrap(),
         );
         let mount_path = PathBuf::from("/etc/ningx/conf.d/default.conf");
-        let mut volumes = BTreeMap::new();
-        volumes.insert(
+        let mut files = BTreeMap::new();
+        files.insert(
             mount_path.clone(),
-            String::from(
+            SecUtf8::from(
                 r#"{{#each services}}
 {{~#isNotCompanion type}}
 location /{{name}} {
@@ -509,25 +532,23 @@ location /{{name}} {
 {{~/each}}"#,
             ),
         );
-        config.set_volumes(Some(volumes));
+        config.set_files(Some(files));
 
         let templated_config = config
             .apply_templating_for_application_companion(&String::from("master"), &service_configs)
             .unwrap();
 
         assert_eq!(
-            templated_config
-                .volumes()
-                .unwrap()
-                .get(&mount_path)
-                .unwrap(),
-            r#"
+            templated_config.files().unwrap().get(&mount_path).unwrap(),
+            &SecUtf8::from(
+                r#"
 location /service-a {
     proxy_pass http://service-a;
 }
 location /service-b {
     proxy_pass http://service-b;
 }"#
+            )
         );
     }
 
@@ -561,10 +582,10 @@ location /service-b {
             Image::from_str("nginx").unwrap(),
         );
         let mount_path = PathBuf::from("/etc/ningx/conf.d/default.conf");
-        let mut volumes = BTreeMap::new();
-        volumes.insert(
+        let mut files = BTreeMap::new();
+        files.insert(
             mount_path.clone(),
-            String::from(
+            SecUtf8::from(
                 r#"{{#each services}}
 {{~#isCompanion type}}
 location /{{name}} {
@@ -574,7 +595,7 @@ location /{{name}} {
 {{~/each}}"#,
             ),
         );
-        config.set_volumes(Some(volumes));
+        config.set_files(Some(files));
 
         let templated_config = config
             .apply_templating_for_application_companion(&String::from("master"), &service_configs)
@@ -582,17 +603,19 @@ location /{{name}} {
 
         assert_eq!(
             templated_config
-                .volumes()
+                .files()
                 .unwrap()
                 .get(&mount_path)
                 .unwrap(),
-            r#"
+            &SecUtf8::from(
+                r#"
 location /service-c {
     proxy_pass http://service-c;
 }
 location /service-d {
     proxy_pass http://service-d;
 }"#
+            )
         );
     }
 
