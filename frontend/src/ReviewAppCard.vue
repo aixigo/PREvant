@@ -115,7 +115,7 @@
                        v-if="isExpanded( container )">
                      <div class="ra-build-infos">
                         <template v-if="container.openApiUrl">
-                           <router-link :to="{ name: 'open-api-ui', params: {  url: container.openApiUrl, title: container.name }}">API Documentation</router-link>
+                           <router-link :to="{ name: 'open-api-ui', params: {  url: container.openApiUrl }, meta: { title: container.name }}">API Documentation</router-link>
                         </template>
                         <router-link :to="{ name: 'logs', params: {  app: reviewApp.name, service: container.name }}">Logs</router-link>
                      </div>
@@ -129,8 +129,7 @@
 
                <div class="ra-container__tags">
                   <span class="badge"
-                        :class="badgeClass( container.type )"
-                        v-tooltip="tooltip( container.type )">{{ container.type }}</span>
+                        :class="badgeClass( container.type )">{{ container.type }}</span>
                   <span v-if="container.version && container.version.gitCommit"
                         class="ra-build-infos ra-build-infos__hash text-right"
                         :title="container.version | version">
@@ -150,7 +149,7 @@
                   autocomplete="off"
                   autocorrect="off"
                   autocapitalize="off"
-                  spellcheck="false">
+                  :spellcheck="false">
             </textarea>
          </div>
       </div>
@@ -164,7 +163,6 @@
    import moment from 'moment';
    import DuplicateAppDialog from './DuplicateAppDialog.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
-   import OpenApiUI from './OpenApiUI.vue';
 
    export default {
       data() {
@@ -176,7 +174,6 @@
       components: {
          'duplicate-app-dialog': DuplicateAppDialog,
          'shutdown-app-dialog': ShutdownAppDialog,
-         'open-api-ui': OpenApiUI
       },
       filters: {
          date(buildDateTime) {

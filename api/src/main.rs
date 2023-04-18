@@ -39,10 +39,10 @@ use crate::config::{Config, Type};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
 use clap::Parser;
-use rocket::fs::NamedFile;
+use rocket::fs::{FileServer, Options};
 use serde_yaml::{from_reader, to_string, Value};
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process;
 use std::sync::Arc;
 
@@ -56,20 +56,9 @@ mod tickets;
 mod webhooks;
 
 #[get("/")]
-async fn index() -> Option<NamedFile> {
-    NamedFile::open(Path::new("frontend/index.html")).await.ok()
-}
-
-#[get("/<path..>", rank = 100)]
-async fn files(path: PathBuf) -> Option<NamedFile> {
-    NamedFile::open(Path::new("frontend/").join(path))
-        .await
-        .ok()
-}
-
-#[get("/")]
 fn openapi(request_info: RequestInfo) -> Option<String> {
-    let mut f = match File::open("openapi.yml") {
+    let openapi_path = Path::new("res").join("openapi.yml");
+    let mut f = match File::open(openapi_path) {
         Ok(f) => f,
         Err(e) => {
             error!("Cannot find API documentation: {}", e);
@@ -126,9 +115,11 @@ async fn main() -> Result<(), StartUpError> {
         .manage(config)
         .manage(apps)
         .manage(host_meta_cache)
-        .mount("/", routes![index])
+        .mount(
+            "/",
+            FileServer::new(Path::new("frontend"), Options::Index | Options::Missing),
+        )
         .mount("/openapi.yaml", routes![openapi])
-        .mount("/", routes![files])
         .mount("/api/apps", crate::apps::apps_routes())
         .mount("/api", routes![tickets::tickets])
         .mount("/api", routes![webhooks::webhooks])

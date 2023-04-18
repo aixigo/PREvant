@@ -2,9 +2,13 @@ This file provides some hints and examples how to develop PREvant.
 
 # Backend Development
 
-Change into the directory `/api` and follow the instructions in the subsections.
+You can build PREvant's backend API with [`cargo`](https://doc.rust-lang.org/cargo/) in the sub directory `/api`. For example, `cargo run` build and starts the backend so that it will be available at `http://localhost:8000`. 
 
-## Kubernetes Backend
+If you want to use PREvant's frontend during development, head over to the [Frontend Development section](#fe-dev).
+
+Without any CLI options, PREvant will use the Docker API. If you want to develop with against Kubernetes, have a look into the [Kubernetes section](#k8s-dev).
+
+## <a name="k8s-dev"></a>Kubernetes Backend
 
 For developing against a local Kubernetes cluster you can use [k3d](https://k3d.io).
 
@@ -28,7 +32,23 @@ For developing against a local Kubernetes cluster you can use [k3d](https://k3d.
       http://localhost:8000/api/apps/master
    ```
 
-# Frontend Development
+# <a name="fe-dev"></a>Frontend Development
+
+You can build PREvant's frontend with [`npm`](https://www.npmjs.com/) in the sub directory `/frontend`. You can [build the static HTML files](#fe-static-html) or [serve the HTML files via the dev server](#fe-dev-server).
+
+
+## <a name="fe-static-html"></a>Static HTML
+
+To create the static HTML files that can be served by PREvant's backend (see [above](#backend-development), you need to run following commands and start the backend.
+
+```bash
+npm ci
+npm run build
+```
+
+PREvant will be available at `http://localhost:8000`.
+
+## <a name="fe-dev-server"></a>Dev Server
 
 1. Start the backend as described in [Backend Development](#backend-development).
 2. Change into the directory `/frontend`

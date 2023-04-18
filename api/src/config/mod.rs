@@ -24,11 +24,11 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::ServiceConfig;
 pub use self::companion::DeploymentStrategy;
 use self::companion::{Companion, CompanionType};
 pub use self::container::ContainerConfig;
 pub use self::runtime::{Runtime, Type};
+use crate::models::ServiceConfig;
 pub(self) use app_selector::AppSelector;
 use clap::Parser;
 use figment::providers::{Env, Format, Toml};
@@ -227,10 +227,7 @@ impl Service {
             for s in secrets.iter().filter(|s| s.matches_app_name(app_name)) {
                 let (path, sec) = s.clone().into();
 
-                service_config.add_file(
-                    path,
-                    sec,
-                );
+                service_config.add_file(path, sec);
             }
         }
     }

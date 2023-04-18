@@ -25,15 +25,23 @@
 */
 <template>
    <dlg ref="dialog" :title="`Logs of ${$route.params.service} in ${$route.params.app}`" :large="true" @close="clearLogs">
-      <template slot="body">
-         <virtual-list :size="10" :remain="50" :bench="120" class="ra-logs" :tobottom="updateLogs">
-            <log-line v-for="line of logLines" :line="line.line" :key="line.id" />
-         </virtual-list>
+      <template v-slot:body>
+         <DynamicScroller :items="logLines" :item-size="20" class="ra-logs">
+            <template v-slot="{ item, index, active }">
+               <DynamicScrollerItem :item="item" :active="active" :size-dependencies="[ item.line ]" :data-index="index">
+                  <div class="ra-log-line" :key="item.id">
+                     {{ item.line }}
+                  </div>
+               </DynamicScrollerItem>
+            </template>
+         </DynamicScroller>
       </template>
    </dlg>
 </template>
 
 <style>
+   @import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
+
    .ra-logs {
       height: 80vh;
       overflow: auto;
@@ -44,13 +52,17 @@
 
       padding: 0.5rem;
    }
+
+   .ra-log-line {
+      white-space: nowrap;
+      height: 20px;
+   }
 </style>
 
 <script>
    import Dialog from './Dialog.vue';
-   import LogLine from "./LogLine";
    import parseLinkHeader from 'parse-link-header';
-   import virtualList from 'vue-virtual-scroll-list'
+   import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
 
    let requestUri;
 
@@ -63,8 +75,8 @@
       },
       components: {
          'dlg': Dialog,
-         'virtual-list': virtualList,
-         'log-line': LogLine
+         'DynamicScrollerItem': DynamicScrollerItem,
+         'DynamicScroller': DynamicScroller
       },
       watch: {
          currentPageLink(newCurrentPageLink) {

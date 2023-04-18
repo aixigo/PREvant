@@ -32,7 +32,9 @@
                <div class="ra-modal-header">
                   <h1>API Documentation<span v-if="showAdditionalHeadlineInformation"> – {{ $route.params.title }}</span></h1>
 
-                  <font-awesome-icon icon="window-close" @click="close()" class="ra-modal-close-button"/>
+                  <span @click="close()">
+                     <font-awesome-icon icon="window-close" @click="close()" class="ra-modal-close-button"/>
+                  </span>
                </div>
 
                <div class="ra-modal-body">
@@ -45,7 +47,7 @@
 </template>
 
 <style type="text/css">
-   @import "~swagger-ui-dist/swagger-ui.css";
+   @import "~swagger-ui/dist/swagger-ui.css";
 
    /* Fixes swagger ui response column width */
    .ra-modal-container .col.response-col_status {
@@ -114,7 +116,7 @@
 </style>
 
 <script>
-   const SwaggerUIBundle = require( 'swagger-ui-dist' ).SwaggerUIBundle;
+   import SwaggerUI from 'swagger-ui';
 
    export default {
       data() {
@@ -126,13 +128,9 @@
          }
       },
       mounted() {
-         SwaggerUIBundle( {
+         SwaggerUI( {
             url: this.$route.params.url,
-            dom_id: `#swagger-ui-${this._uid}`,
-            presets: [
-               SwaggerUIBundle.presets.apis,
-               SwaggerUIBundle.SwaggerUIStandalonePreset
-            ]
+            dom_id: `#swagger-ui-${this._uid}`
          } );
       },
       methods: {
@@ -142,3 +140,4 @@
       }
    }
 </script>
+

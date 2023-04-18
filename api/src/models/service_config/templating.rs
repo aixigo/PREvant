@@ -470,11 +470,7 @@ location /{{name}} {
             .unwrap();
 
         assert_eq!(
-            templated_config
-                .files()
-                .unwrap()
-                .get(&mount_path)
-                .unwrap(),
+            templated_config.files().unwrap().get(&mount_path).unwrap(),
             &SecUtf8::from(
                 r#"
 location /service-a {
@@ -602,11 +598,7 @@ location /{{name}} {
             .unwrap();
 
         assert_eq!(
-            templated_config
-                .files()
-                .unwrap()
-                .get(&mount_path)
-                .unwrap(),
+            templated_config.files().unwrap().get(&mount_path).unwrap(),
             &SecUtf8::from(
                 r#"
 location /service-c {

@@ -26,7 +26,7 @@
 
 <template>
    <dlg ref="dialog" :title="'Shutdown ' + appName" :error-status="errorStatus" :error-status-text="errorStatusText">
-      <template slot="body">
+      <template v-slot:body>
          <p>Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing in the app:</p>
 
          <div class="form-group">
@@ -39,7 +39,7 @@
                   @keyup="keyPressed">
          </div>
       </template>
-      <template slot="footer">
+      <template v-slot:footer>
          <button
                type="button"
                class="btn btn-outline-danger"

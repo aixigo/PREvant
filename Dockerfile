@@ -19,7 +19,8 @@ RUN cargo build --release
 # Compose application directory
 FROM scratch as directory-composer
 COPY --from=backend-builder /usr/src/api/target/release/prevant /app/prevant
-COPY api/res/Rocket.toml api/res/config.toml api/res/openapi.yml /app/
+COPY api/res/Rocket.toml api/res/config.toml /app/
+COPY api/res/openapi.yml /app/res/
 COPY --from=frontend-builder /usr/src/frontend/dist/index.html /usr/src/frontend/dist/favicon.svg /app/frontend/
 COPY --from=frontend-builder /usr/src/frontend/dist/js /app/frontend/js
 COPY --from=frontend-builder /usr/src/frontend/dist/css /app/frontend/css

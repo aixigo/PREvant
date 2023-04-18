@@ -35,10 +35,12 @@ $(document).ready(() => {
      $('body').bootstrapMaterialDesign();
 });
 
-import Vue from 'vue';
-import VueResource from 'vue-resource';
-import VTooltip from 'v-tooltip';
-import VueRouter from 'vue-router';
+import { Vue, createApp, configureCompat } from 'vue';
+import { createRouter, createWebHashHistory } from 'vue-router';
+
+configureCompat({
+  RENDER_FUNCTION: false,
+})
 
 import './scss/theme.scss';
 import App from './App.vue';
@@ -60,30 +62,25 @@ library.add(faTerminal);
 library.add(faTrash);
 library.add(faWindowClose);
 
-Vue.use(VueResource);
-Vue.use(VTooltip);
-Vue.use(VueRouter);
-Vue.component('font-awesome-icon', FontAwesomeIcon);
-
 store.dispatch('fetchData');
 
-const router = new VueRouter({
+const router = createRouter({
+   history: createWebHashHistory(),
    routes: [
       { path: '/open-api-ui/:url', name: 'open-api-ui', component: OpenApiUI },
       { path: '/logs/:app/:service', name: 'logs', component: LogsDialog }
    ]
 });
 
-new Vue({
-    el: '#app',
-    store,
-    router,
-    render: h => h(App)
-});
+createApp(App)
+   .component('font-awesome-icon', FontAwesomeIcon)
+   .use(store)
+   .use(router)
+   .mount('#app')
 
-new Vue({
-    el: '#nav',
-    store,
-    router,
-    render: h => h(Navbar)
-});
+createApp(Navbar)
+   .component('font-awesome-icon', FontAwesomeIcon)
+   .use(store)
+   .use(router)
+   .mount('#nav')
+

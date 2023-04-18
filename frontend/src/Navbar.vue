@@ -51,7 +51,7 @@
                <font-awesome-icon icon="code"/>
                Code
             </a>
-            <router-link class="btn btn-outline-success my-2 my-sm-0" :to="{ name: 'open-api-ui', params: { url: '/openapi.yaml', title: 'PREvant' }}">
+            <router-link class="btn btn-outline-success my-2 my-sm-0" :to="{ name: 'open-api-ui', params: { url: '/openapi.yaml' }, meta: { title: 'PREvant' }}">
                <font-awesome-icon icon="terminal"/>
                API
             </router-link>

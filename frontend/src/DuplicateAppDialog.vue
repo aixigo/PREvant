@@ -26,7 +26,7 @@
 
 <template>
    <dlg ref="dialog" :title="'Duplicate ' + duplicateFromAppName" :error-status="errorStatus" :error-status-text="errorStatusText">
-      <template slot="body">
+      <template v-slot:body>
          <div class="form-group">
             <input
                   type="name"
@@ -37,7 +37,7 @@
                   @keyup="keyPressed">
          </div>
       </template>
-      <template slot="footer">
+      <template v-slot:footer>
          <button
                type="button"
                class="btn btn-outline-primary"

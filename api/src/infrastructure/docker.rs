@@ -370,7 +370,7 @@ impl DockerInfrastructure {
 
         containers.get(&container_info.id).start().await?;
         debug!("Started container: {:?}", container_info);
-        
+
         docker
             .networks()
             .get(network_id)
