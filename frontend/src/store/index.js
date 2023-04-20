@@ -136,6 +136,26 @@ export default new Vuex.Store( {
          }
       },
 
+      deleteApp( state, appNameOrResponseError ) {
+         if( appNameOrResponseError.type ) {
+            state.appsError = appNameOrResponseError;
+         }
+         else {
+            delete state.apps[ appNameOrResponseError ];
+            state.appsError = null;
+         }
+      },
+
+      addApp( state, { appName, servicesOrResponseError } ) {
+         if( servicesOrResponseError.type ) {
+            state.appsError = servicesOrResponseError;
+         }
+         else {
+            state.apps[ appName ] = servicesOrResponseError;
+            state.appsError = null;
+         }
+      },
+
       storeTickets( state, ticketsResponse ) {
          if( ticketsResponse.type ) {
             state.tickets = {};
@@ -228,6 +248,60 @@ export default new Vuex.Store( {
                context.commit( "updateServiceStatus", { appName, serviceName, serviceStatus: newStatus } );
             }
          });
+      },
+
+      duplicateApp( context, { appToDuplicate, newAppName } ) {
+         context.commit( 'startFetch' );
+
+         fetch(
+            `/api/apps/${newAppName}?replicateFrom=${appToDuplicate}`,
+            {
+               method: 'POST',
+               headers: {
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json'
+               },
+               body: JSON.stringify([])
+            } )
+            .then( response => {
+               const contentType = response.headers.get('Content-Type');
+               if( contentType === 'application/json' || contentType === 'application/problem+json' ) {
+                  return response.json();
+               }
+               return response.text().then( detail => ({
+                  type: 'cannot-duplicate-app',
+                  title: 'Cannot duplicate app',
+                  detail
+               }));
+            })
+            .then( servicesOrResponseError => {
+               context.commit( 'addApp', { appName: newAppName, servicesOrResponseError } );
+               context.commit( 'endFetch' );
+            });
+      },
+
+      deleteApp( context, { appName } ) {
+         context.commit( 'startFetch' );
+
+         fetch(`/api/apps/${appName}`, { method: 'DELETE' })
+            .then( response => {
+               if( response.status == 200 ) {
+                  return appName;
+               }
+
+               if( response.headers.get('Content-Type') === 'application/problem+json' ) {
+                  return response.json();
+               }
+               return response.text().then( detail => ({
+                  type: 'cannot-delete-app',
+                  title: 'Cannot delete app',
+                  detail
+               }));
+            })
+            .then( appNameOrResponseError => {
+               context.commit( 'deleteApp', appNameOrResponseError );
+               context.commit( 'endFetch' );
+            })
       }
    }
 } );

@@ -25,7 +25,7 @@
  */
 
 <template>
-   <dlg ref="dialog" :title="'Shutdown ' + appName" :error-status="errorStatus" :error-status-text="errorStatusText">
+   <dlg ref="dialog" :title="'Shutdown ' + appName">
       <template v-slot:body>
          <p>Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing in the app:</p>
 
@@ -35,7 +35,6 @@
                   class="form-control"
                   placeholder="Enter app name"
                   v-model="confirmedAppName"
-                  :disabled="noInteraction ? true : false"
                   @keyup="keyPressed">
          </div>
       </template>
@@ -44,8 +43,8 @@
                type="button"
                class="btn btn-outline-danger"
                @click="deleteApp()"
-               :disabled="noInteraction || confirmedAppName !== appName">
-            <font-awesome-icon icon="spinner" spin v-if="noInteraction"/> Confirm
+               :disabled="confirmedAppName !== appName">
+            Confirm
          </button>
       </template>
    </dlg>
@@ -57,10 +56,7 @@
    export default {
       data() {
          return {
-            errorStatus: null,
-            errorStatusText: null,
-            confirmedAppName: '',
-            noInteraction: false
+            confirmedAppName: ''
          }
       },
       components: {
@@ -71,6 +67,7 @@
       },
       methods: {
          open() {
+            this.confirmedAppName = '';
             this.$refs.dialog.open();
          },
          keyPressed(e) {
@@ -83,22 +80,8 @@
                return;
             }
 
-            this.errorStatus = null;
-            this.errorStatusText = null;
-            this.noInteraction = true;
-
-            this.$http.delete(`/api/apps/${this.confirmedAppName}`)
-               .then(r => {
-                  this.noInteraction = false;
-                  this.$refs.dialog.close();
-
-                  // TODO: use a vue.js event to refetch all apps
-                  location.reload();
-               }, err => {
-                  this.noInteraction = false;
-                  this.errorStatus = err.status;
-                  this.errorStatusText = err.statusText;
-               });
+            this.$store.dispatch( 'deleteApp', { appName: this.confirmedAppName } );
+            this.$refs.dialog.close();
          }
       }
    }

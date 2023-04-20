@@ -25,7 +25,7 @@
  */
 
 <template>
-   <dlg ref="dialog" :title="'Duplicate ' + duplicateFromAppName" :error-status="errorStatus" :error-status-text="errorStatusText">
+   <dlg ref="dialog" :title="'Duplicate ' + duplicateFromAppName">
       <template v-slot:body>
          <div class="form-group">
             <input
@@ -33,7 +33,6 @@
                   class="form-control"
                   placeholder="Enter app name"
                   v-model="newAppName"
-                  :disabled="noInteraction ? true : false"
                   @keyup="keyPressed">
          </div>
       </template>
@@ -41,9 +40,8 @@
          <button
                type="button"
                class="btn btn-outline-primary"
-               @click="duplicateApp()"
-               :disabled="noInteraction">
-            <font-awesome-icon icon="spinner" spin v-if="noInteraction"/> Duplicate
+               @click="duplicateApp()">
+            Duplicate
          </button>
       </template>
    </dlg>
@@ -55,10 +53,7 @@
    export default {
       data() {
          return {
-            newAppName: '',
-            noInteraction: false,
-            errorStatus: null,
-            errorStatusText: null,
+            newAppName: ''
          };
       },
       components: {
@@ -69,6 +64,7 @@
       },
       methods: {
          open() {
+            this.newAppName = '';
             this.$refs.dialog.open();
          },
 
@@ -79,20 +75,11 @@
          },
 
          duplicateApp() {
-            this.noInteraction = true;
-
-            this.$http.post(`/api/apps/${this.newAppName}?replicateFrom=${this.duplicateFromAppName}`, JSON.stringify([]))
-               .then(r => {
-                  this.noInteraction = false;
-                  this.$refs.dialog.close();
-
-                  // TODO: use a vue.js event to refetch all apps
-                  location.reload();
-               }, err => {
-                  this.noInteraction = false;
-                  this.errorStatus = err.status;
-                  this.errorStatusText = err.statusText;
-               });
+            this.$store.dispatch( 'duplicateApp', {
+               appToDuplicate: this.duplicateFromAppName,
+               newAppName: this.newAppName
+            } );
+            this.$refs.dialog.close();
          }
       }
    }
