@@ -25,6 +25,7 @@
  */
 
 use crate::config::{Config, ContainerConfig};
+use crate::deployment::DeploymentUnit;
 use crate::infrastructure::{
     DeploymentStrategy, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
@@ -615,16 +616,16 @@ impl Infrastructure for DockerInfrastructure {
     async fn deploy_services(
         &self,
         status_id: &String,
-        app_name: &String,
-        strategies: &[DeploymentStrategy],
+        deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
+        let app_name = deployment_unit.app_name();
         let deployment_container = self
             .create_status_change_container(status_id, app_name)
             .await?;
 
         let result = self
-            .deploy_services_impl(app_name, strategies, container_config)
+            .deploy_services_impl(app_name, deployment_unit.strategies(), container_config)
             .await;
 
         delete(deployment_container).await?;

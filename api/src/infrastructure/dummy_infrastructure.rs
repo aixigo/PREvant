@@ -25,6 +25,7 @@
  */
 
 use crate::config::ContainerConfig;
+use crate::deployment::DeploymentUnit;
 use crate::infrastructure::{DeploymentStrategy, Infrastructure};
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::{ServiceBuilder, ServiceConfig};
@@ -99,15 +100,15 @@ impl Infrastructure for DummyInfrastructure {
     async fn deploy_services(
         &self,
         _status_id: &String,
-        app_name: &String,
-        strategies: &[DeploymentStrategy],
+        deployment_unit: &DeploymentUnit,
         _container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, failure::Error> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
-
-        if let Some(running_services) = services.get_vec_mut(app_name) {
+        let app_name = deployment_unit.app_name().to_string();
+        let strategies = deployment_unit.strategies();
+        if let Some(running_services) = services.get_vec_mut(&app_name) {
             let service_names = strategies
                 .iter()
                 .map(|c| c.service_name())
