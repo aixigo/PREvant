@@ -155,20 +155,6 @@ impl ImageInfo {
     pub fn digest(&self) -> &String {
         &self.digest
     }
-
-    #[cfg(test)]
-    pub fn with_exposed_port(digest: String, port: u16) -> Self {
-        let mut exposed_ports = HashMap::new();
-        exposed_ports.insert(format!("{}/tcp", port), serde_json::json!({}));
-        Self {
-            digest,
-            blob: Some(ImageBlob {
-                config: ImageConfig {
-                    exposed_ports: Some(exposed_ports),
-                },
-            }),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]

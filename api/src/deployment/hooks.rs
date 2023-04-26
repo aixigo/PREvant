@@ -23,10 +23,10 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use crate::apps::{Apps, AppsServiceError};
+use crate::apps::AppsServiceError;
+use crate::config::Config;
 use crate::infrastructure::DeploymentStrategy;
 use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, Image};
-
 use boa_engine::property::Attribute;
 use boa_engine::syntax::ast::node::Node;
 use boa_engine::{Context, JsValue};
@@ -35,13 +35,23 @@ use std::collections::BTreeMap;
 use std::iter::IntoIterator;
 use std::path::{Path, PathBuf};
 
-impl Apps {
-    pub(super) async fn apply_deployment_hook(
+pub struct Hooks {
+    hook_config: Config,
+}
+
+impl Hooks {
+    pub fn new(hook_configs: &Config) -> Self {
+        Hooks {
+            hook_config: hook_configs.clone(),
+        }
+    }
+
+    pub async fn apply_deployment_hook(
         &self,
         app_name: &AppName,
         configs: Vec<DeploymentStrategy>,
     ) -> Result<Vec<DeploymentStrategy>, AppsServiceError> {
-        match self.config.hook("deployment") {
+        match self.hook_config.hook("deployment") {
             None => Ok(configs),
             Some(hook_path) => self.parse_and_run_hook(app_name, configs, hook_path).await,
         }
@@ -233,9 +243,10 @@ impl From<&DeploymentStrategy> for JsServiceConfig {
 mod tests {
     use super::*;
     use crate::apps::*;
-    use crate::config::Config;
-    use crate::infrastructure::Dummy;
+    use crate::deployment::deployment_unit::DeploymentUnitBuilder;
     use std::io::Write;
+    use std::str::FromStr;
+    use std::vec;
     use tempfile::NamedTempFile;
 
     fn config_with_deployment_hook(script: &str) -> (NamedTempFile, Config) {
@@ -255,42 +266,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_deployment_hook() -> Result<(), AppsError> {
-        let script = r#"
-        function deploymentHook( appName, configs ) {
-            if( appName === 'master' ) {
-                return configs.filter( service => service.name !== 'service-b' );
-            }
-            return configs;
-        }
-        "#;
-
-        let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
-
-        apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
-            &AppStatusChangeId::new(),
-            None,
-            &[crate::sc!("service-a"), crate::sc!("service-b")],
-        )
-        .await?;
-
-        let deployed_services = apps
-            .get_apps()
-            .await?
-            .into_iter()
-            .map(|(_, services)| services.into_iter().map(|s| s.service_name().clone()))
-            .flatten()
-            .collect::<Vec<_>>();
-
-        assert_eq!(deployed_services, vec![String::from("service-a")]);
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn apply_deployment_hook_with_file_modification() -> Result<(), AppsError> {
         let script = r#"
         function deploymentHook( appName, configs ) {
@@ -302,23 +277,21 @@ mod tests {
         "#;
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
-            &AppStatusChangeId::new(),
-            None,
-            &[crate::sc!("service-a")],
-        )
-        .await?;
+        let app_name = AppName::from_str("master").unwrap();
+        let service_configs = vec![crate::sc!("service-a")];
 
-        let services = apps
-            .infrastructure
-            .get_configs_of_app("master")
-            .await
-            .unwrap();
-        let deployed_files = services
+        let unit = DeploymentUnitBuilder::init(app_name, service_configs)
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .resolve_image_manifest(&config)
+            .await?
+            .apply_hooks(&config)
+            .await?
+            .build();
+
+        let deployed_files = unit
+            .strategies()
             .into_iter()
             .map(|service| service.files().cloned())
             .flatten()
@@ -349,8 +322,8 @@ mod tests {
         "#;
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+
+        let app_name = AppName::from_str("master").unwrap();
 
         let mut service_config = crate::sc!("service-a");
         let mut files = BTreeMap::new();
@@ -360,20 +333,17 @@ mod tests {
         );
         service_config.set_files(Some(files));
 
-        apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
-            &AppStatusChangeId::new(),
-            None,
-            &[service_config],
-        )
-        .await?;
+        let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .resolve_image_manifest(&config)
+            .await?
+            .apply_hooks(&config)
+            .await?
+            .build();
 
-        let services = apps
-            .infrastructure
-            .get_configs_of_app("master")
-            .await
-            .unwrap();
-        let deployed_files = services
+        let deployed_files = unit
+            .strategies()
             .into_iter()
             .map(|service| service.files().cloned())
             .flatten()
@@ -398,23 +368,20 @@ mod tests {
         "#;
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let app_name = AppName::from_str("master").unwrap();
+        let service_config = crate::sc!("service-a");
 
-        apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
-            &AppStatusChangeId::new(),
-            None,
-            &[crate::sc!("service-a")],
-        )
-        .await?;
+        let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .resolve_image_manifest(&config)
+            .await?
+            .apply_hooks(&config)
+            .await?
+            .build();
 
-        let services = apps
-            .infrastructure
-            .get_configs_of_app("master")
-            .await
-            .unwrap();
-        let deployed_variables = services
+        let deployed_variables = unit
+            .strategies()
             .into_iter()
             .map(|service| service.env().cloned())
             .flatten()
@@ -443,8 +410,7 @@ mod tests {
         "#;
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let app_name = AppName::from_str("master").unwrap();
 
         let mut service_config = crate::sc!("service-a");
         service_config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
@@ -452,20 +418,17 @@ mod tests {
             SecUtf8::from("Hello"),
         )])));
 
-        apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
-            &AppStatusChangeId::new(),
-            None,
-            &[service_config],
-        )
-        .await?;
+        let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .resolve_image_manifest(&config)
+            .await?
+            .apply_hooks(&config)
+            .await?
+            .build();
 
-        let services = apps
-            .infrastructure
-            .get_configs_of_app("master")
-            .await
-            .unwrap();
-        let deployed_variables = services
+        let deployed_variables = unit
+            .strategies()
             .into_iter()
             .map(|service| service.env().cloned())
             .flatten()
@@ -497,29 +460,25 @@ mod tests {
         "#;
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
 
+        let app_name = AppName::from_str("master").unwrap();
         let mut service_config = crate::sc!("service-a");
         service_config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
             String::from("VARIABLE_X"),
             SecUtf8::from("Hello"),
         )])));
 
-        apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
-            &AppStatusChangeId::new(),
-            None,
-            &[service_config],
-        )
-        .await?;
+        let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .resolve_image_manifest(&config)
+            .await?
+            .apply_hooks(&config)
+            .await?
+            .build();
 
-        let services = apps
-            .infrastructure
-            .get_configs_of_app("master")
-            .await
-            .unwrap();
-        let deployed_variables = services
+        let deployed_variables = unit
+            .strategies()
             .into_iter()
             .map(|service| service.env().cloned())
             .flatten()
@@ -545,25 +504,23 @@ mod tests {
             return configs;
         }
         "#;
-
+        let service_config = crate::sc!("service-a");
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let app_name = AppName::from_str("master").unwrap();
 
-        apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
-            &AppStatusChangeId::new(),
-            None,
-            &[crate::sc!("service-a")],
-        )
-        .await?;
-
-        let deployed_services = apps
-            .get_apps()
+        let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .resolve_image_manifest(&config)
             .await?
+            .apply_hooks(&config)
+            .await?
+            .build();
+
+        let deployed_services = unit
+            .strategies()
             .into_iter()
-            .map(|(_, services)| services.into_iter().map(|s| s.service_name().clone()))
-            .flatten()
+            .map(|services| services.service_name().clone())
             .collect::<Vec<_>>();
 
         assert_eq!(deployed_services, vec![String::from("service-a")]);
@@ -583,19 +540,20 @@ mod tests {
         }
         "#;
 
+        let service_config = crate::sc!("service-a");
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let app_name = AppName::from_str("master").unwrap();
 
-        apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
-            &AppStatusChangeId::new(),
-            None,
-            &[crate::sc!("service-a")],
-        )
-        .await?;
+        let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .resolve_image_manifest(&config)
+            .await?
+            .apply_hooks(&config)
+            .await?
+            .build();
 
-        let deployed_services = apps.get_apps().await?;
+        let deployed_services = unit.strategies();
 
         assert!(deployed_services.is_empty());
 
@@ -609,21 +567,24 @@ mod tests {
             return 'unexpected return value';
         }
         "#;
-
+        let mut deployed_services_error = String::new();
+        let service_config = crate::sc!("service-a");
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
-
-        let deployed_services_error = apps
-            .create_or_update(
-                &AppName::from_str("master").unwrap(),
-                &AppStatusChangeId::new(),
-                None,
-                &[crate::sc!("service-a"), crate::sc!("service-b")],
-            )
+        let app_name = AppName::from_str("master").unwrap();
+        match DeploymentUnitBuilder::init(app_name, vec![service_config])
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .resolve_image_manifest(&config)
+            .await?
+            .apply_hooks(&config)
             .await
-            .unwrap_err()
-            .to_string();
+        {
+            Ok(no_error) => Some(no_error),
+            Err(err) => {
+                deployed_services_error = err.to_string();
+                None
+            }
+        };
 
         assert_eq!(
             deployed_services_error,

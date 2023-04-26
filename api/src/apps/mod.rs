@@ -23,20 +23,18 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-mod deployment_unit;
-mod hooks;
 mod host_meta_cache;
 mod routes;
 
 pub use crate::apps::AppsService as Apps;
 pub use crate::apps::AppsServiceError as AppsError;
 use crate::config::{Config, ConfigError};
+use crate::deployment::deployment_unit::DeploymentUnitBuilder;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
-use crate::registry::{ImagesService, ImagesServiceError};
+use crate::registry::ImagesServiceError;
 use chrono::{DateTime, FixedOffset};
-pub(self) use deployment_unit::DeploymentUnit;
 use handlebars::TemplateRenderError;
 pub use host_meta_cache::new as host_meta_crawling;
 pub use host_meta_cache::HostMetaCache;
@@ -44,7 +42,7 @@ pub use host_meta_cache::HostMetaCrawler;
 use multimap::MultiMap;
 pub use routes::{apps_routes, delete_app_sync};
 use std::collections::{HashMap, HashSet};
-use std::convert::{From, TryInto};
+use std::convert::From;
 use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -264,9 +262,6 @@ impl AppsService {
             );
         }
 
-        let mut deployment_unit = DeploymentUnit::new(app_name.clone(), configs);
-        deployment_unit.extend_with_config(&self.config);
-
         let configs_for_templating = self
             .infrastructure
             .get_configs_of_app(app_name)
@@ -279,23 +274,21 @@ impl AppsService {
                     .any(|c| c.service_name() == config.service_name())
             })
             .collect::<Vec<_>>();
-        deployment_unit.extend_with_templating_only_service_configs(configs_for_templating);
 
-        let images = deployment_unit.images();
-        let image_infos = ImagesService::new(&self.config)
-            .resolve_image_infos(&images)
-            .await?;
-        deployment_unit.assign_image_infos(image_infos);
-
-        let configs: Vec<_> = deployment_unit.try_into()?;
-        let configs = self.apply_deployment_hook(app_name, configs).await?;
+        let deployment_unit = DeploymentUnitBuilder::init(app_name.clone(), configs)
+            .extend_with_config(&self.config)
+            .extend_with_templating_only_service_configs(configs_for_templating)
+            .resolve_image_manifest(&self.config)
+            .await?
+            .apply_hooks(&self.config)
+            .await?
+            .build();
 
         let services = self
             .infrastructure
             .deploy_services(
                 &status_id.to_string(),
-                app_name,
-                &configs,
+                &deployment_unit,
                 &self.config.container_config(),
             )
             .await?;
@@ -435,8 +428,10 @@ mod tests {
     use crate::models::{EnvironmentVariable, Image, ServiceBuilder};
     use chrono::Utc;
     use secstr::SecUtf8;
+    use std::io::Write;
     use std::path::PathBuf;
     use std::str::FromStr;
+    use tempfile::NamedTempFile;
     use tokio::runtime;
 
     macro_rules! config_from_str {
@@ -478,6 +473,22 @@ mod tests {
                 $container_type
             );
         };
+    }
+
+    fn config_with_deployment_hook(script: &str) -> (NamedTempFile, Config) {
+        let mut hook_file = NamedTempFile::new().unwrap();
+
+        hook_file.write_all(script.as_bytes()).unwrap();
+
+        let config = crate::config_from_str!(&format!(
+            r#"
+            [hooks]
+            deployment = {:?}
+            "#,
+            hook_file.path()
+        ));
+
+        (hook_file, config)
     }
 
     #[tokio::test]
@@ -1034,6 +1045,43 @@ Log msg 3 of service-a of app master
                 .expect("Invalid entry in Map"),
             &SecUtf8::from("ABCD")
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_create_app_with_hooks_applied() -> Result<(), AppsServiceError> {
+        let script = r#"
+        function deploymentHook( appName, configs ) {
+            if( appName === 'master' ) {
+                return configs.filter( service => service.name !== 'service-b' );
+            }
+            return configs;
+        }
+        "#;
+
+        let (_temp_js_file, config) = config_with_deployment_hook(script);
+        let app_name = &AppName::from_str("master").unwrap();
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &service_configs!("service-a", "service-b"),
+        )
+        .await?;
+
+        let deployed_services = apps
+            .get_apps()
+            .await?
+            .into_iter()
+            .map(|(_, services)| services.into_iter().map(|s| s.service_name().clone()))
+            .flatten()
+            .collect::<Vec<_>>();
+
+        assert_eq!(deployed_services, vec![String::from("service-a")]);
 
         Ok(())
     }

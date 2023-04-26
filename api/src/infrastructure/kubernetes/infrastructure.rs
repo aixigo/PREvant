@@ -32,6 +32,7 @@ use super::payloads::{
     IngressRoute, Middleware,
 };
 use crate::config::{Config as PREvantConfig, ContainerConfig};
+use crate::deployment::deployment_unit::DeploymentUnit;
 use crate::infrastructure::{DeploymentStrategy, Infrastructure};
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
@@ -513,10 +514,12 @@ impl Infrastructure for KubernetesInfrastructure {
     async fn deploy_services(
         &self,
         _status_id: &String,
-        app_name: &String,
-        strategies: &[DeploymentStrategy],
+        deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
+        let strategies = deployment_unit.strategies();
+        let app_name = deployment_unit.app_name();
+
         self.create_namespace_if_necessary(app_name).await?;
         self.create_pull_secrets_if_necessary(app_name, strategies)
             .await?;

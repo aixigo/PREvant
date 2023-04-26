@@ -265,6 +265,7 @@ macro_rules! sc {
 
     ( $name:expr, $img:expr ) => {{
         use std::str::FromStr;
+        use crate::models::ServiceConfig;
         ServiceConfig::new(String::from($name), crate::models::Image::from_str($img).unwrap())
     }};
 
