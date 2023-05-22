@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 use crate::apps::AppsServiceError;
-use crate::config::Config;
+use crate::config::{Config, StorageStrategy};
 use crate::deployment::hooks::Hooks;
 use crate::infrastructure::TraefikIngressRoute;
 use crate::models::{AppName, ContainerType, Image, ServiceConfig};
@@ -39,23 +39,47 @@ pub struct Initialized {
 pub struct WithCompanions {
     app_name: AppName,
     configs: Vec<ServiceConfig>,
-    service_companions: Vec<(ServiceConfig, crate::config::DeploymentStrategy)>,
-    app_companions: Vec<(ServiceConfig, crate::config::DeploymentStrategy)>,
+    service_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
+    app_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
 }
 
 pub struct WithTemplatedConfigs {
     app_name: AppName,
     configs: Vec<ServiceConfig>,
-    service_companions: Vec<(ServiceConfig, crate::config::DeploymentStrategy)>,
-    app_companions: Vec<(ServiceConfig, crate::config::DeploymentStrategy)>,
+    service_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
+    app_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
     templating_only_service_configs: Vec<ServiceConfig>,
 }
 
 pub struct WithResolvedImages {
     app_name: AppName,
     configs: Vec<ServiceConfig>,
-    service_companions: Vec<(ServiceConfig, crate::config::DeploymentStrategy)>,
-    app_companions: Vec<(ServiceConfig, crate::config::DeploymentStrategy)>,
+    service_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
+    app_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
     templating_only_service_configs: Vec<ServiceConfig>,
     image_infos: HashMap<Image, ImageInfo>,
 }
@@ -96,6 +120,7 @@ pub struct DeployableService {
     raw_service_config: ServiceConfig,
     strategy: DeploymentStrategy,
     ingress_route: TraefikIngressRoute,
+    declared_volumes: Vec<String>,
 }
 
 impl DeployableService {
@@ -104,11 +129,13 @@ impl DeployableService {
         raw_service_config: ServiceConfig,
         strategy: DeploymentStrategy,
         ingress_route: TraefikIngressRoute,
+        declared_volumes: Vec<String>,
     ) -> Self {
         Self {
             raw_service_config,
             strategy,
             ingress_route,
+            declared_volumes,
         }
     }
 
@@ -118,6 +145,10 @@ impl DeployableService {
 
     pub fn ingress_route(&self) -> &TraefikIngressRoute {
         &self.ingress_route
+    }
+
+    pub fn declared_volumes(&self) -> &Vec<String> {
+        &self.declared_volumes
     }
 }
 
@@ -179,7 +210,7 @@ impl DeploymentUnitBuilder<Initialized> {
 impl DeploymentUnitBuilder<WithCompanions> {
     pub fn extend_with_templating_only_service_configs(
         self,
-        configs: Vec<ServiceConfig>,
+        templating_only_service_configs: Vec<ServiceConfig>,
     ) -> DeploymentUnitBuilder<WithTemplatedConfigs> {
         DeploymentUnitBuilder {
             stage: WithTemplatedConfigs {
@@ -187,7 +218,7 @@ impl DeploymentUnitBuilder<WithCompanions> {
                 configs: self.stage.configs,
                 service_companions: self.stage.service_companions,
                 app_companions: self.stage.app_companions,
-                templating_only_service_configs: configs,
+                templating_only_service_configs,
             },
         }
     }
@@ -207,13 +238,13 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
             self.stage
                 .service_companions
                 .iter()
-                .map(|(config, _)| config.image().clone()),
+                .map(|(config, _, _)| config.image().clone()),
         );
         images.extend(
             self.stage
                 .app_companions
                 .iter()
-                .map(|(config, _)| config.image().clone()),
+                .map(|(config, _, _)| config.image().clone()),
         );
         images.extend(
             self.stage
@@ -239,14 +270,14 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
             self.stage
                 .service_companions
                 .iter_mut()
-                .map(|(companion, _)| companion),
+                .map(|(companion, _, _)| companion),
             &image_infos,
         );
         Self::assign_port_mappings_impl(
             self.stage
                 .app_companions
                 .iter_mut()
-                .map(|(companion, _)| companion),
+                .map(|(companion, _, _)| companion),
             &image_infos,
         );
         Self::assign_port_mappings_impl(
@@ -298,6 +329,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                         &self.stage.app_name,
                         config.service_name(),
                     ),
+                    declared_volumes: Vec::new(),
                 },
             );
         }
@@ -310,12 +342,15 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
         struct ServiceCompanion<'a> {
             templated_companion: ServiceConfig,
             strategy: &'a crate::config::DeploymentStrategy,
+            storage_strategy: &'a crate::config::StorageStrategy,
             for_service_name: String,
         }
 
         let mut service_companions = Vec::new();
         for service in services.values() {
-            for (service_companion, strategy) in self.stage.service_companions.iter() {
+            for (service_companion, strategy, storage_strategy) in
+                self.stage.service_companions.iter()
+            {
                 let templated_companion = service_companion
                     .apply_templating_for_service_companion(&self.stage.app_name, &service)?;
 
@@ -323,6 +358,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                     templated_companion,
                     strategy,
                     for_service_name: service.service_name().clone(),
+                    storage_strategy,
                 });
             }
         }
@@ -364,7 +400,8 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                         self.deployable_service(
                             service_companion.templated_companion,
                             service_companion.strategy,
-                            &image_infos,
+                            service_companion.storage_strategy,
+                            image_infos,
                         ),
                     )
                 }),
@@ -377,7 +414,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 .values()
                 .map(|strategy| ServiceConfig::clone(strategy)),
         );
-        for (companion_config, strategy) in self.stage.app_companions.iter() {
+        for (companion_config, strategy, storage_strategy) in self.stage.app_companions.iter() {
             let companion_config = companion_config.apply_templating_for_application_companion(
                 &self.stage.app_name,
                 &templating_only_service_configs,
@@ -392,7 +429,12 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
             } else {
                 services.insert(
                     companion_config.service_name().clone(),
-                    self.deployable_service(companion_config, &strategy, &image_infos),
+                    self.deployable_service(
+                        companion_config,
+                        strategy,
+                        storage_strategy,
+                        image_infos,
+                    ),
                 );
             }
         }
@@ -417,6 +459,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
         &self,
         raw_service_config: ServiceConfig,
         strategy: &crate::config::DeploymentStrategy,
+        storage_strategy: &StorageStrategy,
         image_infos: &HashMap<Image, ImageInfo>,
     ) -> DeployableService {
         let ingress_route = TraefikIngressRoute::with_defaults(
@@ -424,11 +467,25 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
             raw_service_config.service_name(),
         );
 
+        let volume_paths = match image_infos.get(raw_service_config.image()) {
+            None => Vec::new(),
+            Some(info) => info.declared_volumes(),
+        };
+
+        let declared_volumes = match storage_strategy {
+            StorageStrategy::NoMountVolumes => Vec::new(),
+            StorageStrategy::MountDeclaredImageVolumes => volume_paths
+                .into_iter()
+                .map(|path| path.to_owned())
+                .collect(),
+        };
+
         match strategy {
             crate::config::DeploymentStrategy::RedeployAlways => DeployableService {
                 raw_service_config,
                 ingress_route,
                 strategy: DeploymentStrategy::RedeployAlways,
+                declared_volumes,
             },
             crate::config::DeploymentStrategy::RedeployOnImageUpdate => {
                 match image_infos.get(raw_service_config.image()) {
@@ -438,12 +495,14 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                         strategy: DeploymentStrategy::RedeployOnImageUpdate(
                             image_info.digest().to_string(),
                         ),
+                        declared_volumes,
                     },
 
                     None => DeployableService {
                         raw_service_config,
                         ingress_route,
                         strategy: DeploymentStrategy::RedeployAlways,
+                        declared_volumes,
                     },
                 }
             }
@@ -451,6 +510,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 raw_service_config,
                 ingress_route,
                 strategy: DeploymentStrategy::RedeployNever,
+                declared_volumes,
             },
         }
     }

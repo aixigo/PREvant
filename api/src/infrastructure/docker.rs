@@ -43,15 +43,15 @@ use regex::Regex;
 use shiplift::container::{ContainerCreateInfo, ContainerDetails, ContainerInfo};
 use shiplift::errors::Error as ShipLiftError;
 use shiplift::tty::TtyChunk;
+use shiplift::volume::VolumeInfo;
 use shiplift::{
     ContainerConnectionOptions, ContainerFilter, ContainerListOptions, ContainerOptions, Docker,
-    LogsOptions, NetworkCreateOptions, PullOptions, RegistryAuth,
+    LogsOptions, NetworkCreateOptions, PullOptions, RegistryAuth, VolumeCreateOptions,
 };
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
 use std::net::{AddrParseError, IpAddr};
 use std::str::FromStr;
-
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
 pub struct DockerInfrastructure {
@@ -241,19 +241,37 @@ impl DockerInfrastructure {
         Ok(())
     }
 
+    async fn delete_volume_mount(&self, app_name: &String) -> Result<(), ShipLiftError> {
+        let docker = Docker::new();
+        let docker_volumes = docker.volumes();
+        for volume in DockerInfrastructure::fetch_existing_volumes(app_name).await? {
+            docker_volumes.get(&volume.name).delete().await?
+        }
+        Ok(())
+    }
+
     async fn deploy_services_impl(
         &self,
-        app_name: &String,
-        services: &[DeployableService],
+        deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
+        let app_name = deployment_unit.app_name();
+        let services = deployment_unit.services();
         let network_id = self.create_or_get_network_id(app_name).await?;
 
         self.connect_traefik(&network_id).await?;
-
+        let existing_volumes = DockerInfrastructure::fetch_existing_volumes(app_name).await?;
         let futures = services
             .iter()
-            .map(|service| self.start_container(app_name, &network_id, service, container_config))
+            .map(|service| {
+                self.start_container(
+                    app_name,
+                    &network_id,
+                    service,
+                    container_config,
+                    &existing_volumes,
+                )
+            })
             .collect::<Vec<_>>();
 
         let mut services: Vec<Service> = Vec::new();
@@ -294,6 +312,7 @@ impl DockerInfrastructure {
         }
 
         self.delete_network(app_name).await?;
+        self.delete_volume_mount(app_name).await?;
 
         Ok(services)
     }
@@ -304,6 +323,7 @@ impl DockerInfrastructure {
         network_id: &String,
         service: &DeployableService,
         container_config: &ContainerConfig,
+        existing_volumes: &[VolumeInfo],
     ) -> Result<Service, Error> {
         let docker = Docker::new();
         let containers = docker.containers();
@@ -312,7 +332,6 @@ impl DockerInfrastructure {
         if let Image::Named { .. } = service.image() {
             self.pull_image(app_name, service).await?;
         }
-
         let mut image_to_delete = None;
         if let Some(ref container_info) = self
             .get_app_container(app_name, service.service_name())
@@ -350,7 +369,6 @@ impl DockerInfrastructure {
                     .await?;
             }
             container.delete().await?;
-
             image_to_delete = Some(container_details.image);
         }
 
@@ -362,8 +380,16 @@ impl DockerInfrastructure {
             service.container_type(),
         );
 
-        let options =
-            DockerInfrastructure::create_container_options(app_name, service, container_config);
+        let host_config_binds =
+            DockerInfrastructure::create_host_config_binds(app_name, existing_volumes, service)
+                .await?;
+
+        let options = DockerInfrastructure::create_container_options(
+            app_name,
+            service,
+            container_config,
+            &host_config_binds,
+        );
 
         let container_info = containers.create(&options).await?;
         debug!("Created container: {:?}", container_info);
@@ -400,14 +426,14 @@ impl DockerInfrastructure {
                 Err(err) => debug!("Could not clean up image: {:?}", err),
             }
         }
-
         Ok(Service::try_from(&container_details)?)
     }
 
     fn create_container_options(
-        app_name: &String,
+        app_name: &str,
         service_config: &ServiceConfig,
         container_config: &ContainerConfig,
+        host_config_binds: &[String],
     ) -> ContainerOptions {
         let mut options = ContainerOptions::builder(&service_config.image().to_string());
         if let Some(env) = service_config.env() {
@@ -451,6 +477,9 @@ impl DockerInfrastructure {
             labels.insert(REPLICATED_ENV_LABEL, replicated_env);
         }
 
+        if !host_config_binds.is_empty() {
+            options.volumes(host_config_binds.iter().map(|bind| bind.as_str()).collect());
+        }
         options.labels(&labels);
         options.restart_policy("always", 5);
 
@@ -489,6 +518,72 @@ impl DockerInfrastructure {
         }
 
         Ok(())
+    }
+
+    async fn fetch_existing_volumes(app_name: &String) -> Result<Vec<VolumeInfo>, ShipLiftError> {
+        let docker = Docker::new();
+        docker.volumes().list().await.map(|volume_infos| {
+            volume_infos
+                .into_iter()
+                .filter(|s| {
+                    s.labels
+                        .as_ref()
+                        .map(|label| label.get(APP_NAME_LABEL) == Some(app_name))
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<VolumeInfo>>()
+        })
+    }
+
+    async fn create_docker_volume(
+        app_name: &str,
+        service: &DeployableService,
+    ) -> Result<String, ShipLiftError> {
+        let docker = Docker::new();
+        let volumes = docker.volumes();
+
+        let mut labels: HashMap<&str, &str> = HashMap::new();
+        labels.insert(APP_NAME_LABEL, app_name);
+        labels.insert(SERVICE_NAME_LABEL, service.service_name());
+
+        let volume_options = VolumeCreateOptions::builder().labels(&labels).build();
+        volumes
+            .create(&volume_options)
+            .await
+            .map(|volume_info| volume_info.name)
+    }
+
+    async fn create_host_config_binds(
+        app_name: &str,
+        existing_volume: &[VolumeInfo],
+        service: &DeployableService,
+    ) -> Result<Vec<String>, ShipLiftError> {
+        let mut host_binds = Vec::new();
+
+        if service.declared_volumes().is_empty() {
+            return Ok(host_binds);
+        }
+
+        let service_volume = existing_volume
+            .iter()
+            .find(|vol| {
+                vol.labels.as_ref().map_or_else(
+                    || false,
+                    |label| label.get(SERVICE_NAME_LABEL) == Some(service.service_name()),
+                )
+            })
+            .map(|info| &info.name);
+
+        let volume_name = match service_volume {
+            Some(name) => String::from(name),
+            None => DockerInfrastructure::create_docker_volume(app_name, service).await?,
+        };
+
+        for declared_volume in service.declared_volumes() {
+            host_binds.push(format!("{}:{}", volume_name, declared_volume));
+        }
+
+        Ok(host_binds)
     }
 
     async fn pull_image(
@@ -620,13 +715,12 @@ impl Infrastructure for DockerInfrastructure {
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
-        let app_name = deployment_unit.app_name();
         let deployment_container = self
-            .create_status_change_container(status_id, app_name)
+            .create_status_change_container(status_id, deployment_unit.app_name())
             .await?;
 
         let result = self
-            .deploy_services_impl(app_name, deployment_unit.services(), container_config)
+            .deploy_services_impl(deployment_unit, container_config)
             .await;
 
         delete(deployment_container).await?;
@@ -1159,6 +1253,7 @@ mod tests {
             &String::from("master"),
             &config,
             &ContainerConfig::default(),
+            &Vec::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1193,6 +1288,7 @@ mod tests {
             &String::from("master"),
             &config,
             &ContainerConfig::default(),
+            &Vec::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1232,6 +1328,7 @@ mod tests {
             &String::from("master"),
             &config,
             &ContainerConfig::default(),
+            &Vec::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1345,6 +1442,38 @@ mod tests {
                 String::from("MYSQL_ROOT_PASSWORD"),
                 SecUtf8::from("example")
             )
+        );
+    }
+
+    #[test]
+    fn should_create_container_options_with_host_config_binds() {
+        let config = sc!("db", "mariadb:10.3.17");
+
+        let options = DockerInfrastructure::create_container_options(
+            &String::from("master"),
+            &config,
+            &ContainerConfig::default(),
+            &[String::from("test-volume:/var/lib/mysql")],
+        );
+
+        let json = serde_json::to_value(&options).unwrap();
+        assert_json_diff::assert_json_eq!(
+            json,
+            serde_json::json!({
+              "name": null,
+              "params": {
+                "HostConfig.RestartPolicy.Name": "always",
+                "Image": "docker.io/library/mariadb:10.3.17",
+                "HostConfig.Binds":["test-volume:/var/lib/mysql"],
+                "Labels": {
+                  "com.aixigo.preview.servant.app-name": "master",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db",
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
+                  "traefik.frontend.rule": "PathPrefixStrip: /master/db/; PathPrefix:/master/db/;"
+                }
+              }
+            })
         );
     }
 }

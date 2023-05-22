@@ -25,6 +25,7 @@
  */
 
 pub use self::companion::DeploymentStrategy;
+pub use self::companion::StorageStrategy;
 use self::companion::{Companion, CompanionType};
 pub use self::container::ContainerConfig;
 pub use self::runtime::Runtime;
@@ -175,7 +176,7 @@ impl Config {
     pub fn service_companion_configs(
         &self,
         app_name: &str,
-    ) -> Vec<(ServiceConfig, DeploymentStrategy)> {
+    ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)> {
         self.companion_configs(app_name, |companion| {
             companion.companion_type() == &CompanionType::Service
         })
@@ -184,7 +185,7 @@ impl Config {
     pub fn application_companion_configs(
         &self,
         app_name: &str,
-    ) -> Vec<(ServiceConfig, DeploymentStrategy)> {
+    ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)> {
         self.companion_configs(app_name, |companion| {
             companion.companion_type() == &CompanionType::Application
         })
@@ -194,7 +195,7 @@ impl Config {
         &self,
         app_name: &str,
         predicate: P,
-    ) -> Vec<(ServiceConfig, DeploymentStrategy)>
+    ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)>
     where
         P: Fn(&Companion) -> bool,
     {
@@ -203,11 +204,12 @@ impl Config {
             Some(companions_map) => companions_map
                 .iter()
                 .filter(|(_, companion)| companion.matches_app_name(app_name))
-                .filter(|(_, companion)| predicate(*companion))
+                .filter(|(_, companion)| predicate(companion))
                 .map(|(_, companion)| {
                     (
                         companion.clone().into(),
                         companion.deployment_strategy().clone(),
+                        companion.storage_strategy().clone(),
                     )
                 })
                 .collect(),
@@ -330,7 +332,7 @@ mod tests {
         let companion_configs = config.application_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _)| {
+        companion_configs.iter().for_each(|(config, _, _)| {
             assert_eq!(config.service_name(), "openid");
             assert_eq!(
                 &config.image().to_string(),
@@ -365,7 +367,7 @@ mod tests {
         let companion_configs = config.service_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _)| {
+        companion_configs.iter().for_each(|(config, _, _)| {
             assert_eq!(config.service_name(), "{{service-name}}-nginx");
             assert_eq!(
                 &config.image().to_string(),
@@ -391,7 +393,7 @@ mod tests {
         let companion_configs = config.service_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(_, strategy)| {
+        companion_configs.iter().for_each(|(_, strategy, _)| {
             assert_eq!(strategy, &DeploymentStrategy::RedeployOnImageUpdate);
         });
     }
@@ -414,7 +416,7 @@ mod tests {
         let companion_configs = config.application_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _)| {
+        companion_configs.iter().for_each(|(config, _, _)| {
             assert_eq!(config.files().unwrap().len(), 2);
         });
     }
@@ -436,7 +438,7 @@ mod tests {
         let companion_configs = config.application_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _)| {
+        companion_configs.iter().for_each(|(config, _, _)| {
             for (k, v) in config.labels().unwrap().iter() {
                 assert_eq!(k, "com.example.foo");
                 assert_eq!(v, "bar");
@@ -460,7 +462,7 @@ mod tests {
         let companion_configs = config.application_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _)| {
+        companion_configs.iter().for_each(|(config, _, _)| {
             assert_eq!(config.service_name(), "openid");
             assert_eq!(
                 &config.image().to_string(),
@@ -658,8 +660,34 @@ mod tests {
         let companion_configs = config.application_companion_configs("master");
 
         assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _)| {
+        companion_configs.iter().for_each(|(config, _, _)| {
             assert_eq!(config.files().unwrap().len(), 2);
         });
+    }
+
+    #[test]
+    fn should_return_service_companions_with_storage_strategy() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:11-alpine'
+            env = [ 'KEY=VALUE' ]
+            storageStrategy = 'mount-declared-image-volumes'
+            "#
+        );
+
+        let companion_configs = config.application_companion_configs("master");
+
+        assert_eq!(companion_configs.len(), 1);
+        companion_configs
+            .iter()
+            .for_each(|(_, _, storage_strategy)| {
+                assert_eq!(
+                    storage_strategy,
+                    &StorageStrategy::MountDeclaredImageVolumes
+                );
+            });
     }
 }

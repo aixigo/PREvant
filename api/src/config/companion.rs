@@ -48,6 +48,8 @@ pub(super) struct Companion {
     app_selector: AppSelector,
     router: Option<Router>,
     middlewares: Option<BTreeMap<String, Value>>,
+    #[serde(default)]
+    storage_strategy: StorageStrategy,
 }
 
 #[derive(Clone, Deserialize, Debug, PartialEq)]
@@ -56,6 +58,14 @@ pub(super) enum CompanionType {
     Application,
     #[serde(rename = "service")]
     Service,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub enum StorageStrategy {
+    #[serde(rename = "none")]
+    NoMountVolumes,
+    #[serde(rename = "mount-declared-image-volumes")]
+    MountDeclaredImageVolumes,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -79,6 +89,10 @@ impl Companion {
 
     pub fn deployment_strategy(&self) -> &DeploymentStrategy {
         &self.deployment_strategy
+    }
+
+    pub fn storage_strategy(&self) -> &StorageStrategy {
+        &self.storage_strategy
     }
 }
 
@@ -126,6 +140,12 @@ impl From<CompanionType> for ContainerType {
 impl Default for DeploymentStrategy {
     fn default() -> Self {
         Self::RedeployAlways
+    }
+}
+
+impl Default for StorageStrategy {
+    fn default() -> Self {
+        Self::NoMountVolumes
     }
 }
 

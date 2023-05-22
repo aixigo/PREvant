@@ -176,6 +176,22 @@ deploymentStrategy = 'redeploy-on-image-update'
 - `redeploy-on-image-update`: Re-deploys the companion if there is a more rescent image available.
 - `redeploy-never`: Even if there is a new deployment request the companion won't be redeployed and stays running.
 
+### Storage Strategy
+
+Companions may have varying storage requirements and storage strategies cater to these by offering the below configuration flags:
+
+```toml
+[companions.postgres]
+type = 'application'
+image = 'postgres:latest'
+storageStrategy = 'mount-declared-image-volumes'
+```
+
+`storageStrategy` offers following values to determine how storage is managed for a companion:
+
+- `none` (_default_): Companion is deployed without persistent storage.
+- `mount-declared-image-volumes`: Mounts the volume paths declared within the image, providing persistent storage for the companion.
+
 ## Hooks
 
 Hooks can be used to manipulate the deployment before handing it over to actual infrastructure and they are able to manipulate all service configurations once for any deployment REST API call. For example, based on the deployment's app name you can decide to reconfigure your services to use a different DBMS so that you are able to verify that your services work with different DBMSs.
