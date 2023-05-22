@@ -600,6 +600,7 @@ mod tests {
                 TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
                     "master", "db",
                 ])),
+                Vec::new(),
             ),
             &ContainerConfig::default(),
             false,
@@ -677,6 +678,7 @@ mod tests {
                 TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
                     "master", "db",
                 ])),
+                Vec::new(),
             ),
             &ContainerConfig::default(),
             false,
@@ -757,6 +759,7 @@ mod tests {
                 TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
                     "master", "db",
                 ])),
+                Vec::new(),
             ),
             &ContainerConfig::default(),
             false,
@@ -836,6 +839,7 @@ mod tests {
             config,
             DeploymentStrategy::RedeployAlways,
             TraefikIngressRoute::with_defaults(&AppName::from_str("master").unwrap(), "db"),
+            Vec::new(),
         );
         let payload = ingress_route_payload(&app_name, &config);
 
@@ -878,6 +882,7 @@ mod tests {
             config,
             DeploymentStrategy::RedeployAlways,
             TraefikIngressRoute::with_defaults(&AppName::from_str("master").unwrap(), "db"),
+            Vec::new(),
         );
 
         let payload = middleware_payload(&String::from("master"), &service);
