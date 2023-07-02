@@ -43,9 +43,7 @@ url = { version = "2.1", features = ["serde"] }
 uuid = { version = "1.1", features = ["serde", "v4"] }
 yansi = "0.5"
 
-[dependencies.goji]
-git = "https://github.com/softprops/goji.git"
-rev = "5916526332951a144b6f6fd7c94d02ea56fdad31"
+jira_query = "1.2"
 
 [dependencies.dkregistry]
 git = "https://github.com/camallo/dkregistry-rs.git"

@@ -23,8 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-
-use goji::Issue;
+use jira_query::Issue;
 use serde::ser::{Serialize, Serializer};
 use std::convert::From;
 use url::Url;
@@ -36,19 +35,13 @@ pub struct TicketInfo {
 }
 
 impl From<Issue> for TicketInfo {
-    fn from(issue: Issue) -> Self {
-        let summary = match issue.summary() {
-            None => "".to_owned(),
-            Some(summary) => summary,
-        };
+    fn from(issues: Issue) -> Self {
+        let summary = issues.fields.summary;
 
-        let status = match issue.status() {
-            None => "".to_owned(),
-            Some(status) => status.name,
-        };
+        let status = issues.fields.status.name;
 
-        let mut link = Url::parse(&issue.self_link).unwrap();
-        link.set_path(&("/browse/".to_owned() + &issue.key));
+        let mut link = Url::parse(&issues.self_link).unwrap();
+        link.set_path(&("/browse/".to_owned() + &issues.key));
 
         TicketInfo {
             link,

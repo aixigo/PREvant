@@ -1,0 +1,43 @@
+on: [push]
+
+name: Build and test API
+
+jobs:
+  unitTest:
+    name: API Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+        
+      - name: Install latest nightly
+        uses: actions-rs/toolchain@v1
+        with:
+            toolchain: nightly
+            override: true
+
+      - name: Run cargo test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --manifest-path api/Cargo.toml
+
+  integrationTests:
+    name: API Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+
+      - name: Build Docker Image
+        run: docker build --pull -t aixigo/prevant .
+
+      - name: Install latest nightly
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          override: true
+
+      - name: Run cargo test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --manifest-path api-tests/Cargo.toml -- --test-threads=1

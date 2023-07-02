@@ -48,7 +48,6 @@ use std::sync::Arc;
 
 mod apps;
 mod config;
-mod deployment;
 mod http_result;
 mod infrastructure;
 mod models;

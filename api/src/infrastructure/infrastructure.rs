@@ -25,7 +25,6 @@
  */
 
 use crate::config::ContainerConfig;
-use crate::deployment::DeploymentUnit;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::{ContainerType, ServiceConfig};
 use async_trait::async_trait;
@@ -85,7 +84,8 @@ pub trait Infrastructure: Send + Sync {
     async fn deploy_services(
         &self,
         status_id: &String,
-        deployment_unit: &DeploymentUnit,
+        app_name: &String,
+        strategies: &[DeploymentStrategy],
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error>;
 
