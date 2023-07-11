@@ -484,8 +484,8 @@ impl DockerInfrastructure {
         options.restart_policy("always", 5);
 
         if let Some(memory_limit) = container_config.memory_limit() {
-            options.memory(memory_limit);
-            options.memory_swap(memory_limit as i64);
+            options.memory(memory_limit.as_u64());
+            options.memory_swap(memory_limit.as_u64() as i64);
         }
 
         options.build()

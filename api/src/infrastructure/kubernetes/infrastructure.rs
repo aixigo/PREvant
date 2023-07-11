@@ -25,11 +25,12 @@
  */
 use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
+    STORAGE_TYPE_LABEL,
 };
 use super::payloads::{
     deployment_payload, deployment_replicas_payload, image_pull_secret_payload,
-    ingress_route_payload, middleware_payload, namespace_payload, secrets_payload, service_payload,
-    IngressRoute, Middleware,
+    ingress_route_payload, middleware_payload, namespace_payload, persistent_volume_claim_payload,
+    secrets_payload, service_payload, IngressRoute, Middleware,
 };
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
@@ -41,9 +42,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use failure::Error;
 use futures::future::join_all;
+use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
-    core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
+    core::v1::PersistentVolumeClaim, core::v1::Pod as V1Pod, core::v1::Secret as V1Secret,
+    core::v1::Service as V1Service,
 };
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
@@ -51,10 +54,10 @@ use kube::{
     config::Config,
     error::{Error as KubeError, ErrorResponse},
 };
-use log::debug;
+use log::{debug, warn};
 use multimap::MultiMap;
 use secstr::SecUtf8;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::{From, TryFrom};
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -88,6 +91,8 @@ pub enum KubernetesInfrastructureError {
         deployment_name
     )]
     MissingImageLabel { deployment_name: String },
+    #[fail(display = "The default storage class is missing in kubernetes.")]
+    MissingDefaultStorageClass,
 }
 
 impl KubernetesInfrastructure {
@@ -327,6 +332,10 @@ impl KubernetesInfrastructure {
                 );
                 Ok(())
             }
+            Err(KubeError::Api(ErrorResponse { code, .. })) if code == 409 => {
+                debug!("Secrets already exists for {}", app_name);
+                Ok(())
+            }
             Err(e) => {
                 error!("Cannot deploy namespace: {}", e);
                 Err(e.into())
@@ -346,6 +355,10 @@ impl KubernetesInfrastructure {
 
         let client = self.client().await?;
 
+        let persistence_volume_map = self
+            .create_persistent_volume_claim(app_name, service)
+            .await?;
+
         match Api::namespaced(client.clone(), app_name)
             .create(
                 &PostParams::default(),
@@ -356,6 +369,7 @@ impl KubernetesInfrastructure {
                     self.config
                         .registry_credentials(&service.image().registry().unwrap_or_default())
                         .is_some(),
+                    &persistence_volume_map,
                 ),
             )
             .await
@@ -387,6 +401,7 @@ impl KubernetesInfrastructure {
                                     &service.image().registry().unwrap_or_default(),
                                 )
                                 .is_some(),
+                            &persistence_volume_map,
                         )),
                     )
                     .await?;
@@ -477,6 +492,111 @@ impl KubernetesInfrastructure {
             .await?;
 
         Ok(service)
+    }
+
+    async fn create_persistent_volume_claim<'a>(
+        &self,
+        app_name: &str,
+        service: &'a DeployableService,
+    ) -> Result<Option<HashMap<&'a String, PersistentVolumeClaim>>, KubernetesInfrastructureError>
+    {
+        let client = self.client().await?;
+        let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {return Ok(None)};
+
+        let storage_size = k8s_config.storage_config().storage_size();
+        let storage_class = match k8s_config.storage_config().storage_class() {
+            Some(sc) => sc.into(),
+            None => self
+                .fetch_default_storage_class()
+                .await?
+                .metadata
+                .name
+                .ok_or(KubernetesInfrastructureError::UnexpectedError {
+                    internal_message: String::from(
+                        "The default storage class contains an empty name",
+                    ),
+                })?,
+        };
+
+        let mut persistent_volume_map = HashMap::new();
+        let existing_pvc: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), app_name);
+
+        for declared_volume in service.declared_volumes() {
+            let pvc_list_params = ListParams {
+                label_selector: Some(format!(
+                    "{}={},{}={},{}={}",
+                    APP_NAME_LABEL,
+                    app_name,
+                    SERVICE_NAME_LABEL,
+                    service.service_name(),
+                    STORAGE_TYPE_LABEL,
+                    declared_volume.split('/').last().unwrap_or("default")
+                )),
+                ..Default::default()
+            };
+
+            let fetched_pvc = existing_pvc.list(&pvc_list_params).await?.items;
+
+            if fetched_pvc.is_empty() {
+                match Api::namespaced(client.clone(), app_name)
+                    .create(
+                        &PostParams::default(),
+                        &persistent_volume_claim_payload(
+                            app_name,
+                            service,
+                            storage_size,
+                            &storage_class,
+                            declared_volume,
+                        ),
+                    )
+                    .await
+                {
+                    Ok(pvc) => {
+                        persistent_volume_map.insert(declared_volume, pvc);
+                    }
+                    Err(e) => {
+                        error!("Cannot deploy persistent volume claim: {}", e);
+                        return Err(e.into());
+                    }
+                }
+            } else {
+                if fetched_pvc.len() != 1 {
+                    warn!(
+                        "Found more than 1 Persistent Volume Claim - {:?} for declared image path {} \n Using the first available Persistent Volume Claim - {:?}",
+                        &fetched_pvc.iter().map(|pvc| &pvc.metadata.name),
+                        declared_volume,
+                        fetched_pvc.first().unwrap().metadata.name
+                    );
+                }
+
+                persistent_volume_map
+                    .insert(declared_volume, fetched_pvc.into_iter().next().unwrap());
+            }
+        }
+        Ok(Some(persistent_volume_map))
+    }
+
+    async fn fetch_default_storage_class(
+        &self,
+    ) -> Result<StorageClass, KubernetesInfrastructureError> {
+        let storage_classes: Api<StorageClass> = Api::all(self.client().await?);
+
+        match storage_classes.list(&ListParams::default()).await {
+            Ok(sc) => sc
+                .items
+                .into_iter()
+                .find(|sc| {
+                    sc.metadata.annotations.as_ref().map_or_else(
+                        || false,
+                        |v| {
+                            v.get("storageclass.kubernetes.io/is-default-class")
+                                == Some(&"true".into())
+                        },
+                    )
+                })
+                .ok_or(KubernetesInfrastructureError::MissingDefaultStorageClass),
+            Err(err) => Err(err.into()),
+        }
     }
 }
 
