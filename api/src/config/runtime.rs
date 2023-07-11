@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 /*-
  * ========================LICENSE_START=================================
  * PREvant REST API
@@ -25,6 +23,10 @@ use std::path::PathBuf;
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+use bytesize::ByteSize;
+use serde::Deserialize;
+use std::path::PathBuf;
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum Runtime {
@@ -43,11 +45,17 @@ impl Default for Runtime {
 pub struct KubernetesRuntimeConfig {
     #[serde(default)]
     downward_api: KubernetesDownwardApiConfig,
+    #[serde(default)]
+    storage_config: KubernetesStorageConfig,
 }
 
 impl KubernetesRuntimeConfig {
     pub fn downward_api(&self) -> &KubernetesDownwardApiConfig {
         &self.downward_api
+    }
+
+    pub fn storage_config(&self) -> &KubernetesStorageConfig {
+        &self.storage_config
     }
 }
 
@@ -67,6 +75,37 @@ impl Default for KubernetesDownwardApiConfig {
     fn default() -> Self {
         Self {
             labels_path: PathBuf::from("/run/podinfo/labels"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStorageConfig {
+    #[serde(default = "KubernetesStorageConfig::default_storage_size")]
+    storage_size: ByteSize,
+    storage_class: Option<String>,
+}
+
+impl KubernetesStorageConfig {
+    pub fn storage_size(&self) -> &ByteSize {
+        &self.storage_size
+    }
+
+    pub fn storage_class(&self) -> &Option<String> {
+        &self.storage_class
+    }
+
+    fn default_storage_size() -> ByteSize {
+        ByteSize::gb(2)
+    }
+}
+
+impl Default for KubernetesStorageConfig {
+    fn default() -> Self {
+        Self {
+            storage_size: Self::default_storage_size(),
+            storage_class: None,
         }
     }
 }
@@ -112,7 +151,8 @@ mod tests {
             Runtime::Kubernetes(KubernetesRuntimeConfig {
                 downward_api: KubernetesDownwardApiConfig {
                     labels_path: PathBuf::from("/some/path")
-                }
+                },
+                storage_config: KubernetesStorageConfig::default()
             })
         );
     }
@@ -129,5 +169,28 @@ mod tests {
             config.downward_api.labels_path(),
             &PathBuf::from("/run/podinfo/labels")
         )
+    }
+
+    #[test]
+    fn parse_as_kubernetes_storage_config() {
+        let runtime_toml = r#"
+        type = 'Kubernetes'
+        [storageConfig]
+        storageSize = '10g'
+        storageClass = 'local-path'
+        "#;
+
+        let runtime = toml::de::from_str::<Runtime>(runtime_toml).unwrap();
+
+        assert_eq!(
+            runtime,
+            Runtime::Kubernetes(KubernetesRuntimeConfig {
+                downward_api: KubernetesDownwardApiConfig::default(),
+                storage_config: KubernetesStorageConfig {
+                    storage_size: ByteSize::gb(10),
+                    storage_class: Some(String::from("local-path"))
+                }
+            })
+        );
     }
 }

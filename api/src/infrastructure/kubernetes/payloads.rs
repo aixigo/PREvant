@@ -25,6 +25,7 @@
  */
 use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
+    STORAGE_TYPE_LABEL,
 };
 use crate::config::ContainerConfig;
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
@@ -33,10 +34,12 @@ use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
 use crate::models::service::Service;
 use crate::models::ServiceConfig;
 use base64::{engine::general_purpose, Engine};
+use bytesize::ByteSize;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::DeploymentSpec;
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PodSpec, PodTemplateSpec,
+    Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PersistentVolumeClaim,
+    PersistentVolumeClaimSpec, PersistentVolumeClaimVolumeSource, PodSpec, PodTemplateSpec,
     ResourceRequirements, SecretVolumeSource, Volume, VolumeMount,
 };
 use k8s_openapi::api::{
@@ -53,8 +56,9 @@ use schemars::JsonSchema;
 use secstr::SecUtf8;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
+use std::iter::FromIterator;
 use std::path::{Component, PathBuf};
 use std::string::ToString;
 
@@ -174,6 +178,7 @@ pub fn deployment_payload(
     service: &DeployableService,
     container_config: &ContainerConfig,
     use_image_pull_secret: bool,
+    persistent_volume_map: &Option<HashMap<&String, PersistentVolumeClaim>>,
 ) -> V1Deployment {
     let env = service.env().map(|env| {
         env.iter()
@@ -213,6 +218,17 @@ pub fn deployment_payload(
             .collect::<Vec<_>>()
     });
 
+    let volume_mounts = match persistent_volume_map {
+        Some(pv_map) => {
+            let mut mounts = volume_mounts.unwrap_or_default();
+            for (path, pvc) in pv_map {
+                mounts.push(pvc_volume_mount_payload(path, pvc));
+            }
+            Some(mounts)
+        }
+        None => volume_mounts,
+    };
+
     let volumes = service.files().map(|files| {
         let files = files
             .iter()
@@ -247,15 +263,27 @@ pub fn deployment_payload(
                     ..Default::default()
                 }
             })
-            .collect()
+            .collect::<Vec<Volume>>()
     });
+
+    let volumes = match persistent_volume_map {
+        Some(pv_map) => {
+            let mut vols = volumes.unwrap_or_default();
+            pv_map.iter().for_each(|(_, pvc)| {
+                vols.push(pvc_volume_payload(pvc));
+            });
+
+            Some(vols)
+        }
+        None => volumes,
+    };
 
     let resources = container_config
         .memory_limit()
         .map(|mem_limit| ResourceRequirements {
             limits: Some(BTreeMap::from([(
                 String::from("memory"),
-                Quantity(format!("{mem_limit}")),
+                Quantity(format!("{}", mem_limit.as_u64())),
             )])),
             ..Default::default()
         });
@@ -297,6 +325,7 @@ pub fn deployment_payload(
                     ..Default::default()
                 }),
                 spec: Some(PodSpec {
+                    volumes,
                     containers: vec![Container {
                         name: service.service_name().to_string(),
                         image: Some(service.image().to_string()),
@@ -310,7 +339,6 @@ pub fn deployment_payload(
                         resources,
                         ..Default::default()
                     }],
-                    volumes,
                     image_pull_secrets: if use_image_pull_secret {
                         Some(vec![LocalObjectReference {
                             name: Some(format!("{app_name}-image-pull-secret")),
@@ -412,7 +440,6 @@ pub fn image_pull_secret_payload(
     app_name: &str,
     registries_and_credentials: BTreeMap<String, (&str, &SecUtf8)>,
 ) -> V1Secret {
-    use core::iter::FromIterator;
     let data = ByteString(
         serde_json::json!({
             "auths":
@@ -579,14 +606,100 @@ pub fn middleware_payload(app_name: &String, service: &DeployableService) -> Vec
         .collect::<Vec<_>>()
 }
 
+pub fn pvc_volume_mount_payload(
+    path: &str,
+    persitent_volume_claim: &PersistentVolumeClaim,
+) -> VolumeMount {
+    VolumeMount {
+        name: format!(
+            "{}-volume",
+            persitent_volume_claim
+                .metadata
+                .labels
+                .as_ref()
+                .unwrap_or(&BTreeMap::new())
+                .get(STORAGE_TYPE_LABEL)
+                .unwrap_or(&String::from("default"))
+        ),
+        mount_path: path.to_string(),
+        ..Default::default()
+    }
+}
+
+pub fn pvc_volume_payload(persistent_volume_claim: &PersistentVolumeClaim) -> Volume {
+    Volume {
+        name: format!(
+            "{}-volume",
+            persistent_volume_claim
+                .metadata
+                .labels
+                .as_ref()
+                .unwrap_or(&BTreeMap::new())
+                .get(STORAGE_TYPE_LABEL)
+                .unwrap_or(&String::from("default"))
+        ),
+        persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+            claim_name: persistent_volume_claim
+                .metadata
+                .name
+                .clone()
+                .unwrap_or_default(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+pub fn persistent_volume_claim_payload(
+    app_name: &str,
+    service: &DeployableService,
+    storage_size: &ByteSize,
+    storage_class: &str,
+    declared_volume: &str,
+) -> PersistentVolumeClaim {
+    PersistentVolumeClaim {
+        metadata: ObjectMeta {
+            generate_name: Some(format!("{}-{}-pvc-", app_name, service.service_name())),
+            labels: Some(BTreeMap::from([
+                (APP_NAME_LABEL.to_owned(), app_name.to_owned()),
+                (
+                    SERVICE_NAME_LABEL.to_owned(),
+                    service.service_name().to_owned(),
+                ),
+                (
+                    STORAGE_TYPE_LABEL.to_owned(),
+                    declared_volume
+                        .split('/')
+                        .last()
+                        .unwrap_or("default")
+                        .to_owned(),
+                ),
+            ])),
+            ..Default::default()
+        },
+        spec: Some(PersistentVolumeClaimSpec {
+            storage_class_name: Some(storage_class.to_owned()),
+            access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+            resources: Some(ResourceRequirements {
+                requests: Some(BTreeMap::from_iter(vec![(
+                    "storage".to_owned(),
+                    Quantity(format!("{}", storage_size.as_u64())),
+                )])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
     use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
     use crate::models::{AppName, Environment, EnvironmentVariable};
     use crate::sc;
+    use std::str::FromStr;
 
     #[test]
     fn should_create_deployment_payload() {
@@ -604,6 +717,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
+            &None,
         );
 
         assert_json_diff::assert_json_include!(
@@ -613,7 +727,7 @@ mod tests {
               "kind": "Deployment",
               "metadata": {
                 "annotations": {
-                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17"
                 },
                 "labels": {
                   "com.aixigo.preview.servant.app-name": "master",
@@ -682,6 +796,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
+            &None,
         );
 
         assert_json_diff::assert_json_include!(
@@ -763,6 +878,7 @@ mod tests {
             ),
             &ContainerConfig::default(),
             false,
+            &None,
         );
 
         assert_json_diff::assert_json_include!(
@@ -904,6 +1020,221 @@ mod tests {
                 }
               },
             }]),
+        );
+    }
+
+    #[test]
+    fn should_create_deployment_payload_with_persistent_volume_claim() {
+        let config = sc!("db", "mariadb:10.3.17");
+
+        let persistent_volume_claim = PersistentVolumeClaim {
+            metadata: ObjectMeta {
+                name: Some(String::from("master-db-pvc-abc")),
+                namespace: Some(String::from("master")),
+                labels: Some(BTreeMap::from([
+                    (APP_NAME_LABEL.to_owned(), "master".to_owned()),
+                    (SERVICE_NAME_LABEL.to_owned(), "db".to_owned()),
+                    (STORAGE_TYPE_LABEL.to_owned(), "data".to_owned()),
+                ])),
+                ..Default::default()
+            },
+            spec: Some(PersistentVolumeClaimSpec {
+                storage_class_name: Some("local-path".to_owned()),
+                access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+                resources: Some(ResourceRequirements {
+                    requests: Some(BTreeMap::from_iter(vec![(
+                        "storage".to_owned(),
+                        Quantity("2Gi".to_owned()),
+                    )])),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let payload = deployment_payload(
+            "master",
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
+                    "master", "db",
+                ])),
+                vec![String::from("/var/lib/data")],
+            ),
+            &ContainerConfig::default(),
+            false,
+            &Some(HashMap::from([(
+                &String::from("/var/lib/data"),
+                persistent_volume_claim,
+            )])),
+        );
+
+        assert_json_diff::assert_json_include!(
+            actual:payload,
+            expected:serde_json::json!({
+              "apiVersion": "apps/v1",
+              "kind": "Deployment",
+              "metadata": {
+                "annotations": {
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17"
+                },
+                "labels": {
+                  "com.aixigo.preview.servant.app-name": "master",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db"
+                },
+                "name": "master-db-deployment",
+                "namespace": "master"
+              },
+              "spec": {
+                "replicas": 1,
+                "selector": {
+                  "matchLabels": {
+                    "com.aixigo.preview.servant.app-name": "master",
+                    "com.aixigo.preview.servant.container-type": "instance",
+                    "com.aixigo.preview.servant.service-name": "db"
+                  }
+                },
+                "template": {
+                  "metadata": {
+                    "annotations": {
+                    },
+                    "labels": {
+                      "com.aixigo.preview.servant.app-name": "master",
+                      "com.aixigo.preview.servant.container-type": "instance",
+                      "com.aixigo.preview.servant.service-name": "db"
+                    }
+                  },
+                  "spec": {
+                    "containers": [
+                      {
+                        "image": "docker.io/library/mariadb:10.3.17",
+                        "imagePullPolicy": "Always",
+                        "name": "db",
+                        "ports": [
+                          {
+                            "containerPort": 80
+                          }
+                        ],
+                        "volumeMounts": [{
+                          "mountPath": "/var/lib/data",
+                          "name": "data-volume"
+                        }]
+                      }
+                    ],
+                    "volumes": [
+                      {
+                        "name": "data-volume",
+                        "persistentVolumeClaim": {
+                          "claimName": "master-db-pvc-abc"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            })
+        );
+    }
+
+    #[test]
+    fn should_create_deployment_for_config_containing_file_data() {
+        let mut config = sc!("db", "mariadb:10.3.17");
+        config.set_files(Some(BTreeMap::from([(
+            PathBuf::from("/etc/mysql/my.cnf"),
+            SecUtf8::from_str(
+                r"[client-server]
+                  socket=/tmp/mysql.sock
+                  port=3306",
+            )
+            .unwrap(),
+        )])));
+
+        let payload = deployment_payload(
+            "master",
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
+                    "master", "db",
+                ])),
+                Vec::new(),
+            ),
+            &ContainerConfig::default(),
+            false,
+            &None,
+        );
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!({
+              "apiVersion": "apps/v1",
+              "kind": "Deployment",
+              "metadata": {
+                "annotations": {
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
+                },
+                "labels": {
+                  "com.aixigo.preview.servant.app-name": "master",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db"
+                },
+                "name": "master-db-deployment",
+                "namespace": "master"
+              },
+              "spec": {
+                "replicas": 1,
+                "selector": {
+                  "matchLabels": {
+                    "com.aixigo.preview.servant.app-name": "master",
+                    "com.aixigo.preview.servant.container-type": "instance",
+                    "com.aixigo.preview.servant.service-name": "db"
+                  }
+                },
+                "template": {
+                  "metadata": {
+                    "annotations": {
+                    },
+                    "labels": {
+                      "com.aixigo.preview.servant.app-name": "master",
+                      "com.aixigo.preview.servant.container-type": "instance",
+                      "com.aixigo.preview.servant.service-name": "db"
+                    }
+                  },
+                  "spec": {
+                    "containers": [
+                      {
+                        "image": "docker.io/library/mariadb:10.3.17",
+                        "imagePullPolicy": "Always",
+                        "name": "db",
+                        "ports": [
+                          {
+                            "containerPort": 80
+                          }
+                        ],
+                        "volumeMounts": [{
+                          "mountPath": "/etc/mysql",
+                          "name": "etc-mysql"
+                        }]
+                      }
+                    ],
+                    "volumes": [{
+                      "name": "etc-mysql",
+                      "secret": {
+                        "items": [
+                          {
+                            "key": "my-cnf",
+                            "path": "my.cnf"
+                          }
+                        ],
+                        "secretName": "master-db-secret"
+                      }
+                    }]
+                  },
+                }
+              }
+            })
         );
     }
 }

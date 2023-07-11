@@ -23,35 +23,39 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+use bytesize::ByteSize;
 use serde::{de, Deserialize, Deserializer};
 
 #[derive(Clone, Default, Deserialize)]
 pub struct ContainerConfig {
     #[serde(deserialize_with = "ContainerConfig::parse_from_memory_string")]
-    memory_limit: Option<u64>,
+    memory_limit: Option<ByteSize>,
 }
 
 impl ContainerConfig {
-    fn parse_from_memory_string<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+    fn parse_from_memory_string<'de, D>(deserializer: D) -> Result<Option<ByteSize>, D::Error>
     where
         D: Deserializer<'de>,
     {
         let container_limit = String::deserialize(deserializer)?;
+        match container_limit.parse::<ByteSize>() {
+            Ok(result) => Ok(Some(result)),
+            Err(_) => {
+                let (size, unit) = container_limit.split_at(container_limit.len() - 1);
+                let limit = size.parse::<u64>().map_err(de::Error::custom)?;
 
-        let (size, unit) = container_limit.split_at(container_limit.len() - 1);
-        let limit = size.parse::<u64>().map_err(de::Error::custom)?;
-
-        let exp = match unit.to_lowercase().as_str() {
-            "k" => 1,
-            "m" => 2,
-            "g" => 3,
-            _ => 0,
-        };
-
-        Ok(Some(limit * 1024_u64.pow(exp)))
+                let exp = match unit.to_lowercase().as_str() {
+                    "k" => 1,
+                    "m" => 2,
+                    "g" => 3,
+                    _ => 0,
+                };
+                Ok(Some(ByteSize(limit * 1024_u64.pow(exp))))
+            }
+        }
     }
 
-    pub fn memory_limit(&self) -> Option<u64> {
+    pub fn memory_limit(&self) -> Option<ByteSize> {
         self.memory_limit
     }
 }
