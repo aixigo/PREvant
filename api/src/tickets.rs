@@ -28,9 +28,8 @@ use crate::apps::Apps;
 use crate::config::Config;
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::ticket_info::TicketInfo;
-use goji::Error as GojiError;
-use goji::{Credentials, Jira, SearchOptions};
 use http_api_problem::{HttpApiProblem, StatusCode};
+use jira_query::{JiraInstance, JiraQueryError};
 use rocket::serde::json::Json;
 use rocket::State;
 use std::collections::HashMap;
@@ -54,13 +53,12 @@ pub async fn tickets(
             let services = apps_service.get_apps().await?;
 
             let pw = String::from(jira_config.password().unsecure());
-            let jira = match Jira::new(
-                jira_config.host().clone(),
-                Credentials::Basic(jira_config.user().clone(), pw),
-            ) {
-                Ok(jira) => jira,
-                Err(e) => return Err(ListTicketsError::from(e).into()),
-            };
+            let jira = JiraInstance::at(jira_config.host().clone())
+                .unwrap()
+                .authenticate(jira_query::Auth::Basic {
+                    user: jira_config.user().clone(),
+                    password: pw,
+                });
 
             let issue_keys = services
                 .keys()
@@ -70,32 +68,23 @@ pub async fn tickets(
 
             debug!("Search for issues: {}", issue_keys);
 
-            let options = SearchOptions::builder().validate(false).build();
-
-            match jira
-                .search()
-                .iter(format!("issuekey in ({})", issue_keys), &options)
-            {
-                Ok(issues) => {
-                    for issue in issues {
-                        tickets.insert(issue.key.clone(), TicketInfo::from(issue));
-                    }
-                }
-                Err(err) => match err {
-                    GojiError::Fault { code, errors } => {
-                        debug!("No issue for {}: {:?} {:?}", issue_keys, code, errors)
-                    }
-                    err => {
-                        let e = ListTicketsError::from(err);
-                        error!("Cannot retrieve ticket information: {}", e);
-                        return Err(e.into());
-                    }
-                },
+            let query = format!("issuekey in ({})&validateQuery=False", issue_keys);
+            let issues = jira.search(&query).await.map_err(ListTicketsError::from)?;
+            for issue in issues {
+                tickets.insert(issue.key.clone(), TicketInfo::from(issue));
             }
         }
     }
 
     Ok(Json(tickets))
+}
+
+impl From<JiraQueryError> for ListTicketsError {
+    fn from(err: JiraQueryError) -> Self {
+        ListTicketsError::UnexpectedError {
+            internal_message: err.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Fail)]
@@ -121,13 +110,5 @@ impl From<ListTicketsError> for HttpApiError {
         HttpApiProblem::with_title_and_type(status)
             .detail(format!("{}", error))
             .into()
-    }
-}
-
-impl From<GojiError> for ListTicketsError {
-    fn from(err: GojiError) -> Self {
-        ListTicketsError::UnexpectedError {
-            internal_message: format!("{:?}", err),
-        }
     }
 }
