@@ -23,7 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 use std::convert::From;
 
 pub struct LogChunk {
@@ -33,6 +33,7 @@ pub struct LogChunk {
 }
 
 impl LogChunk {
+    #[cfg(test)]
     pub fn since(&self) -> &DateTime<FixedOffset> {
         &self.since
     }
@@ -48,15 +49,8 @@ impl LogChunk {
 
 impl From<Vec<(DateTime<FixedOffset>, String)>> for LogChunk {
     fn from(logs: Vec<(DateTime<FixedOffset>, String)>) -> Self {
-        let since: DateTime<FixedOffset> = DateTime::<FixedOffset>::from_utc(
-            chrono::MAX_DATE.and_hms(0, 0, 0).naive_utc(),
-            FixedOffset::east(0),
-        );
-
-        let until: DateTime<FixedOffset> = DateTime::<FixedOffset>::from_utc(
-            chrono::MIN_DATE.and_hms(0, 0, 0).naive_utc(),
-            FixedOffset::east(0),
-        );
+        let since = DateTime::<Utc>::MAX_UTC.fixed_offset();
+        let until = DateTime::<Utc>::MIN_UTC.fixed_offset();
 
         let chunk = LogChunk {
             since,

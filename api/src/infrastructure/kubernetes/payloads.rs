@@ -32,7 +32,7 @@ use crate::infrastructure::traefik::TraefikMiddleware;
 use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
 use crate::models::service::Service;
 use crate::models::ServiceConfig;
-use base64::encode;
+use base64::{Engine, engine::general_purpose};
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::DeploymentSpec;
 use k8s_openapi::api::core::v1::{
@@ -387,7 +387,7 @@ pub fn secrets_payload(
         .map(|(path, file_content)| {
             (
                 secret_name_from_name!(path),
-                Value::String(encode(file_content.unsecure())),
+                Value::String(general_purpose::STANDARD.encode(file_content.unsecure())),
             )
         })
         .collect::<Map<String, Value>>();

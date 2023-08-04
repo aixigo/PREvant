@@ -195,7 +195,7 @@ mod tests {
 
         assert_eq!(
             meta.date_modified(),
-            Some(Utc.ymd(2019, 4, 17).and_hms(17, 21, 00))
+            Utc.with_ymd_and_hms(2019, 4, 17, 17, 21, 00).single()
         );
     }
 

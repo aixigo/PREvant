@@ -27,8 +27,7 @@ use crate::apps::AppsServiceError;
 use crate::config::Config;
 use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, Image};
 use boa_engine::property::Attribute;
-use boa_engine::syntax::ast::node::Node;
-use boa_engine::{Context, JsValue};
+use boa_engine::{Context, JsValue, Source};
 use secstr::SecUtf8;
 use std::collections::BTreeMap;
 use std::iter::IntoIterator;
@@ -65,14 +64,18 @@ impl<'a> Hooks<'a> {
         match Self::parse_hook(hook_path).await {
             Some(mut context) => {
                 Self::register_configs_as_global_property(&mut context, &services);
-                context.register_global_property(
-                    "appName",
-                    JsValue::String(app_name.to_string().into()),
-                    Attribute::READONLY,
-                );
+                context
+                    .register_global_property(
+                        "appName",
+                        JsValue::String(app_name.to_string().into()),
+                        Attribute::READONLY,
+                    )
+                    .expect("Property registration failed unexpectedly");
 
                 let transformed_configs = context
-                    .eval("deploymentHook(appName, serviceConfigs)")
+                    .eval(Source::from_bytes(
+                        "deploymentHook(appName, serviceConfigs)",
+                    ))
                     .unwrap();
 
                 let transformed_configs = transformed_configs.to_json(&mut context).unwrap();
@@ -93,15 +96,8 @@ impl<'a> Hooks<'a> {
         };
 
         let mut context = Context::default();
-        let statements = match context.parse(&hook_content) {
-            Ok(statements) => statements,
-            Err(err) => {
-                error!("Cannot parse hook file {:?}: {}", hook_path, err);
-                return None;
-            }
-        };
 
-        if let Err(err) = context.eval(&hook_content) {
+        if let Err(err) = context.eval(Source::from_bytes(&hook_content)) {
             error!(
                 "Cannot populate hook {:?} to Javascript context: {:?}",
                 hook_path, err
@@ -109,18 +105,11 @@ impl<'a> Hooks<'a> {
             return None;
         }
 
-        statements
-            .items()
-            .iter()
-            .find_map(|node| match node {
-                Node::FunctionDecl(decl)
-                    if context.interner().resolve(decl.name()) == Some("deploymentHook") =>
-                {
-                    Some(decl)
-                }
-                _ => None,
-            })
-            .map(|_| context)
+        if dbg!(context.interner().get("deploymentHook")).is_some() {
+            Some(context)
+        } else {
+            None
+        }
     }
 
     fn register_configs_as_global_property(
@@ -136,7 +125,9 @@ impl<'a> Hooks<'a> {
         let js_configs =
             JsValue::from_json(&js_configs, &mut context).expect("Unable to read JSON value");
 
-        context.register_global_property("serviceConfigs", js_configs, Attribute::READONLY);
+        context
+            .register_global_property("serviceConfigs", js_configs, Attribute::READONLY)
+            .expect("Property registration failed unexpectedly");
     }
 
     fn parse_service_config<Iter>(
