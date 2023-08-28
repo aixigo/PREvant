@@ -35,28 +35,6 @@ pub struct RequestInfo {
 }
 
 impl RequestInfo {
-    /// Returns the value for the `host` value of the
-    /// [Forwarded](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Forwarded) header.
-    pub fn host(&self) -> String {
-        match self.base_url.scheme() {
-            "http" => match self.base_url.port() {
-                None | Some(80) => String::from(self.base_url.host_str().unwrap()),
-                Some(port) => format!("{}:{}", self.base_url.host_str().unwrap(), port),
-            },
-            "https" => match self.base_url.port() {
-                None | Some(443) => String::from(self.base_url.host_str().unwrap()),
-                Some(port) => format!("{}:{}", self.base_url.host_str().unwrap(), port),
-            },
-            _ => String::from(self.base_url.host_str().unwrap()),
-        }
-    }
-
-    /// Returns the value for the `proto` value of the
-    /// [Forwarded](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Forwarded) header.
-    pub fn scheme(&self) -> &str {
-        self.base_url.scheme()
-    }
-
     pub fn get_base_url(&self) -> &Url {
         &self.base_url
     }
@@ -67,16 +45,32 @@ impl<'r> FromRequest<'r> for RequestInfo {
     type Error = ();
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
-        let hosts: Vec<_> = request.headers().get("host").collect();
+        let forwarded_host = request.headers().get_one("x-forwarded-host");
+        let forwarded_host = match forwarded_host {
+            Some(host) => host.to_string(),
+            None => match request.headers().get_one("host") {
+                Some(host) => host.to_string(),
+                None => {
+                    return Outcome::Failure((Status::BadRequest, ()));
+                }
+            },
+        };
 
-        if hosts.len() != 1 {
-            return Outcome::Failure((Status::BadRequest, ()));
-        }
+        let forwarded_proto = request
+            .headers()
+            .get_one("x-forwarded-proto")
+            .map(|proto| proto.to_string())
+            .unwrap_or_else(|| String::from("http"));
+        let forwarded_port = request
+            .headers()
+            .get_one("x-forwarded-port")
+            .map(|port| format!(":{}", port.to_string()))
+            .unwrap_or_else(|| String::from(""));
 
-        let url_string = format!("http://{}", hosts[0]);
-        match Url::parse(&url_string) {
-            Ok(url) => return Outcome::Success(RequestInfo { base_url: url }),
-            Err(_) => return Outcome::Failure((Status::BadRequest, ())),
+        let host_url = format!("{}://{}{}", forwarded_proto, forwarded_host, forwarded_port);
+        match Url::parse(&host_url) {
+            Ok(url) => Outcome::Success(RequestInfo { base_url: url }),
+            Err(_) => Outcome::Failure((Status::BadRequest, ())),
         }
     }
 }

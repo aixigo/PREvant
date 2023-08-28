@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 use crate::config::AppSelector;
-use base64::{Engine, engine::general_purpose};
+use base64::{engine::general_purpose, Engine};
 use secstr::SecUtf8;
 use serde::{de, Deserialize, Deserializer};
 use std::path::PathBuf;
@@ -46,7 +46,9 @@ impl Secret {
         D: Deserializer<'de>,
     {
         let secret = String::deserialize(deserializer)?;
-        let decoded = general_purpose::STANDARD.decode(&secret).map_err(de::Error::custom)?;
+        let decoded = general_purpose::STANDARD
+            .decode(&secret)
+            .map_err(de::Error::custom)?;
         let sec_value = String::from_utf8(decoded).map_err(de::Error::custom)?;
         Ok(SecUtf8::from(sec_value))
     }
