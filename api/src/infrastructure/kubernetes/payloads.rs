@@ -32,7 +32,7 @@ use crate::infrastructure::traefik::TraefikMiddleware;
 use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
 use crate::models::service::Service;
 use crate::models::ServiceConfig;
-use base64::{Engine, engine::general_purpose};
+use base64::{engine::general_purpose, Engine};
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::DeploymentSpec;
 use k8s_openapi::api::core::v1::{
