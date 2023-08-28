@@ -310,4 +310,23 @@ impl HostMetaCrawler {
         };
         (key, service, meta)
     }
+    #[cfg(test)]
+    pub fn fake_empty_host_meta_info(&mut self, app_name: String, service_id: String) {
+        let web_host_meta = WebHostMeta::empty();
+        let value = Arc::new(Value {
+            timestamp: chrono::Utc::now(),
+            web_host_meta,
+        });
+
+        self.writer.insert(
+            Key {
+                app_name: app_name.clone(),
+                service_id: service_id.clone(),
+            },
+            value,
+        );
+
+        self.writer.refresh();
+        self.writer.flush();
+    }
 }
