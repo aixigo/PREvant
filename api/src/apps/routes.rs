@@ -513,4 +513,252 @@ mod tests {
             assert_eq!(run_options, Some(RunOptions::Sync));
         }
     }
+
+    mod url_rendering {
+        use crate::apps::{AppsService, HostMetaCache};
+        use crate::infrastructure::Dummy;
+        use crate::models::{AppName, AppStatusChangeId};
+        use crate::sc;
+        use assert_json_diff::assert_json_include;
+        use rocket::http::ContentType;
+        use rocket::http::Header;
+        use rocket::http::Status;
+        use rocket::local::asynchronous::Client;
+        use serde_json::json;
+        use serde_json::Value;
+        use std::convert::From;
+        use std::str::FromStr;
+        use std::sync::Arc;
+
+        async fn set_up_rocket_with_dummy_infrastructure_and_a_running_app(
+            host_meta_cache: HostMetaCache,
+        ) -> Result<Client, crate::apps::AppsServiceError> {
+            let infrastructure = Box::new(Dummy::new());
+            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
+            let _result = apps
+                .create_or_update(
+                    &AppName::from_str("master").unwrap(),
+                    &AppStatusChangeId::new(),
+                    None,
+                    &vec![sc!("service-a")],
+                )
+                .await?;
+
+            let rocket = rocket::build()
+                .manage(host_meta_cache)
+                .manage(apps)
+                .mount("/", routes![crate::apps::routes::apps])
+                .mount("/api/apps", crate::apps::apps_routes());
+            Ok(Client::tracked(rocket).await.expect("valid rocket"))
+        }
+
+        #[tokio::test]
+        async fn host_header_response_with_xforwardedhost_xforwardedproto_and_xforwardedport(
+        ) -> Result<(), crate::apps::AppsServiceError> {
+            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let client =
+                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
+            host_meta_crawler
+                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+
+            let get = client
+                .get("/")
+                .header(rocket::http::Header::new("x-forwarded-host", "prevant.com"))
+                .header(rocket::http::Header::new("x-forwarded-proto", "http"))
+                .header(rocket::http::Header::new("x-forwarded-port", "8433"))
+                .header(ContentType::JSON)
+                .dispatch();
+
+            let response = get.await;
+
+            let body_str = response.into_string().await.expect("valid response body");
+            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
+
+            assert_json_include!(actual: value_in_json, expected: json!({
+             "master": [
+                    {
+                     "url":"http://prevant.com:8433/master/service-a/"
+                    }
+                ]
+            }));
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn host_header_response_with_xforwardedproto_and_other_default_values(
+        ) -> Result<(), crate::apps::AppsServiceError> {
+            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let client =
+                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
+            host_meta_crawler
+                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+
+            let get = client
+                .get("/")
+                .header(rocket::http::Header::new("x-forwarded-proto", "https"))
+                .header(rocket::http::Header::new("host", "localhost"))
+                .header(ContentType::JSON)
+                .dispatch();
+
+            let response = get.await;
+
+            let body_str = response.into_string().await.expect("valid response body");
+            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
+            assert_json_include!(actual: value_in_json, expected: json!({
+             "master": [
+                    {
+                     "url":"https://localhost/master/service-a/"
+                    }
+                ]
+            }));
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn host_header_response_with_xforwardedhost_and_other_default_values(
+        ) -> Result<(), crate::apps::AppsServiceError> {
+            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let client =
+                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
+            host_meta_crawler
+                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+
+            let get = client
+                .get("/")
+                .header(rocket::http::Header::new("x-forwarded-host", "prevant.com"))
+                .header(ContentType::JSON)
+                .dispatch();
+
+            let response = get.await;
+
+            let body_str = response.into_string().await.expect("valid response body");
+            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
+            assert_json_include!(actual: value_in_json, expected: json!({
+             "master": [
+                    {
+                     "url":"http://prevant.com/master/service-a/"
+                    }
+                ]
+            }));
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn host_header_response_with_xforwardedport_and_default_values(
+        ) -> Result<(), crate::apps::AppsServiceError> {
+            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let client =
+                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
+            host_meta_crawler
+                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+
+            let get = client
+                .get("/")
+                .header(rocket::http::Header::new("host", "localhost"))
+                .header(rocket::http::Header::new("x-forwarded-port", "8433"))
+                .header(ContentType::JSON)
+                .dispatch();
+
+            let response = get.await;
+
+            let body_str = response.into_string().await.expect("valid response body");
+            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
+            assert_json_include!(actual: value_in_json, expected: json!({
+             "master": [
+                    {
+                     "url":"http://localhost:8433/master/service-a/"
+                    }
+                ]
+            }));
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn host_header_response_with_all_default_values(
+        ) -> Result<(), crate::apps::AppsServiceError> {
+            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let client =
+                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
+            host_meta_crawler
+                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+            let get = client
+                .get("/")
+                .header(rocket::http::Header::new("host", "localhost"))
+                .header(ContentType::JSON)
+                .dispatch();
+
+            let response = get.await;
+
+            let body_str = response.into_string().await.expect("valid response body");
+            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
+            assert_json_include!(actual: value_in_json, expected: json!({
+             "master": [
+                    {
+                     "url":"http://localhost/master/service-a/"
+                    }
+                ]
+            }));
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn bad_request_without_host_header() {
+            let (host_meta_cache, _host_meta_crawler) = crate::host_meta_crawling();
+            let infrastructure = Box::new(Dummy::new());
+            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
+
+            let rocket = rocket::build()
+                .manage(host_meta_cache)
+                .manage(apps)
+                .mount("/", routes![crate::apps::routes::apps]);
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let mut get = client.get(rocket::uri!(crate::apps::routes::apps));
+            get.add_header(ContentType::JSON);
+            let response = get.dispatch().await;
+            assert_eq!(response.status(), Status::BadRequest);
+        }
+
+        #[tokio::test]
+        async fn with_invalid_headers() {
+            let (host_meta_cache, _host_meta_crawler) = crate::host_meta_crawling();
+            let infrastructure = Box::new(Dummy::new());
+            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
+
+            let rocket = rocket::build()
+                .manage(host_meta_cache)
+                .manage(apps)
+                .mount("/", routes![crate::apps::routes::apps]);
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let get = client
+                .get(rocket::uri!(crate::apps::routes::apps))
+                .header(Header::new("x-forwarded-host", ""));
+
+            let response = get.dispatch().await;
+            assert_eq!(response.status(), Status::BadRequest);
+        }
+
+        #[tokio::test]
+        async fn with_invalid_proto() {
+            let (host_meta_cache, _host_meta_crawler) = crate::host_meta_crawling();
+            let infrastructure = Box::new(Dummy::new());
+            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
+
+            let rocket = rocket::build()
+                .manage(host_meta_cache)
+                .manage(apps)
+                .mount("/", routes![crate::apps::routes::apps]);
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let get = client
+                .get(rocket::uri!(crate::apps::routes::apps))
+                .header(Header::new("x-forwarded-proto", "."));
+
+            let response = get.dispatch().await;
+            assert_eq!(response.status(), Status::BadRequest);
+        }
+    }
 }

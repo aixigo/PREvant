@@ -101,7 +101,7 @@ impl Infrastructure for DummyInfrastructure {
         for (app, configs) in services.iter_all() {
             for config in configs {
                 let service = ServiceBuilder::new()
-                    .id(format!("{}-{}", app.clone(), config.service_name()))
+                    .id(format!("{}", config.service_name()))
                     .app_name(app.clone())
                     .config(ServiceConfig::clone(config))
                     .service_status(ServiceStatus::Running)
