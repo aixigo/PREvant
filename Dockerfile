@@ -9,7 +9,7 @@ RUN npm ci && npm run build
 
 
 # Build Backend
-FROM rust:1 as backend-builder
+FROM rust:1-bookworm as backend-builder
 COPY api/Cargo.toml api/Cargo.lock /usr/src/api/
 WORKDIR /usr/src/api
 
@@ -34,7 +34,7 @@ COPY --from=frontend-builder /usr/src/frontend/dist/css /app/frontend/css
 
 
 # Build whole application
-FROM gcr.io/distroless/cc
+FROM gcr.io/distroless/cc-debian12
 LABEL maintainer="marc.schreiber@aixigo.de"
 
 WORKDIR /app

@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Deserializer};
 use url::Url;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Serialize, PartialEq)]
@@ -44,7 +45,11 @@ struct Properties {
     version: Option<String>,
     #[serde(rename = "https://git-scm.com/docs/git-commit")]
     commit: Option<String>,
-    #[serde(rename = "https://schema.org/dateModified")]
+    #[serde(
+        rename = "https://schema.org/dateModified",
+        default,
+        deserialize_with = "WebHostMeta::parse_date_modified"
+    )]
     date_modified: Option<DateTime<Utc>>,
 }
 
@@ -108,6 +113,13 @@ impl WebHostMeta {
             None => None,
             Some(properties) => properties.date_modified,
         }
+    }
+
+    fn parse_date_modified<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(DateTime::<Utc>::deserialize(deserializer).ok())
     }
 
     pub fn with_base_url(&self, url: &Url) -> WebHostMeta {
@@ -197,6 +209,20 @@ mod tests {
             meta.date_modified(),
             Utc.with_ymd_and_hms(2019, 4, 17, 17, 21, 00).single()
         );
+    }
+
+    #[test]
+    fn should_parse_meta_with_invalid_date_modified_property() {
+        let json = r#"{
+          "properties":{
+            "http://blgx.example.net/ns/ext": null,
+            "https://schema.org/dateModified": "random string"
+          }
+        }"#;
+
+        let meta = serde_json::from_str::<WebHostMeta>(json).unwrap();
+
+        assert_eq!(meta.date_modified(), None,);
     }
 
     #[test]
