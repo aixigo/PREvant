@@ -427,7 +427,7 @@ components:
                 type: string
               templated:
                 type: boolean
-              replicated:
+              replicate:
                 type: boolean
             required:
               - value
