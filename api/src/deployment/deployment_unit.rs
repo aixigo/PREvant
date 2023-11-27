@@ -25,11 +25,12 @@
  */
 use crate::apps::AppsServiceError;
 use crate::config::{Config, StorageStrategy};
-use crate::deployment::hooks::Hooks;
 use crate::infrastructure::TraefikIngressRoute;
 use crate::models::{AppName, ContainerType, Image, ServiceConfig};
 use crate::registry::{ImageInfo, ImagesService, ImagesServiceError};
 use std::collections::{HashMap, HashSet};
+
+use super::hooks::Hooks;
 
 pub struct Initialized {
     app_name: AppName,
@@ -92,11 +93,13 @@ pub struct WithAppliedTemplating {
 pub struct WithAppliedHooks {
     app_name: AppName,
     services: Vec<DeployableService>,
+    volume_groups: Vec<Vec<ServicePath>>,
 }
 
 pub struct WithAppliedIngressRoute {
     app_name: AppName,
     services: Vec<DeployableService>,
+    volume_groups: Vec<Vec<ServicePath>>,
 }
 
 pub struct DeploymentUnitBuilder<Stage> {
@@ -106,6 +109,7 @@ pub struct DeploymentUnitBuilder<Stage> {
 pub struct DeploymentUnit {
     app_name: AppName,
     services: Vec<DeployableService>,
+    volume_groups: Vec<Vec<ServicePath>>,
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +125,27 @@ pub struct DeployableService {
     strategy: DeploymentStrategy,
     ingress_route: TraefikIngressRoute,
     declared_volumes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServicePath {
+    service_name: String,
+    path: String,
+}
+
+impl ServicePath {
+    pub fn new(service_name: String, path: String) -> ServicePath {
+        ServicePath { service_name, path }
+    }
+
+    pub fn service_name(&self) -> &String {
+        &self.service_name
+    }
+
+    pub fn path(&self) -> &String {
+        &self.path
+    }
 }
 
 impl DeployableService {
@@ -173,6 +198,10 @@ impl DeploymentUnit {
 
     pub fn app_name(&self) -> &AppName {
         &self.app_name
+    }
+
+    pub fn volume_groups(&self) -> &Vec<Vec<ServicePath>> {
+        &self.volume_groups
     }
 }
 
@@ -314,11 +343,24 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
 impl DeploymentUnitBuilder<WithResolvedImages> {
     pub fn apply_templating(
         self,
+        app_config: &Config,
     ) -> Result<DeploymentUnitBuilder<WithAppliedTemplating>, AppsServiceError> {
         let mut services = HashMap::new();
+        let image_infos = &self.stage.image_infos;
 
         for config in self.stage.configs.iter() {
             let templated_config = config.apply_templating(&self.stage.app_name)?;
+            let declared_volumes = match app_config.hook("persistence") {
+                Some(_) => match image_infos.get(config.image()) {
+                    Some(image) => image
+                        .declared_volumes()
+                        .iter()
+                        .map(|path| path.to_string())
+                        .collect(),
+                    None => Vec::new(),
+                },
+                None => Vec::new(),
+            };
 
             services.insert(
                 config.service_name().clone(),
@@ -329,7 +371,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                         &self.stage.app_name,
                         config.service_name(),
                     ),
-                    declared_volumes: Vec::new(),
+                    declared_volumes,
                 },
             );
         }
@@ -378,8 +420,6 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 .unwrap()
                 .merge_with(&companion.templated_companion);
         }
-
-        let image_infos = &self.stage.image_infos;
 
         // Exclude service_companions that are included in the request
         services.extend(
@@ -474,10 +514,9 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
 
         let declared_volumes = match storage_strategy {
             StorageStrategy::NoMountVolumes => Vec::new(),
-            StorageStrategy::MountDeclaredImageVolumes => volume_paths
-                .into_iter()
-                .map(|path| path.to_owned())
-                .collect(),
+            StorageStrategy::MountDeclaredImageVolumes => {
+                volume_paths.into_iter().cloned().collect()
+            }
         };
 
         match strategy {
@@ -533,11 +572,15 @@ impl DeploymentUnitBuilder<WithAppliedTemplating> {
         let services = hooks
             .apply_deployment_hook(&self.stage.app_name, self.stage.services)
             .await?;
+        let volume_groups = hooks
+            .apply_persistence_hooks(&self.stage.app_name, &services)
+            .await?;
 
         Ok(DeploymentUnitBuilder {
             stage: WithAppliedHooks {
                 app_name: self.stage.app_name,
                 services,
+                volume_groups,
             },
         })
     }
@@ -557,6 +600,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
             stage: WithAppliedIngressRoute {
                 app_name: self.stage.app_name,
                 services: self.stage.services,
+                volume_groups: self.stage.volume_groups,
             },
         }
     }
@@ -565,6 +609,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
         DeploymentUnit {
             app_name: self.stage.app_name,
             services: self.stage.services,
+            volume_groups: self.stage.volume_groups,
         }
     }
 }
@@ -574,6 +619,7 @@ impl DeploymentUnitBuilder<WithAppliedIngressRoute> {
         DeploymentUnit {
             app_name: self.stage.app_name,
             services: self.stage.services,
+            volume_groups: self.stage.volume_groups,
         }
     }
 }
@@ -630,7 +676,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -669,7 +715,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -725,7 +771,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -773,7 +819,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -818,7 +864,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -854,7 +900,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -894,7 +940,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -949,7 +995,7 @@ mod tests {
             .extend_with_templating_only_service_configs(vec![sc!("postgres", "postgres:alpine")])
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1004,7 +1050,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1057,7 +1103,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1109,7 +1155,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1155,7 +1201,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1186,7 +1232,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .apply_base_traefik_ingress_route(TraefikIngressRoute::with_rule(

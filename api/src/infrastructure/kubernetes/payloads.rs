@@ -25,10 +25,10 @@
  */
 use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
-    STORAGE_TYPE_LABEL,
+    SERVICE_PERSISTENCE_LABEL,
 };
 use crate::config::ContainerConfig;
-use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
+use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy, ServicePath};
 use crate::infrastructure::traefik::TraefikMiddleware;
 use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
 use crate::models::service::Service;
@@ -178,7 +178,7 @@ pub fn deployment_payload(
     service: &DeployableService,
     container_config: &ContainerConfig,
     use_image_pull_secret: bool,
-    persistent_volume_map: &Option<HashMap<&String, PersistentVolumeClaim>>,
+    persistent_volume_map: &Option<HashMap<&ServicePath, &PersistentVolumeClaim>>,
 ) -> V1Deployment {
     let env = service.env().map(|env| {
         env.iter()
@@ -219,10 +219,10 @@ pub fn deployment_payload(
     });
 
     let volume_mounts = match persistent_volume_map {
-        Some(pv_map) => {
+        Some(ref pv_map) => {
             let mut mounts = volume_mounts.unwrap_or_default();
-            for (path, pvc) in pv_map {
-                mounts.push(pvc_volume_mount_payload(path, pvc));
+            for service_path in pv_map.keys() {
+                mounts.push(pvc_volume_mount_payload(service_path.path()));
             }
             Some(mounts)
         }
@@ -267,12 +267,11 @@ pub fn deployment_payload(
     });
 
     let volumes = match persistent_volume_map {
-        Some(pv_map) => {
+        Some(ref pv_map) => {
             let mut vols = volumes.unwrap_or_default();
-            pv_map.iter().for_each(|(_, pvc)| {
-                vols.push(pvc_volume_payload(pvc));
-            });
-
+            for (service_path, pvc) in pv_map {
+                vols.push(pvc_volume_payload(service_path.path(), pvc));
+            }
             Some(vols)
         }
         None => volumes,
@@ -606,38 +605,17 @@ pub fn middleware_payload(app_name: &String, service: &DeployableService) -> Vec
         .collect::<Vec<_>>()
 }
 
-pub fn pvc_volume_mount_payload(
-    path: &str,
-    persitent_volume_claim: &PersistentVolumeClaim,
-) -> VolumeMount {
+pub fn pvc_volume_mount_payload(path: &str) -> VolumeMount {
     VolumeMount {
-        name: format!(
-            "{}-volume",
-            persitent_volume_claim
-                .metadata
-                .labels
-                .as_ref()
-                .unwrap_or(&BTreeMap::new())
-                .get(STORAGE_TYPE_LABEL)
-                .unwrap_or(&String::from("default"))
-        ),
+        name: format!("{}-volume", path.trim_start_matches('/').replace('/', "-")),
         mount_path: path.to_string(),
         ..Default::default()
     }
 }
 
-pub fn pvc_volume_payload(persistent_volume_claim: &PersistentVolumeClaim) -> Volume {
+pub fn pvc_volume_payload(path: &str, persistent_volume_claim: &PersistentVolumeClaim) -> Volume {
     Volume {
-        name: format!(
-            "{}-volume",
-            persistent_volume_claim
-                .metadata
-                .labels
-                .as_ref()
-                .unwrap_or(&BTreeMap::new())
-                .get(STORAGE_TYPE_LABEL)
-                .unwrap_or(&String::from("default"))
-        ),
+        name: format!("{}-volume", path.trim_start_matches('/').replace('/', "-")),
         persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
             claim_name: persistent_volume_claim
                 .metadata
@@ -652,34 +630,29 @@ pub fn pvc_volume_payload(persistent_volume_claim: &PersistentVolumeClaim) -> Vo
 
 pub fn persistent_volume_claim_payload(
     app_name: &str,
-    service: &DeployableService,
     storage_size: &ByteSize,
     storage_class: &str,
-    declared_volume: &str,
+    service_path_pair: &str,
+    shared: bool,
 ) -> PersistentVolumeClaim {
     PersistentVolumeClaim {
         metadata: ObjectMeta {
-            generate_name: Some(format!("{}-{}-pvc-", app_name, service.service_name())),
+            name: Some(format!("pvc-{}", service_path_pair)),
             labels: Some(BTreeMap::from([
                 (APP_NAME_LABEL.to_owned(), app_name.to_owned()),
                 (
-                    SERVICE_NAME_LABEL.to_owned(),
-                    service.service_name().to_owned(),
-                ),
-                (
-                    STORAGE_TYPE_LABEL.to_owned(),
-                    declared_volume
-                        .split('/')
-                        .last()
-                        .unwrap_or("default")
-                        .to_owned(),
+                    SERVICE_PERSISTENCE_LABEL.to_owned(),
+                    service_path_pair.to_owned(),
                 ),
             ])),
             ..Default::default()
         },
         spec: Some(PersistentVolumeClaimSpec {
             storage_class_name: Some(storage_class.to_owned()),
-            access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+            access_modes: Some(vec![match shared {
+                true => "ReadWriteMany".to_owned(),
+                false => "ReadWriteOnce".to_owned(),
+            }]),
             resources: Some(ResourceRequirements {
                 requests: Some(BTreeMap::from_iter(vec![(
                     "storage".to_owned(),
@@ -1034,7 +1007,6 @@ mod tests {
                 labels: Some(BTreeMap::from([
                     (APP_NAME_LABEL.to_owned(), "master".to_owned()),
                     (SERVICE_NAME_LABEL.to_owned(), "db".to_owned()),
-                    (STORAGE_TYPE_LABEL.to_owned(), "data".to_owned()),
                 ])),
                 ..Default::default()
             },
@@ -1055,7 +1027,7 @@ mod tests {
         let payload = deployment_payload(
             "master",
             &DeployableService::new(
-                config,
+                config.clone(),
                 DeploymentStrategy::RedeployAlways,
                 TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
                     "master", "db",
@@ -1065,8 +1037,8 @@ mod tests {
             &ContainerConfig::default(),
             false,
             &Some(HashMap::from([(
-                &String::from("/var/lib/data"),
-                persistent_volume_claim,
+                &ServicePath::new(String::from("db"), String::from("/var/lib/data")),
+                &persistent_volume_claim,
             )])),
         );
 
@@ -1119,13 +1091,13 @@ mod tests {
                         ],
                         "volumeMounts": [{
                           "mountPath": "/var/lib/data",
-                          "name": "data-volume"
+                          "name": "var-lib-data-volume"
                         }]
                       }
                     ],
                     "volumes": [
                       {
-                        "name": "data-volume",
+                        "name": "var-lib-data-volume",
                         "persistentVolumeClaim": {
                           "claimName": "master-db-pvc-abc"
                         }
@@ -1145,8 +1117,8 @@ mod tests {
             PathBuf::from("/etc/mysql/my.cnf"),
             SecUtf8::from_str(
                 r"[client-server]
-                  socket=/tmp/mysql.sock
-                  port=3306",
+                socket=/tmp/mysql.sock
+                port=3306",
             )
             .unwrap(),
         )])));

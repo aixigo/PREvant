@@ -360,7 +360,8 @@ impl From<AppsError> for HttpApiError {
             | AppsError::InvalidServerConfiguration { .. }
             | AppsError::InvalidTemplateFormat { .. }
             | AppsError::UnableToResolveImage { .. }
-            | AppsError::InvalidDeploymentHook => {
+            | AppsError::InvalidDeploymentHook
+            | AppsError::InvalidPersistenceHook => {
                 error!("Internal server error: {}", error);
                 StatusCode::INTERNAL_SERVER_ERROR
             }

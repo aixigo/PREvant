@@ -200,11 +200,11 @@ storageStrategy = 'mount-declared-image-volumes'
 - `none` (_default_): Companion is deployed without persistent storage.
 - `mount-declared-image-volumes`: Mounts the volume paths declared within the image, providing persistent storage for the companion.
 
-## Hooks
+## Deployment Hooks
 
-Hooks can be used to manipulate the deployment before handing it over to actual infrastructure and they are able to manipulate all service configurations once for any deployment REST API call. For example, based on the deployment's app name you can decide to reconfigure your services to use a different DBMS so that you are able to verify that your services work with different DBMSs.
+Deployment Hooks can be used to manipulate the deployment before handing it over to actual infrastructure and they are able to manipulate all service configurations once for any deployment REST API call. For example, based on the deployment's app name you can decide to reconfigure your services to use a different DBMS so that you are able to verify that your services work with different DBMSs.
 
-Technically, hooks are Javascript files that provide functions to modify all service configurations of a deployment. For example, add following section to your PREvant configuration. This configuration snippet enables the _deployemnt hook_ that will be used to modify the services' configurations.
+Technically, hooks are Javascript files that provide functions to modify all service configurations of a deployment. For example, add following section to your PREvant configuration. This configuration snippet enables the _deployment hook_ that will be used to modify the services' configurations.
 
 ```toml
 [hooks]
@@ -232,6 +232,34 @@ PREvant calls this function with the app name (see `appName`) and an array of se
 | `type`        | The type of the service, e.g. `instance`, `replica`, etc. (readonly).                                      |
 | `env`         | A map of key and value containing the environment variables that will be used when creating the container. |
 | `files`       | A map of key and value containing the files that will be mounted into the container.                       |
+
+## Persistence Hooks
+Persistence Hooks in PREvant are designed to handle data persistence by managing volume paths of services. For example, you can use a Persistence Hook to configure any services that share a persistence path or add missing additional paths that caters to unreleased features.
+
+Like Deployment Hooks, these hooks are Javascript files that provide functions to manage and manipulate persistence settings. This configuration snippet enables the _persistence hook_ that will be used to modify the services' configurations.
+
+```toml
+[hooks]
+persistence = 'path/to/persistenceHook.js'
+```
+
+The hook at `path/to/hook.js` must provide following Javascript function:
+
+```javascript
+function persistenceHook(appName, serviceConfigs) {
+  //Return Array of an Array of pairs of service name and path.
+}
+```
+Note: The input to the Persistence Hook is an array of name and path pairs. If multiple paths are declared in the configuration, they are split and treated as separate pairs.
+
+PREvant will invoke this function with an array of service config with name and path as fields. This input can be modified according to the required persistence logic and must be returned by the function in an Array of Arrays format. The output structure allows for grouping shared paths or treating them as individual, based on the deployment's specific requirements.
+
+The fields in each object of the serviceConfig are:
+
+| Key           | Description                                                                                                |
+|---------------|------------------------------------------------------------------------------------------------------------|
+| `name`        | The service name (readonly).                                                                               |
+| `path`       | The path declared by the docker manifest of the image file.              |
 
 ## Registries
 

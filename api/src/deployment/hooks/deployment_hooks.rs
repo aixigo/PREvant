@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 use crate::apps::AppsServiceError;
-use crate::config::Config;
+use crate::deployment::deployment_unit::DeployableService;
 use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, Image};
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsValue, Source};
@@ -33,30 +33,10 @@ use std::collections::BTreeMap;
 use std::iter::IntoIterator;
 use std::path::{Path, PathBuf};
 
-use super::deployment_unit::DeployableService;
+pub struct DeploymentHooks;
 
-pub struct Hooks<'a> {
-    hook_config: &'a Config,
-}
-
-impl<'a> Hooks<'a> {
-    pub fn new(hook_config: &'a Config) -> Self {
-        Hooks { hook_config }
-    }
-
-    pub async fn apply_deployment_hook(
-        &self,
-        app_name: &AppName,
-        services: Vec<DeployableService>,
-    ) -> Result<Vec<DeployableService>, AppsServiceError> {
-        match self.hook_config.hook("deployment") {
-            None => Ok(services),
-            Some(hook_path) => self.parse_and_run_hook(app_name, services, hook_path).await,
-        }
-    }
-
-    async fn parse_and_run_hook(
-        &self,
+impl DeploymentHooks {
+    pub async fn parse_and_run_hook(
         app_name: &AppName,
         services: Vec<DeployableService>,
         hook_path: &Path,
@@ -112,10 +92,7 @@ impl<'a> Hooks<'a> {
         }
     }
 
-    fn register_configs_as_global_property(
-        mut context: &mut Context,
-        services: &[DeployableService],
-    ) {
+    fn register_configs_as_global_property(context: &mut Context, services: &[DeployableService]) {
         let js_configs = services
             .iter()
             .map(JsServiceConfig::from)
@@ -123,7 +100,7 @@ impl<'a> Hooks<'a> {
 
         let js_configs = serde_json::to_value(js_configs).expect("Should be serializable");
         let js_configs =
-            JsValue::from_json(&js_configs, &mut context).expect("Unable to read JSON value");
+            JsValue::from_json(&js_configs, context).expect("Unable to read JSON value");
 
         context
             .register_global_property("serviceConfigs", js_configs, Attribute::READONLY)
@@ -233,6 +210,7 @@ impl From<&DeployableService> for JsServiceConfig {
 mod tests {
     use super::*;
     use crate::apps::*;
+    use crate::config::Config;
     use crate::deployment::deployment_unit::DeploymentUnitBuilder;
     use std::io::Write;
     use std::str::FromStr;
@@ -276,7 +254,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -329,7 +307,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -368,7 +346,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -416,7 +394,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -467,7 +445,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -508,7 +486,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -545,7 +523,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -573,7 +551,7 @@ mod tests {
             .extend_with_templating_only_service_configs(Vec::new())
             .resolve_image_manifest(&config)
             .await?
-            .apply_templating()?
+            .apply_templating(&config)?
             .apply_hooks(&config)
             .await
         {

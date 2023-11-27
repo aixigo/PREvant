@@ -25,11 +25,11 @@
  */
 
 use crate::config::{Config, ContainerConfig};
-use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
+use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy, ServicePath};
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::{
     Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL,
-    SERVICE_NAME_LABEL, STATUS_ID,
+    SERVICE_NAME_LABEL, SERVICE_PERSISTENCE_LABEL, STATUS_ID,
 };
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
@@ -258,9 +258,13 @@ impl DockerInfrastructure {
         let app_name = deployment_unit.app_name();
         let services = deployment_unit.services();
         let network_id = self.create_or_get_network_id(app_name).await?;
-
+        let volume_groups = deployment_unit.volume_groups();
         self.connect_traefik(&network_id).await?;
         let existing_volumes = DockerInfrastructure::fetch_existing_volumes(app_name).await?;
+
+        let final_host_binds = self
+            .host_config_binds(app_name, volume_groups, &existing_volumes)
+            .await?;
         let futures = services
             .iter()
             .map(|service| {
@@ -269,7 +273,7 @@ impl DockerInfrastructure {
                     &network_id,
                     service,
                     container_config,
-                    &existing_volumes,
+                    &final_host_binds,
                 )
             })
             .collect::<Vec<_>>();
@@ -323,7 +327,7 @@ impl DockerInfrastructure {
         network_id: &String,
         service: &DeployableService,
         container_config: &ContainerConfig,
-        existing_volumes: &[VolumeInfo],
+        host_binds: &HashMap<String, Vec<String>>,
     ) -> Result<Service, Error> {
         let docker = Docker::new();
         let containers = docker.containers();
@@ -380,15 +384,11 @@ impl DockerInfrastructure {
             service.container_type(),
         );
 
-        let host_config_binds =
-            DockerInfrastructure::create_host_config_binds(app_name, existing_volumes, service)
-                .await?;
-
         let options = DockerInfrastructure::create_container_options(
             app_name,
             service,
             container_config,
-            &host_config_binds,
+            host_binds,
         );
 
         let container_info = containers.create(&options).await?;
@@ -433,7 +433,7 @@ impl DockerInfrastructure {
         app_name: &str,
         service_config: &ServiceConfig,
         container_config: &ContainerConfig,
-        host_config_binds: &[String],
+        host_config_binds: &HashMap<String, Vec<String>>,
     ) -> ContainerOptions {
         let mut options = ContainerOptions::builder(&service_config.image().to_string());
         if let Some(env) = service_config.env() {
@@ -477,8 +477,10 @@ impl DockerInfrastructure {
             labels.insert(REPLICATED_ENV_LABEL, replicated_env);
         }
 
-        if !host_config_binds.is_empty() {
-            options.volumes(host_config_binds.iter().map(|bind| bind.as_str()).collect());
+        if let Some(binds) = host_config_binds.get(service_config.service_name()) {
+            if !binds.is_empty() {
+                options.volumes(binds.iter().map(|bind| bind.as_str()).collect());
+            }
         }
         options.labels(&labels);
         options.restart_policy("always", 5);
@@ -537,14 +539,14 @@ impl DockerInfrastructure {
 
     async fn create_docker_volume(
         app_name: &str,
-        service: &DeployableService,
+        service_path_pairs: &str,
     ) -> Result<String, ShipLiftError> {
         let docker = Docker::new();
         let volumes = docker.volumes();
 
         let mut labels: HashMap<&str, &str> = HashMap::new();
         labels.insert(APP_NAME_LABEL, app_name);
-        labels.insert(SERVICE_NAME_LABEL, service.service_name());
+        labels.insert(SERVICE_PERSISTENCE_LABEL, service_path_pairs);
 
         let volume_options = VolumeCreateOptions::builder().labels(&labels).build();
         volumes
@@ -553,34 +555,43 @@ impl DockerInfrastructure {
             .map(|volume_info| volume_info.name)
     }
 
-    async fn create_host_config_binds(
+    async fn host_config_binds(
+        &self,
         app_name: &str,
+        volume_groups: &Vec<Vec<ServicePath>>,
         existing_volume: &[VolumeInfo],
-        service: &DeployableService,
-    ) -> Result<Vec<String>, ShipLiftError> {
-        let mut host_binds = Vec::new();
+    ) -> Result<HashMap<String, Vec<String>>, ShipLiftError> {
+        let mut host_binds: HashMap<String, Vec<String>> = HashMap::new();
 
-        if service.declared_volumes().is_empty() {
-            return Ok(host_binds);
-        }
+        for volume_group in volume_groups {
+            let mut match_key = volume_group
+                .iter()
+                .map(|service| format!("{}:{}", service.service_name(), service.path()))
+                .collect::<Vec<_>>();
+            match_key.sort();
 
-        let service_volume = existing_volume
-            .iter()
-            .find(|vol| {
-                vol.labels.as_ref().map_or_else(
-                    || false,
-                    |label| label.get(SERVICE_NAME_LABEL) == Some(service.service_name()),
-                )
-            })
-            .map(|info| &info.name);
+            let match_key = match_key.join(",");
+            let service_volume = existing_volume
+                .iter()
+                .find(|vol| {
+                    vol.labels.as_ref().map_or_else(
+                        || false,
+                        |label| label.get(SERVICE_PERSISTENCE_LABEL) == Some(&match_key),
+                    )
+                })
+                .map(|info| &info.name);
 
-        let volume_name = match service_volume {
-            Some(name) => String::from(name),
-            None => DockerInfrastructure::create_docker_volume(app_name, service).await?,
-        };
+            let volume_name = match service_volume {
+                Some(name) => String::from(name),
+                None => DockerInfrastructure::create_docker_volume(app_name, &match_key).await?,
+            };
 
-        for declared_volume in service.declared_volumes() {
-            host_binds.push(format!("{}:{}", volume_name, declared_volume));
+            for service_paths in volume_group {
+                host_binds
+                    .entry(service_paths.service_name().to_string())
+                    .or_default()
+                    .push(format!("{}:{}", volume_name, service_paths.path()));
+            }
         }
 
         Ok(host_binds)
@@ -1253,7 +1264,7 @@ mod tests {
             &String::from("master"),
             &config,
             &ContainerConfig::default(),
-            &Vec::new(),
+            &HashMap::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1288,7 +1299,7 @@ mod tests {
             &String::from("master"),
             &config,
             &ContainerConfig::default(),
-            &Vec::new(),
+            &HashMap::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1328,7 +1339,7 @@ mod tests {
             &String::from("master"),
             &config,
             &ContainerConfig::default(),
-            &Vec::new(),
+            &HashMap::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1453,7 +1464,10 @@ mod tests {
             &String::from("master"),
             &config,
             &ContainerConfig::default(),
-            &[String::from("test-volume:/var/lib/mysql")],
+            &HashMap::from([(
+                String::from("db"),
+                vec![String::from("test-volume:/var/lib/mysql")],
+            )]),
         );
 
         let json = serde_json::to_value(&options).unwrap();

@@ -280,7 +280,7 @@ impl AppsService {
             .extend_with_templating_only_service_configs(configs_for_templating)
             .resolve_image_manifest(&self.config)
             .await?
-            .apply_templating()?
+            .apply_templating(&self.config)?
             .apply_hooks(&self.config)
             .await?;
 
@@ -398,6 +398,8 @@ pub enum AppsServiceError {
     UnableToResolveImage { error: ImagesServiceError },
     #[fail(display = "Invalid deployment hook.")]
     InvalidDeploymentHook,
+    #[fail(display = "Invalid persistence hook.")]
+    InvalidPersistenceHook,
 }
 
 impl From<ConfigError> for AppsServiceError {

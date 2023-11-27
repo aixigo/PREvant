@@ -25,7 +25,7 @@
  */
 use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
-    STORAGE_TYPE_LABEL,
+    SERVICE_PERSISTENCE_LABEL,
 };
 use super::payloads::{
     deployment_payload, deployment_replicas_payload, image_pull_secret_payload,
@@ -33,6 +33,7 @@ use super::payloads::{
     secrets_payload, service_payload, IngressRoute, Middleware,
 };
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
+use crate::deployment::deployment_unit::ServicePath;
 use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
 use crate::infrastructure::traefik::TraefikIngressRoute;
 use crate::infrastructure::Infrastructure;
@@ -57,8 +58,10 @@ use kube::{
 use log::{debug, warn};
 use multimap::MultiMap;
 use secstr::SecUtf8;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::convert::{From, TryFrom};
+use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -348,16 +351,13 @@ impl KubernetesInfrastructure {
         app_name: &String,
         service: &'a DeployableService,
         container_config: &ContainerConfig,
+        persistent_volume_map: Option<HashMap<&ServicePath, &PersistentVolumeClaim>>,
     ) -> Result<&'a DeployableService, KubernetesInfrastructureError> {
         if let Some(files) = service.files() {
             self.deploy_secret(app_name, service, &files).await?;
         }
 
         let client = self.client().await?;
-
-        let persistence_volume_map = self
-            .create_persistent_volume_claim(app_name, service)
-            .await?;
 
         match Api::namespaced(client.clone(), app_name)
             .create(
@@ -369,7 +369,7 @@ impl KubernetesInfrastructure {
                     self.config
                         .registry_credentials(&service.image().registry().unwrap_or_default())
                         .is_some(),
-                    &persistence_volume_map,
+                    &persistent_volume_map,
                 ),
             )
             .await
@@ -401,7 +401,7 @@ impl KubernetesInfrastructure {
                                     &service.image().registry().unwrap_or_default(),
                                 )
                                 .is_some(),
-                            &persistence_volume_map,
+                            &persistent_volume_map,
                         )),
                     )
                     .await?;
@@ -494,12 +494,14 @@ impl KubernetesInfrastructure {
         Ok(service)
     }
 
-    async fn create_persistent_volume_claim<'a>(
+    async fn persistent_volume_claim(
         &self,
         app_name: &str,
-        service: &'a DeployableService,
-    ) -> Result<Option<HashMap<&'a String, PersistentVolumeClaim>>, KubernetesInfrastructureError>
-    {
+        volume_groups: &Vec<Vec<ServicePath>>,
+    ) -> Result<
+        Option<HashMap<Vec<ServicePath>, PersistentVolumeClaim>>,
+        KubernetesInfrastructureError,
+    > {
         let client = self.client().await?;
         let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {return Ok(None)};
 
@@ -520,21 +522,18 @@ impl KubernetesInfrastructure {
 
         let mut persistent_volume_map = HashMap::new();
         let existing_pvc: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), app_name);
+        let mut hasher = DefaultHasher::new();
 
-        for declared_volume in service.declared_volumes() {
+        for volume_group in volume_groups {
+            volume_group.hash(&mut hasher);
+            let hash = hasher.finish().to_string();
             let pvc_list_params = ListParams {
                 label_selector: Some(format!(
-                    "{}={},{}={},{}={}",
-                    APP_NAME_LABEL,
-                    app_name,
-                    SERVICE_NAME_LABEL,
-                    service.service_name(),
-                    STORAGE_TYPE_LABEL,
-                    declared_volume.split('/').last().unwrap_or("default")
+                    "{}={},{}={}",
+                    APP_NAME_LABEL, app_name, SERVICE_PERSISTENCE_LABEL, hash,
                 )),
                 ..Default::default()
             };
-
             let fetched_pvc = existing_pvc.list(&pvc_list_params).await?.items;
 
             if fetched_pvc.is_empty() {
@@ -543,16 +542,16 @@ impl KubernetesInfrastructure {
                         &PostParams::default(),
                         &persistent_volume_claim_payload(
                             app_name,
-                            service,
                             storage_size,
                             &storage_class,
-                            declared_volume,
+                            &hash,
+                            volume_group.len() > 1,
                         ),
                     )
                     .await
                 {
                     Ok(pvc) => {
-                        persistent_volume_map.insert(declared_volume, pvc);
+                        persistent_volume_map.insert(volume_group.clone(), pvc);
                     }
                     Err(e) => {
                         error!("Cannot deploy persistent volume claim: {}", e);
@@ -562,17 +561,18 @@ impl KubernetesInfrastructure {
             } else {
                 if fetched_pvc.len() != 1 {
                     warn!(
-                        "Found more than 1 Persistent Volume Claim - {:?} for declared image path {} \n Using the first available Persistent Volume Claim - {:?}",
-                        &fetched_pvc.iter().map(|pvc| &pvc.metadata.name),
-                        declared_volume,
-                        fetched_pvc.first().unwrap().metadata.name
+                        "Found more than 1 Persistent Volume Claim for {:?}",
+                        &volume_group
                     );
                 }
 
-                persistent_volume_map
-                    .insert(declared_volume, fetched_pvc.into_iter().next().unwrap());
+                persistent_volume_map.insert(
+                    volume_group.clone(),
+                    fetched_pvc.into_iter().next().unwrap(),
+                );
             }
         }
+
         Ok(Some(persistent_volume_map))
     }
 
@@ -642,9 +642,26 @@ impl Infrastructure for KubernetesInfrastructure {
         self.create_pull_secrets_if_necessary(app_name, services)
             .await?;
 
+        let persistent_volume_map = self
+            .persistent_volume_claim(app_name, deployment_unit.volume_groups())
+            .await?;
+
         let futures = services
             .iter()
-            .map(|service| self.deploy_service(app_name, service, container_config))
+            .map(|service| match &persistent_volume_map {
+                Some(persistent_volume_map) => {
+                    let mut pv_map = HashMap::new();
+                    for (service_paths, pvc) in persistent_volume_map {
+                        for service_path in service_paths {
+                            if service_path.service_name() == service.service_name() {
+                                pv_map.insert(service_path, pvc);
+                            }
+                        }
+                    }
+                    self.deploy_service(app_name, service, container_config, Some(pv_map))
+                }
+                None => self.deploy_service(app_name, service, container_config, None),
+            })
             .collect::<Vec<_>>();
 
         for deploy_result in join_all(futures).await {
