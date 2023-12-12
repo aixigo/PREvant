@@ -108,18 +108,18 @@ impl<'r> FromData<'r> for WebHookInfo {
         let body = match data.open(2.mebibytes()).into_string().await {
             Ok(string) if string.is_complete() => string.into_inner(),
             Ok(_) => {
-                return data::Outcome::Failure((
+                return data::Outcome::Error((
                     Status::PayloadTooLarge,
                     "Payload too large".to_string(),
                 ))
             }
-            Err(e) => return data::Outcome::Failure((Status::InternalServerError, e.to_string())),
+            Err(e) => return data::Outcome::Error((Status::InternalServerError, e.to_string())),
         };
 
         let data = match from_str::<WebHookInfo>(&body) {
             Ok(v) => v,
             Err(err) => {
-                return data::Outcome::Failure((
+                return data::Outcome::Error((
                     Status::BadRequest,
                     format!("Cannot read body as JSON: {:?}", err),
                 ));

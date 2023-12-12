@@ -12,6 +12,12 @@ In order to configure PREvant create a [TOML](https://github.com/toml-lang/toml)
 [runtime]
 type = 'Kubernetes'
 
+# This map of annotations allow to add additionall annotations to Kubernetes namespaces that will be created
+# through PREVant. In this example, the annotations will be used to connect the namespaces to a Rancher project.
+# Futher information is provided here: https://stackoverflow.com/a/74405246/5088458
+[runtime.annotations.namespace]
+'field.cattle.io/projectId' = 'rancher-project-id'
+
 [runtime.downwardApi]
 # Path to the file that contains the labels that have been assigned to the PREvant deployemnt itself.
 # This information is crucial if you run PREvant behind a Traefik instance that enforces the user ot be

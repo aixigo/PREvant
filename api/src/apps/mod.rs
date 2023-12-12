@@ -35,7 +35,7 @@ use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
 use crate::registry::ImagesServiceError;
 use chrono::{DateTime, FixedOffset};
-use handlebars::TemplateRenderError;
+use handlebars::RenderError;
 pub use host_meta_cache::new as host_meta_crawling;
 pub use host_meta_cache::HostMetaCache;
 pub use host_meta_cache::HostMetaCrawler;
@@ -43,7 +43,6 @@ use multimap::MultiMap;
 pub use routes::{apps_routes, delete_app_sync};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
-use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -85,21 +84,21 @@ impl AppGuard {
 
     fn is_first(&self) -> bool {
         let mut guard = self.process_mutex.lock().unwrap();
-        if (*guard).0 {
+        if guard.0 {
             false
         } else {
-            (*guard).0 = true;
+            guard.0 = true;
             true
         }
     }
 
     fn wait_for_result(&self) -> GuardedResult {
         let mut guard = self.process_mutex.lock().unwrap();
-        while (*guard).1.is_none() {
+        while guard.1.is_none() {
             trace!("waiting for the result of {}", self.app_name);
             guard = self.condvar.wait(guard).unwrap();
         }
-        (*guard)
+        guard
             .1
             .as_ref()
             .cloned()
@@ -112,7 +111,7 @@ impl AppGuard {
         result: GuardedResult,
     ) -> GuardedResult {
         let mut guard = self.process_mutex.lock().unwrap();
-        (*guard).1 = Some(result.clone());
+        guard.1 = Some(result.clone());
         self.condvar.notify_all();
 
         let mut apps_in_deletion = apps_service.app_guards.lock().unwrap();
@@ -140,7 +139,7 @@ impl AppsService {
 
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
-    pub async fn get_apps(&self) -> Result<MultiMap<String, Service>, AppsServiceError> {
+    pub async fn get_apps(&self) -> Result<MultiMap<AppName, Service>, AppsServiceError> {
         Ok(self.infrastructure.get_services().await?)
     }
 
@@ -167,8 +166,8 @@ impl AppsService {
     async fn configs_to_replicate(
         &self,
         services_to_deploy: &[ServiceConfig],
-        app_name: &str,
-        replicate_from_app_name: &str,
+        app_name: &AppName,
+        replicate_from_app_name: &AppName,
     ) -> Result<Vec<ServiceConfig>, AppsServiceError> {
         let running_services = self.infrastructure.get_configs_of_app(app_name).await?;
         let running_service_names = running_services
@@ -253,8 +252,7 @@ impl AppsService {
     ) -> Result<Vec<Service>, AppsServiceError> {
         let mut configs = service_configs.to_vec();
 
-        let replicate_from_app_name =
-            replicate_from.unwrap_or_else(|| AppName::from_str("master").unwrap());
+        let replicate_from_app_name = replicate_from.unwrap_or_else(AppName::master);
         if &replicate_from_app_name != app_name {
             configs.extend(
                 self.configs_to_replicate(service_configs, app_name, &replicate_from_app_name)
@@ -359,7 +357,7 @@ impl AppsService {
 
     pub async fn change_status(
         &self,
-        app_name: &String,
+        app_name: &AppName,
         service_name: &String,
         status: ServiceStatus,
     ) -> Result<Option<Service>, AppsServiceError> {
@@ -393,7 +391,7 @@ pub enum AppsServiceError {
     #[fail(display = "Invalid configuration: {}", error)]
     InvalidServerConfiguration { error: Arc<ConfigError> },
     #[fail(display = "Invalid configuration (invalid template): {}", error)]
-    InvalidTemplateFormat { error: Arc<TemplateRenderError> },
+    InvalidTemplateFormat { error: Arc<RenderError> },
     #[fail(display = "Unable to resolve information about image: {}", error)]
     UnableToResolveImage { error: ImagesServiceError },
     #[fail(display = "Invalid deployment hook.")]
@@ -416,8 +414,8 @@ impl From<failure::Error> for AppsServiceError {
     }
 }
 
-impl From<TemplateRenderError> for AppsServiceError {
-    fn from(error: TemplateRenderError) -> Self {
+impl From<RenderError> for AppsServiceError {
+    fn from(error: RenderError) -> Self {
         AppsServiceError::InvalidTemplateFormat {
             error: Arc::new(error),
         }
@@ -490,7 +488,7 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
+            &AppName::master(),
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
@@ -499,7 +497,7 @@ mod tests {
 
         let deployed_apps = apps.get_apps().await?;
         assert_eq!(deployed_apps.len(), 1);
-        let services = deployed_apps.get_vec("master").unwrap();
+        let services = deployed_apps.get_vec(&AppName::master()).unwrap();
         assert_eq!(services.len(), 1);
         assert_contains_service!(services, "service-a", ContainerType::Instance);
 
@@ -530,7 +528,9 @@ mod tests {
 
         let deployed_apps = apps.get_apps().await?;
 
-        let services = deployed_apps.get_vec("branch").unwrap();
+        let services = deployed_apps
+            .get_vec(&AppName::from_str("branch").unwrap())
+            .unwrap();
         assert_eq!(services.len(), 2);
         assert_contains_service!(services, "service-b", ContainerType::Instance);
         assert_contains_service!(services, "service-a", ContainerType::Replica);
@@ -545,7 +545,7 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
+            &AppName::master(),
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
@@ -555,7 +555,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             &AppStatusChangeId::new(),
-            Some(AppName::from_str("master").unwrap()),
+            Some(AppName::master()),
             &vec![sc!("service-b")],
         )
         .await?;
@@ -570,7 +570,9 @@ mod tests {
 
         let deployed_apps = apps.get_apps().await?;
 
-        let services = deployed_apps.get_vec("branch").unwrap();
+        let services = deployed_apps
+            .get_vec(&AppName::from_str("branch").unwrap())
+            .unwrap();
         assert_eq!(services.len(), 2);
         assert_contains_service!(services, "service-a", ContainerType::Instance);
         assert_contains_service!(services, "service-b", ContainerType::Instance);
@@ -603,7 +605,7 @@ mod tests {
 
         let configs = apps
             .infrastructure
-            .get_configs_of_app(&String::from("master"))
+            .get_configs_of_app(&AppName::master())
             .await?;
         assert_eq!(configs.len(), 1);
 
@@ -642,7 +644,7 @@ mod tests {
 
         let configs = apps
             .infrastructure
-            .get_configs_of_app(&String::from("master-1.x"))
+            .get_configs_of_app(&AppName::from_str("master-1.x").unwrap())
             .await?;
         assert_eq!(configs.len(), 1);
 
@@ -713,7 +715,7 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         apps.create_or_update(
             &app_name,
             &AppStatusChangeId::new(),
@@ -723,7 +725,7 @@ Log msg 3 of service-a of app master
         .await?;
         let deployed_apps = apps.get_apps().await?;
 
-        let services = deployed_apps.get_vec("master").unwrap();
+        let services = deployed_apps.get_vec(&app_name).unwrap();
         assert_eq!(services.len(), 3);
         assert_contains_service!(services, "openid", ContainerType::ApplicationCompanion);
         assert_contains_service!(services, "db", ContainerType::ServiceCompanion);
@@ -751,20 +753,20 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let configs = vec![sc!("openid"), sc!("db")];
         apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
             .await?;
         let deployed_apps = apps.get_apps().await?;
 
-        let services = deployed_apps.get_vec("master").unwrap();
+        let services = deployed_apps.get_vec(&app_name).unwrap();
         assert_eq!(services.len(), 2);
         assert_contains_service!(services, "openid", ContainerType::Instance);
         assert_contains_service!(services, "db", ContainerType::Instance);
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
-            .get_configs_of_app(&String::from("master"))
+            .get_configs_of_app(&app_name)
             .await?
             .into_iter()
             .filter(|config| config.service_name() == "openid")
@@ -794,7 +796,7 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
 
         let configs = vec![crate::sc!(
             "openid",
@@ -808,13 +810,13 @@ Log msg 3 of service-a of app master
 
         let deployed_apps = apps.get_apps().await?;
 
-        let services = deployed_apps.get_vec("master").unwrap();
+        let services = deployed_apps.get_vec(&app_name).unwrap();
         assert_eq!(services.len(), 1);
         assert_contains_service!(services, "openid", ContainerType::Instance);
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
-            .get_configs_of_app(&String::from("master"))
+            .get_configs_of_app(&app_name)
             .await?
             .into_iter()
             .filter(|config| config.service_name() == "openid")
@@ -881,7 +883,7 @@ Log msg 3 of service-a of app master
 
         let services = apps.infrastructure.get_services().await?;
         let openid_config = services
-            .get_vec("master")
+            .get_vec(&AppName::master())
             .unwrap()
             .iter()
             .find(|service| service.service_name() == "openid")
@@ -903,7 +905,7 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         apps.create_or_update(
             &app_name,
             &AppStatusChangeId::new(),
@@ -995,7 +997,7 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let configs = vec![sc!("db1"), sc!("db2")];
         apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
             .await?;
@@ -1003,7 +1005,7 @@ Log msg 3 of service-a of app master
 
         let db_config1: Vec<ServiceConfig> = apps
             .infrastructure
-            .get_configs_of_app(&String::from("master"))
+            .get_configs_of_app(&app_name)
             .await?
             .into_iter()
             .filter(|config| config.service_name() == "db1")
@@ -1011,13 +1013,13 @@ Log msg 3 of service-a of app master
 
         let db_config2: Vec<ServiceConfig> = apps
             .infrastructure
-            .get_configs_of_app(&String::from("master"))
+            .get_configs_of_app(&app_name)
             .await?
             .into_iter()
             .filter(|config| config.service_name() == "db2")
             .collect();
 
-        let services = deployed_apps.get_vec("master").unwrap();
+        let services = deployed_apps.get_vec(&app_name).unwrap();
 
         assert_eq!(services.len(), 2);
         assert_eq!(
