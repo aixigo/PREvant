@@ -25,7 +25,7 @@
  */
 use bytesize::ByteSize;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "type")]
@@ -44,6 +44,8 @@ impl Default for Runtime {
 #[serde(rename_all = "camelCase")]
 pub struct KubernetesRuntimeConfig {
     #[serde(default)]
+    annotations: KubernetesAnnotationsConfig,
+    #[serde(default)]
     downward_api: KubernetesDownwardApiConfig,
     #[serde(default)]
     storage_config: KubernetesStorageConfig,
@@ -56,6 +58,22 @@ impl KubernetesRuntimeConfig {
 
     pub fn storage_config(&self) -> &KubernetesStorageConfig {
         &self.storage_config
+    }
+
+    pub fn annotations(&self) -> &KubernetesAnnotationsConfig {
+        &self.annotations
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct KubernetesAnnotationsConfig {
+    #[serde(default)]
+    namespace: BTreeMap<String, String>,
+}
+
+impl KubernetesAnnotationsConfig {
+    pub fn namespace(&self) -> &BTreeMap<String, String> {
+        &self.namespace
     }
 }
 
@@ -152,7 +170,7 @@ mod tests {
                 downward_api: KubernetesDownwardApiConfig {
                     labels_path: PathBuf::from("/some/path")
                 },
-                storage_config: KubernetesStorageConfig::default()
+                ..Default::default()
             })
         );
     }
@@ -163,7 +181,10 @@ mod tests {
         type = 'Kubernetes'
         "#;
 
-        let Runtime::Kubernetes(config) = toml::de::from_str::<Runtime>(runtime_toml).unwrap() else { panic!("Need a K8s config") };
+        let Runtime::Kubernetes(config) = toml::de::from_str::<Runtime>(runtime_toml).unwrap()
+        else {
+            panic!("Need a K8s config")
+        };
 
         assert_eq!(
             config.downward_api.labels_path(),
@@ -185,12 +206,51 @@ mod tests {
         assert_eq!(
             runtime,
             Runtime::Kubernetes(KubernetesRuntimeConfig {
-                downward_api: KubernetesDownwardApiConfig::default(),
                 storage_config: KubernetesStorageConfig {
                     storage_size: ByteSize::gb(10),
                     storage_class: Some(String::from("local-path"))
-                }
+                },
+                ..Default::default()
             })
+        );
+    }
+
+    #[test]
+    fn parse_without_namespace_annotations() {
+        let runtime_toml = r#"
+        type = 'Kubernetes'
+        "#;
+
+        let Runtime::Kubernetes(config) = toml::de::from_str::<Runtime>(runtime_toml).unwrap()
+        else {
+            panic!("Need a K8s config")
+        };
+
+        assert!(config.annotations.namespace.is_empty());
+    }
+
+    #[test]
+    fn parse_with_namespace_annotations() {
+        let runtime_toml = r#"
+        type = 'Kubernetes'
+
+        [annotations.namespace]
+        'field.cattle.io/containerDefaultResourceLimit' = '{}'
+        'field.cattle.io/projectId' = "rancher-project-id"
+        'field.cattle.io/resourceQuota' = '{"limit":{"limitsMemory":"30000Mi"}}'
+        "#;
+
+        let Runtime::Kubernetes(config) = toml::de::from_str::<Runtime>(runtime_toml).unwrap()
+        else {
+            panic!("Need a K8s config")
+        };
+
+        assert_eq!(
+            config
+                .annotations
+                .namespace
+                .get("field.cattle.io/projectId"),
+            Some(&String::from("rancher-project-id"))
         );
     }
 }

@@ -27,12 +27,12 @@ use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
     STORAGE_TYPE_LABEL,
 };
-use crate::config::ContainerConfig;
+use crate::config::{Config, ContainerConfig};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::infrastructure::traefik::TraefikMiddleware;
 use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
 use crate::models::service::Service;
-use crate::models::ServiceConfig;
+use crate::models::{AppName, ServiceConfig};
 use base64::{engine::general_purpose, Engine};
 use bytesize::ByteSize;
 use chrono::Utc;
@@ -60,6 +60,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::iter::FromIterator;
 use std::path::{Component, PathBuf};
+use std::str::FromStr;
 use std::string::ToString;
 
 #[derive(CustomResource, Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -141,8 +142,6 @@ impl TryFrom<IngressRoute> for TraefikIngressRoute {
     type Error = &'static str;
 
     fn try_from(value: IngressRoute) -> Result<Self, Self::Error> {
-        use std::str::FromStr;
-
         let k8s_route = value.spec.routes.unwrap().into_iter().next().unwrap();
         let rule = TraefikRouterRule::from_str(&k8s_route.r#match).unwrap();
 
@@ -160,21 +159,47 @@ impl TryFrom<IngressRoute> for TraefikIngressRoute {
     }
 }
 
-/// Creates a JSON payload suitable for [Kubernetes' Namespaces](https://kubernetes.io/docs/tasks/administer-cluster/namespaces/)
-pub fn namespace_payload(app_name: &String) -> V1Namespace {
-    serde_json::from_value(serde_json::json!({
-      "apiVersion": "v1",
-      "kind": "Namespace",
-      "metadata": {
-        "name": app_name
-      }
-    }))
-    .expect("Cannot convert value to core/v1/Namespace")
+/// Creates a JSON payload suitable for [Kubernetes'
+/// Namespaces](https://kubernetes.io/docs/tasks/administer-cluster/namespaces/)
+pub fn namespace_payload(app_name: &AppName, config: &Config) -> V1Namespace {
+    let annotations = match config.runtime_config() {
+        crate::config::Runtime::Docker => None,
+        crate::config::Runtime::Kubernetes(runtime) => {
+            let annotations = runtime.annotations().namespace();
+
+            if annotations.is_empty() {
+                None
+            } else {
+                Some(annotations.clone())
+            }
+        }
+    };
+
+    V1Namespace {
+        metadata: ObjectMeta {
+            name: Some(app_name.to_rfc1123_namespace_id()),
+            annotations,
+            labels: Some(BTreeMap::from([(
+                APP_NAME_LABEL.to_string(),
+                app_name.to_string(),
+            )])),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
-/// Creates a JSON payload suitable for [Kubernetes' Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
+impl AppName {
+    /// See https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#dns-label-names
+    pub fn to_rfc1123_namespace_id(&self) -> String {
+        self.to_string().to_lowercase()
+    }
+}
+
+/// Creates a JSON payload suitable for [Kubernetes'
+/// Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 pub fn deployment_payload(
-    app_name: &str,
+    app_name: &AppName,
     service: &DeployableService,
     container_config: &ContainerConfig,
     use_image_pull_secret: bool,
@@ -304,10 +329,10 @@ pub fn deployment_payload(
         metadata: ObjectMeta {
             name: Some(format!(
                 "{}-{}-deployment",
-                app_name,
+                app_name.to_rfc1123_namespace_id(),
                 service.service_name()
             )),
-            namespace: Some(app_name.to_string()),
+            namespace: Some(app_name.to_rfc1123_namespace_id()),
             labels: Some(labels.clone()),
             annotations: Some(annotations),
             ..Default::default()
@@ -341,7 +366,10 @@ pub fn deployment_payload(
                     }],
                     image_pull_secrets: if use_image_pull_secret {
                         Some(vec![LocalObjectReference {
-                            name: Some(format!("{app_name}-image-pull-secret")),
+                            name: Some(format!(
+                                "{}-image-pull-secret",
+                                app_name.to_rfc1123_namespace_id()
+                            )),
                         }])
                     } else {
                         None
@@ -374,7 +402,7 @@ fn deployment_annotations(service: &DeployableService) -> BTreeMap<String, Strin
 }
 
 pub fn deployment_replicas_payload(
-    app_name: &String,
+    app_name: &AppName,
     service: &Service,
     replicas: u32,
 ) -> V1Deployment {
@@ -382,8 +410,8 @@ pub fn deployment_replicas_payload(
       "apiVersion": "apps/v1",
       "kind": "Deployment",
       "metadata": {
-        "name": format!("{}-{}-deployment", app_name, service.service_name()),
-        "namespace": app_name,
+        "name": format!("{}-{}-deployment", app_name.to_rfc1123_namespace_id(), service.service_name()),
+        "namespace": app_name.to_rfc1123_namespace_id(),
         "labels": {
           APP_NAME_LABEL: app_name,
           SERVICE_NAME_LABEL: service.service_name(),
@@ -406,7 +434,7 @@ pub fn deployment_replicas_payload(
 
 /// Creates a JSON payload suitable for [Kubernetes' Secrets](https://kubernetes.io/docs/concepts/configuration/secret/)
 pub fn secrets_payload(
-    app_name: &String,
+    app_name: &AppName,
     service_config: &ServiceConfig,
     files: &BTreeMap<PathBuf, SecUtf8>,
 ) -> V1Secret {
@@ -424,8 +452,8 @@ pub fn secrets_payload(
       "apiVersion": "v1",
       "kind": "Secret",
       "metadata": {
-        "name": format!("{}-{}-secret", app_name, service_config.service_name()),
-        "namespace": app_name,
+        "name": format!("{}-{}-secret", app_name.to_rfc1123_namespace_id(), service_config.service_name()),
+        "namespace": app_name.to_rfc1123_namespace_id(),
          APP_NAME_LABEL: app_name,
          SERVICE_NAME_LABEL: service_config.service_name(),
          CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
@@ -437,7 +465,7 @@ pub fn secrets_payload(
 }
 
 pub fn image_pull_secret_payload(
-    app_name: &str,
+    app_name: &AppName,
     registries_and_credentials: BTreeMap<String, (&str, &SecUtf8)>,
 ) -> V1Secret {
     let data = ByteString(
@@ -461,8 +489,11 @@ pub fn image_pull_secret_payload(
 
     V1Secret {
         metadata: ObjectMeta {
-            name: Some(format!("{app_name}-image-pull-secret")),
-            namespace: Some(app_name.to_string()),
+            name: Some(format!(
+                "{}-image-pull-secret",
+                app_name.to_rfc1123_namespace_id()
+            )),
+            namespace: Some(app_name.to_rfc1123_namespace_id()),
             labels: Some(BTreeMap::from([(
                 APP_NAME_LABEL.to_string(),
                 app_name.to_string(),
@@ -477,11 +508,11 @@ pub fn image_pull_secret_payload(
 }
 
 /// Creates a JSON payload suitable for [Kubernetes' Services](https://kubernetes.io/docs/concepts/services-networking/service/)
-pub fn service_payload(app_name: &String, service_config: &ServiceConfig) -> V1Service {
+pub fn service_payload(app_name: &AppName, service_config: &ServiceConfig) -> V1Service {
     serde_json::from_value(serde_json::json!({
       "apiVersion": "v1",
       "kind": "Service",
-      "namespace": app_name,
+      "namespace": app_name.to_rfc1123_namespace_id(),
       "metadata": {
         "name": service_config.service_name(),
         APP_NAME_LABEL: app_name,
@@ -510,7 +541,7 @@ pub fn service_payload(app_name: &String, service_config: &ServiceConfig) -> V1S
 ///
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
-pub fn ingress_route_payload(app_name: &String, service: &DeployableService) -> IngressRoute {
+pub fn ingress_route_payload(app_name: &AppName, service: &DeployableService) -> IngressRoute {
     let rules = service
         .ingress_route()
         .routes()
@@ -527,7 +558,9 @@ pub fn ingress_route_payload(app_name: &String, service: &DeployableService) -> 
                         crate::infrastructure::traefik::TraefikMiddleware::Spec {
                             name,
                             spec: _,
-                        } => name.clone(),
+                        } => AppName::from_str(name)
+                            .map(|app_name| app_name.to_rfc1123_namespace_id())
+                            .unwrap_or_else(|_| name.clone()),
                     };
                     TraefikRuleMiddleware { name }
                 })
@@ -550,10 +583,10 @@ pub fn ingress_route_payload(app_name: &String, service: &DeployableService) -> 
         metadata: ObjectMeta {
             name: Some(format!(
                 "{}-{}-ingress-route",
-                app_name,
+                app_name.to_rfc1123_namespace_id(),
                 service.service_name()
             )),
-            namespace: Some(app_name.to_string()),
+            namespace: Some(app_name.to_rfc1123_namespace_id()),
             annotations: Some(BTreeMap::from([
                 (APP_NAME_LABEL.to_string(), app_name.to_string()),
                 (
@@ -582,7 +615,7 @@ pub fn ingress_route_payload(app_name: &String, service: &DeployableService) -> 
 ///
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
-pub fn middleware_payload(app_name: &String, service: &DeployableService) -> Vec<Middleware> {
+pub fn middleware_payload(app_name: &AppName, service: &DeployableService) -> Vec<Middleware> {
     service
         .ingress_route()
         .routes()
@@ -592,13 +625,18 @@ pub fn middleware_payload(app_name: &String, service: &DeployableService) -> Vec
                 .iter()
                 .filter_map(|middleware| match middleware {
                     TraefikMiddleware::Ref(_) => None,
-                    TraefikMiddleware::Spec { name, spec } => Some((name, spec)),
+                    TraefikMiddleware::Spec { name, spec } => Some((
+                        AppName::from_str(name)
+                            .map(|app_name| app_name.to_rfc1123_namespace_id())
+                            .unwrap_or_else(|_| name.clone()),
+                        spec,
+                    )),
                 })
         })
         .map(|(name, spec)| Middleware {
             metadata: ObjectMeta {
-                name: Some(name.clone()),
-                namespace: Some(app_name.clone()),
+                name: Some(name),
+                namespace: Some(app_name.to_rfc1123_namespace_id()),
                 ..Default::default()
             },
             spec: MiddlewareSpec(serde_json::json!(spec)),
@@ -651,7 +689,7 @@ pub fn pvc_volume_payload(persistent_volume_claim: &PersistentVolumeClaim) -> Vo
 }
 
 pub fn persistent_volume_claim_payload(
-    app_name: &str,
+    app_name: &AppName,
     service: &DeployableService,
     storage_size: &ByteSize,
     storage_class: &str,
@@ -659,9 +697,13 @@ pub fn persistent_volume_claim_payload(
 ) -> PersistentVolumeClaim {
     PersistentVolumeClaim {
         metadata: ObjectMeta {
-            generate_name: Some(format!("{}-{}-pvc-", app_name, service.service_name())),
+            generate_name: Some(format!(
+                "{}-{}-pvc-",
+                app_name.to_rfc1123_namespace_id(),
+                service.service_name()
+            )),
             labels: Some(BTreeMap::from([
-                (APP_NAME_LABEL.to_owned(), app_name.to_owned()),
+                (APP_NAME_LABEL.to_owned(), app_name.to_string()),
                 (
                     SERVICE_NAME_LABEL.to_owned(),
                     service.service_name().to_owned(),
@@ -706,7 +748,7 @@ mod tests {
         let config = sc!("db", "mariadb:10.3.17");
 
         let payload = deployment_payload(
-            "master",
+            &AppName::master(),
             &DeployableService::new(
                 config,
                 DeploymentStrategy::RedeployAlways,
@@ -785,7 +827,7 @@ mod tests {
         )])));
 
         let payload = deployment_payload(
-            "master",
+            &AppName::master(),
             &DeployableService::new(
                 config,
                 DeploymentStrategy::RedeployAlways,
@@ -867,7 +909,7 @@ mod tests {
         ])));
 
         let payload = deployment_payload(
-            "master",
+            &AppName::master(),
             &DeployableService::new(
                 config,
                 DeploymentStrategy::RedeployAlways,
@@ -946,15 +988,90 @@ mod tests {
     }
 
     #[test]
+    fn should_create_deployment_payload_with_app_name_that_is_not_compliant_to_rfc1123() {
+        let config = sc!("db", "mariadb:10.3.17");
+
+        let payload = deployment_payload(
+            &AppName::from_str("MY-APP").unwrap(),
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
+                    "master", "db",
+                ])),
+                Vec::new(),
+            ),
+            &ContainerConfig::default(),
+            false,
+            &None,
+        );
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!({
+              "apiVersion": "apps/v1",
+              "kind": "Deployment",
+              "metadata": {
+                "annotations": {
+                  "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17"
+                },
+                "labels": {
+                  "com.aixigo.preview.servant.app-name": "MY-APP",
+                  "com.aixigo.preview.servant.container-type": "instance",
+                  "com.aixigo.preview.servant.service-name": "db"
+                },
+                "name": "my-app-db-deployment",
+                "namespace": "my-app"
+              },
+              "spec": {
+                "replicas": 1,
+                "selector": {
+                  "matchLabels": {
+                    "com.aixigo.preview.servant.app-name": "MY-APP",
+                    "com.aixigo.preview.servant.container-type": "instance",
+                    "com.aixigo.preview.servant.service-name": "db"
+                  }
+                },
+                "template": {
+                  "metadata": {
+                    "annotations": {
+                    },
+                    "labels": {
+                      "com.aixigo.preview.servant.app-name": "MY-APP",
+                      "com.aixigo.preview.servant.container-type": "instance",
+                      "com.aixigo.preview.servant.service-name": "db"
+                    }
+                  },
+                  "spec": {
+                    "containers": [
+                      {
+                        "image": "docker.io/library/mariadb:10.3.17",
+                        "imagePullPolicy": "Always",
+                        "name": "db",
+                        "ports": [
+                          {
+                            "containerPort": 80
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            })
+        );
+    }
+
+    #[test]
     fn should_create_ingress_route() {
-        let app_name = "master".parse::<AppName>().unwrap();
+        let app_name = AppName::master();
         let mut config = sc!("db", "mariadb:10.3.17");
         let port = 1234;
         config.set_port(port);
         let config = DeployableService::new(
             config,
             DeploymentStrategy::RedeployAlways,
-            TraefikIngressRoute::with_defaults(&AppName::from_str("master").unwrap(), "db"),
+            TraefikIngressRoute::with_defaults(&app_name, "db"),
             Vec::new(),
         );
         let payload = ingress_route_payload(&app_name, &config);
@@ -992,16 +1109,63 @@ mod tests {
     }
 
     #[test]
+    fn should_create_ingress_route_with_app_name_that_is_not_compliant_to_rfc1123() {
+        let app_name = AppName::from_str("MY-APP").unwrap();
+        let mut config = sc!("db", "mariadb:10.3.17");
+        let port = 1234;
+        config.set_port(port);
+        let config = DeployableService::new(
+            config,
+            DeploymentStrategy::RedeployAlways,
+            TraefikIngressRoute::with_defaults(&app_name, "db"),
+            Vec::new(),
+        );
+        let payload = ingress_route_payload(&app_name, &config);
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!({
+              "apiVersion": "traefik.containo.us/v1alpha1",
+              "kind": "IngressRoute",
+              "metadata": {
+                "name": "my-app-db-ingress-route",
+                "namespace": "my-app",
+              },
+              "spec": {
+                "routes": [
+                  {
+                    "match": "PathPrefix(`/MY-APP/db/`)",
+                    "kind": "Rule",
+                    "services": [
+                      {
+                        "name": "db",
+                        "port": port,
+                      }
+                    ],
+                    "middlewares": [
+                      {
+                        "name": "my-app-db-middleware",
+                      }
+                    ]
+                  }
+                ]
+              },
+            }),
+        );
+    }
+
+    #[test]
     fn should_create_middleware_with_default_prefix() {
+        let app_name = AppName::master();
         let config = sc!("db", "mariadb:10.3.17");
         let service = DeployableService::new(
             config,
             DeploymentStrategy::RedeployAlways,
-            TraefikIngressRoute::with_defaults(&AppName::from_str("master").unwrap(), "db"),
+            TraefikIngressRoute::with_defaults(&app_name, "db"),
             Vec::new(),
         );
 
-        let payload = middleware_payload(&String::from("master"), &service);
+        let payload = middleware_payload(&app_name, &service);
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -1016,6 +1180,39 @@ mod tests {
                 "stripPrefix": {
                   "prefixes": [
                     "/master/db/"
+                  ]
+                }
+              },
+            }]),
+        );
+    }
+
+    #[test]
+    fn should_create_middleware_with_default_prefix_with_name_rfc1123_app_name() {
+        let app_name = AppName::from_str("MY-APP").unwrap();
+        let config = sc!("db", "mariadb:10.3.17");
+        let service = DeployableService::new(
+            config,
+            DeploymentStrategy::RedeployAlways,
+            TraefikIngressRoute::with_defaults(&app_name, "db"),
+            Vec::new(),
+        );
+
+        let payload = middleware_payload(&app_name, &service);
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!([{
+              "apiVersion": "traefik.containo.us/v1alpha1",
+              "kind": "Middleware",
+              "metadata": {
+                "name": "my-app-db-middleware",
+                "namespace": "my-app",
+              },
+              "spec": {
+                "stripPrefix": {
+                  "prefixes": [
+                    "/MY-APP/db/"
                   ]
                 }
               },
@@ -1053,7 +1250,7 @@ mod tests {
             ..Default::default()
         };
         let payload = deployment_payload(
-            "master",
+            &AppName::master(),
             &DeployableService::new(
                 config,
                 DeploymentStrategy::RedeployAlways,
@@ -1152,7 +1349,7 @@ mod tests {
         )])));
 
         let payload = deployment_payload(
-            "master",
+            &AppName::master(),
             &DeployableService::new(
                 config,
                 DeploymentStrategy::RedeployAlways,
@@ -1235,6 +1432,61 @@ mod tests {
                 }
               }
             })
+        );
+    }
+
+    #[test]
+    fn create_namespace_with_screaming_snake_case() {
+        let namespace =
+            namespace_payload(&AppName::from_str("MY-APP").unwrap(), &Default::default());
+
+        assert_eq!(
+            namespace,
+            V1Namespace {
+                metadata: ObjectMeta {
+                    name: Some(String::from("my-app")),
+                    labels: Some(BTreeMap::from([(
+                        String::from("com.aixigo.preview.servant.app-name"),
+                        String::from("MY-APP"),
+                    )])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn create_namespace_payload_with_annotations() {
+        let config = toml::de::from_str::<Config>(
+            r#"
+            [runtime]
+            type = 'Kubernetes'
+            [runtime.annotations.namespace]
+            'field.cattle.io/projectId' = 'rancher-project-id'
+            "#,
+        )
+        .unwrap();
+
+        let namespace = namespace_payload(&AppName::from_str("myapp").unwrap(), &config);
+
+        assert_eq!(
+            namespace,
+            V1Namespace {
+                metadata: ObjectMeta {
+                    name: Some(String::from("myapp")),
+                    labels: Some(BTreeMap::from([(
+                        String::from("com.aixigo.preview.servant.app-name"),
+                        String::from("myapp"),
+                    )])),
+                    annotations: Some(BTreeMap::from([(
+                        String::from("field.cattle.io/projectId"),
+                        String::from("rancher-project-id"),
+                    )])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
         );
     }
 }

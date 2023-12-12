@@ -36,6 +36,21 @@ use std::str::{FromStr, Utf8Error};
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AppName(String);
 
+impl AppName {
+    pub fn master() -> Self {
+        Self(String::from("master"))
+    }
+}
+
+impl serde::Serialize for AppName {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
 impl Deref for AppName {
     type Target = String;
 

@@ -26,8 +26,7 @@
 
 use crate::apps::{Apps, AppsError};
 use crate::models::service::{Service, ServiceBuilder, ServiceStatus};
-use crate::models::RequestInfo;
-use crate::models::WebHostMeta;
+use crate::models::{AppName, RequestInfo, WebHostMeta};
 use chrono::{DateTime, Utc};
 use evmap::{ReadHandleFactory, WriteHandle};
 use multimap::MultiMap;
@@ -48,7 +47,7 @@ pub struct HostMetaCrawler {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct Key {
-    app_name: String,
+    app_name: AppName,
     service_id: String,
 }
 
@@ -72,9 +71,9 @@ pub fn new() -> (HostMetaCache, HostMetaCrawler) {
 impl HostMetaCache {
     pub fn update_meta_data(
         &self,
-        services: MultiMap<String, Service>,
+        services: MultiMap<AppName, Service>,
         request_info: &RequestInfo,
-    ) -> MultiMap<String, Service> {
+    ) -> MultiMap<AppName, Service> {
         let mut assigned_apps = MultiMap::new();
 
         let reader = self.reader_factory.handle();
@@ -82,7 +81,7 @@ impl HostMetaCache {
         for (app_name, service) in services.iter_all() {
             for service in service.iter().cloned() {
                 let key = Key {
-                    app_name: app_name.to_string(),
+                    app_name: app_name.clone(),
                     service_id: service.id().to_string(),
                 };
 
@@ -136,7 +135,7 @@ impl HostMetaCrawler {
                     // avoid cloning when https://github.com/havarnov/multimap/issues/24 has been implemented
                     .map(move |service| {
                         let key = Key {
-                            app_name: app_name.to_string(),
+                            app_name: app_name.clone(),
                             service_id: service.id().to_string(),
                         };
                         (key, service.clone())
@@ -178,7 +177,7 @@ impl HostMetaCrawler {
         Ok(())
     }
 
-    fn clear_stale_web_host_meta(&mut self, apps: &MultiMap<String, Service>) {
+    fn clear_stale_web_host_meta(&mut self, apps: &MultiMap<AppName, Service>) {
         let copy: HashMap<Key, Vec<_>> = self
             .writer
             .map_into(|k, vs| (k.clone(), vs.iter().cloned().collect()));
@@ -311,7 +310,7 @@ impl HostMetaCrawler {
         (key, service, meta)
     }
     #[cfg(test)]
-    pub fn fake_empty_host_meta_info(&mut self, app_name: String, service_id: String) {
+    pub fn fake_empty_host_meta_info(&mut self, app_name: AppName, service_id: String) {
         let web_host_meta = WebHostMeta::empty();
         let value = Arc::new(Value {
             timestamp: chrono::Utc::now(),
@@ -320,8 +319,8 @@ impl HostMetaCrawler {
 
         self.writer.insert(
             Key {
-                app_name: app_name.clone(),
-                service_id: service_id.clone(),
+                app_name,
+                service_id,
             },
             value,
         );

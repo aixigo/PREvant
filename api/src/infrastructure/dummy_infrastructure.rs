@@ -29,7 +29,7 @@ use crate::deployment::deployment_unit::DeployableService;
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{Service, ServiceStatus};
-use crate::models::{ServiceBuilder, ServiceConfig};
+use crate::models::{AppName, ServiceBuilder, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use multimap::MultiMap;
@@ -42,7 +42,7 @@ use super::TraefikIngressRoute;
 #[cfg(test)]
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
-    services: Mutex<MultiMap<String, DeployableService>>,
+    services: Mutex<MultiMap<AppName, DeployableService>>,
     base_ingress_route: Option<TraefikIngressRoute>,
 }
 
@@ -94,7 +94,7 @@ impl DummyInfrastructure {
 #[cfg(test)]
 #[async_trait]
 impl Infrastructure for DummyInfrastructure {
-    async fn get_services(&self) -> Result<MultiMap<String, Service>, failure::Error> {
+    async fn get_services(&self) -> Result<MultiMap<AppName, Service>, failure::Error> {
         let mut s = MultiMap::new();
 
         let services = self.services.lock().unwrap();
@@ -102,7 +102,7 @@ impl Infrastructure for DummyInfrastructure {
             for config in configs {
                 let service = ServiceBuilder::new()
                     .id(format!("{}", config.service_name()))
-                    .app_name(app.clone())
+                    .app_name(app.to_string())
                     .config(ServiceConfig::clone(config))
                     .service_status(ServiceStatus::Running)
                     .started_at(
@@ -122,14 +122,14 @@ impl Infrastructure for DummyInfrastructure {
 
     async fn deploy_services(
         &self,
-        _status_id: &String,
+        _status_id: &str,
         deployment_unit: &DeploymentUnit,
         _container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, failure::Error> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
-        let app_name = deployment_unit.app_name().to_string();
+        let app_name = deployment_unit.app_name();
         let deployable_services = deployment_unit.services();
         if let Some(running_services) = services.get_vec_mut(&app_name) {
             let service_names = deployable_services
@@ -149,8 +149,8 @@ impl Infrastructure for DummyInfrastructure {
 
     async fn stop_services(
         &self,
-        _status_id: &String,
-        app_name: &String,
+        _status_id: &str,
+        app_name: &AppName,
     ) -> Result<Vec<Service>, failure::Error> {
         self.delay_if_configured().await;
 
@@ -160,7 +160,7 @@ impl Infrastructure for DummyInfrastructure {
                 .into_iter()
                 .map(|sc| {
                     ServiceBuilder::new()
-                        .app_name(app_name.clone())
+                        .app_name(app_name.to_string())
                         .id(sc.service_name().clone())
                         .config(ServiceConfig::clone(&sc))
                         .started_at(
@@ -178,8 +178,8 @@ impl Infrastructure for DummyInfrastructure {
 
     async fn get_logs(
         &self,
-        app_name: &String,
-        service_name: &String,
+        app_name: &AppName,
+        service_name: &str,
         _from: &Option<DateTime<FixedOffset>>,
         _limit: usize,
     ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, failure::Error> {
@@ -201,8 +201,8 @@ impl Infrastructure for DummyInfrastructure {
 
     async fn change_status(
         &self,
-        _app_name: &String,
-        _service_name: &String,
+        _app_name: &AppName,
+        _service_name: &str,
         _status: ServiceStatus,
     ) -> Result<Option<Service>, failure::Error> {
         Ok(None)

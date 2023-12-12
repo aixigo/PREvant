@@ -63,7 +63,7 @@ async fn apps(
     apps: &State<Arc<Apps>>,
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
-) -> HttpResult<Json<MultiMap<String, Service>>> {
+) -> HttpResult<Json<MultiMap<AppName, Service>>> {
     let services = apps.get_apps().await?;
     Ok(Json(
         host_meta_cache.update_meta_data(services, &request_info),
@@ -387,8 +387,7 @@ impl<'r> FromRequest<'r> for RunOptions {
 
         for header in headers
             .iter()
-            .map(|header| header.split(','))
-            .flatten()
+            .flat_map(|header| header.split(','))
             .map(str::trim)
         {
             if header == "respond-async" {
@@ -558,8 +557,7 @@ mod tests {
             let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler
-                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
 
             let get = client
                 .get("/")
@@ -591,8 +589,7 @@ mod tests {
             let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler
-                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
 
             let get = client
                 .get("/")
@@ -622,8 +619,7 @@ mod tests {
             let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler
-                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
 
             let get = client
                 .get("/")
@@ -652,8 +648,7 @@ mod tests {
             let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler
-                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
 
             let get = client
                 .get("/")
@@ -683,8 +678,7 @@ mod tests {
             let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler
-                .fake_empty_host_meta_info("master".to_string(), "service-a".to_string());
+            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
             let get = client
                 .get("/")
                 .header(rocket::http::Header::new("host", "localhost"))

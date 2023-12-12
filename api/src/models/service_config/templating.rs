@@ -28,7 +28,6 @@ use crate::models::service::ContainerType;
 use crate::models::{Environment, EnvironmentVariable, ServiceConfig};
 use handlebars::{
     Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderError, Renderable,
-    TemplateRenderError,
 };
 use secstr::SecUtf8;
 use serde_value::Value;
@@ -36,7 +35,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 impl ServiceConfig {
-    pub fn apply_templating(&self, app_name: &String) -> Result<Self, TemplateRenderError> {
+    pub fn apply_templating(&self, app_name: &String) -> Result<Self, RenderError> {
         let parameters = TemplateParameters {
             application: ApplicationTemplateParameter {
                 name: app_name.clone(),
@@ -56,7 +55,7 @@ impl ServiceConfig {
         &self,
         app_name: &String,
         service_config: &Self,
-    ) -> Result<Self, TemplateRenderError> {
+    ) -> Result<Self, RenderError> {
         let parameters = TemplateParameters {
             application: ApplicationTemplateParameter {
                 name: app_name.clone(),
@@ -76,7 +75,7 @@ impl ServiceConfig {
         &self,
         app_name: &String,
         service_configs: &Vec<Self>,
-    ) -> Result<Self, TemplateRenderError> {
+    ) -> Result<Self, RenderError> {
         let parameters = TemplateParameters {
             application: ApplicationTemplateParameter {
                 name: app_name.clone(),
@@ -97,7 +96,7 @@ impl ServiceConfig {
         self.apply_template(&parameters)
     }
 
-    fn apply_template(&self, parameters: &TemplateParameters) -> Result<Self, TemplateRenderError> {
+    fn apply_template(&self, parameters: &TemplateParameters) -> Result<Self, RenderError> {
         let mut reg = Handlebars::new();
         reg.register_helper("isCompanion", Box::new(is_companion));
         reg.register_helper("isNotCompanion", Box::new(is_not_companion));
@@ -141,7 +140,7 @@ impl Environment {
         &self,
         parameters: &TemplateParameters,
         reg: &mut Handlebars,
-    ) -> Result<Self, TemplateRenderError> {
+    ) -> Result<Self, RenderError> {
         let mut templated_env = Vec::new();
 
         for e in self.iter() {
@@ -163,8 +162,8 @@ impl Environment {
 fn is_not_companion<'reg, 'rc>(
     h: &Helper<'reg, 'rc>,
     r: &'reg Handlebars,
-    ctx: &Context,
-    rc: &mut RenderContext<'reg>,
+    ctx: &'rc Context,
+    rc: &mut RenderContext<'reg, 'rc>,
     out: &mut dyn Output,
 ) -> HelperResult {
     let s = h
@@ -191,8 +190,8 @@ fn is_not_companion<'reg, 'rc>(
 fn is_companion<'reg, 'rc>(
     h: &Helper<'reg, 'rc>,
     r: &'reg Handlebars,
-    ctx: &Context,
-    rc: &mut RenderContext<'reg>,
+    ctx: &'rc Context,
+    rc: &mut RenderContext<'reg, 'rc>,
     out: &mut dyn Output,
 ) -> HelperResult {
     let s = h
@@ -220,7 +219,7 @@ fn apply_templates<K>(
     reg: &Handlebars,
     parameters: &TemplateParameters,
     original_values: &BTreeMap<K, String>,
-) -> Result<BTreeMap<K, String>, TemplateRenderError>
+) -> Result<BTreeMap<K, String>, RenderError>
 where
     K: Clone + std::cmp::Ord,
 {
@@ -237,7 +236,7 @@ fn apply_templates_with_secrets<K>(
     reg: &Handlebars,
     parameters: &TemplateParameters,
     original_values: &BTreeMap<K, SecUtf8>,
-) -> Result<BTreeMap<K, SecUtf8>, TemplateRenderError>
+) -> Result<BTreeMap<K, SecUtf8>, RenderError>
 where
     K: Clone + std::cmp::Ord,
 {
@@ -257,7 +256,7 @@ fn apply_templating_to_middlewares(
     reg: &Handlebars,
     parameters: &TemplateParameters,
     original_values: &BTreeMap<String, Value>,
-) -> Result<BTreeMap<String, Value>, TemplateRenderError> {
+) -> Result<BTreeMap<String, Value>, RenderError> {
     let mut templated_values = BTreeMap::new();
 
     for (k, v) in original_values {
@@ -274,7 +273,7 @@ fn apply_templating_to_middleware_value(
     reg: &Handlebars,
     parameters: &TemplateParameters,
     value: &Value,
-) -> Result<Value, TemplateRenderError> {
+) -> Result<Value, RenderError> {
     match value {
         Value::String(v) => Ok(Value::String(reg.render_template(v, &parameters)?)),
         Value::Seq(values) => {
@@ -472,11 +471,9 @@ location /{{name}} {
         assert_eq!(
             templated_config.files().unwrap().get(&mount_path).unwrap(),
             &SecUtf8::from(
-                r#"
-location /service-a {
+                r#"location /service-a {
     proxy_pass http://service-a;
 }
-
 location /service-b {
     proxy_pass http://service-b;
 }
@@ -524,8 +521,8 @@ location /service-b {
 location /{{name}} {
     proxy_pass http://{{~name~}};
 }
-{{~/isNotCompanion}}
-{{~/each}}"#,
+{{/isNotCompanion}}
+{{/each}}"#,
             ),
         );
         config.set_files(Some(files));
@@ -537,13 +534,13 @@ location /{{name}} {
         assert_eq!(
             templated_config.files().unwrap().get(&mount_path).unwrap(),
             &SecUtf8::from(
-                r#"
-location /service-a {
+                r#"location /service-a {
     proxy_pass http://service-a;
 }
 location /service-b {
     proxy_pass http://service-b;
-}"#
+}
+"#
             )
         );
     }
@@ -587,8 +584,8 @@ location /service-b {
 location /{{name}} {
     proxy_pass http://{{~name~}};
 }
-{{~/isCompanion}}
-{{~/each}}"#,
+{{/isCompanion}}
+{{/each}}"#,
             ),
         );
         config.set_files(Some(files));
@@ -600,13 +597,13 @@ location /{{name}} {
         assert_eq!(
             templated_config.files().unwrap().get(&mount_path).unwrap(),
             &SecUtf8::from(
-                r#"
-location /service-c {
+                r#"location /service-c {
     proxy_pass http://service-c;
 }
 location /service-d {
     proxy_pass http://service-d;
-}"#
+}
+"#
             )
         );
     }

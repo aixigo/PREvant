@@ -32,7 +32,9 @@ use crate::infrastructure::{
     SERVICE_NAME_LABEL, STATUS_ID,
 };
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
-use crate::models::{Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig};
+use crate::models::{
+    AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::{format_err, Error};
@@ -89,7 +91,7 @@ impl DockerInfrastructure {
 
     async fn find_status_change_container(
         &self,
-        status_id: &String,
+        status_id: &str,
     ) -> Result<Option<ContainerInfo>, ShipLiftError> {
         self.get_status_change_containers(None, Some(status_id))
             .await
@@ -98,11 +100,11 @@ impl DockerInfrastructure {
 
     async fn create_status_change_container(
         &self,
-        status_id: &String,
-        app_name: &str,
+        status_id: &str,
+        app_name: &AppName,
     ) -> Result<ContainerDetails, Error> {
         let existing_task = self
-            .get_status_change_containers(Some(&String::from(app_name)), None)
+            .get_status_change_containers(Some(app_name), None)
             .await?
             .into_iter()
             .next();
@@ -282,7 +284,7 @@ impl DockerInfrastructure {
         Ok(services)
     }
 
-    async fn stop_services_impl(&self, app_name: &String) -> Result<Vec<Service>, Error> {
+    async fn stop_services_impl(&self, app_name: &AppName) -> Result<Vec<Service>, Error> {
         let container_details = match self
             .get_container_details(Some(app_name), None)
             .await?
@@ -319,7 +321,7 @@ impl DockerInfrastructure {
 
     async fn start_container(
         &self,
-        app_name: &String,
+        app_name: &AppName,
         network_id: &String,
         service: &DeployableService,
         container_config: &ContainerConfig,
@@ -469,8 +471,7 @@ impl DockerInfrastructure {
 
         let replicated_env = service_config
             .env()
-            .map(|env| super::replicated_environment_variable_to_json(env))
-            .flatten()
+            .and_then(|env| super::replicated_environment_variable_to_json(env))
             .map(|value| value.to_string());
 
         if let Some(replicated_env) = &replicated_env {
@@ -626,11 +627,11 @@ impl DockerInfrastructure {
 
     async fn get_app_containers(
         &self,
-        app_name: Option<&String>,
-        service_name: Option<&String>,
+        app_name: Option<&AppName>,
+        service_name: Option<&str>,
     ) -> Result<Vec<ContainerInfo>, ShipLiftError> {
         let filters = vec![
-            label_filter(APP_NAME_LABEL, app_name),
+            label_filter(APP_NAME_LABEL, app_name.map(|app_name| app_name.as_str())),
             label_filter(SERVICE_NAME_LABEL, service_name),
         ];
         self.get_containers(filters).await
@@ -638,11 +639,11 @@ impl DockerInfrastructure {
 
     async fn get_status_change_containers(
         &self,
-        app_name: Option<&String>,
-        status_id: Option<&String>,
+        app_name: Option<&AppName>,
+        status_id: Option<&str>,
     ) -> Result<Vec<ContainerInfo>, ShipLiftError> {
         let filters = vec![
-            label_filter(APP_NAME_LABEL, app_name),
+            label_filter(APP_NAME_LABEL, app_name.map(|app_name| app_name.as_str())),
             label_filter(STATUS_ID, status_id),
         ];
         self.get_containers(filters).await
@@ -650,8 +651,8 @@ impl DockerInfrastructure {
 
     async fn get_app_container(
         &self,
-        app_name: &String,
-        service_name: &String,
+        app_name: &AppName,
+        service_name: &str,
     ) -> Result<Option<ContainerInfo>, ShipLiftError> {
         self.get_app_containers(Some(app_name), Some(service_name))
             .await
@@ -660,9 +661,9 @@ impl DockerInfrastructure {
 
     async fn get_container_details(
         &self,
-        app_name: Option<&String>,
-        service_name: Option<&String>,
-    ) -> Result<MultiMap<String, ContainerDetails>, Error> {
+        app_name: Option<&AppName>,
+        service_name: Option<&str>,
+    ) -> Result<MultiMap<AppName, ContainerDetails>, Error> {
         debug!("Resolve container details for app {:?}", app_name);
 
         let container_list = self.get_app_containers(app_name, service_name).await?;
@@ -670,14 +671,17 @@ impl DockerInfrastructure {
         let mut container_details = MultiMap::new();
         for container in container_list.into_iter() {
             if let Some(details) = not_found_to_none(inspect(container).await)? {
-                let app_name = details
-                    .config
-                    .labels
-                    .clone()
-                    .unwrap()
-                    .get(APP_NAME_LABEL)
-                    .unwrap()
-                    .clone();
+                let app_name = match app_name {
+                    Some(app_name) => app_name.clone(),
+                    None => details
+                        .config
+                        .labels
+                        .clone()
+                        .unwrap()
+                        .get(APP_NAME_LABEL)
+                        .and_then(|app_name| AppName::from_str(app_name).ok())
+                        .unwrap(),
+                };
                 container_details.insert(app_name, details);
             }
         }
@@ -688,7 +692,7 @@ impl DockerInfrastructure {
 
 #[async_trait]
 impl Infrastructure for DockerInfrastructure {
-    async fn get_services(&self) -> Result<MultiMap<String, Service>, Error> {
+    async fn get_services(&self) -> Result<MultiMap<AppName, Service>, Error> {
         let mut apps = MultiMap::new();
         let container_details = self.get_container_details(None, None).await?;
 
@@ -711,7 +715,7 @@ impl Infrastructure for DockerInfrastructure {
 
     async fn deploy_services(
         &self,
-        status_id: &String,
+        status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error> {
@@ -728,20 +732,21 @@ impl Infrastructure for DockerInfrastructure {
         result
     }
 
-    async fn get_status_change(&self, status_id: &String) -> Result<Option<Vec<Service>>, Error> {
+    async fn get_status_change(&self, status_id: &str) -> Result<Option<Vec<Service>>, Error> {
         Ok(
             match self
                 .find_status_change_container(status_id)
                 .await?
                 .as_ref()
                 .and_then(|c| c.labels.get(APP_NAME_LABEL))
+                .and_then(|app_name| AppName::from_str(app_name).ok())
             {
                 Some(app_name) => {
                     let mut services = Vec::new();
                     if let Some(container_details) = self
-                        .get_container_details(Some(app_name), None)
+                        .get_container_details(Some(&app_name), None)
                         .await?
-                        .get_vec(app_name)
+                        .get_vec(&app_name)
                     {
                         for container in container_details {
                             services.push(Service::try_from(container)?);
@@ -758,8 +763,8 @@ impl Infrastructure for DockerInfrastructure {
     /// Deletes all services for the given `app_name`.
     async fn stop_services(
         &self,
-        status_id: &String,
-        app_name: &String,
+        status_id: &str,
+        app_name: &AppName,
     ) -> Result<Vec<Service>, Error> {
         let deployment_container = self
             .create_status_change_container(status_id, app_name)
@@ -774,8 +779,8 @@ impl Infrastructure for DockerInfrastructure {
 
     async fn get_logs(
         &self,
-        app_name: &String,
-        service_name: &String,
+        app_name: &AppName,
+        service_name: &str,
         from: &Option<DateTime<FixedOffset>>,
         limit: usize,
     ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, failure::Error> {
@@ -845,8 +850,8 @@ impl Infrastructure for DockerInfrastructure {
 
     async fn change_status(
         &self,
-        app_name: &String,
-        service_name: &String,
+        app_name: &AppName,
+        service_name: &str,
         status: ServiceStatus,
     ) -> Result<Option<Service>, failure::Error> {
         match self.get_app_container(app_name, service_name).await? {
@@ -898,11 +903,14 @@ impl Infrastructure for DockerInfrastructure {
 }
 
 /// Helper function to build ContainerFilters
-fn label_filter(label_name: &str, label_value: Option<&String>) -> ContainerFilter {
-    let label_name = String::from(label_name);
+fn label_filter<S>(label_name: S, label_value: Option<S>) -> ContainerFilter
+where
+    S: AsRef<str>,
+{
+    let label_name = label_name.as_ref().to_string();
     match label_value {
         None => ContainerFilter::LabelName(label_name),
-        Some(value) => ContainerFilter::Label(label_name, value.clone()),
+        Some(value) => ContainerFilter::Label(label_name, value.as_ref().to_string()),
     }
 }
 
@@ -967,10 +975,7 @@ fn find_port(
     container_details: &ContainerDetails,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<u16, DockerInfrastructureError> {
-    if let Some(port) = labels
-        .map(|labels| labels.get(CONTAINER_PORT_LABEL))
-        .flatten()
-    {
+    if let Some(port) = labels.and_then(|labels| labels.get(CONTAINER_PORT_LABEL)) {
         match port.parse::<u16>() {
             Ok(port) => Ok(port),
             Err(err) => Err(DockerInfrastructureError::UnexpectedError {
@@ -1005,7 +1010,7 @@ impl TryFrom<&ContainerDetails> for Service {
     ) -> Result<Service, DockerInfrastructureError> {
         let labels = container_details.config.labels.as_ref();
 
-        let app_name = match labels.map(|labels| labels.get(APP_NAME_LABEL)).flatten() {
+        let app_name = match labels.and_then(|labels| labels.get(APP_NAME_LABEL)) {
             Some(name) => name,
             None => {
                 return Err(DockerInfrastructureError::MissingAppNameLabel {
@@ -1044,10 +1049,7 @@ impl TryFrom<&ContainerDetails> for ServiceConfig {
     fn try_from(container_details: &ContainerDetails) -> Result<Self, Self::Error> {
         let labels = container_details.config.labels.as_ref();
 
-        let service_name = match labels
-            .map(|labels| labels.get(SERVICE_NAME_LABEL))
-            .flatten()
-        {
+        let service_name = match labels.and_then(|labels| labels.get(SERVICE_NAME_LABEL)) {
             Some(name) => name,
             None => {
                 return Err(DockerInfrastructureError::MissingServiceNameLabel {
@@ -1056,7 +1058,7 @@ impl TryFrom<&ContainerDetails> for ServiceConfig {
             }
         };
 
-        let image = match labels.map(|labels| labels.get(IMAGE_LABEL)).flatten() {
+        let image = match labels.and_then(|labels| labels.get(IMAGE_LABEL)) {
             Some(image_label) => Image::from_str(image_label).map_err(|err| {
                 DockerInfrastructureError::UnexpectedImageFormat {
                     img: image_label.clone(),
@@ -1072,17 +1074,11 @@ impl TryFrom<&ContainerDetails> for ServiceConfig {
         }?;
         let mut config = ServiceConfig::new(service_name.clone(), image);
 
-        if let Some(lb) = labels
-            .map(|labels| labels.get(CONTAINER_TYPE_LABEL))
-            .flatten()
-        {
+        if let Some(lb) = labels.and_then(|labels| labels.get(CONTAINER_TYPE_LABEL)) {
             config.set_container_type(lb.parse::<ContainerType>()?);
         }
 
-        if let Some(replicated_env) = labels
-            .map(|labels| labels.get(REPLICATED_ENV_LABEL))
-            .flatten()
-        {
+        if let Some(replicated_env) = labels.and_then(|labels| labels.get(REPLICATED_ENV_LABEL)) {
             let env = serde_json::from_str::<Environment>(replicated_env).map_err(|err| {
                 DockerInfrastructureError::UnexpectedError {
                     internal_message: err.to_string(),

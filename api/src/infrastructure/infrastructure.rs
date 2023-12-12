@@ -28,7 +28,7 @@ use super::traefik::TraefikIngressRoute;
 use crate::config::ContainerConfig;
 use crate::deployment::DeploymentUnit;
 use crate::models::service::{Service, ServiceStatus};
-use crate::models::{ContainerType, ServiceConfig};
+use crate::models::{AppName, ContainerType, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
@@ -37,7 +37,7 @@ use multimap::MultiMap;
 #[async_trait]
 pub trait Infrastructure: Send + Sync {
     /// Returns a `MultiMap` of `app-name` and the running services for this app.
-    async fn get_services(&self) -> Result<MultiMap<String, Service>, Error>;
+    async fn get_services(&self) -> Result<MultiMap<AppName, Service>, Error>;
 
     /// Deploys the services of the given set of `ServiceConfig`.
     ///
@@ -49,12 +49,12 @@ pub trait Infrastructure: Send + Sync {
     ///   must be able to find the corresponding services.
     async fn deploy_services(
         &self,
-        status_id: &String,
+        status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<Vec<Service>, Error>;
 
-    async fn get_status_change(&self, _status_id: &String) -> Result<Option<Vec<Service>>, Error> {
+    async fn get_status_change(&self, _status_id: &str) -> Result<Option<Vec<Service>>, Error> {
         Ok(None)
     }
 
@@ -64,15 +64,15 @@ pub trait Infrastructure: Send + Sync {
     /// stopped.
     async fn stop_services(
         &self,
-        status_id: &String,
-        app_name: &String,
+        status_id: &str,
+        app_name: &AppName,
     ) -> Result<Vec<Service>, Error>;
 
     /// Returns the log lines with a the corresponding timestamps in it.
     async fn get_logs(
         &self,
-        app_name: &String,
-        service_name: &String,
+        app_name: &AppName,
+        service_name: &str,
         from: &Option<DateTime<FixedOffset>>,
         limit: usize,
     ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error>;
@@ -80,8 +80,8 @@ pub trait Infrastructure: Send + Sync {
     /// Changes the status of a service, for example, the service might me stopped or started.
     async fn change_status(
         &self,
-        app_name: &String,
-        service_name: &String,
+        app_name: &AppName,
+        service_name: &str,
         status: ServiceStatus,
     ) -> Result<Option<Service>, Error>;
 
@@ -99,7 +99,10 @@ pub trait Infrastructure: Send + Sync {
 
 impl dyn Infrastructure {
     /// Returns the configuration of all services running for the given application name.
-    pub async fn get_configs_of_app(&self, app_name: &str) -> Result<Vec<ServiceConfig>, Error> {
+    pub async fn get_configs_of_app(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Vec<ServiceConfig>, Error> {
         let services = self.get_services().await?;
         Ok(services
             .get_vec(app_name)
