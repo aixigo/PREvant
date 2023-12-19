@@ -53,6 +53,12 @@ Currently, Jira as a tracking system is supported.
 ```toml
 [jira]
 host = 'https://jira.example.com'
+apiKey = ''
+```
+
+```toml
+[jira]
+host = 'https://jira.example.com'
 user = ''
 password = ''
 ```
