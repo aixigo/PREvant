@@ -117,8 +117,21 @@ impl figment::Provider for CliArgs {
 #[derive(Clone, Deserialize)]
 pub struct JiraConfig {
     host: String,
-    user: String,
-    password: SecUtf8,
+    #[serde(flatten)]
+    auth: JiraAuth,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum JiraAuth {
+    Basic {
+        user: String,
+        password: SecUtf8,
+    },
+    #[serde(rename_all = "camelCase")]
+    ApiKey {
+        api_key: SecUtf8,
+    },
 }
 
 #[derive(Clone, Deserialize)]
@@ -242,11 +255,8 @@ impl JiraConfig {
     pub fn host(&self) -> &String {
         &self.host
     }
-    pub fn user(&self) -> &String {
-        &self.user
-    }
-    pub fn password(&self) -> &SecUtf8 {
-        &self.password
+    pub fn auth(&self) -> &JiraAuth {
+        &self.auth
     }
 }
 
@@ -689,5 +699,47 @@ mod tests {
                     &StorageStrategy::MountDeclaredImageVolumes
                 );
             });
+    }
+
+    #[test]
+    fn should_parse_jira_config_with_username_and_password() {
+        let config = config_from_str!(
+            r#"
+            [jira]
+            host = 'http://jira.example.com'
+            user = 'user'
+            password = 'pass'
+        "#
+        );
+
+        let jira_config = config.jira_config().unwrap();
+        assert_eq!(jira_config.host(), "http://jira.example.com");
+        assert_eq!(
+            jira_config.auth(),
+            &JiraAuth::Basic {
+                user: String::from("user"),
+                password: SecUtf8::from_str("pass").unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn should_parse_jira_config_with_api_key() {
+        let config = config_from_str!(
+            r#"
+            [jira]
+            host = 'http://jira.example.com'
+            apiKey = 'key'
+        "#
+        );
+
+        let jira_config = config.jira_config().unwrap();
+        assert_eq!(jira_config.host(), "http://jira.example.com");
+        assert_eq!(
+            jira_config.auth(),
+            &JiraAuth::ApiKey {
+                api_key: SecUtf8::from_str("key").unwrap()
+            }
+        );
     }
 }

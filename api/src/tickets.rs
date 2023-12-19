@@ -51,13 +51,20 @@ pub async fn tickets(
         }
         Some(jira_config) => {
             let services = apps_service.get_apps().await?;
+            if services.is_empty() {
+                return Ok(Json(tickets));
+            }
 
-            let pw = String::from(jira_config.password().unsecure());
             let jira = JiraInstance::at(jira_config.host().clone())
                 .unwrap()
-                .authenticate(jira_query::Auth::Basic {
-                    user: jira_config.user().clone(),
-                    password: pw,
+                .authenticate(match jira_config.auth() {
+                    crate::config::JiraAuth::Basic { user, password } => jira_query::Auth::Basic {
+                        user: user.clone(),
+                        password: password.unsecure().to_string(),
+                    },
+                    crate::config::JiraAuth::ApiKey { api_key } => {
+                        jira_query::Auth::ApiKey(api_key.unsecure().to_string())
+                    }
                 });
 
             let issue_keys = services
