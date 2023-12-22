@@ -17,7 +17,7 @@ base64 = "0.21"
 boa_engine = "0.17"
 bytesize = { version = "1.3", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "3.2", features = ["derive", "cargo"] }
+clap = { version = "4.4", features = ["derive", "cargo", "help", "usage", "error-context"] }
 env_logger = "0.10"
 evmap = "10.0"
 failure = "0.1"

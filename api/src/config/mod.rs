@@ -63,6 +63,7 @@ pub struct CliArgs {
     runtime_type: Option<RuntimeTypeCliFlag>,
 }
 
+#[derive(Clone)]
 enum RuntimeTypeCliFlag {
     Docker,
     Kubernetes,
