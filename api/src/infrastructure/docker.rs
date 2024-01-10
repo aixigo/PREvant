@@ -35,10 +35,12 @@ use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus
 use crate::models::{
     AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig,
 };
+use async_stream::stream;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::{format_err, Error};
 use futures::future::join_all;
+use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use multimap::MultiMap;
 use regex::Regex;
@@ -54,6 +56,7 @@ use std::collections::HashMap;
 use std::convert::{From, TryFrom};
 use std::net::{AddrParseError, IpAddr};
 use std::str::FromStr;
+
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
 pub struct DockerInfrastructure {
@@ -777,75 +780,70 @@ impl Infrastructure for DockerInfrastructure {
         result
     }
 
-    async fn get_logs(
-        &self,
-        app_name: &AppName,
-        service_name: &str,
-        from: &Option<DateTime<FixedOffset>>,
-        limit: usize,
-    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, failure::Error> {
-        match self.get_app_container(app_name, service_name).await? {
-            None => Ok(None),
-            Some(container) => {
-                let docker = Docker::new();
+    async fn get_logs<'a>(
+        &'a self,
+        app_name: &'a AppName,
+        service_name: &'a str,
+        from: &'a Option<DateTime<FixedOffset>>,
+        limit: &'a Option<usize>,
+        follow: bool,
+    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String), failure::Error>> {
+        stream! {
+            match self
+                .get_app_container(&AppName::from_str(app_name).unwrap(), service_name)
+                .await
+            {
+                Ok(None) => {}
+                Ok(Some(container)) => {
+                    let docker = Docker::new();
 
-                trace!(
-                    "Acquiring logs of container {} since {:?}",
-                    container.id,
-                    from
-                );
+                    trace!(
+                        "Acquiring logs of container {} since {:?}",
+                        container.id,
+                        from
+                    );
 
-                let log_options = match from {
-                    Some(from) => LogsOptions::builder()
-                        .since(from)
-                        .stdout(true)
-                        .stderr(true)
-                        .timestamps(true)
-                        .build(),
-                    None => LogsOptions::builder()
-                        .stdout(true)
-                        .stderr(true)
-                        .timestamps(true)
-                        .build(),
-                };
+                    let mut log_options = LogsOptions::builder();
+                    log_options.stdout(true).stderr(true).timestamps(true);
 
-                let logs = docker
-                    .containers()
-                    .get(&container.id)
-                    .logs(&log_options)
-                    .collect::<Vec<Result<TtyChunk, ShipLiftError>>>()
-                    .await;
+                    if let Some(since) = from {
+                        log_options.since(since);
+                    }
 
-                let logs = logs.into_iter()
-                    .enumerate()
-                    // Unfortunately, docker API does not support head (cf. https://github.com/moby/moby/issues/13096)
-                    // Until then we have to skip these log messages which is super slow…
-                    .filter(move |(index, _)| index < &limit)
-                    .filter_map(|(_, chunk)| chunk.ok())
-                    .map(|chunk| {
-                        let line = String::from_utf8_lossy(&chunk.to_vec()).to_string();
+                    log_options.follow(follow);
+                    
+                    let logs = docker
+                        .containers()
+                        .get(&container.id)
+                        .logs(&log_options.build());
 
-                        let mut iter = line.splitn(2, ' ');
-                        let timestamp = iter.next()
-                            .expect("This should never happen: docker should return timestamps, separated by space");
+                    let mut logs = match limit {
+                        Some(log_limit) => Box::pin(logs.take(*log_limit))
+                            as BoxStream<Result<TtyChunk, shiplift::Error>>,
+                        None => Box::pin(logs) as BoxStream<Result<TtyChunk, shiplift::Error>>,
+                    };
 
-                        let datetime = DateTime::parse_from_rfc3339(timestamp).expect("Expecting a valid timestamp");
+                    while let Some(result) = logs.next().await {
+                        match result {
+                            Ok(chunk) => {
+                                let line = String::from_utf8_lossy(&chunk.to_vec()).to_string();
 
-                        let log_line : String = iter
-                            .collect::<Vec<&str>>()
-                            .join(" ");
-                        (datetime, log_line)
-                    })
-                    .filter(move |(timestamp, _)| {
-                        // Due to the fact that docker's REST API supports only unix time (cf. since),
-                        // it is necessary to filter the timestamps as well.
-                        from.map(|from| timestamp >= &from).unwrap_or(true)
-                    })
-                    .collect();
+                                let mut iter = line.splitn(2, ' ');
+                                let timestamp = iter.next()
+                                    .expect("This should never happen: docker should return timestamps, separated by space");
 
-                Ok(Some(logs))
+                                let datetime = DateTime::parse_from_rfc3339(timestamp)
+                                    .expect("Expecting a valid timestamp");
+                                let log_line: String = iter.collect::<Vec<&str>>().join(" ");
+                                yield Ok((datetime, log_line))
+                            }
+                            Err(e) => yield Err(e.into()),
+                        }
+                    }
+                }
+                Err(e) => yield Err(e.into()),
             }
-        }
+        }.boxed()
     }
 
     async fn change_status(

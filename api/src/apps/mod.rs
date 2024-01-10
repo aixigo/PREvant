@@ -36,6 +36,8 @@ use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
 use crate::registry::Registry;
 use crate::registry::RegistryError;
 use chrono::{DateTime, FixedOffset};
+use futures::stream::BoxStream;
+use futures::StreamExt;
 use handlebars::RenderError;
 pub use host_meta_cache::new as host_meta_crawling;
 pub use host_meta_cache::HostMetaCache;
@@ -349,22 +351,38 @@ impl AppsService {
         }
     }
 
-    pub async fn get_logs(
-        &self,
-        app_name: &AppName,
-        service_name: &str,
-        since: &Option<DateTime<FixedOffset>>,
-        limit: usize,
+    pub async fn stream_logs<'a>(
+        &'a self,
+        app_name: &'a AppName,
+        service_name: &'a str,
+        since: &'a Option<DateTime<FixedOffset>>,
+        limit: &'a Option<usize>,
+    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String), failure::Error>> {
+        self.infrastructure
+            .get_logs(app_name, service_name, since, limit, true)
+            .await
+    }
+
+    pub async fn get_logs<'a>(
+        &'a self,
+        app_name: &'a AppName,
+        service_name: &'a str,
+        since: &'a Option<DateTime<FixedOffset>>,
+        limit: &'a Option<usize>,
     ) -> Result<Option<LogChunk>, AppsServiceError> {
-        match self
+        let mut log_lines = Vec::new();
+        let mut log_stream = self
             .infrastructure
-            .get_logs(app_name, service_name, since, limit)
-            .await?
-        {
-            None => Ok(None),
-            Some(ref logs) if logs.is_empty() => Ok(None),
-            Some(logs) => Ok(Some(LogChunk::from(logs))),
+            .get_logs(app_name, service_name, since, limit, false)
+            .await;
+
+        while let Some(result) = log_stream.next().await {
+            if let Ok(log_line) = result {
+                log_lines.push(log_line);
+            }
         }
+
+        Ok(Some(LogChunk::from(log_lines)))
     }
 
     pub async fn change_status(
@@ -683,7 +701,7 @@ mod tests {
         .await?;
 
         let log_chunk = apps
-            .get_logs(&app_name, &String::from("service-a"), &None, 100)
+            .get_logs(&app_name, &String::from("service-a"), &None, &Some(100))
             .await
             .unwrap()
             .unwrap();
@@ -705,6 +723,58 @@ Log msg 2 of service-a of app master
 Log msg 3 of service-a of app master
 "#
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_stream_logs_from_infrastructure() -> Result<(), AppsServiceError> {
+        let config = Config::default();
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        let app_name = AppName::from_str("master").unwrap();
+        let services = vec![sc!("service-a"), sc!("service-b")];
+        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &services)
+            .await?;
+        for service in services {
+            let mut log_stream = apps
+                .stream_logs(&app_name, service.service_name(), &None, &None)
+                .await;
+
+            assert_eq!(
+                log_stream.next().await.unwrap().unwrap(),
+                (
+                    DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(),
+                    format!(
+                        "Log msg 1 of {} of app {app_name}\n",
+                        service.service_name()
+                    )
+                )
+            );
+
+            assert_eq!(
+                log_stream.next().await.unwrap().unwrap(),
+                (
+                    DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
+                    format!(
+                        "Log msg 2 of {} of app {app_name}\n",
+                        service.service_name()
+                    )
+                )
+            );
+
+            assert_eq!(
+                log_stream.next().await.unwrap().unwrap(),
+                (
+                    DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(),
+                    format!(
+                        "Log msg 3 of {} of app {app_name}\n",
+                        service.service_name()
+                    )
+                )
+            );
+        }
 
         Ok(())
     }

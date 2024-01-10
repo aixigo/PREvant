@@ -32,6 +32,7 @@ use crate::models::{AppName, ContainerType, ServiceConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use failure::Error;
+use futures::stream::BoxStream;
 use multimap::MultiMap;
 
 #[async_trait]
@@ -68,14 +69,15 @@ pub trait Infrastructure: Send + Sync {
         app_name: &AppName,
     ) -> Result<Vec<Service>, Error>;
 
-    /// Returns the log lines with a the corresponding timestamps in it.
-    async fn get_logs(
-        &self,
-        app_name: &AppName,
-        service_name: &str,
-        from: &Option<DateTime<FixedOffset>>,
-        limit: usize,
-    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error>;
+    /// Streams the log lines with a the corresponding timestamps in it.
+    async fn get_logs<'a>(
+        &'a self,
+        app_name: &'a AppName,
+        service_name: &'a str,
+        from: &'a Option<DateTime<FixedOffset>>,
+        limit: &'a Option<usize>,
+        follow: bool,
+    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String), failure::Error>>;
 
     /// Changes the status of a service, for example, the service might me stopped or started.
     async fn change_status(

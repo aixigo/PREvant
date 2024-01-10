@@ -41,11 +41,14 @@ use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus
 use crate::models::{
     AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig,
 };
+use async_stream::stream;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use failure::Error;
 use futures::stream::FuturesUnordered;
+use futures::stream::{self, BoxStream};
 use futures::StreamExt;
+use futures::{AsyncBufReadExt, TryStreamExt};
 use k8s_openapi::api::core::v1::PersistentVolumeClaim;
 use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::{
@@ -567,53 +570,43 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(services)
     }
 
-    async fn get_logs(
-        &self,
-        app_name: &AppName,
-        service_name: &str,
-        from: &Option<DateTime<FixedOffset>>,
-        limit: usize,
-    ) -> Result<Option<Vec<(DateTime<FixedOffset>, String)>>, Error> {
-        let client = self.client().await?;
-        let namespace = app_name.to_rfc1123_namespace_id();
-
+    async fn get_logs<'a>(
+        &'a self,
+        app_name: &'a AppName,
+        service_name: &'a str,
+        from: &'a Option<DateTime<FixedOffset>>,
+        limit: &'a Option<usize>,
+        follow: bool,
+    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String), failure::Error>> {
         let Some((_deployment, Some(pod))) =
-            self.get_deployment_and_pod(app_name, service_name).await?
+            (match self.get_deployment_and_pod(app_name, service_name).await {
+                Ok(result) => result,
+                Err(_) => return stream::empty().boxed(),
+            })
         else {
-            return Ok(None);
+            return stream::empty().boxed();
         };
 
-        let p = LogParams {
-            timestamps: true,
-            since_seconds: from
-                .map(|from| {
-                    from.timestamp()
-                        - pod
-                            .status
-                            .as_ref()
-                            .unwrap()
-                            .start_time
-                            .as_ref()
-                            .unwrap()
-                            .0
-                            .timestamp()
-                })
-                .filter(|since_seconds| since_seconds > &0),
-            ..Default::default()
-        };
+        stream! {
+            let p = LogParams {
+                timestamps: true,
+                since_time: from.map(|from| from.with_timezone(&Utc)),
+                follow,
+                ..Default::default()
+            };
+            let client = self.client().await?;
+            let namespace = app_name.to_rfc1123_namespace_id();
 
-        let logs = Api::<V1Pod>::namespaced(client, &namespace)
-            .logs(&pod.metadata.name.unwrap(), &p)
-            .await?;
-
-        let logs = logs
-            .split('\n')
-            .enumerate()
-            // Unfortunately,  API does not support head (also like docker, cf. https://github.com/moby/moby/issues/13096)
-            // Until then we have to skip these log messages which is super slow…
-            .filter(move |(index, _)| index < &limit)
-            .filter(|(_, line)| !line.is_empty())
-            .map(|(_, line)| {
+            let logs = Api::<V1Pod>::namespaced(client, &namespace)
+                .log_stream(&pod.metadata.name.unwrap(), &p)
+                .await?;
+            let mut logs = match limit {
+                Some(log_limit) => {
+                    Box::pin(logs.lines().take(*log_limit)) as BoxStream<Result<String, std::io::Error>>
+                }
+                None => Box::pin(logs.lines()) as BoxStream<Result<String, std::io::Error>>,
+            };
+            while let Some(line) = logs.try_next().await? {
                 let mut iter = line.splitn(2, ' ');
                 let timestamp = iter.next().expect(
                     "This should never happen: kubernetes should return timestamps, separated by space",
@@ -624,11 +617,10 @@ impl Infrastructure for KubernetesInfrastructure {
 
                 let mut log_line: String = iter.collect::<Vec<&str>>().join(" ");
                 log_line.push('\n');
-                (datetime, log_line)
-            })
-            .collect();
 
-        Ok(Some(logs))
+                yield Ok((datetime, log_line))
+            }
+        }.boxed()
     }
 
     async fn change_status(

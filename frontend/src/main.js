@@ -49,13 +49,14 @@ import OpenApiUI from './OpenApiUI.vue';
 import LogsDialog from './LogsDialog.vue';
 
 import {library} from '@fortawesome/fontawesome-svg-core';
-import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose} from '@fortawesome/free-solid-svg-icons';
+import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose, faDownload} from '@fortawesome/free-solid-svg-icons';
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome';
 import store from './store';
 
 library.add(faClipboard);
 library.add(faCode);
 library.add(faCopy);
+library.add(faDownload);
 library.add(faServer);
 library.add(faSpinner);
 library.add(faTerminal);

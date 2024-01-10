@@ -246,12 +246,20 @@ paths:
           example: '2019-07-22T08:42:47-00:00'
         - in: query
           name: limit
-          description: The number of log lines to retrieve. If not present, 1000 lines will be retrieved.
+          description: The number of log lines to retrieve. If not present, all the lines from `since` are retrieved.
           schema:
             type: integer
+        - in: query
+          name: asAttachment
+          description: >-
+            Determines how the response is presented by the browser. When `true`, the response content is provided as a downloadable attachment.
+            If `false` or not provided, the response is displayed inline.
+          schema:
+            type: boolean
       responses:
         '200':
-          description: The available log statements
+          description: | 
+            The available log statements. MIME type `text/event-stream` supports streaming of logs.
           headers:
             Link:
               schema:
