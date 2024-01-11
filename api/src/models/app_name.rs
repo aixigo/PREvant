@@ -65,6 +65,12 @@ impl std::fmt::Display for AppName {
     }
 }
 
+impl AsRef<str> for AppName {
+    fn as_ref(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 impl FromStr for AppName {
     type Err = AppNameError;
 

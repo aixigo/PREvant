@@ -31,17 +31,17 @@ use crate::config::{Config, ContainerConfig};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::infrastructure::traefik::TraefikMiddleware;
 use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
-use crate::models::service::Service;
 use crate::models::{AppName, ServiceConfig};
 use base64::{engine::general_purpose, Engine};
 use bytesize::ByteSize;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::DeploymentSpec;
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, KeyToPath, LocalObjectReference, PersistentVolumeClaim,
-    PersistentVolumeClaimSpec, PersistentVolumeClaimVolumeSource, PodSpec, PodTemplateSpec,
-    ResourceRequirements, SecretVolumeSource, Volume, VolumeMount,
+    Container, ContainerPort, EnvVar, KeyToPath, PersistentVolumeClaim, PersistentVolumeClaimSpec,
+    PersistentVolumeClaimVolumeSource, PodSpec, PodTemplateSpec, ResourceRequirements,
+    SecretVolumeSource, Volume, VolumeMount,
 };
+use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
     core::v1::Secret as V1Secret, core::v1::Service as V1Service,
@@ -56,8 +56,10 @@ use schemars::JsonSchema;
 use secstr::SecUtf8;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryFrom;
+use std::hash::Hasher;
 use std::iter::FromIterator;
 use std::path::{Component, PathBuf};
 use std::str::FromStr;
@@ -72,7 +74,7 @@ use std::string::ToString;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct IngressRouteSpec {
-    pub entrypoints: Option<Vec<String>>,
+    pub entry_points: Option<Vec<String>>,
     pub routes: Option<Vec<TraefikRuleSpec>>,
     pub tls: Option<TraefikTls>,
 }
@@ -94,13 +96,13 @@ pub struct TraefikRuleService {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TraefikRuleMiddleware {
-    name: String,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TraefikTls {
-    cert_resolver: Option<String>,
+    pub cert_resolver: Option<String>,
 }
 
 #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -111,7 +113,7 @@ pub struct TraefikTls {
     namespaced
 )]
 #[serde(rename_all = "camelCase")]
-pub struct MiddlewareSpec(Value);
+pub struct MiddlewareSpec(pub Value);
 
 macro_rules! secret_name_from_path {
     ($path:expr) => {{
@@ -139,14 +141,23 @@ macro_rules! secret_name_from_name {
 }
 
 impl TryFrom<IngressRoute> for TraefikIngressRoute {
-    type Error = &'static str;
+    type Error = String;
 
     fn try_from(value: IngressRoute) -> Result<Self, Self::Error> {
-        let k8s_route = value.spec.routes.unwrap().into_iter().next().unwrap();
-        let rule = TraefikRouterRule::from_str(&k8s_route.r#match).unwrap();
+        let Some(routes) = value.spec.routes else {
+            return Err(String::from(
+                "The ingress route does not provide any routes",
+            ));
+        };
+        let Some(k8s_route) = routes.into_iter().next() else {
+            return Err(String::from(
+                "The ingress route does not provide any routes",
+            ));
+        };
+        let rule = TraefikRouterRule::from_str(&k8s_route.r#match)?;
 
         Ok(TraefikIngressRoute::with_existing_routing_rules(
-            value.spec.entrypoints.unwrap_or_default(),
+            value.spec.entry_points.unwrap_or_default(),
             rule,
             k8s_route
                 .middlewares
@@ -157,6 +168,134 @@ impl TryFrom<IngressRoute> for TraefikIngressRoute {
             value.spec.tls.unwrap_or_default().cert_resolver,
         ))
     }
+}
+
+pub fn convert_k8s_ingress_to_traefik_ingress(
+    ingress: Ingress,
+    base_route: TraefikIngressRoute,
+) -> Result<(IngressRoute, Option<Middleware>), &'static str> {
+    let Some(spec) = ingress.spec else {
+        return Err("Ingress does not provide spec");
+    };
+    let Some(rules) = spec.rules else {
+        return Err("Ingress' spec does not provide rules");
+    };
+
+    let Some(path) = rules
+        .into_iter()
+        .filter_map(|rule| rule.http)
+        .find_map(|http| http.paths.into_iter().next())
+    else {
+        return Err("Ingress' rule does not a provide http paths object");
+    };
+
+    let Some(path_value) = path.path else {
+        return Err("Ingress' path does not provide a HTTP path value");
+    };
+
+    let (rule, middleware) = match &spec.ingress_class_name {
+        Some(ingress_class_name) if ingress_class_name == "nginx" => {
+            let middleware = ingress
+                .metadata
+                .annotations
+                .as_ref()
+                .filter(|annotations| {
+                    annotations.get("nginx.ingress.kubernetes.io/use-regex")
+                        == Some(&String::from("true"))
+                })
+                .and_then(|annotations| {
+                    annotations
+                        .get("nginx.ingress.kubernetes.io/rewrite-target")
+                        .cloned()
+                })
+                .and_then(|_rewrite_target| {
+                    let hir = regex_syntax::parse(&path_value).ok()?;
+                    let got = regex_syntax::hir::literal::Extractor::new().extract(&hir);
+                    let prefixes = got
+                        .literals()?
+                        .iter()
+                        .map(|l| String::from_utf8_lossy(l.as_bytes()).to_string())
+                        .map(serde_json::Value::from)
+                        .collect::<Vec<_>>();
+
+                    Some(Middleware {
+                        metadata: kube::core::ObjectMeta {
+                            name: Some(uuid::Uuid::new_v4().to_string()),
+                            ..Default::default()
+                        },
+                        spec: MiddlewareSpec(serde_json::json!({
+                            "stripPrefix": {
+                                "prefixes": serde_json::Value::from(prefixes)
+                            }
+                        })),
+                    })
+                });
+
+            (None, middleware)
+        }
+        _ => {
+            // TODO warn that ingress class is unknown
+            (
+                Some(TraefikIngressRoute::with_rule(
+                    TraefikRouterRule::path_prefix_rule([path_value.clone()]),
+                )),
+                None,
+            )
+        }
+    };
+
+    let mut route = base_route;
+    if let Some(rule) = rule {
+        route.merge_with(rule);
+    }
+
+    let mut middlewares = route
+        .routes()
+        .iter()
+        .flat_map(|route| route.middlewares().iter())
+        .filter_map(|middleware| match middleware {
+            crate::infrastructure::traefik::TraefikMiddleware::Ref(name) => {
+                Some(TraefikRuleMiddleware { name: name.clone() })
+            }
+            crate::infrastructure::traefik::TraefikMiddleware::Spec { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    middlewares.extend(middleware.as_ref().map(|m| TraefikRuleMiddleware {
+        name: m.metadata.name.clone().unwrap_or_default(),
+    }));
+
+    let routes = vec![TraefikRuleSpec {
+        kind: String::from("Rule"),
+        r#match: route.routes()[0].rule().to_string(),
+        middlewares: Some(middlewares),
+        services: vec![TraefikRuleService {
+            kind: Some(String::from("Service")),
+            name: path.backend.service.clone().unwrap().name,
+            port: Some(
+                path.backend
+                    .service
+                    .as_ref()
+                    .and_then(|service| service.port.as_ref())
+                    .and_then(|port| port.number)
+                    .map(|p| p as u16)
+                    // TODO: how to get the if missing
+                    .unwrap_or(80),
+            ),
+        }],
+    }];
+
+    let route = IngressRoute {
+        metadata: ingress.metadata,
+        spec: IngressRouteSpec {
+            routes: Some(routes),
+            entry_points: Some(route.entry_points().clone()),
+            tls: route.tls().as_ref().map(|tls| TraefikTls {
+                cert_resolver: Some(tls.cert_resolver.clone()),
+            }),
+        },
+    };
+
+    Ok((route, middleware))
 }
 
 /// Creates a JSON payload suitable for [Kubernetes'
@@ -202,7 +341,6 @@ pub fn deployment_payload(
     app_name: &AppName,
     service: &DeployableService,
     container_config: &ContainerConfig,
-    use_image_pull_secret: bool,
     persistent_volume_map: &Option<HashMap<&String, PersistentVolumeClaim>>,
 ) -> V1Deployment {
     let env = service.env().map(|env| {
@@ -346,7 +484,7 @@ pub fn deployment_payload(
             template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
                     labels: Some(labels),
-                    annotations: Some(deployment_annotations(service)),
+                    annotations: Some(deployment_annotations(service.strategy())),
                     ..Default::default()
                 }),
                 spec: Some(PodSpec {
@@ -364,16 +502,6 @@ pub fn deployment_payload(
                         resources,
                         ..Default::default()
                     }],
-                    image_pull_secrets: if use_image_pull_secret {
-                        Some(vec![LocalObjectReference {
-                            name: Some(format!(
-                                "{}-image-pull-secret",
-                                app_name.to_rfc1123_namespace_id()
-                            )),
-                        }])
-                    } else {
-                        None
-                    },
                     ..Default::default()
                 }),
             },
@@ -389,8 +517,8 @@ pub fn deployment_payload(
 /// For example, this [popular workaround](https://stackoverflow.com/a/55221174/5088458) will be
 /// applied to ensure that a pod will be recreated everytime a deployment with
 /// [`DeploymentStrategy::RedeployAlways`] has been initiated.
-fn deployment_annotations(service: &DeployableService) -> BTreeMap<String, String> {
-    match service.strategy() {
+fn deployment_annotations(strategy: &DeploymentStrategy) -> BTreeMap<String, String> {
+    match strategy {
         DeploymentStrategy::RedeployOnImageUpdate(image_id) => {
             BTreeMap::from([(String::from("imageHash"), image_id.clone())])
         }
@@ -399,37 +527,6 @@ fn deployment_annotations(service: &DeployableService) -> BTreeMap<String, Strin
             BTreeMap::from([(String::from("date"), Utc::now().to_rfc3339())])
         }
     }
-}
-
-pub fn deployment_replicas_payload(
-    app_name: &AppName,
-    service: &Service,
-    replicas: u32,
-) -> V1Deployment {
-    serde_json::from_value(serde_json::json!({
-      "apiVersion": "apps/v1",
-      "kind": "Deployment",
-      "metadata": {
-        "name": format!("{}-{}-deployment", app_name.to_rfc1123_namespace_id(), service.service_name()),
-        "namespace": app_name.to_rfc1123_namespace_id(),
-        "labels": {
-          APP_NAME_LABEL: app_name,
-          SERVICE_NAME_LABEL: service.service_name(),
-          CONTAINER_TYPE_LABEL: service.container_type().to_string()
-        }
-      },
-      "spec": {
-        "replicas": replicas,
-        "selector": {
-          "matchLabels": {
-            APP_NAME_LABEL: app_name,
-            SERVICE_NAME_LABEL: service.service_name(),
-            CONTAINER_TYPE_LABEL: service.container_type().to_string()
-          }
-        }
-      }
-    }))
-    .expect("Cannot convert value to apps/v1/Deployment")
 }
 
 /// Creates a JSON payload suitable for [Kubernetes' Secrets](https://kubernetes.io/docs/concepts/configuration/secret/)
@@ -468,6 +565,14 @@ pub fn image_pull_secret_payload(
     app_name: &AppName,
     registries_and_credentials: BTreeMap<String, (&str, &SecUtf8)>,
 ) -> V1Secret {
+    // Hashing over all registries ensures that the same secret name will be generated for the same
+    // registries. Thus, password or user can change and will be updated. Additionally, it will be
+    // idempontent to the Kubernetes API.
+    let mut registry_hasher = DefaultHasher::new();
+    for registry in registries_and_credentials.keys() {
+        registry_hasher.write(registry.as_bytes());
+    }
+
     let data = ByteString(
         serde_json::json!({
             "auths":
@@ -490,8 +595,9 @@ pub fn image_pull_secret_payload(
     V1Secret {
         metadata: ObjectMeta {
             name: Some(format!(
-                "{}-image-pull-secret",
-                app_name.to_rfc1123_namespace_id()
+                "{}-image-pull-secret-{:#010x}",
+                app_name.to_rfc1123_namespace_id(),
+                registry_hasher.finish()
             )),
             namespace: Some(app_name.to_rfc1123_namespace_id()),
             labels: Some(BTreeMap::from([(
@@ -542,8 +648,9 @@ pub fn service_payload(app_name: &AppName, service_config: &ServiceConfig) -> V1
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
 pub fn ingress_route_payload(app_name: &AppName, service: &DeployableService) -> IngressRoute {
-    let rules = service
-        .ingress_route()
+    let route = service.ingress_route();
+
+    let rules = route
         .routes()
         .iter()
         .map(|route| {
@@ -606,18 +713,21 @@ pub fn ingress_route_payload(app_name: &AppName, service: &DeployableService) ->
         },
         spec: IngressRouteSpec {
             routes: Some(rules),
-            ..Default::default()
+            entry_points: Some(route.entry_points().clone()),
+            tls: route.tls().as_ref().map(|tls| TraefikTls {
+                cert_resolver: Some(tls.cert_resolver.clone()),
+            }),
         },
     }
 }
 
-/// Creates a payload that ensures that Traefik strips out the path prefix.
-///
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
-pub fn middleware_payload(app_name: &AppName, service: &DeployableService) -> Vec<Middleware> {
-    service
-        .ingress_route()
+pub fn middleware_payload(
+    app_name: &AppName,
+    ingress_route: &TraefikIngressRoute,
+) -> Vec<Middleware> {
+    ingress_route
         .routes()
         .iter()
         .flat_map(|r| {
@@ -758,7 +868,6 @@ mod tests {
                 Vec::new(),
             ),
             &ContainerConfig::default(),
-            false,
             &None,
         );
 
@@ -837,7 +946,6 @@ mod tests {
                 Vec::new(),
             ),
             &ContainerConfig::default(),
-            false,
             &None,
         );
 
@@ -919,7 +1027,6 @@ mod tests {
                 Vec::new(),
             ),
             &ContainerConfig::default(),
-            false,
             &None,
         );
 
@@ -1002,7 +1109,6 @@ mod tests {
                 Vec::new(),
             ),
             &ContainerConfig::default(),
-            false,
             &None,
         );
 
@@ -1157,15 +1263,11 @@ mod tests {
     #[test]
     fn should_create_middleware_with_default_prefix() {
         let app_name = AppName::master();
-        let config = sc!("db", "mariadb:10.3.17");
-        let service = DeployableService::new(
-            config,
-            DeploymentStrategy::RedeployAlways,
-            TraefikIngressRoute::with_defaults(&app_name, "db"),
-            Vec::new(),
-        );
 
-        let payload = middleware_payload(&app_name, &service);
+        let payload = middleware_payload(
+            &app_name,
+            &TraefikIngressRoute::with_defaults(&app_name, "db"),
+        );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -1190,15 +1292,11 @@ mod tests {
     #[test]
     fn should_create_middleware_with_default_prefix_with_name_rfc1123_app_name() {
         let app_name = AppName::from_str("MY-APP").unwrap();
-        let config = sc!("db", "mariadb:10.3.17");
-        let service = DeployableService::new(
-            config,
-            DeploymentStrategy::RedeployAlways,
-            TraefikIngressRoute::with_defaults(&app_name, "db"),
-            Vec::new(),
-        );
 
-        let payload = middleware_payload(&app_name, &service);
+        let payload = middleware_payload(
+            &app_name,
+            &TraefikIngressRoute::with_defaults(&app_name, "db"),
+        );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -1260,7 +1358,6 @@ mod tests {
                 vec![String::from("/var/lib/data")],
             ),
             &ContainerConfig::default(),
-            false,
             &Some(HashMap::from([(
                 &String::from("/var/lib/data"),
                 persistent_volume_claim,
@@ -1359,7 +1456,6 @@ mod tests {
                 Vec::new(),
             ),
             &ContainerConfig::default(),
-            false,
             &None,
         );
 
@@ -1488,5 +1584,49 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn create_image_pull_secrets() {
+        let payload = image_pull_secret_payload(
+            &AppName::from_str("MY-APP").unwrap(),
+            BTreeMap::from([(
+                String::from("registry.gitlab.com"),
+                ("oauth2", &SecUtf8::from_str("some-random-token").unwrap()),
+            )]),
+        );
+
+        assert_eq!(
+            payload,
+            V1Secret {
+                metadata: ObjectMeta {
+                    name: Some(String::from("my-app-image-pull-secret-0x7a2952c7a89d3fd0")),
+                    namespace: Some(String::from("my-app")),
+                    labels: Some(BTreeMap::from([(
+                        String::from("com.aixigo.preview.servant.app-name"),
+                        String::from("MY-APP")
+                    )])),
+                    ..Default::default()
+                },
+                immutable: Some(true),
+                data: Some(BTreeMap::from([(
+                    String::from(".dockerconfigjson"),
+                    ByteString(
+                        serde_json::json!({
+                            "auths": {
+                                "registry.gitlab.com": {
+                                    "username": "oauth2",
+                                    "password": "some-random-token"
+                                }
+                            }
+                        })
+                        .to_string()
+                        .into_bytes()
+                    )
+                )])),
+                type_: Some(String::from("kubernetes.io/dockerconfigjson")),
+                ..Default::default()
+            }
+        )
     }
 }

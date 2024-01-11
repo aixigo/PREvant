@@ -232,14 +232,6 @@ impl ServiceBuilder {
         self
     }
 
-    pub fn current_app_name(&self) -> Option<&String> {
-        self.app_name.as_ref()
-    }
-
-    pub fn current_config(&self) -> Option<&ServiceConfig> {
-        self.config.as_ref()
-    }
-
     pub fn started_at(mut self, started_at: DateTime<Utc>) -> Self {
         self.started_at = Some(started_at);
         self

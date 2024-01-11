@@ -13,8 +13,16 @@ pub struct TraefikIngressRoute {
 }
 
 impl TraefikIngressRoute {
+    pub fn entry_points(&self) -> &Vec<String> {
+        &self.entry_points
+    }
+
     pub fn routes(&self) -> &Vec<TraefikRoute> {
         &self.routes
+    }
+
+    pub fn tls(&self) -> &Option<TraefikTLS> {
+        &self.tls
     }
 
     #[cfg(test)]
@@ -26,14 +34,37 @@ impl TraefikIngressRoute {
         }
     }
 
+    pub fn with_app_only_defaults(app_name: &AppName) -> Self {
+        let mut prefixes = BTreeMap::new();
+        prefixes.insert(
+            Value::String(String::from("prefixes")),
+            Value::Seq(vec![Value::String(format!("/{app_name}/",))]),
+        );
+
+        let mut middlewares = BTreeMap::new();
+        middlewares.insert(
+            Value::String(String::from("stripPrefix")),
+            Value::Map(prefixes),
+        );
+
+        Self {
+            entry_points: Vec::new(),
+            routes: vec![TraefikRoute {
+                rule: TraefikRouterRule::path_prefix_rule([app_name.as_str()]),
+                middlewares: vec![TraefikMiddleware::Spec {
+                    name: format!("{app_name}-middleware"),
+                    spec: Value::Map(middlewares),
+                }],
+            }],
+            tls: None,
+        }
+    }
+
     pub fn with_defaults(app_name: &AppName, service_name: &str) -> Self {
         let mut prefixes = BTreeMap::new();
         prefixes.insert(
             Value::String(String::from("prefixes")),
-            Value::Seq(vec![Value::String(format!(
-                "/{}/{}/",
-                app_name, service_name
-            ))]),
+            Value::Seq(vec![Value::String(format!("/{app_name}/{service_name}/",))]),
         );
 
         let mut middlewares = BTreeMap::new();
@@ -55,7 +86,6 @@ impl TraefikIngressRoute {
         }
     }
 
-    #[cfg(test)]
     pub fn with_rule(rule: TraefikRouterRule) -> Self {
         Self::with_existing_routing_rules(Vec::new(), rule, Vec::new(), None)
     }
@@ -83,7 +113,7 @@ impl TraefikIngressRoute {
     }
 
     pub fn merge_with(&mut self, other: Self) {
-        self.entry_points.extend(other.entry_points.into_iter());
+        self.entry_points.extend(other.entry_points);
 
         // FIXME: at the moment there is no handling of multiple routes which needs to be addessed
         // in the future when it is required.
@@ -108,6 +138,47 @@ impl TraefikIngressRoute {
             (None, Some(tls)) => Some(tls),
             (Some(_), Some(tls)) => Some(tls),
         };
+    }
+
+    pub fn to_url(&self) -> Option<Url> {
+        let mut domain = None;
+        let mut path = None;
+
+        match self.routes.first() {
+            Some(route) => {
+                let rule = &route.rule;
+                for m in &rule.matches {
+                    match m {
+                        Matcher::Host { domains } => {
+                            domain = Some(&domains[0]);
+                        }
+                        Matcher::PathPrefix { paths } => {
+                            path = Some(&paths[0]);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            None => return None,
+        }
+
+        let scheme = if self.tls.is_some()
+            || self
+                .entry_points
+                .iter()
+                .any(|entry_point| entry_point == "websecure")
+        {
+            "https"
+        } else {
+            "http"
+        };
+
+        Url::parse(&format!(
+            "{scheme}://{}{}",
+            domain?,
+            path.as_ref().map(|p| p.as_str()).unwrap_or_default()
+        ))
+        .ok()
     }
 }
 
@@ -361,7 +432,7 @@ impl Display for TraefikRouterRule {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraefikTLS {
-    cert_resolver: String,
+    pub cert_resolver: String,
 }
 
 #[cfg(test)]
@@ -652,8 +723,7 @@ mod test {
                 cert_resolver: String::from("letsencrypt"),
             }),
         };
-        let route2 =
-            TraefikIngressRoute::with_defaults(&AppName::from_str("master").unwrap(), "whoami");
+        let route2 = TraefikIngressRoute::with_defaults(&AppName::master(), "whoami");
 
         route1.merge_with(route2);
 
@@ -701,8 +771,7 @@ mod test {
                 cert_resolver: String::from("letsencrypt"),
             }),
         };
-        let mut route2 =
-            TraefikIngressRoute::with_defaults(&AppName::from_str("master").unwrap(), "whoami");
+        let mut route2 = TraefikIngressRoute::with_defaults(&AppName::master(), "whoami");
 
         route2.merge_with(route1);
 
@@ -753,13 +822,13 @@ mod test {
         let mut route1 = TraefikIngressRoute::empty();
 
         route1.merge_with(TraefikIngressRoute::with_defaults(
-            &AppName::from_str("master").unwrap(),
+            &AppName::master(),
             "test",
         ));
 
         assert_eq!(
             route1,
-            TraefikIngressRoute::with_defaults(&AppName::from_str("master").unwrap(), "test",)
+            TraefikIngressRoute::with_defaults(&AppName::master(), "test",)
         );
     }
 
@@ -786,5 +855,67 @@ mod test {
                 })
             }
         );
+    }
+
+    mod to_url {
+        use super::*;
+
+        #[test]
+        fn empty_route() {
+            assert_eq!(TraefikIngressRoute::empty().to_url(), None);
+        }
+
+        #[test]
+        fn with_host_rule() {
+            let url =
+                TraefikIngressRoute::with_rule(TraefikRouterRule::host_rule(vec![String::from(
+                    "example.com",
+                )]))
+                .to_url();
+
+            assert_eq!(url, Url::parse("http://example.com").ok());
+        }
+
+        #[test]
+        fn with_host_and_path_rule() {
+            let url = TraefikIngressRoute::with_rule(
+                TraefikRouterRule::from_str(
+                    "PathPrefix(`/master/whoami/`) && Host(`prevant.example.com`)",
+                )
+                .unwrap(),
+            )
+            .to_url();
+
+            assert_eq!(
+                url,
+                Url::parse("http://prevant.example.com/master/whoami/").ok()
+            );
+        }
+
+        #[test]
+        fn with_host_rule_and_tls() {
+            let mut route =
+                TraefikIngressRoute::with_rule(TraefikRouterRule::host_rule(vec![String::from(
+                    "example.com",
+                )]));
+            route.tls = Some(TraefikTLS {
+                cert_resolver: String::from("first"),
+            });
+            let url = route.to_url();
+
+            assert_eq!(url, Url::parse("https://example.com").ok());
+        }
+
+        #[test]
+        fn with_host_rule_and_websecure_entrypoint() {
+            let mut route =
+                TraefikIngressRoute::with_rule(TraefikRouterRule::host_rule(vec![String::from(
+                    "example.com",
+                )]));
+            route.entry_points.push(String::from("websecure"));
+            let url = route.to_url();
+
+            assert_eq!(url, Url::parse("https://example.com").ok());
+        }
     }
 }

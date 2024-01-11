@@ -23,16 +23,17 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+use crate::models::AppName;
 use regex::Regex;
 
 #[derive(Clone)]
 pub(super) struct AppSelector(Regex);
 
 impl AppSelector {
-    pub fn matches(&self, app_name: &str) -> bool {
+    pub fn matches(&self, app_name: &AppName) -> bool {
         match self.0.captures(app_name) {
             None => false,
-            Some(captures) => captures.get(0).map_or("", |m| m.as_str()) == app_name,
+            Some(captures) => captures.get(0).map_or("", |m| m.as_str()) == app_name.as_str(),
         }
     }
 }

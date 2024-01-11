@@ -236,7 +236,6 @@ mod tests {
     use crate::deployment::deployment_unit::DeploymentUnitBuilder;
     use std::collections::HashMap;
     use std::io::Write;
-    use std::str::FromStr;
     use std::vec;
     use tempfile::NamedTempFile;
 
@@ -269,7 +268,7 @@ mod tests {
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![crate::sc!("service-a")];
 
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
@@ -314,7 +313,7 @@ mod tests {
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
 
         let mut service_config = crate::sc!("service-a");
         let mut files = BTreeMap::new();
@@ -359,7 +358,7 @@ mod tests {
         "#;
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_config = crate::sc!("service-a");
 
         let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
@@ -401,7 +400,7 @@ mod tests {
         "#;
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
 
         let mut service_config = crate::sc!("service-a");
         service_config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
@@ -452,7 +451,7 @@ mod tests {
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let mut service_config = crate::sc!("service-a");
         service_config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
             String::from("VARIABLE_X"),
@@ -497,7 +496,7 @@ mod tests {
         "#;
         let service_config = crate::sc!("service-a");
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
 
         let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
             .extend_with_config(&config)
@@ -533,7 +532,7 @@ mod tests {
 
         let service_config = crate::sc!("service-a");
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
 
         let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
             .extend_with_config(&config)
@@ -561,7 +560,7 @@ mod tests {
         let mut deployed_services_error = String::new();
         let service_config = crate::sc!("service-a");
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         match DeploymentUnitBuilder::init(app_name, vec![service_config])
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())

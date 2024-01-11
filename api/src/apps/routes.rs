@@ -191,7 +191,7 @@ async fn change_status(
 )]
 async fn logs(
     app_name: Result<AppName, AppNameError>,
-    service_name: String,
+    service_name: &str,
     since: Option<String>,
     limit: Option<usize>,
     apps: &State<Arc<Apps>>,
@@ -214,13 +214,13 @@ async fn logs(
     let limit = limit.unwrap_or(20_000);
 
     let log_chunk = apps
-        .get_logs(&app_name, &service_name, &since, limit)
+        .get_logs(&app_name, &service_name.to_string(), &since, limit)
         .await?;
 
     Ok(LogsResponse {
         log_chunk,
         app_name,
-        service_name,
+        service_name: service_name.to_string(),
         limit,
     })
 }
@@ -810,7 +810,7 @@ mod tests {
                     "type": "https://httpstatuses.com/400",
                     "status": 400,
                     "title": "Bad Request",
-                    "detail": "Invalid image: private-registry.example.com/_/postgres at line 1 column 70"
+                    "detail": "Invalid image: private-registry.example.com/_/postgres at line 1 column 51"
                 })
             );
         }
