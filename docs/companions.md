@@ -1,14 +1,16 @@
-# Companions
+# Companion Configuration
 
-A companion is a service that is running inside an application
+Have a look at the [basic terminology](../README.md) what is a companion. For
+these use cases following sections provide example configurations.
 
-It is possible to start containers that will be started when the client requests to create a new service. For example, if the application requires an [OpenID](https://en.wikipedia.org/wiki/OpenID_Connect) provider, it is possible to create a configuration that starts the provider for each application. Another use case might be a Kafka services that is required by the application.
+A simple but limited configuration of companions can be done via the
+`config.toml` file for [application companions](#application-wide) and [service
+companions](#service-based). More complex companions can be created via
+[bootstrapping](#bootstrapping-from-the-infrastructure-backend).
 
-Furthermore, it is also possible to create containers for each service. For example, for each service a database container could be started.
+## Static Configuration
 
-For these use cases following sections provide example configurations.
-
-## Application Wide
+### Application Wide
 
 If you want to include an OpenID provider for every application, you could use following configuration.
 
@@ -19,7 +21,7 @@ image = 'private.example.com/library/openid:latest'
 env = [ 'KEY=VALUE' ]
 ```
 
-The provided values of `serviceName` and `env` can include the [handlebars syntax](https://handlebarsjs.com/) in order to access dynamic values.
+The provided values of `serviceName` and `env` can include the [handlebars syntax][handlebars] in order to access dynamic values.
 
 Additionally, you could mount files that are generated from handlebars templates (example contains a properties generation):
 
@@ -41,7 +43,7 @@ Furthermore, you can provide labels through handlebars templating:
 "com.github.prevant" = "bar-{{application.name}}"
 ```
 
-### Template Variables
+#### Template Variables
 
 The list of available handlebars variables:
 
@@ -52,14 +54,14 @@ The list of available handlebars variables:
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
 
-### Handlebar Helpers
+#### Handlebar Helpers
 
 PREvant provides some handlebars helpers which can be used to generate more complex configuration files. See handlerbar's [block helper documentation](https://handlebarsjs.com/block_helpers.html) for more details.
 
 - `{{#isCompanion <type>}}` A conditional handlerbars block helper that checks if the given service type matches any companion type.
 - `isNotCompanion <type>` A conditional handlerbars block helper that checks if the given service type does not match any companion type.
 
-## Service Based
+### Service Based
 
 The service-based companions works the in the same way as the application-based services. Make sure, that the `serviceName` is unique by using the handlebars templating.
 
@@ -76,7 +78,7 @@ env = [ 'KEY=VALUE' ]
 ```
 
 
-### Template Variables
+#### Template Variables
 
 The list of available handlebars variables:
 
@@ -87,7 +89,7 @@ The list of available handlebars variables:
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
 
-## Deployment Strategy
+### Deployment Strategy
 
 Companions offer different deployment strategies so that a companion could be restarted or not under certain conditions. Therefore, PREvant offers following configuration flags:
 
@@ -104,4 +106,80 @@ deploymentStrategy = 'redeploy-on-image-update'
 - `redeploy-on-image-update`: Re-deploys the companion if there is a more rescent image available.
 - `redeploy-never`: Even if there is a new deployment request the companion won't be redeployed and stays running.
 
-a
+### Storage Strategy
+
+Companions may have varying storage requirements and storage strategies cater to these by offering the below configuration flags:
+
+```toml
+[companions.postgres]
+type = 'application'
+image = 'postgres:latest'
+storageStrategy = 'mount-declared-image-volumes'
+```
+
+`storageStrategy` offers following values to determine how storage is managed for a companion:
+
+- `none` (_default_): Companion is deployed without persistent storage.
+- `mount-declared-image-volumes`: Mounts the volume paths declared within the image, providing persistent storage for the companion.
+
+## Bootstrapping From the Infrastructure Backend
+
+When the [static configuration](#static-configuration) is insufficient for your
+use case, then PREvant can utilize the underlying infrastructure to bootstrap
+the companion configuration from the stdout of containers that are run once
+within the infrastructure (depicted by following image). PREvant's static
+companion configuration might be insufficient if services of the application
+rely on volume sharing among services (see [#123][persistent-data-issue]).
+
+![](../assets/bootstrap-companions.svg "Illustration how bootstrapping of companions work")
+
+In the depicted images PREvant will start one or more containers on the
+infrastructure backend that are expected to generate output on standard out
+(stdout) that will be parsed by PREvant that needs to be native to the
+underlying infrastructure.
+
+- When PREvant uses Kubernetes as the infrastructure runtime, the bootstrap
+  containers need to output [Kubernetes manifests][k8s-manifest].
+
+  Make sure to put out YAML that is compatible with 1.1 and 1.2
+  (For example, bitnami helm charts have been adjusted in part in that regard,
+  see [here][zookeeper-yaml-1.2-pr] and [here][kafka-yaml-1.2-pr])
+- Docker: not yet implemented but the aim is to support [Docker
+  compose][docker-compose] files.
+
+Then before deploying these bootstrapped companions PREvant merges them with
+the objects generated from the HTTP request payload (all bootstrapped
+companions will be considered as application companions). Thus you can add or
+overwrite configurations. For example, you can change the image used or an
+environment variable. If you overwrite any configuration the companion will be
+turned into an instance (as PREvant did before).
+
+Following configuration block depicts that an image
+`registry.example.com/user/bootstrap-helm-chart:lastet` is based on a [Helm
+chart][helm-chart] that generates an OpenID provider for your application with
+[Keycloak][keycloak]. Additionally, it is possible to passed additional
+arguments to the container than can be templated with [Handlebars][handlebars].
+
+```toml
+[[companions.bootstrapping.containers]]
+image = "registry.example.com/user/bootstrap-helm-chart:latest"
+args = [
+   "--set", "keycloak.httpRelativePath=/{{application.name}}/keycloak/",
+   "--set", "keycloak.redirectUris[0]={{application.baseUrl}}oauth_redir"
+]
+```
+
+The list of available handlebars variables for bootstrap container arguments:
+
+- `application`: The companion's application information
+  - `name`: The application name
+  - `baseUrl`: The URL that all services in the application share
+
+[docker-compose]: https://docs.docker.com/compose/
+[handlebars]: https://handlebarsjs.com/
+[helm-chart]: https://helm.sh/docs/topics/charts/
+[k8s-manifest]: https://kubernetes.io/docs/reference/glossary/?all=true#term-manifest
+[keycloak]: https://www.keycloak.org/
+[persistent-data-issue]: https://github.com/aixigo/PREvant/issues/123
+[zookeeper-yaml-1.2-pr]: https://github.com/bitnami/charts/pull/21081
+[kafka-yaml-1.2-pr]: https://github.com/bitnami/charts/pull/21086
