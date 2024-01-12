@@ -112,10 +112,7 @@ impl<'a> Hooks<'a> {
         }
     }
 
-    fn register_configs_as_global_property(
-        mut context: &mut Context,
-        services: &[DeployableService],
-    ) {
+    fn register_configs_as_global_property(context: &mut Context, services: &[DeployableService]) {
         let js_configs = services
             .iter()
             .map(JsServiceConfig::from)
@@ -123,7 +120,7 @@ impl<'a> Hooks<'a> {
 
         let js_configs = serde_json::to_value(js_configs).expect("Should be serializable");
         let js_configs =
-            JsValue::from_json(&js_configs, &mut context).expect("Unable to read JSON value");
+            JsValue::from_json(&js_configs, context).expect("Unable to read JSON value");
 
         context
             .register_global_property("serviceConfigs", js_configs, Attribute::READONLY)

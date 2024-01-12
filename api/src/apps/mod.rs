@@ -352,7 +352,7 @@ impl AppsService {
     pub async fn get_logs(
         &self,
         app_name: &AppName,
-        service_name: &String,
+        service_name: &str,
         since: &Option<DateTime<FixedOffset>>,
         limit: usize,
     ) -> Result<Option<LogChunk>, AppsServiceError> {
@@ -370,7 +370,7 @@ impl AppsService {
     pub async fn change_status(
         &self,
         app_name: &AppName,
-        service_name: &String,
+        service_name: &str,
         status: ServiceStatus,
     ) -> Result<Option<Service>, AppsServiceError> {
         Ok(self

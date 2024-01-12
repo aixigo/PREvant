@@ -353,7 +353,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 self.stage.service_companions.iter()
             {
                 let templated_companion = service_companion
-                    .apply_templating_for_service_companion(&self.stage.app_name, &service)?;
+                    .apply_templating_for_service_companion(&self.stage.app_name, service)?;
 
                 service_companions.push(ServiceCompanion {
                     templated_companion,

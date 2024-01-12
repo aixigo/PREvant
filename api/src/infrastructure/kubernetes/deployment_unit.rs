@@ -13,6 +13,7 @@ use crate::{
 };
 use failure::Error;
 use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt, TryStreamExt};
+use handlebars::RenderError;
 use k8s_openapi::{
     api::{
         apps::v1::{Deployment, StatefulSet},
@@ -78,14 +79,16 @@ impl K8sDeploymentUnit {
         let containers = bootstrapping_containers
             .iter()
             .enumerate()
-            .map(|(i, bc)| Container {
-                name: format!("bootstrap-{i}"),
-                image: Some(bc.image().to_string()),
-                image_pull_policy: Some(String::from("Always")),
-                args: Some(bc.templated_args(app_name, &base_url)),
-                ..Default::default()
+            .map(|(i, bc)| {
+                Ok(Container {
+                    name: format!("bootstrap-{i}"),
+                    image: Some(bc.image().to_string()),
+                    image_pull_policy: Some(String::from("Always")),
+                    args: Some(bc.templated_args(app_name, &base_url)?),
+                    ..Default::default()
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, RenderError>>()?;
 
         let pod_name = format!(
             "{}-bootstrap-{}",

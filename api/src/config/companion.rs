@@ -26,7 +26,7 @@
 use crate::config::AppSelector;
 use crate::models::service::ContainerType;
 use crate::models::{AppName, Environment, Image, Router, ServiceConfig};
-use handlebars::Handlebars;
+use handlebars::{Handlebars, RenderError};
 use secstr::SecUtf8;
 use serde_value::Value;
 use std::collections::BTreeMap;
@@ -204,7 +204,11 @@ impl BootstrappingContainer {
         &self.image
     }
 
-    pub fn templated_args(&self, app_name: &AppName, base_url: &Option<Url>) -> Vec<String> {
+    pub fn templated_args(
+        &self,
+        app_name: &AppName,
+        base_url: &Option<Url>,
+    ) -> Result<Vec<String>, RenderError> {
         let handlebars = Handlebars::new();
 
         #[derive(Serialize)]
@@ -222,16 +226,17 @@ impl BootstrappingContainer {
 
         let data = Data {
             application: AppData {
-                name: &app_name,
+                name: app_name,
                 base_url,
             },
         };
 
-        self.args
-            .iter()
-            // TODO: handle result
-            .map(|arg| handlebars.render_template(&arg, &data).unwrap())
-            .collect()
+        let mut args = Vec::with_capacity(self.args.len());
+        for arg in &self.args {
+            args.push(handlebars.render_template(arg, &data)?);
+        }
+
+        Ok(args)
     }
 }
 
@@ -287,7 +292,7 @@ mod tests {
 
         assert_eq!(container.image, Image::from_str("busybox").unwrap());
         assert_eq!(
-            container.templated_args(&AppName::master(), &None),
+            container.templated_args(&AppName::master(), &None).unwrap(),
             Vec::<String>::new()
         );
     }
@@ -306,7 +311,7 @@ mod tests {
 
         assert_eq!(container.image, Image::from_str("busybox").unwrap());
         assert_eq!(
-            container.templated_args(&AppName::master(), &None),
+            container.templated_args(&AppName::master(), &None).unwrap(),
             vec![String::from("echo"), String::from("Hello master")]
         );
     }
@@ -325,10 +330,12 @@ mod tests {
 
         assert_eq!(container.image, Image::from_str("busybox").unwrap());
         assert_eq!(
-            container.templated_args(
-                &AppName::master(),
-                &Some(Url::parse("http://example.com").unwrap())
-            ),
+            container
+                .templated_args(
+                    &AppName::master(),
+                    &Some(Url::parse("http://example.com").unwrap())
+                )
+                .unwrap(),
             vec![
                 String::from("echo"),
                 String::from("Hello http://example.com/")

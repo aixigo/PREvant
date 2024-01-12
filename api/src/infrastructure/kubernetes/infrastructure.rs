@@ -44,7 +44,7 @@ use crate::models::{
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use failure::Error;
-use futures::stream::{FuturesUnordered, Stream};
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::PersistentVolumeClaim;
 use k8s_openapi::api::storage::v1::StorageClass;
@@ -64,7 +64,6 @@ use secstr::SecUtf8;
 use std::collections::{BTreeMap, HashMap};
 use std::convert::{From, TryFrom};
 use std::net::IpAddr;
-use std::pin::Pin;
 use std::str::FromStr;
 
 pub struct KubernetesInfrastructure {
@@ -115,11 +114,11 @@ impl KubernetesInfrastructure {
         })
     }
 
-    async fn get_deployment(
+    async fn get_deployment_and_pod(
         &self,
         app_name: &AppName,
         service_name: &str,
-    ) -> Result<Option<V1Deployment>, KubernetesInfrastructureError> {
+    ) -> Result<Option<(V1Deployment, Option<V1Pod>)>, KubernetesInfrastructureError> {
         let client = self.client().await?;
         let namespace = app_name.to_rfc1123_namespace_id();
 
@@ -128,59 +127,44 @@ impl KubernetesInfrastructure {
             ..Default::default()
         };
 
-        match Api::<V1Deployment>::namespaced(client.clone(), &namespace)
-            .list(&p)
-            .await?
-            .into_iter()
-            .next()
-        {
-            Some(deployment) => Ok(Some(deployment)),
-            None => Ok(None),
-        }
-    }
-
-    async fn get_pod_of_deployment(
-        &self,
-        deployment: &V1Deployment,
-    ) -> Result<Option<V1Pod>, KubernetesInfrastructureError> {
-        let Some(spec) = &deployment.spec else {
-            return Ok(None);
+        let client_clone = client.clone();
+        let deployment = async {
+            Api::<V1Deployment>::namespaced(client_clone, &namespace)
+                .list(&p)
+                .await
+                .map(|list| list.items.into_iter().next())
+        };
+        let pods = async {
+            Api::<V1Pod>::namespaced(client, &namespace)
+                .list(&Default::default())
+                .await
+                .map(|list| list.items)
         };
 
-        match Api::<V1Pod>::namespaced(
-            self.client().await?,
-            deployment
-                .metadata
-                .namespace
-                .as_ref()
-                .expect("A namespace should be present for a deployment"),
-        )
-        .list(&ListParams {
-            label_selector: spec.selector.match_labels.as_ref().map(|labels| {
-                labels
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            }),
-            ..Default::default()
-        })
-        .await?
-        .into_iter()
-        .next()
-        {
-            Some(pod) => Ok(Some(pod)),
-            None => Ok(None),
-        }
+        let (deployment, pods) = futures::try_join!(deployment, pods)?;
+
+        Ok(deployment.and_then(|deployment| {
+            let spec = deployment.spec.as_ref()?;
+            let matches_labels = spec.selector.match_labels.as_ref()?;
+            let pod = pods.into_iter().find(|pod| {
+                pod.metadata
+                    .labels
+                    .as_ref()
+                    .map(|labels| matches_labels.iter().all(|(k, v)| labels.get(k) == Some(v)))
+                    .unwrap_or(false)
+            });
+
+            Some((deployment, pod))
+        }))
     }
 
-    async fn create_service_from(
-        &self,
+    fn create_service_from_deployment_and_pod(
         deployment: V1Deployment,
+        pod: Option<V1Pod>,
     ) -> Result<Service, KubernetesInfrastructureError> {
         let mut builder = ServiceBuilder::try_from(deployment.clone())?;
 
-        if let Some(pod) = self.get_pod_of_deployment(&deployment).await? {
+        if let Some(pod) = pod {
             if let Some(container) = pod.spec.as_ref().and_then(|spec| spec.containers.first()) {
                 builder = builder.started_at(
                     pod.status
@@ -214,22 +198,49 @@ impl KubernetesInfrastructure {
         &self,
         app_name: &AppName,
     ) -> Result<Vec<Service>, KubernetesInfrastructureError> {
-        let mut futures = Api::<V1Deployment>::namespaced(
-            self.client().await?,
-            &app_name.to_rfc1123_namespace_id(),
-        )
-        .list(&Default::default())
-        .await?
-        .items
-        .into_iter()
-        // FIXME: this performs many network requests to inspect the IPs ip addresses.
-        .map(|deployment| self.create_service_from(deployment))
-        .map(Box::pin)
-        .collect::<FuturesUnordered<Pin<Box<_>>>>();
+        let client = self.client().await?;
 
-        let mut services = Vec::with_capacity(futures.size_hint().0);
-        while let Some(service) = futures.next().await {
-            let service = match service {
+        let namespace = app_name.to_rfc1123_namespace_id();
+        let list_param = Default::default();
+        let client_clone = client.clone();
+        let deployments = async {
+            Api::<V1Deployment>::namespaced(client_clone, &namespace)
+                .list(&list_param)
+                .await
+        };
+        let pods = async {
+            Api::<V1Pod>::namespaced(client, &namespace)
+                .list(&list_param)
+                .await
+        };
+        let (deployments, mut pods) = futures::try_join!(deployments, pods)?;
+
+        let mut services = Vec::with_capacity(deployments.items.len());
+        for deployment in deployments.into_iter() {
+            let pod = {
+                let Some(spec) = deployment.spec.as_ref() else {
+                    continue;
+                };
+                let Some(matches_labels) = spec.selector.match_labels.as_ref() else {
+                    continue;
+                };
+
+                match pods.items.iter().position(|pod| {
+                    pod.metadata
+                        .labels
+                        .as_ref()
+                        .map(|labels| matches_labels.iter().all(|(k, v)| labels.get(k) == Some(v)))
+                        .unwrap_or(false)
+                }) {
+                    Some(pod_position) => {
+                        let pod = pods.items.swap_remove(pod_position);
+                        Some(pod)
+                    }
+                    None => None,
+                }
+            };
+
+            let service = match Self::create_service_from_deployment_and_pod(deployment, pod) {
                 Ok(service) => service,
                 Err(e) => {
                     debug!("Deployment does not provide required data: {:?}", e);
@@ -241,19 +252,6 @@ impl KubernetesInfrastructure {
         }
 
         Ok(services)
-    }
-
-    async fn get_service_of_app(
-        &self,
-        app_name: &AppName,
-        service_name: &str,
-    ) -> Result<Option<Service>, KubernetesInfrastructureError> {
-        let deployment = self.get_deployment(app_name, service_name).await?;
-
-        match deployment.map(|deployment| self.create_service_from(deployment)) {
-            Some(service) => Ok(Some(service.await?)),
-            None => Ok(None),
-        }
     }
 
     async fn create_namespace_if_necessary(
@@ -461,7 +459,7 @@ impl KubernetesInfrastructure {
 impl Infrastructure for KubernetesInfrastructure {
     async fn get_services(&self) -> Result<MultiMap<AppName, Service>, Error> {
         let client = self.client().await?;
-        let app_names = Api::<V1Namespace>::all(client.clone())
+        let mut app_name_and_services = Api::<V1Namespace>::all(client.clone())
             .list(&ListParams {
                 label_selector: Some(APP_NAME_LABEL.to_string()),
                 ..Default::default()
@@ -478,11 +476,17 @@ impl Infrastructure for KubernetesInfrastructure {
             .filter_map(|ns| {
                 AppName::from_str(ns.metadata.labels.as_ref()?.get(APP_NAME_LABEL)?).ok()
             })
-            .collect::<Vec<_>>();
+            .map(|app_name| async {
+                self.get_services_of_app(&app_name)
+                    .await
+                    .map(|services| (app_name, services))
+            })
+            .map(Box::pin)
+            .collect::<FuturesUnordered<_>>();
 
         let mut apps = MultiMap::new();
-        for app_name in app_names {
-            let services = self.get_services_of_app(&app_name).await?;
+        while let Some(res) = app_name_and_services.next().await {
+            let (app_name, services) = res?;
             apps.insert_many(app_name, services);
         }
 
@@ -518,7 +522,6 @@ impl Infrastructure for KubernetesInfrastructure {
         let services = self.get_services_of_app(app_name).await?;
         k8s_deployment_unit.filter_by_instances_and_replicas(&services);
 
-        // TODO: things like cloning data from existing deployments have to be considered
         for deployable_service in deployment_unit.services() {
             let (secret, service, deployment, ingress_route, middlewares) = self
                 .create_payloads(app_name, deployable_service, container_config)
@@ -536,13 +539,7 @@ impl Infrastructure for KubernetesInfrastructure {
         let deployments = k8s_deployment_unit.deploy(client, app_name).await?;
         let mut services = Vec::with_capacity(deployments.len());
         for deployment in deployments.into_iter() {
-            let service = match self.create_service_from(deployment).await {
-                Ok(service) => service,
-                Err(e) => {
-                    debug!("Deployment does not provide required data: {:?}", e);
-                    continue;
-                }
-            };
+            let service = Self::create_service_from_deployment_and_pod(deployment, None)?;
             services.push(service);
         }
 
@@ -579,18 +576,10 @@ impl Infrastructure for KubernetesInfrastructure {
         let client = self.client().await?;
         let namespace = app_name.to_rfc1123_namespace_id();
 
-        let deployment = match self.get_deployment(app_name, service_name).await? {
-            Some(deployment) => deployment,
-            None => {
-                return Ok(None);
-            }
-        };
-
-        let pod = match self.get_pod_of_deployment(&deployment).await? {
-            Some(pod) => pod,
-            None => {
-                return Ok(None);
-            }
+        let Some((_deployment, Some(pod))) =
+            self.get_deployment_and_pod(app_name, service_name).await?
+        else {
+            return Ok(None);
         };
 
         let p = LogParams {
@@ -647,26 +636,25 @@ impl Infrastructure for KubernetesInfrastructure {
         service_name: &str,
         status: ServiceStatus,
     ) -> Result<Option<Service>, Error> {
-        let (service, replicas) = match self.get_service_of_app(app_name, service_name).await? {
-            Some(service) if service.status() == &status => return Ok(None),
-            Some(service) => match status {
-                ServiceStatus::Running => (service, 1),
-                ServiceStatus::Paused => (service, 0),
-            },
-            None => return Ok(None),
+        let Some((mut deployment, pod)) =
+            self.get_deployment_and_pod(app_name, service_name).await?
+        else {
+            return Ok(None);
         };
 
-        let mut deployment = match self.get_deployment(app_name, service_name).await? {
-            Some(deployment) => deployment,
-            None => {
-                return Ok(None);
-            }
-        };
+        let service = Self::create_service_from_deployment_and_pod(deployment.clone(), pod)?;
+        if service.status() == &status {
+            return Ok(None);
+        }
 
         let Some(spec) = deployment.spec.as_mut() else {
             return Ok(None);
         };
-        spec.replicas = Some(replicas);
+
+        spec.replicas = Some(match status {
+            ServiceStatus::Running => 1,
+            ServiceStatus::Paused => 0,
+        });
 
         Api::<V1Deployment>::namespaced(self.client().await?, &app_name.to_rfc1123_namespace_id())
             .patch(
