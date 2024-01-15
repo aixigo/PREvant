@@ -126,6 +126,7 @@ impl PartialEq for Image {
 }
 
 impl Image {
+    #[cfg(test)]
     pub fn tag(&self) -> Option<String> {
         match &self {
             Image::Digest { .. } => None,
@@ -141,6 +142,7 @@ impl Image {
         }
     }
 
+    #[cfg(test)]
     pub fn name(&self) -> Option<String> {
         match &self {
             Image::Digest { .. } => None,
@@ -210,12 +212,25 @@ impl FromStr for Image {
         let user = captures.name("user").map(|m| String::from(m.as_str()));
         let tag = captures.name("tag").map(|m| String::from(m.as_str()));
 
-        Ok(Image::Named {
+        let named = Image::Named {
             image_repository: repo,
             registry,
             image_user: user,
             image_tag: tag,
-        })
+        };
+
+        // FIXME: eventually replace Image with oci_distribution::Reference
+        //
+        // At the moment the handling of image is a bit weird because it has grown over time and
+        // the parsing code had to take into account that Docker forgets about images names if
+        // there are multiple applications available with moving image tags.
+        if let Err(_err) = oci_distribution::Reference::from_str(&named.to_string()) {
+            return Err(ServiceError::InvalidImageString {
+                invalid_string: s.to_string(),
+            });
+        }
+
+        Ok(named)
     }
 }
 
@@ -414,5 +429,21 @@ mod tests {
             "some-group/zammad/zammad-docker-compose"
         );
         assert_eq!(&image.tag().unwrap(), "latest");
+    }
+
+    #[test]
+    fn fail() {
+        assert_eq!(
+            Image::from_str("postgres_"),
+            Err(ServiceError::InvalidImageString {
+                invalid_string: String::from("postgres_")
+            })
+        );
+        assert_eq!(
+            Image::from_str("private-registry.example.com/_/postgres"),
+            Err(ServiceError::InvalidImageString {
+                invalid_string: String::from("private-registry.example.com/_/postgres")
+            })
+        );
     }
 }
