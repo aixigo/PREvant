@@ -131,9 +131,18 @@ pub async fn create_app(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
     create_app_form: CreateAppOptions,
-    service_configs: Json<Vec<ServiceConfig>>,
+    service_configs: Result<Json<Vec<ServiceConfig>>, rocket::serde::json::Error<'_>>,
     options: RunOptions,
 ) -> HttpResult<AsyncCompletion<Json<Vec<Service>>>> {
+    let service_configs = service_configs.map_err(|e| {
+        let detail = match e {
+            rocket::serde::json::Error::Parse(_, e) => e.to_string(),
+            e => e.to_string(),
+        };
+
+        HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST).detail(detail)
+    })?;
+
     let status_id = AppStatusChangeId::new();
     let app_name = app_name?;
     let app_name_cloned = app_name.clone();
@@ -352,14 +361,17 @@ impl<'r> Responder<'r, 'static> for ServiceStatusResponse {
 
 impl From<AppsError> for HttpApiError {
     fn from(error: AppsError) -> Self {
-        let status = match error {
+        let status = match &error {
+            AppsError::UnableToResolveImage { error } => match error {
+                crate::registry::RegistryError::ImageNotFound { .. } => StatusCode::NOT_FOUND,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            },
             AppsError::AppNotFound { .. } => StatusCode::NOT_FOUND,
             AppsError::AppIsInDeployment { .. } => StatusCode::CONFLICT,
             AppsError::AppIsInDeletion { .. } => StatusCode::CONFLICT,
             AppsError::InfrastructureError { .. }
             | AppsError::InvalidServerConfiguration { .. }
             | AppsError::InvalidTemplateFormat { .. }
-            | AppsError::UnableToResolveImage { .. }
             | AppsError::InvalidDeploymentHook => {
                 error!("Internal server error: {}", error);
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -753,6 +765,146 @@ mod tests {
 
             let response = get.dispatch().await;
             assert_eq!(response.status(), Status::BadRequest);
+        }
+    }
+
+    mod http_api_error {
+        use super::super::*;
+        use crate::{
+            apps::{AppsError, AppsService},
+            infrastructure::Dummy,
+            registry::RegistryError,
+        };
+        use assert_json_diff::assert_json_eq;
+        use rocket::{http::ContentType, local::asynchronous::Client};
+
+        #[tokio::test]
+        async fn invalid_service_payload() {
+            let infrastructure = Box::new(Dummy::new());
+            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
+
+            let rocket = rocket::build()
+                .manage(apps)
+                .mount("/", routes![crate::apps::routes::create_app]);
+
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let response = client
+                .post("/master")
+                .body(
+                    serde_json::json!([{
+                        "serviceName": "db",
+                        "image": "private-registry.example.com/_/postgres"
+                    }])
+                    .to_string(),
+                )
+                .header(ContentType::JSON)
+                .dispatch()
+                .await;
+
+            assert_eq!(response.status(), Status::BadRequest);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({
+                    "type": "https://httpstatuses.com/400",
+                    "status": 400,
+                    "title": "Bad Request",
+                    "detail": "Invalid image: private-registry.example.com/_/postgres at line 1 column 70"
+                })
+            );
+        }
+
+        #[tokio::test]
+        async fn image_registry_authentication_error() {
+            #[get("/")]
+            fn image_auth_failed() -> HttpResult<&'static str> {
+                Err(AppsError::UnableToResolveImage {
+                    error: RegistryError::AuthenticationFailure {
+                        image: String::from("private-registry.example.com/_/postgres"),
+                        failure: String::from("403: invalid user name and password"),
+                    },
+                }
+                .into())
+            }
+            let rocket = rocket::build().mount("/", routes![image_auth_failed]);
+
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let response = client.get("/").dispatch().await;
+
+            assert_eq!(response.status(), Status::InternalServerError);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({
+                    "type": "https://httpstatuses.com/500",
+                    "status": 500,
+                    "title": "Internal Server Error",
+                    "detail": "Unable to resolve information about image: Cannot resolve image private-registry.example.com/_/postgres due to authentication failure: 403: invalid user name and password"
+                })
+            );
+        }
+
+        #[tokio::test]
+        async fn image_registry_unexpected_error() {
+            #[get("/")]
+            fn image_not_found() -> HttpResult<&'static str> {
+                Err(AppsError::UnableToResolveImage {
+                    error: RegistryError::UnexpectedError {
+                        image: String::from("private-registry.example.com/_/postgres"),
+                        internal_message: String::from("unexpected"),
+                    },
+                }
+                .into())
+            }
+            let rocket = rocket::build().mount("/", routes![image_not_found]);
+
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let response = client.get("/").dispatch().await;
+
+            assert_eq!(response.status(), Status::InternalServerError);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({
+                    "type": "https://httpstatuses.com/500",
+                    "status": 500,
+                    "title": "Internal Server Error",
+                    "detail": "Unable to resolve information about image: Unexpected docker registry error when resolving manifest for private-registry.example.com/_/postgres: unexpected"
+                })
+            );
+        }
+
+        #[tokio::test]
+        async fn image_registry_not_found_error() {
+            #[get("/")]
+            fn image_not_found() -> HttpResult<&'static str> {
+                Err(AppsError::UnableToResolveImage {
+                    error: RegistryError::ImageNotFound {
+                        image: String::from("private-registry.example.com/_/postgres"),
+                    },
+                }
+                .into())
+            }
+            let rocket = rocket::build().mount("/", routes![image_not_found]);
+
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+            let response = client.get("/").dispatch().await;
+
+            assert_eq!(response.status(), Status::NotFound);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({
+                    "type": "https://httpstatuses.com/404",
+                    "status": 404,
+                    "title": "Not Found",
+                    "detail": "Unable to resolve information about image: Cannot find image private-registry.example.com/_/postgres"
+                })
+            );
         }
     }
 }

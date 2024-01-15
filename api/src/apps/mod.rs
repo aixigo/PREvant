@@ -33,12 +33,12 @@ use crate::deployment::deployment_unit::DeploymentUnitBuilder;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
-use crate::registry::ImagesServiceError;
+use crate::registry::Registry;
+use crate::registry::RegistryError;
 use chrono::{DateTime, FixedOffset};
 use handlebars::RenderError;
 pub use host_meta_cache::new as host_meta_crawling;
 pub use host_meta_cache::HostMetaCache;
-pub use host_meta_cache::HostMetaCrawler;
 use multimap::MultiMap;
 pub use routes::{apps_routes, delete_app_sync};
 use std::collections::{HashMap, HashSet};
@@ -275,9 +275,15 @@ impl AppsService {
 
         let deployment_unit_builder = DeploymentUnitBuilder::init(app_name.clone(), configs)
             .extend_with_config(&self.config)
-            .extend_with_templating_only_service_configs(configs_for_templating)
-            .resolve_image_manifest(&self.config)
-            .await?
+            .extend_with_templating_only_service_configs(configs_for_templating);
+
+        let images = deployment_unit_builder.images();
+        let image_infos = Registry::new(&self.config)
+            .resolve_image_infos(&images)
+            .await?;
+
+        let deployment_unit_builder = deployment_unit_builder
+            .extend_with_image_infos(image_infos)
             .apply_templating()?
             .apply_hooks(&self.config)
             .await?;
@@ -393,7 +399,7 @@ pub enum AppsServiceError {
     #[fail(display = "Invalid configuration (invalid template): {}", error)]
     InvalidTemplateFormat { error: Arc<RenderError> },
     #[fail(display = "Unable to resolve information about image: {}", error)]
-    UnableToResolveImage { error: ImagesServiceError },
+    UnableToResolveImage { error: RegistryError },
     #[fail(display = "Invalid deployment hook.")]
     InvalidDeploymentHook,
 }
@@ -422,8 +428,8 @@ impl From<RenderError> for AppsServiceError {
     }
 }
 
-impl From<ImagesServiceError> for AppsServiceError {
-    fn from(error: ImagesServiceError) -> Self {
+impl From<RegistryError> for AppsServiceError {
+    fn from(error: RegistryError) -> Self {
         AppsServiceError::UnableToResolveImage { error }
     }
 }
@@ -704,12 +710,12 @@ Log msg 3 of service-a of app master
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
-            image = 'private.example.com/library/openid:latest'
+            image = 'keycloak/keycloak:23.0'
 
             [companions.db]
             serviceName = 'db'
             type = 'service'
-            image = 'private.example.com/library/db:latest'
+            image = 'postgres:16.1'
         "#
         );
         let infrastructure = Box::new(Dummy::new());
@@ -742,12 +748,12 @@ Log msg 3 of service-a of app master
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
-            image = 'private.example.com/library/openid:latest'
+            image = 'keycloak/keycloak:23.0'
 
             [companions.db]
             serviceName = 'db'
             type = 'service'
-            image = 'private.example.com/library/db:latest'
+            image = 'postgres:16.1'
         "#
         );
         let infrastructure = Box::new(Dummy::new());
@@ -785,7 +791,7 @@ Log msg 3 of service-a of app master
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
-            image = 'private.example.com/library/openid:latest'
+            image = 'keycloak/keycloak:23.0'
             env = [ "VAR_1=abcd", "VAR_2=1234" ]
 
             [companions.openid.labels]
@@ -850,7 +856,7 @@ Log msg 3 of service-a of app master
             [companions.openid]
             serviceName = 'openid'
             type = 'application'
-            image = 'private.example.com/library/openid:latest'
+            image = 'keycloak/keycloak:23.0'
             env = [ """SERVICES={{~#each services~}}{{name}},{{~/each~}}""" ]
         "#
         );
@@ -980,7 +986,7 @@ Log msg 3 of service-a of app master
             [companions.db1]
             serviceName = 'db1'
             type = 'service'
-            image = 'private.example.com/library/db:latest'
+            image = 'postgres:16.1'
 
             [companions.db1.volumes]
             '/etc/mysql1/my.cnf' = 'EFGH'
@@ -988,7 +994,7 @@ Log msg 3 of service-a of app master
             [companions.db2]
             serviceName = 'db2'
             type = 'service'
-            image = 'private.example.com/library/db:latest'
+            image = 'postgres:16.1'
 
             [companions.db2.files]
             '/etc/mysql2/my.cnf' = 'ABCD'

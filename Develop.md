@@ -2,7 +2,7 @@ This file provides some hints and examples how to develop PREvant.
 
 # Backend Development
 
-You can build PREvant's backend API with [`cargo`](https://doc.rust-lang.org/cargo/) in the sub directory `/api`. For example, `cargo run` build and starts the backend so that it will be available at `http://localhost:8000`. 
+You can build PREvant's backend API with [`cargo`](https://doc.rust-lang.org/cargo/) in the sub directory `/api`. For example, `cargo run` build and starts the backend so that it will be available at `http://localhost:8000`.
 
 When you than interact with the REST API to deploy service, it is worthwhile to have a look into the [Traefik dashboard](https://doc.traefik.io/traefik/operations/dashboard/#the-dashboard) to double check if PREvant exposes the services as expected.
 
@@ -29,8 +29,6 @@ For developing against a local Kubernetes cluster you can use [k3d](https://k3d.
 3. Deploy some containers and observe the result [here](http://localhost/master/whoami/):
 
    ```bash
-   # PREvant can't handle multi arch images, yet (see https://github.com/aixigo/PREvant/issues/125)
-   # Therefore, the example uses 1.8.1 which hasn't multi arch versions
    curl -X POST -d '[{"serviceName": "whoami", "image": "quay.io/truecharts/whoami:1.8.1"}]' \
       -H "Content-type: application/json" \
       http://localhost:8000/api/apps/master

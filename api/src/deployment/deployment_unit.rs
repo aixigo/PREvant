@@ -28,7 +28,7 @@ use crate::config::{Config, StorageStrategy};
 use crate::deployment::hooks::Hooks;
 use crate::infrastructure::TraefikIngressRoute;
 use crate::models::{AppName, ContainerType, Image, ServiceConfig};
-use crate::registry::{ImageInfo, ImagesService, ImagesServiceError};
+use crate::registry::ImageInfo;
 use std::collections::{HashMap, HashSet};
 
 pub struct Initialized {
@@ -225,7 +225,7 @@ impl DeploymentUnitBuilder<WithCompanions> {
 }
 
 impl DeploymentUnitBuilder<WithTemplatedConfigs> {
-    fn images(&self) -> HashSet<Image> {
+    pub fn images(&self) -> HashSet<Image> {
         let mut images = HashSet::new();
 
         images.extend(
@@ -256,15 +256,10 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
         images
     }
 
-    pub async fn resolve_image_manifest(
+    pub fn extend_with_image_infos(
         mut self,
-        config: &Config,
-    ) -> Result<DeploymentUnitBuilder<WithResolvedImages>, ImagesServiceError> {
-        let images = self.images();
-        let image_infos = ImagesService::new(config)
-            .resolve_image_infos(&images)
-            .await?;
-
+        image_infos: HashMap<Image, ImageInfo>,
+    ) -> DeploymentUnitBuilder<WithResolvedImages> {
         Self::assign_port_mappings_impl(self.stage.configs.iter_mut(), &image_infos);
         Self::assign_port_mappings_impl(
             self.stage
@@ -285,7 +280,7 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
             &image_infos,
         );
 
-        Ok(DeploymentUnitBuilder {
+        DeploymentUnitBuilder {
             stage: WithResolvedImages {
                 app_name: self.stage.app_name,
                 configs: self.stage.configs,
@@ -294,7 +289,7 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
                 templating_only_service_configs: self.stage.templating_only_service_configs,
                 image_infos,
             },
-        })
+        }
     }
 
     fn assign_port_mappings_impl<'a, Iter>(configs: Iter, image_infos: &HashMap<Image, ImageInfo>)
@@ -628,8 +623,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -667,8 +661,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -723,8 +716,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -771,8 +763,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -816,8 +807,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -852,8 +842,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, vec![service_configs])
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -892,8 +881,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -947,8 +935,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(vec![sc!("postgres", "postgres:alpine")])
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -1002,8 +989,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -1055,8 +1041,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -1107,8 +1092,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -1153,8 +1137,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?
@@ -1184,8 +1167,7 @@ mod tests {
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
-            .resolve_image_manifest(&config)
-            .await?
+            .extend_with_image_infos(HashMap::new())
             .apply_templating()?
             .apply_hooks(&config)
             .await?

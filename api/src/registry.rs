@@ -26,21 +26,22 @@
 
 use crate::config::Config;
 use crate::models::Image;
-use dkregistry::errors::Error as DKRegistryError;
-use dkregistry::v2::manifest::Manifest;
-use dkregistry::v2::Client;
-use futures::future::join_all;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use oci_distribution::client::ClientConfig;
+use oci_distribution::errors::OciDistributionError;
+use oci_distribution::secrets::RegistryAuth;
+use oci_distribution::{Client, Reference};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
-use std::io::Error as IOError;
 use std::str::FromStr;
 
-pub struct ImagesService<'a> {
+pub struct Registry<'a> {
     config: &'a Config,
 }
 
-impl<'a> ImagesService<'a> {
+impl<'a> Registry<'a> {
     pub fn new<'b: 'a>(config: &'b Config) -> Self {
         Self { config }
     }
@@ -50,93 +51,101 @@ impl<'a> ImagesService<'a> {
     pub async fn resolve_image_infos(
         &self,
         images: &HashSet<Image>,
-    ) -> Result<HashMap<Image, ImageInfo>, ImagesServiceError> {
-        let futures = images
+    ) -> Result<HashMap<Image, ImageInfo>, RegistryError> {
+        let mut resolve_image_info_futures = images
             .iter()
             .filter_map(|image| match image {
-                Image::Named { .. } => Some(ImagesService::resolve_image_info(self.config, image)),
+                Image::Named { .. } => Some(Registry::resolve_image_info(self.config, image)),
                 Image::Digest { .. } => None,
             })
-            .collect::<Vec<_>>();
-        let blobs = join_all(futures).await;
+            .map(Box::pin)
+            .collect::<FuturesUnordered<_>>();
 
-        Ok(blobs
-            .into_iter()
-            .filter_map(|result| match result {
-                Ok((image, Some(image_info))) => Some((Image::clone(image), image_info)),
-                Ok(_) => None,
-                Err((image, err)) => {
-                    warn!("Cannot resolve manifest of image {image}: {err}");
-                    None
+        let mut image_infos = HashMap::new();
+        while let Some(result) = resolve_image_info_futures.next().await {
+            match result {
+                Ok((image, image_info)) => {
+                    image_infos.insert(image.clone(), image_info);
                 }
-            })
-            .collect::<HashMap<Image, ImageInfo>>())
+                Err((image, err)) => {
+                    return Err(match err {
+                        OciDistributionError::AuthenticationFailure(err) => {
+                            RegistryError::AuthenticationFailure {
+                                image: image.to_string(),
+                                failure: err,
+                            }
+                        }
+                        OciDistributionError::ImageManifestNotFoundError(_) => {
+                            RegistryError::ImageNotFound {
+                                image: image.to_string(),
+                            }
+                        }
+                        err => RegistryError::UnexpectedError {
+                            image: image.to_string(),
+                            internal_message: err.to_string(),
+                        },
+                    });
+                }
+            }
+        }
+
+        Ok(image_infos)
     }
 
     async fn resolve_image_info<'i>(
         config: &Config,
         image: &'i Image,
-    ) -> Result<(&'i Image, Option<ImageInfo>), (&'i Image, ImagesServiceError)> {
+    ) -> Result<(&'i Image, ImageInfo), (&'i Image, OciDistributionError)> {
         debug!("Resolve image manifest for {:?}", image);
 
-        let client = Self::create_client(config, image)
-            .await
-            .map_err(|err| (image, err))?;
+        let mut client = Client::new(ClientConfig {
+            platform_resolver: Some(Box::new(|entries| {
+                oci_distribution::client::current_platform_resolver(entries).or(
+                    // There are cases where current_platform_resolver fails, e.g. in tests on
+                    // MacOS. However it is not safe to assume the current platform that PREvant
+                    // runs on it the platform the backend (Docker or Kubernetes) runs on. For
+                    // example, it could be the case that clusters have multiple architectures
+                    // https://carlosedp.medium.com/building-a-hybrid-x86-64-and-arm-kubernetes-cluster-e7f94ff6e51d
+                    //
+                    // Thus, the first entry will be used when current_platform_resolver fails and
+                    // it is assumed that the information provided by the image config is equal on
+                    // each platform. If a port mapping or a volume definition is different for
+                    // different platforms, that would cripple into issues not just for PREvant but
+                    // rather for all users that migrate to a different architecture.
+                    entries.first().map(|e| e.digest.clone()),
+                )
+            })),
+            ..Default::default()
+        });
 
-        let (image_name, tag) = (image.name().unwrap(), image.tag().unwrap());
+        let reference = Reference::from_str(&image.to_string())
+            .expect("Image should be convertable if it is the Named variant");
 
-        let manifest = client
-            .get_manifest(&image_name, &tag)
+        let (_manifest, digest, config) = client
+            .pull_manifest_and_config(&reference, &Self::registry_auth(config, &reference))
             .await
-            .map_err(|err| (image, err.into()))?;
-        let blob = match manifest {
-            Manifest::S2(schema) => {
-                let digest = schema.manifest_spec.config().digest.to_string();
-                let raw_blob = client
-                    .get_blob(&image_name, &digest)
-                    .await
-                    .map_err(|err| (image, err.into()))?;
-                match serde_json::from_str::<ImageBlob>(&String::from_utf8(raw_blob).unwrap()) {
-                    Ok(blob) => Some(ImageInfo {
-                        blob: Some(blob),
-                        digest,
-                    }),
-                    Err(err) => {
-                        warn!("Cannot resolve manifest for {}: {}", image, err);
-                        Some(ImageInfo { blob: None, digest })
-                    }
-                }
-            }
-            _ => {
-                warn!("Image of {} is not stored in Manifest::S2 format", image);
-                None
+            .map_err(|err| (image, dbg!(err)))?;
+
+        let blob = match serde_json::from_str::<ImageBlob>(&config) {
+            Ok(blob) => ImageInfo {
+                blob: Some(blob),
+                digest,
+            },
+            Err(err) => {
+                warn!("Cannot parse manifest blob for {image}: {err}");
+                ImageInfo { blob: None, digest }
             }
         };
 
         Ok((image, blob))
     }
 
-    async fn create_client(config: &Config, image: &Image) -> Result<Client, ImagesServiceError> {
-        let registry = image.registry().unwrap();
-        let name = image.name().unwrap();
-        let dk_config = dkregistry::v2::Client::configure().registry(&registry);
-
-        match config.registry_credentials(&registry) {
+    fn registry_auth(config: &Config, reference: &Reference) -> RegistryAuth {
+        match config.registry_credentials(reference.registry()) {
             Some((username, password)) => {
-                let client = dk_config
-                    .username(Some(String::from(username)))
-                    .password(Some(password.unsecure().to_string()))
-                    .build()?;
-
-                debug!("Login to registry: {registry}");
-                let client = client
-                    .authenticate(&[&format!("repository:{name}:pull")])
-                    .await?;
-                debug!("Logged in to registry: {registry}");
-
-                Ok(client)
+                RegistryAuth::Basic(String::from(username), password.unsecure().to_string())
             }
-            None => Ok(dk_config.build()?),
+            None => RegistryAuth::Anonymous,
         }
     }
 }
@@ -215,35 +224,22 @@ impl ImageConfig {
 }
 
 #[derive(Debug, Clone, Fail)]
-pub enum ImagesServiceError {
-    #[fail(display = "Unexpected docker registry error: {}", internal_message)]
-    UnexpectedError { internal_message: String },
-    #[fail(display = "Unexpected docker image blob format: {}", internal_message)]
-    InvalidImageBlob { internal_message: String },
-}
-
-impl From<IOError> for ImagesServiceError {
-    fn from(e: IOError) -> Self {
-        ImagesServiceError::UnexpectedError {
-            internal_message: format!("{}", e),
-        }
-    }
-}
-
-impl From<DKRegistryError> for ImagesServiceError {
-    fn from(e: DKRegistryError) -> Self {
-        ImagesServiceError::UnexpectedError {
-            internal_message: format!("{}", e),
-        }
-    }
-}
-
-impl From<serde_json::Error> for ImagesServiceError {
-    fn from(e: serde_json::Error) -> Self {
-        ImagesServiceError::InvalidImageBlob {
-            internal_message: format!("{}", e),
-        }
-    }
+pub enum RegistryError {
+    #[fail(
+        display = "Unexpected docker registry error when resolving manifest for {}: {}",
+        image, internal_message
+    )]
+    UnexpectedError {
+        image: String,
+        internal_message: String,
+    },
+    #[fail(
+        display = "Cannot resolve image {} due to authentication failure: {}",
+        image, failure
+    )]
+    AuthenticationFailure { image: String, failure: String },
+    #[fail(display = "Cannot find image {}", image)]
+    ImageNotFound { image: String },
 }
 
 #[cfg(test)]

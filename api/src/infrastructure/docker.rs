@@ -1414,7 +1414,7 @@ mod tests {
         assert_eq!(service.app_name(), "master");
         assert_eq!(service.config().service_name(), "nginx");
         assert_eq!(
-            service.image().to_string(),
+            service.config().image().to_string(),
             "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913"
         );
     }

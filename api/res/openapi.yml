@@ -72,7 +72,13 @@ paths:
           description: The application name that will be used to replicate from.
         - $ref: '#/components/parameters/preferAsync'
       requestBody:
-        description: Information of review app to create
+        description: >
+           A list of service configuration that will be included in the application.
+           <p>
+           The example provides two services: a database and a wordpress
+           instance which can also be replicated via the UI. Make sure that
+           you adjust the values for `WP_HOME` and `WP_SITE` to match the
+           host URL of your PREvant instance.
         required: true
         content:
           application/json:
@@ -80,6 +86,55 @@ paths:
               type: array
               items:
                 $ref: '#/components/schemas/ServiceConfiguration'
+            example: |
+               [{
+                  "serviceName": "db",
+                  "image": "mariadb",
+                  "env": {
+                     "MARIADB_ROOT_PASSWORD": {
+                        "value": "example",
+                        "replicate": true
+                     },
+                     "MARIADB_USER": {
+                        "value": "example-user",
+                        "replicate": true
+                     },
+                     "MARIADB_PASSWORD": {
+                        "value": "my_cool_secret",
+                        "replicate": true
+                     },
+                     "MARIADB_DATABASE": {
+                        "value": "example-database",
+                        "replicate": true
+                     }
+                  }
+               }, {
+                  "serviceName": "blog",
+                  "image": "wordpress",
+                  "env": {
+                     "WORDPRESS_DB_HOST": {
+                        "value": "db",
+                        "replicate": true
+                     },
+                     "WORDPRESS_DB_USER": {
+                        "value": "example-user",
+                        "replicate": true
+                     },
+                     "WORDPRESS_DB_PASSWORD": {
+                        "value": "my_cool_secret",
+                        "replicate": true
+                     },
+                     "WORDPRESS_DB_NAME": {
+                        "value": "example-database",
+                        "replicate": true
+                     },
+                     "WORDPRESS_CONFIG_EXTRA": {
+                        "value": "define('WP_HOME','http://localhost');\ndefine('WP_SITEURL','http://localhost/{{application.name}}/blog');",
+                        "replicate": true,
+                        "templated": true
+                     }
+                  }
+               }]
       responses:
         '200':
           description: ''

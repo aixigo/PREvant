@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::{web_host_meta::WebHostMeta, Image, ServiceConfig};
+use crate::models::{web_host_meta::WebHostMeta, ServiceConfig};
 use chrono::{DateTime, Utc};
 use serde::ser::{Serialize, Serializer};
 use serde::Deserialize;
@@ -104,10 +104,6 @@ impl Service {
         &self.config
     }
 
-    pub fn port(&self) -> Option<u16> {
-        self.endpoint.as_ref().map(|endpoint| endpoint.exposed_port)
-    }
-
     pub fn endpoint_url(&self) -> Option<Url> {
         self.endpoint.as_ref().map(|endpoint| endpoint.to_url())
     }
@@ -118,10 +114,6 @@ impl Service {
 
     pub fn status(&self) -> &ServiceStatus {
         &self.state.status
-    }
-
-    pub fn image(&self) -> &Image {
-        self.config.image()
     }
 }
 
@@ -307,9 +299,10 @@ impl From<Service> for ServiceBuilder {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Eq, Hash, PartialEq, Serialize)]
+#[derive(Debug, Default, Deserialize, Clone, Eq, Hash, PartialEq, Serialize)]
 pub enum ContainerType {
     #[serde(rename = "instance")]
+    #[default]
     Instance,
     #[serde(rename = "replica")]
     Replica,
@@ -317,12 +310,6 @@ pub enum ContainerType {
     ApplicationCompanion,
     #[serde(rename = "service-companion")]
     ServiceCompanion,
-}
-
-impl Default for ContainerType {
-    fn default() -> ContainerType {
-        ContainerType::Instance
-    }
 }
 
 impl FromStr for ContainerType {
@@ -352,7 +339,7 @@ impl Display for ContainerType {
     }
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Fail, PartialEq)]
 pub enum ServiceError {
     #[fail(display = "Invalid service type label: {}", label)]
     InvalidServiceType { label: String },

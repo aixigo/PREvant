@@ -31,6 +31,7 @@ kube = { version = "0.84", default-features = false, features = ["client", "deri
 lazy_static = "1.4"
 log = "0.4"
 multimap = "0.9"
+oci-distribution = "0.10"
 pest = "2.6"
 pest_derive = "2.6"
 regex = "1.9"
@@ -50,10 +51,6 @@ url = { version = "2.4", features = ["serde"] }
 uuid = { version = "1.3", features = ["serde", "v4"] }
 yansi = "0.5"
 
-
-[dependencies.dkregistry]
-git = "https://github.com/camallo/dkregistry-rs.git"
-rev = "0642b1c"
 
 [dependencies.shiplift]
 git = "https://github.com/softprops/shiplift.git"
