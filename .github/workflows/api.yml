@@ -10,16 +10,11 @@ jobs:
       - uses: actions/checkout@master
 
       - name: Install latest stable
-        uses: actions-rs/toolchain@v1
-        with:
-            toolchain: stable
-            override: true
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --manifest-path api/Cargo.toml
+        run:
+          cargo test --manifest-path api/Cargo.toml
 
   integrationTests:
     name: API Integration Tests
@@ -31,13 +26,8 @@ jobs:
         run: docker build --pull -t aixigo/prevant .
 
       - name: Install latest stable
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --manifest-path api-tests/Cargo.toml -- --test-threads=1
+        run:
+          cargo test --manifest-path api-tests/Cargo.toml -- --test-threads=1
