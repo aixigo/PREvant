@@ -11,6 +11,8 @@ jobs:
 
       - name: Install latest stable
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
 
       - name: Run cargo test
         run:
@@ -27,6 +29,8 @@ jobs:
 
       - name: Install latest stable
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
 
       - name: Run cargo test
         run:
