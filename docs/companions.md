@@ -129,7 +129,9 @@ use case, then PREvant can utilize the underlying infrastructure to bootstrap
 the companion configuration from the stdout of containers that are run once
 within the infrastructure (depicted by following image). PREvant's static
 companion configuration might be insufficient if services of the application
-rely on volume sharing among services (see [#123][persistent-data-issue]).
+rely on volume sharing among services (see [#123][persistent-data-issue]) or
+when operations are required to be run at the application's start up, e.g.
+importing test data.
 
 ![](../assets/bootstrap-companions.svg "Illustration how bootstrapping of companions work")
 
