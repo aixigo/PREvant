@@ -539,8 +539,9 @@ impl Infrastructure for KubernetesInfrastructure {
         let deployments = k8s_deployment_unit.deploy(client, app_name).await?;
         let mut services = Vec::with_capacity(deployments.len());
         for deployment in deployments.into_iter() {
-            let service = Self::create_service_from_deployment_and_pod(deployment, None)?;
-            services.push(service);
+            if let Ok(service) = Self::create_service_from_deployment_and_pod(deployment, None) {
+                services.push(service);
+            }
         }
 
         Ok(services)
