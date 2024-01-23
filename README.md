@@ -16,17 +16,17 @@ Through PREvant's web interface domain experts, managers, developers, and sales 
 
 ## Basic Terminology
 
-An *application*, that PREvant manages, is a composition microservices based on
-“architectural pattern that arranges an application as a collection of loosely
-coupled, fine-grained services, communicating through lightweight protocols.”
-([Wikipedia][wiki-microservices]) Each application has a unique name which is
-the key to perform actions like creating, duplicating, modifying, or deleting
-these applications via REST API or Web UI.
+An *application*, that PREvant manages, is a composition of microservices based
+on an “architectural pattern that arranges an application as a collection of
+loosely coupled, fine-grained services, communicating through lightweight
+protocols.” ([Wikipedia][wiki-microservices]) Each application has a unique
+name which is the key to perform actions like creating, duplicating, modifying,
+or deleting these applications via REST API or Web UI.
 
 In each application, PREvant manages the microservices as *services* which need
 to be available in the [OCI Image Format][oci-image-spec] (a.k.a. Docker
-images). At least one service needs to be available for an application and
-PREvant manages following kind of services.
+images). At least one service needs to be available for an application. PREvant
+manages the following kind of services:
 
 - *Instance*: a service labeled as instance is a service that has been
   configured explicitly when creating or updating an application.
@@ -40,13 +40,13 @@ Additionally, PREvant provides a way of creating service everytime it creates
 an application. These services are called *companions* and there are two types
 of them.
 
-- An application wide companion (app companion) is a unique service for the
-  whole application. For example, a [Kafka][kafka] instance can be stared
-  automatically everytime you create an application so that all service within
+- An application wide companion (app companion) is an unique service for the
+  whole application. For example, a [Kafka][kafka] instance can be started
+  automatically everytime you create an application so that all services within
   the application can synchronize via events.
 - A companion can also be attached to a service a user wants to deploy (service
   companion). For example, a [PostgreSQL][postgres] container can be started
-  for each to provide a dedicated database for each service.
+  for each service to provide a dedicated database for it.
 
 # Usage
 

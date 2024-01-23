@@ -900,7 +900,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parse_unit_from_deploymen_stdout() {
+    async fn parse_unit_from_deployment_stdout() {
         let unit = parse_unit(
             r#"
             apiVersion: apps/v1

@@ -278,7 +278,9 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
                     .and_then(|service| service.port.as_ref())
                     .and_then(|port| port.number)
                     .map(|p| p as u16)
-                    // TODO: how to get the if missing
+                    // TODO: for now it is okay to assume that if the port is missing, port 80 is a
+                    // good default. However, in the future there should be some better error
+                    // handling.
                     .unwrap_or(80),
             ),
         }],

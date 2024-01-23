@@ -1,9 +1,10 @@
 # Companion Configuration
 
-Have a look at the [basic terminology](../README.md) what is a companion. For
-these use cases following sections provide example configurations.
+Have a look at the [basic terminology](../README.md) to understand what a
+companion is. For these use cases the following sections provide example
+configurations.
 
-A simple but limited configuration of companions can be done via the
+A simple, but limited configuration of companions can be done via the
 `config.toml` file for [application companions](#application-wide) and [service
 companions](#service-based). More complex companions can be created via
 [bootstrapping](#bootstrapping-from-the-infrastructure-backend).
@@ -12,7 +13,8 @@ companions](#service-based). More complex companions can be created via
 
 ### Application Wide
 
-If you want to include an OpenID provider for every application, you could use following configuration.
+If you want to include an OpenID provider for every application, you could use
+the following configuration:
 
 ```toml
 [companions.openid]
@@ -49,7 +51,8 @@ The list of available handlebars variables:
 
 - `application`: The companion's application information
   - `name`: The application name
-- `services`: An array of the services of the application. Each element has following structure:
+- `services`: An array of the services of the application. Each element has the
+  following structure:
   - `name`: The service name which is equivalent to the network alias
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
@@ -63,7 +66,9 @@ PREvant provides some handlebars helpers which can be used to generate more comp
 
 ### Service Based
 
-The service-based companions works the in the same way as the application-based services. Make sure, that the `serviceName` is unique by using the handlebars templating.
+The service-based companions work the in the same way as the application-based
+services. Make sure, that the `serviceName` is unique by using handlebars
+templating.
 
 ```toml
 [companions.service-name]
@@ -84,7 +89,7 @@ The list of available handlebars variables:
 
 - `application`: The companion's application information
   - `name`: The application name
-- `service`: The companion's service containing following fields:
+- `service`: The companion's service containing the following fields:
   - `name`: The service name which is equivalent to the network alias
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
@@ -100,7 +105,7 @@ image = 'private.example.com/library/openid:latest'
 deploymentStrategy = 'redeploy-on-image-update'
 ```
 
-`deploymentStrategy` offers following values and if a companion exists for an app following strategy will be applied:
+`deploymentStrategy` offers the following values and if a companion exists for an app following strategy will be applied:
 
 - `redeploy-always` (_default_): Re-deploys the companion every time there is a new deployment request.
 - `redeploy-on-image-update`: Re-deploys the companion if there is a more rescent image available.
@@ -117,7 +122,7 @@ image = 'postgres:latest'
 storageStrategy = 'mount-declared-image-volumes'
 ```
 
-`storageStrategy` offers following values to determine how storage is managed for a companion:
+`storageStrategy` offers the following values to determine how storage is managed for a companion:
 
 - `none` (_default_): Companion is deployed without persistent storage.
 - `mount-declared-image-volumes`: Mounts the volume paths declared within the image, providing persistent storage for the companion.
@@ -127,7 +132,7 @@ storageStrategy = 'mount-declared-image-volumes'
 When the [static configuration](#static-configuration) is insufficient for your
 use case, then PREvant can utilize the underlying infrastructure to bootstrap
 the companion configuration from the stdout of containers that are run once
-within the infrastructure (depicted by following image). PREvant's static
+within the infrastructure (depicted by the following image). PREvant's static
 companion configuration might be insufficient if services of the application
 rely on volume sharing among services (see [#123][persistent-data-issue]) or
 when operations are required to be run at the application's start up, e.g.
@@ -143,7 +148,7 @@ underlying infrastructure.
 - When PREvant uses Kubernetes as the infrastructure runtime, the bootstrap
   containers need to output [Kubernetes manifests][k8s-manifest].
 
-  Make sure to put out YAML that is compatible with 1.1 and 1.2
+  Make sure to output YAML that is compatible with 1.1 and 1.2
   (For example, bitnami helm charts have been adjusted in part in that regard,
   see [here][zookeeper-yaml-1.2-pr] and [here][kafka-yaml-1.2-pr])
 - Docker: not yet implemented but the aim is to support [Docker
@@ -156,11 +161,11 @@ overwrite configurations. For example, you can change the image used or an
 environment variable. If you overwrite any configuration the companion will be
 turned into an instance (as PREvant did before).
 
-Following configuration block depicts that an image
+The following configuration block depicts that an image
 `registry.example.com/user/bootstrap-helm-chart:lastet` is based on a [Helm
 chart][helm-chart] that generates an OpenID provider for your application with
-[Keycloak][keycloak]. Additionally, it is possible to passed additional
-arguments to the container than can be templated with [Handlebars][handlebars].
+[Keycloak][keycloak]. Additionally, it is possible to pass additional arguments
+to the container than can be templated with [Handlebars][handlebars].
 
 ```toml
 [[companions.bootstrapping.containers]]

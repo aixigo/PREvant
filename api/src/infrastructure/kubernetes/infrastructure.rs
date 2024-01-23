@@ -313,7 +313,7 @@ impl KubernetesInfrastructure {
     async fn create_payloads(
         &self,
         app_name: &AppName,
-        deployabel_service: &DeployableService,
+        deployable_service: &DeployableService,
         container_config: &ContainerConfig,
     ) -> Result<
         (
@@ -325,23 +325,23 @@ impl KubernetesInfrastructure {
         ),
         KubernetesInfrastructureError,
     > {
-        let secret = deployabel_service
+        let secret = deployable_service
             .files()
-            .map(|files| secrets_payload(app_name, deployabel_service, files));
+            .map(|files| secrets_payload(app_name, deployable_service, files));
 
-        let service = service_payload(app_name, deployabel_service);
+        let service = service_payload(app_name, deployable_service);
 
         let deployment = deployment_payload(
             app_name,
-            deployabel_service,
+            deployable_service,
             container_config,
             &self
-                .create_persistent_volume_claim(app_name, deployabel_service)
+                .create_persistent_volume_claim(app_name, deployable_service)
                 .await?,
         );
 
-        let ingress_route = ingress_route_payload(app_name, deployabel_service);
-        let middlewares = middleware_payload(app_name, deployabel_service.ingress_route());
+        let ingress_route = ingress_route_payload(app_name, deployable_service);
+        let middlewares = middleware_payload(app_name, deployable_service.ingress_route());
 
         Ok((secret, service, deployment, ingress_route, middlewares))
     }
