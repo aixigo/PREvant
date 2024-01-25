@@ -34,6 +34,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use multimap::MultiMap;
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -113,7 +114,7 @@ impl Infrastructure for DummyInfrastructure {
                     .build()
                     .unwrap();
 
-                s.insert(app.clone(), service);
+                s.insert(AppName::from_str(app).unwrap(), service);
             }
         }
 
@@ -155,7 +156,8 @@ impl Infrastructure for DummyInfrastructure {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
-        match services.remove(app_name) {
+
+        match services.remove(&app_name) {
             Some(services) => Ok(services
                 .into_iter()
                 .map(|sc| {

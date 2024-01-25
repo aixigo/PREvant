@@ -189,13 +189,13 @@ async fn change_status(
     "/<app_name>/logs/<service_name>?<since>&<limit>",
     format = "text/plain"
 )]
-async fn logs(
+async fn logs<'r>(
     app_name: Result<AppName, AppNameError>,
-    service_name: String,
+    service_name: &'r str,
     since: Option<String>,
     limit: Option<usize>,
     apps: &State<Arc<Apps>>,
-) -> HttpResult<LogsResponse> {
+) -> HttpResult<LogsResponse<'r>> {
     let app_name = app_name?;
 
     let since = match since {
@@ -214,7 +214,7 @@ async fn logs(
     let limit = limit.unwrap_or(20_000);
 
     let log_chunk = apps
-        .get_logs(&app_name, &service_name, &since, limit)
+        .get_logs(&app_name, service_name, &since, limit)
         .await?;
 
     Ok(LogsResponse {
@@ -265,10 +265,10 @@ fn map_join_error(err: tokio::task::JoinError) -> HttpApiError {
         .into()
 }
 
-pub struct LogsResponse {
+pub struct LogsResponse<'a> {
     log_chunk: Option<LogChunk>,
     app_name: AppName,
-    service_name: String,
+    service_name: &'a str,
     limit: usize,
 }
 
@@ -284,7 +284,7 @@ impl CreateAppOptions {
     }
 }
 
-impl<'r> Responder<'r, 'static> for LogsResponse {
+impl<'r> Responder<'r, 'static> for LogsResponse<'r> {
     fn respond_to(self, _request: &'r Request) -> Result<Response<'static>, Status> {
         use std::io::Cursor;
         let log_chunk = match self.log_chunk {
@@ -810,7 +810,7 @@ mod tests {
                     "type": "https://httpstatuses.com/400",
                     "status": 400,
                     "title": "Bad Request",
-                    "detail": "Invalid image: private-registry.example.com/_/postgres at line 1 column 70"
+                    "detail": "Invalid image: private-registry.example.com/_/postgres at line 1 column 51"
                 })
             );
         }

@@ -25,11 +25,21 @@
  */
 use crate::config::AppSelector;
 use crate::models::service::ContainerType;
-use crate::models::{Environment, Image, Router, ServiceConfig};
+use crate::models::{AppName, Environment, Image, Router, ServiceConfig};
+use handlebars::{Handlebars, RenderError};
 use secstr::SecUtf8;
 use serde_value::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use url::Url;
+
+#[derive(Clone, Default, Deserialize)]
+pub(super) struct Companions {
+    #[serde(default)]
+    bootstrapping: Bootstrapping,
+    #[serde(flatten)]
+    companions: BTreeMap<String, Companion>,
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,12 +88,52 @@ pub enum DeploymentStrategy {
     RedeployNever,
 }
 
+#[derive(Clone, Default, Deserialize)]
+struct Bootstrapping {
+    containers: Vec<BootstrappingContainer>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct BootstrappingContainer {
+    image: Image,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+impl Companions {
+    pub(super) fn companion_configs<P>(
+        &self,
+        app_name: &AppName,
+        predicate: P,
+    ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)>
+    where
+        P: Fn(&Companion) -> bool,
+    {
+        self.companions
+            .iter()
+            .filter(|(_, companion)| companion.matches_app_name(app_name))
+            .filter(|(_, companion)| predicate(companion))
+            .map(|(_, companion)| {
+                (
+                    ServiceConfig::from(companion.clone()),
+                    companion.deployment_strategy().clone(),
+                    companion.storage_strategy().clone(),
+                )
+            })
+            .collect()
+    }
+
+    pub(super) fn companion_bootstrapping_containers(&self) -> &Vec<BootstrappingContainer> {
+        &self.bootstrapping.containers
+    }
+}
+
 impl Companion {
     pub fn companion_type(&self) -> &CompanionType {
         &self.companion_type
     }
 
-    pub fn matches_app_name(&self, app_name: &str) -> bool {
+    pub fn matches_app_name(&self, app_name: &AppName) -> bool {
         self.app_selector.matches(app_name)
     }
 
@@ -149,6 +199,47 @@ impl Default for StorageStrategy {
     }
 }
 
+impl BootstrappingContainer {
+    pub fn image(&self) -> &Image {
+        &self.image
+    }
+
+    pub fn templated_args(
+        &self,
+        app_name: &AppName,
+        base_url: &Option<Url>,
+    ) -> Result<Vec<String>, RenderError> {
+        let handlebars = Handlebars::new();
+
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct AppData<'a> {
+            name: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            base_url: &'a Option<Url>,
+        }
+        // TODO: apply same pattern as for companions. {{application.name}}, {{service.…}}…
+        #[derive(Serialize)]
+        struct Data<'a> {
+            application: AppData<'a>,
+        }
+
+        let data = Data {
+            application: AppData {
+                name: app_name,
+                base_url,
+            },
+        };
+
+        let mut args = Vec::with_capacity(self.args.len());
+        for arg in &self.args {
+            args.push(handlebars.render_template(arg, &data)?);
+        }
+
+        Ok(args)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +248,12 @@ mod tests {
     macro_rules! companion_from_str {
         ( $config_str:expr ) => {
             toml::de::from_str::<Companion>($config_str).unwrap()
+        };
+    }
+
+    macro_rules! companions_from_str {
+        ( $config_str:expr ) => {
+            toml::de::from_str::<Companions>($config_str).unwrap()
         };
     }
 
@@ -179,6 +276,70 @@ mod tests {
         assert_eq!(
             companion.deployment_strategy,
             DeploymentStrategy::RedeployAlways
+        );
+    }
+
+    #[test]
+    fn should_parse_companion_bootstrap_containers() {
+        let companions = companions_from_str!(
+            r#"
+            [[bootstrapping.containers]]
+            image = "busybox"
+            "#
+        );
+
+        let container = &companions.bootstrapping.containers[0];
+
+        assert_eq!(container.image, Image::from_str("busybox").unwrap());
+        assert_eq!(
+            container.templated_args(&AppName::master(), &None).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn should_parse_companion_bootstrap_containers_and_template_args() {
+        let companions = companions_from_str!(
+            r#"
+            [[bootstrapping.containers]]
+            image = "busybox"
+            args = [ "echo", "Hello {{application.name}}" ]
+            "#
+        );
+
+        let container = &companions.bootstrapping.containers[0];
+
+        assert_eq!(container.image, Image::from_str("busybox").unwrap());
+        assert_eq!(
+            container.templated_args(&AppName::master(), &None).unwrap(),
+            vec![String::from("echo"), String::from("Hello master")]
+        );
+    }
+
+    #[test]
+    fn should_parse_companion_bootstrap_containers_and_template_url_args() {
+        let companions = companions_from_str!(
+            r#"
+            [[bootstrapping.containers]]
+            image = "busybox"
+            args = [ "echo", "Hello {{application.baseUrl}}" ]
+            "#
+        );
+
+        let container = &companions.bootstrapping.containers[0];
+
+        assert_eq!(container.image, Image::from_str("busybox").unwrap());
+        assert_eq!(
+            container
+                .templated_args(
+                    &AppName::master(),
+                    &Some(Url::parse("http://example.com").unwrap())
+                )
+                .unwrap(),
+            vec![
+                String::from("echo"),
+                String::from("Hello http://example.com/")
+            ]
         );
     }
 }

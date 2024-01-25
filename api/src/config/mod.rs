@@ -24,11 +24,13 @@
  * =========================LICENSE_END==================================
  */
 
+pub use self::companion::BootstrappingContainer;
 pub use self::companion::DeploymentStrategy;
 pub use self::companion::StorageStrategy;
-use self::companion::{Companion, CompanionType};
+use self::companion::{Companion, CompanionType, Companions};
 pub use self::container::ContainerConfig;
 pub use self::runtime::Runtime;
+use crate::models::AppName;
 use crate::models::ServiceConfig;
 pub(self) use app_selector::AppSelector;
 use clap::Parser;
@@ -146,7 +148,8 @@ pub struct Config {
     runtime: Runtime,
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
-    companions: Option<BTreeMap<String, Companion>>,
+    #[serde(default)]
+    companions: Companions,
     services: Option<BTreeMap<String, Service>>,
     hooks: Option<BTreeMap<String, PathBuf>>,
     #[serde(default)]
@@ -189,7 +192,7 @@ impl Config {
 
     pub fn service_companion_configs(
         &self,
-        app_name: &str,
+        app_name: &AppName,
     ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)> {
         self.companion_configs(app_name, |companion| {
             companion.companion_type() == &CompanionType::Service
@@ -198,39 +201,29 @@ impl Config {
 
     pub fn application_companion_configs(
         &self,
-        app_name: &str,
+        app_name: &AppName,
     ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)> {
         self.companion_configs(app_name, |companion| {
             companion.companion_type() == &CompanionType::Application
         })
     }
 
+    pub fn companion_bootstrapping_containers(&self) -> &Vec<BootstrappingContainer> {
+        self.companions.companion_bootstrapping_containers()
+    }
+
     fn companion_configs<P>(
         &self,
-        app_name: &str,
+        app_name: &AppName,
         predicate: P,
     ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)>
     where
         P: Fn(&Companion) -> bool,
     {
-        match &self.companions {
-            None => vec![],
-            Some(companions_map) => companions_map
-                .iter()
-                .filter(|(_, companion)| companion.matches_app_name(app_name))
-                .filter(|(_, companion)| predicate(companion))
-                .map(|(_, companion)| {
-                    (
-                        companion.clone().into(),
-                        companion.deployment_strategy().clone(),
-                        companion.storage_strategy().clone(),
-                    )
-                })
-                .collect(),
-        }
+        self.companions.companion_configs(app_name, predicate)
     }
 
-    pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &str) {
+    pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &AppName) {
         if let Some(services) = &self.services {
             if let Some(service) = services.get(service_config.service_name()) {
                 service.add_secrets_to(service_config, app_name);
@@ -262,7 +255,7 @@ impl JiraConfig {
 }
 
 impl Service {
-    pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &str) {
+    pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &AppName) {
         if let Some(secrets) = &self.secrets {
             for s in secrets.iter().filter(|s| s.matches_app_name(app_name)) {
                 let (path, sec) = s.clone().into();
@@ -340,7 +333,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master");
+        let companion_configs = config.application_companion_configs(&AppName::master());
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|(config, _, _)| {
@@ -375,7 +368,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.service_companion_configs("master");
+        let companion_configs = config.service_companion_configs(&AppName::master());
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|(config, _, _)| {
@@ -401,7 +394,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.service_companion_configs("master");
+        let companion_configs = config.service_companion_configs(&AppName::master());
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|(_, strategy, _)| {
@@ -424,7 +417,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master");
+        let companion_configs = config.application_companion_configs(&AppName::master());
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|(config, _, _)| {
@@ -446,7 +439,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master");
+        let companion_configs = config.application_companion_configs(&AppName::master());
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|(config, _, _)| {
@@ -470,7 +463,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master");
+        let companion_configs = config.application_companion_configs(&AppName::master());
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|(config, _, _)| {
@@ -500,7 +493,8 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("random-name");
+        let companion_configs =
+            config.application_companion_configs(&AppName::from_str("random-name").unwrap());
 
         assert_eq!(companion_configs.len(), 0);
     }
@@ -517,7 +511,7 @@ mod tests {
         );
 
         let mut service_config = service_config!("mariadb");
-        config.add_secrets_to(&mut service_config, &String::from("master"));
+        config.add_secrets_to(&mut service_config, &AppName::master());
         let secret_file_content = service_config
             .files()
             .expect("File content is missing")
@@ -539,7 +533,7 @@ mod tests {
         );
 
         let mut service_config = service_config!("mariadb");
-        config.add_secrets_to(&mut service_config, &String::from("master"));
+        config.add_secrets_to(&mut service_config, &AppName::master());
 
         let secret_file_content = service_config
             .files()
@@ -562,7 +556,10 @@ mod tests {
         );
 
         let mut service_config = service_config!("mariadb");
-        config.add_secrets_to(&mut service_config, &String::from("master-1.x"));
+        config.add_secrets_to(
+            &mut service_config,
+            &AppName::from_str("master-1.x").unwrap(),
+        );
 
         let secret_file_content = service_config
             .files()
@@ -585,7 +582,10 @@ mod tests {
         );
 
         let mut service_config = service_config!("mariadb");
-        config.add_secrets_to(&mut service_config, &String::from("random-app-name"));
+        config.add_secrets_to(
+            &mut service_config,
+            &AppName::from_str("random-app-name").unwrap(),
+        );
 
         assert!(service_config.files().is_none());
     }
@@ -603,7 +603,10 @@ mod tests {
         );
 
         let mut service_config = service_config!("mariadb");
-        config.add_secrets_to(&mut service_config, &String::from("master-1.x"));
+        config.add_secrets_to(
+            &mut service_config,
+            &AppName::from_str("master-1.x").unwrap(),
+        );
 
         assert_eq!(service_config.files(), None);
     }
@@ -668,7 +671,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master");
+        let companion_configs = config.application_companion_configs(&AppName::master());
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs.iter().for_each(|(config, _, _)| {
@@ -689,7 +692,7 @@ mod tests {
             "#
         );
 
-        let companion_configs = config.application_companion_configs("master");
+        let companion_configs = config.application_companion_configs(&AppName::master());
 
         assert_eq!(companion_configs.len(), 1);
         companion_configs

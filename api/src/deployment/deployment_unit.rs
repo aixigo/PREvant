@@ -97,6 +97,7 @@ pub struct WithAppliedHooks {
 pub struct WithAppliedIngressRoute {
     app_name: AppName,
     services: Vec<DeployableService>,
+    route: TraefikIngressRoute,
 }
 
 pub struct DeploymentUnitBuilder<Stage> {
@@ -106,6 +107,7 @@ pub struct DeploymentUnitBuilder<Stage> {
 pub struct DeploymentUnit {
     app_name: AppName,
     services: Vec<DeployableService>,
+    route: TraefikIngressRoute,
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +175,10 @@ impl DeploymentUnit {
 
     pub fn app_name(&self) -> &AppName {
         &self.app_name
+    }
+
+    pub fn app_base_route(&self) -> &TraefikIngressRoute {
+        &self.route
     }
 }
 
@@ -347,7 +353,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 self.stage.service_companions.iter()
             {
                 let templated_companion = service_companion
-                    .apply_templating_for_service_companion(&self.stage.app_name, &service)?;
+                    .apply_templating_for_service_companion(&self.stage.app_name, service)?;
 
                 service_companions.push(ServiceCompanion {
                     templated_companion,
@@ -548,18 +554,26 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
             service.ingress_route.merge_with(service_route);
         }
 
+        let mut route = route;
+        route.merge_with(TraefikIngressRoute::with_app_only_defaults(
+            &self.stage.app_name,
+        ));
+
         DeploymentUnitBuilder {
             stage: WithAppliedIngressRoute {
                 app_name: self.stage.app_name,
                 services: self.stage.services,
+                route,
             },
         }
     }
 
     pub fn build(self) -> DeploymentUnit {
+        let route = TraefikIngressRoute::with_app_only_defaults(&self.stage.app_name);
         DeploymentUnit {
             app_name: self.stage.app_name,
             services: self.stage.services,
+            route,
         }
     }
 }
@@ -569,6 +583,7 @@ impl DeploymentUnitBuilder<WithAppliedIngressRoute> {
         DeploymentUnit {
             app_name: self.stage.app_name,
             services: self.stage.services,
+            route: self.stage.route,
         }
     }
 }
@@ -580,13 +595,12 @@ mod tests {
     use crate::models::{Environment, EnvironmentVariable};
     use crate::{config_from_str, sc};
     use secstr::SecUtf8;
-    use std::str::FromStr;
 
     #[tokio::test]
     async fn should_return_unique_images() -> Result<(), AppsServiceError> {
         let config = Config::default();
         let unit = DeploymentUnitBuilder::init(
-            AppName::from_str("master").unwrap(),
+            AppName::master(),
             vec![
                 sc!("http1", "nginx:1.13"),
                 sc!("wordpress1", "wordpress:alpine"),
@@ -617,7 +631,7 @@ mod tests {
         "#
         );
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![sc!("http1", "nginx:1.13")];
 
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
@@ -650,7 +664,7 @@ mod tests {
         "#
         );
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![sc!(
             "openid",
             labels = (),
@@ -705,7 +719,7 @@ mod tests {
         "#
         );
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![sc!(
             "openid",
             labels = (),
@@ -754,7 +768,7 @@ mod tests {
             image = 'postgres:11'
         "#
         );
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![
             sc!("wordpress", "wordpress:alpine"),
             sc!("nextcloud", "nextcloud:alpine"),
@@ -802,7 +816,7 @@ mod tests {
         ])));
 
         let config = Config::default();
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
 
         let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
             .extend_with_config(&config)
@@ -836,7 +850,7 @@ mod tests {
             SecUtf8::from("{{application.name}}"),
         )])));
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let config = Config::default();
 
         let unit = DeploymentUnitBuilder::init(app_name, vec![service_configs])
@@ -875,7 +889,7 @@ mod tests {
         "#
         );
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![sc!("wordpress", "wordpress:latest")];
 
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
@@ -929,7 +943,7 @@ mod tests {
         "#
         );
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![sc!("wordpress", "wordpress:alpine")];
 
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
@@ -983,7 +997,7 @@ mod tests {
         "#
         );
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![sc!("openid", "private.example.com/library/openid:backup")];
 
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
@@ -1032,7 +1046,7 @@ mod tests {
         "#
         );
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![
             sc!("wordpress", "wordpress:alpine"),
             sc!("wordpress-db", "postgres:11-alpine"),
@@ -1081,7 +1095,7 @@ mod tests {
     #[tokio::test]
     async fn should_determine_deployment_strategy_for_requested_service(
     ) -> Result<(), AppsServiceError> {
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![
             sc!("wordpress", "wordpress:alpine"),
             sc!("wordpress-db", "postgres:11-alpine"),
@@ -1131,7 +1145,7 @@ mod tests {
         "#
         );
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![sc!("wordpress", "wordpress:alpine")];
 
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)
@@ -1161,7 +1175,7 @@ mod tests {
     async fn apply_base_traefik_router_rule() -> Result<(), AppsServiceError> {
         let config = config_from_str!("");
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let service_configs = vec![sc!("wordpress")];
 
         let unit = DeploymentUnitBuilder::init(app_name, service_configs)

@@ -23,7 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use crate::config::AppSelector;
+use crate::{config::AppSelector, models::AppName};
 use base64::{engine::general_purpose, Engine};
 use secstr::SecUtf8;
 use serde::{de, Deserialize, Deserializer};
@@ -53,7 +53,7 @@ impl Secret {
         Ok(SecUtf8::from(sec_value))
     }
 
-    pub fn matches_app_name(&self, app_name: &str) -> bool {
+    pub fn matches_app_name(&self, app_name: &AppName) -> bool {
         self.app_selector.matches(app_name)
     }
 }

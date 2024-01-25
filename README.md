@@ -4,7 +4,7 @@
 
 # PREvant In a Nutshell
 
-PREvant a is Docker container that serves as an abstraction layer between continuous integration pipelines and a container orchestration platform. This abstraction serves as a reviewing platform to ensure that developers have built the features that domain expert requested. 
+PREvant a is Docker container that serves as an abstraction layer between continuous integration pipelines and a container orchestration platform. This abstraction serves as a reviewing platform to ensure that developers have built the features that domain expert requested.
 
 PREvant's name originates from this requirement: _Preview servant (PREvant, `prɪˈvɛnt`, it's pronounced like prevent)_ __serves__ developers to deploy previews of their application as simple as possible when their application consists of multiple microservices distributed across multiple source code repositories. These previews should __PREvant__ to do mistakes in feature development because domain experts can review changes as soon as possible.
 
@@ -13,6 +13,40 @@ PREvant's name originates from this requirement: _Preview servant (PREvant, `pr�
 Through PREvant's web interface domain experts, managers, developers, and sales experts can review and demonstrate the application development.
 
 ![Access the application](assets/screenshot.png "Access the application")
+
+## Basic Terminology
+
+An *application*, that PREvant manages, is a composition of microservices based
+on an “architectural pattern that arranges an application as a collection of
+loosely coupled, fine-grained services, communicating through lightweight
+protocols.” ([Wikipedia][wiki-microservices]) Each application has a unique
+name which is the key to perform actions like creating, duplicating, modifying,
+or deleting these applications via REST API or Web UI.
+
+In each application, PREvant manages the microservices as *services* which need
+to be available in the [OCI Image Format][oci-image-spec] (a.k.a. Docker
+images). At least one service needs to be available for an application. PREvant
+manages the following kind of services:
+
+- *Instance*: a service labeled as instance is a service that has been
+  configured explicitly when creating or updating an application.
+- *Replica*: a service labeled as replica is a service that has been replicated
+  from another application. By default if you create an application under any
+  name PREvant will replicate all instances from the application *master*.
+  Alternatively, any other application can be specified as a source of
+  replication.
+
+Additionally, PREvant provides a way of creating service everytime it creates
+an application. These services are called *companions* and there are two types
+of them.
+
+- An application wide companion (app companion) is an unique service for the
+  whole application. For example, a [Kafka][kafka] instance can be started
+  automatically everytime you create an application so that all services within
+  the application can synchronize via events.
+- A companion can also be attached to a service a user wants to deploy (service
+  companion). For example, a [PostgreSQL][postgres] container can be started
+  for each service to provide a dedicated database for it.
 
 # Usage
 
@@ -69,3 +103,8 @@ This paper is based on [the abstract](https://www.conf-micro.services/2019/paper
 The talk is available on [YouTube](http://www.youtube.com/watch?v=O9GxapQR5bk). Click on the image to start the playback:
 
 [![Video “PREvant: Composing Microservices into Reviewable and Testable Applications” at Microservices 2019](http://img.youtube.com/vi/O9GxapQR5bk/0.jpg)](http://www.youtube.com/watch?v=O9GxapQR5bk)
+
+[wiki-microservices]: https://en.wikipedia.org/wiki/Microservices
+[oci-image-spec]: https://specs.opencontainers.org/image-spec/
+[kafka]: https://kafka.apache.org
+[postgres]: https://www.postgresql.org

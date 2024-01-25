@@ -291,6 +291,12 @@ impl AppsService {
         let deployment_unit = if let Ok(Some(base_traefik_ingress_route)) =
             self.infrastructure.base_traefik_ingress_route().await
         {
+            trace!(
+                "The base URL for {app_name} is: {:?}",
+                base_traefik_ingress_route
+                    .to_url()
+                    .map(|url| url.to_string())
+            );
             deployment_unit_builder
                 .apply_base_traefik_ingress_route(base_traefik_ingress_route)
                 .build()
@@ -346,7 +352,7 @@ impl AppsService {
     pub async fn get_logs(
         &self,
         app_name: &AppName,
-        service_name: &String,
+        service_name: &str,
         since: &Option<DateTime<FixedOffset>>,
         limit: usize,
     ) -> Result<Option<LogChunk>, AppsServiceError> {
@@ -364,7 +370,7 @@ impl AppsService {
     pub async fn change_status(
         &self,
         app_name: &AppName,
-        service_name: &String,
+        service_name: &str,
         status: ServiceStatus,
     ) -> Result<Option<Service>, AppsServiceError> {
         Ok(self
@@ -517,7 +523,7 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
+            &AppName::master(),
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
@@ -527,7 +533,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             &AppStatusChangeId::new(),
-            Some(AppName::from_str("master").unwrap()),
+            Some(AppName::master()),
             &vec![sc!("service-b")],
         )
         .await?;
@@ -569,7 +575,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             &AppStatusChangeId::new(),
-            Some(AppName::from_str("master").unwrap()),
+            Some(AppName::master()),
             &vec![sc!("service-a")],
         )
         .await?;
@@ -602,7 +608,7 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &AppName::from_str("master").unwrap(),
+            &AppName::master(),
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("mariadb")],
@@ -666,7 +672,7 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
 
         apps.create_or_update(
             &app_name,
@@ -863,7 +869,7 @@ Log msg 3 of service-a of app master
 
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
 
         apps.create_or_update(
             &app_name,
@@ -948,7 +954,7 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::with_delay(std::time::Duration::from_millis(500)));
         let apps = Arc::new(AppsService::new(config, infrastructure)?);
 
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         apps.create_or_update(
             &app_name,
             &AppStatusChangeId::new(),
@@ -965,7 +971,7 @@ Log msg 3 of service-a of app master
                 .unwrap();
             rt.block_on(apps_clone.delete_app(&app_name, &AppStatusChangeId::new()))
         });
-        let app_name = AppName::from_str("master").unwrap();
+        let app_name = AppName::master();
         let handle2 = std::thread::spawn(move || {
             let rt = runtime::Builder::new_current_thread()
                 .enable_time()
@@ -1061,7 +1067,7 @@ Log msg 3 of service-a of app master
         "#;
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
-        let app_name = &AppName::from_str("master").unwrap();
+        let app_name = &AppName::master();
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
@@ -1093,7 +1099,7 @@ Log msg 3 of service-a of app master
         )));
         let apps = AppsService::new(Config::default(), infrastructure)?;
 
-        let app_name = &AppName::from_str("master").unwrap();
+        let app_name = &AppName::master();
         apps.create_or_update(
             &app_name,
             &AppStatusChangeId::new(),
@@ -1135,7 +1141,7 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(Config::default(), infrastructure)?;
 
-        let app_name = &AppName::from_str("master").unwrap();
+        let app_name = &AppName::master();
         apps.create_or_update(
             &app_name,
             &AppStatusChangeId::new(),
