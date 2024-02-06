@@ -42,15 +42,19 @@ use bollard::Docker;
 use bollard::container::{CreateContainerOptions, ListContainersOptions, LogOutput, LogsOptions};
 use bollard::errors::Error as ShipLiftError;
 use bollard::image::CreateImageOptions;
+use bollard::network::{InspectNetworkOptions, ListNetworksOptions};
 use bollard::service::{ContainerInspectResponse, ContainerSummary};
-use chrono::{DateTime, FixedOffset};
+use bollard::volume::CreateVolumeOptions;
+use chrono::{DateTime, FixedOffset, Utc};
 use failure::{format_err, Error};
 use futures::future::join_all;
+use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use multimap::MultiMap;
 use regex::Regex;
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
+use std::hash::Hash;
 use std::net::{AddrParseError, IpAddr};
 use std::str::FromStr;
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
@@ -145,17 +149,17 @@ impl DockerInfrastructure {
         Ok(docker.inspect_container(&container_info.id, None).await?)
     }
 
-    async fn create_or_get_network_id(&self, app_name: &String) -> Result<String, ShipLiftError> {
+    async fn create_or_get_network_id(&self, app_name: &AppName) -> Result<String, ShipLiftError> {
         trace!("Resolve network id for {}", app_name);
 
         let network_name = format!("{}-net", app_name);
 
         let docker = Docker::connect_with_local_defaults()?;
         let network_id = docker
-            .list_networks(None)
+            .list_networks(None::<ListNetworksOptions<String>>)
             .await?
             .into_iter()
-            .find(|n| n.name == Some(network_name))
+            .find(|n| n.name.as_ref() == Some(&network_name))
             .and_then(|n| n.id);
 
         if let Some(n) = network_id {
@@ -165,29 +169,33 @@ impl DockerInfrastructure {
         debug!("Creating network for app {}.", app_name);
 
         let network_create_info = docker
-            .networks()
-            .create(&NetworkCreateOptions::builder(network_name.as_ref()).build())
+            .inspect_network(&network_name, None::<InspectNetworkOptions<String>>)
             .await?;
 
         debug!(
-            "Created network for app {} with id {}",
-            app_name, network_create_info.id
+            "Created network for app {app_name} with id {}",
+            network_create_info
+                .id
+                .as_ref()
+                .expect("There should be a network id")
         );
 
-        Ok(network_create_info.id)
+        Ok(network_create_info
+            .id
+            .expect("There should be a network id"))
     }
 
-    async fn connect_traefik(&self, network_id: &String) -> Result<(), ShipLiftError> {
-        let docker = Docker::new();
+    async fn connect_traefik(&self, network_id: &str) -> Result<(), ShipLiftError> {
+        let docker = Docker::connect_with_local_defaults()?;
 
-        let containers = docker
-            .containers()
-            .list(&ContainerListOptions::builder().build())
-            .await?;
-        let traefik_container_id = containers
+        let traefik_container_id = docker
+            // TODO: is there a way to filter by label
+            .list_containers(None)
+            .await?
             .into_iter()
-            .find(|c| c.image.contains("traefik"))
-            .map(|c| c.id);
+            .filter_map(|c| Some((c.id?, c.image?)))
+            .find(|(_, image)| image.contains("traefik"))
+            .map(|(id, _)| id);
 
         if let Some(id) = traefik_container_id {
             if let Err(e) = docker
@@ -203,17 +211,17 @@ impl DockerInfrastructure {
         Ok(())
     }
 
-    async fn disconnect_traefik(&self, network_id: &String) -> Result<(), ShipLiftError> {
-        let docker = Docker::new();
+    async fn disconnect_traefik(&self, network_id: &str) -> Result<(), ShipLiftError> {
+        let docker = Docker::connect_with_local_defaults()?;
 
-        let containers = docker
-            .containers()
-            .list(&ContainerListOptions::builder().build())
-            .await?;
-        let traefik_container_id = containers
+        let traefik_container_id = docker
+            // TODO: is there a way to filter by label
+            .list_containers(None)
+            .await?
             .into_iter()
-            .find(|c| c.image.contains("traefik"))
-            .map(|c| c.id);
+            .filter_map(|c| Some((c.id?, c.image?)))
+            .find(|(_, image)| image.contains("traefik"))
+            .map(|(id, _)| id);
 
         if let Some(id) = traefik_container_id {
             docker
@@ -226,29 +234,33 @@ impl DockerInfrastructure {
         Ok(())
     }
 
-    async fn delete_network(&self, app_name: &String) -> Result<(), ShipLiftError> {
+    async fn delete_network(&self, app_name: &AppName) -> Result<(), ShipLiftError> {
         let network_name = format!("{}-net", app_name);
 
-        let docker = Docker::new();
-        for n in docker
-            .networks()
-            .list(&Default::default())
+        let docker = Docker::connect_with_local_defaults()?;
+        for network_id in docker
+            .list_networks(None)
             .await?
             .iter()
-            .filter(|n| n.name == network_name)
+            .filter(|n| n.name == Some(network_name))
+            .filter_map(|n| n.id)
         {
-            self.disconnect_traefik(&n.id).await?;
-            docker.networks().get(&n.id).delete().await?;
+            self.disconnect_traefik(&network_id).await?;
+            docker.remove_network(&network_id).await?;
         }
 
         Ok(())
     }
 
-    async fn delete_volume_mount(&self, app_name: &String) -> Result<(), ShipLiftError> {
-        let docker = Docker::new();
-        let docker_volumes = docker.volumes();
-        for volume in DockerInfrastructure::fetch_existing_volumes(app_name).await? {
-            docker_volumes.get(&volume.name).delete().await?
+    async fn delete_volume_mount(&self, app_name: &AppName) -> Result<(), ShipLiftError> {
+        let docker = Docker::connect_with_local_defaults()?;
+        for volume in Self::fetch_existing_volumes(app_name)
+            .await?
+            .volumes
+            .into_iter()
+            .flatten()
+        {
+            docker.remove_volume(volume.name, None).await?;
         }
         Ok(())
     }
@@ -263,7 +275,7 @@ impl DockerInfrastructure {
         let network_id = self.create_or_get_network_id(app_name).await?;
 
         self.connect_traefik(&network_id).await?;
-        let existing_volumes = DockerInfrastructure::fetch_existing_volumes(app_name).await?;
+        let existing_volumes = Self::fetch_existing_volumes(app_name).await?;
         let futures = services
             .iter()
             .map(|service| {
@@ -275,10 +287,11 @@ impl DockerInfrastructure {
                     &existing_volumes,
                 )
             })
-            .collect::<Vec<_>>();
+            .map(Box::pin)
+            .collect::<FuturesUnordered<_>>();
 
         let mut services: Vec<Service> = Vec::new();
-        for service in join_all(futures).await {
+        while let Some(service) = futures.next().await? {
             services.push(service?);
         }
 
@@ -295,23 +308,28 @@ impl DockerInfrastructure {
             Some(services) => services.clone(),
         };
 
+        let docker = Docker::connect_with_local_defaults()?;
         let futures = container_details
-            .iter()
-            .filter(|details| details.state.running)
-            .map(|details| stop(details.clone()));
-        for container in join_all(futures).await {
-            trace!("Stopped container {:?}", container?);
-        }
+            .into_iter()
+            // TODO .filter(|details| details.state.running)
+            .filter_map(|details| Some((details, details.id.clone()?)))
+            .map(|(details, id)| async {
+                // double stopping???
+                docker.stop_container(&id, None).await?;
+                trace!("Stopped container {id} for {app_name}");
 
-        let mut services = Vec::with_capacity(container_details.len());
-        let futures = container_details
-            .iter()
-            .map(|details| delete(details.clone()));
-        for container in join_all(futures).await {
-            let container = container?;
-            trace!("Deleted container {:?}", container);
+                // double deleting???
+                docker.remove_container(&id, None).await?;
+                trace!("Deleted container {id} for {app_name}");
 
-            services.push(Service::try_from(&container)?);
+                Ok(details)
+            })
+            .collect::<FuturesUnordered<_>>();
+
+        let mut services = Vec::with_capacity(futures.len());
+        while let Some(result) = futures.next().await {
+            let container = result?;
+            services.push(Service::try_from(container)?);
         }
 
         self.delete_network(app_name).await?;
@@ -520,35 +538,35 @@ impl DockerInfrastructure {
         Ok(())
     }
 
-    async fn fetch_existing_volumes(app_name: &String) -> Result<Vec<VolumeInfo>, ShipLiftError> {
-        let docker = Docker::new();
-        docker.volumes().list().await.map(|volume_infos| {
-            volume_infos
-                .into_iter()
-                .filter(|s| {
-                    s.labels
-                        .as_ref()
-                        .map(|label| label.get(APP_NAME_LABEL) == Some(app_name))
-                        .unwrap_or(false)
-                })
-                .collect::<Vec<VolumeInfo>>()
-        })
+    async fn fetch_existing_volumes(
+        app_name: &AppName,
+    ) -> Result<VolumeListReponse, ShipLiftError> {
+        let docker = Docker::connect_with_local_defaults()?;
+        docker
+            .list_volumes(Some(bollard::volume::ListVolumesOptions {
+                filters: HashMap::from([(
+                    String::from("label"),
+                    vec![format!("{APP_NAME_LABEL}={app_name}")],
+                )]),
+            }))
+            .await
     }
 
     async fn create_docker_volume(
         app_name: &str,
         service: &DeployableService,
     ) -> Result<String, ShipLiftError> {
-        let docker = Docker::new();
-        let volumes = docker.volumes();
+        let docker = Docker::connect_with_local_defaults()?;
 
         let mut labels: HashMap<&str, &str> = HashMap::new();
         labels.insert(APP_NAME_LABEL, app_name);
         labels.insert(SERVICE_NAME_LABEL, service.service_name());
 
-        let volume_options = VolumeCreateOptions::builder().labels(&labels).build();
-        volumes
-            .create(&volume_options)
+        docker
+            .create_volume(CreateVolumeOptions {
+                // TODO let volume_options = VolumeCreateOptions::builder().labels(&labels).build();
+                ..Default::default()
+            })
             .await
             .map(|volume_info| volume_info.name)
     }
@@ -811,7 +829,7 @@ impl Infrastructure for DockerInfrastructure {
 
                 trace!(
                     "Acquiring logs of container {} since {:?}",
-                    container.id,
+                    container.id.unwrap(),
                     from
                 );
 
@@ -876,9 +894,9 @@ impl Infrastructure for DockerInfrastructure {
     ) -> Result<Option<Service>, failure::Error> {
         match self.get_app_container(app_name, service_name).await? {
             Some(container) => {
-                let docker = Docker::new();
+                let docker = Docker::connect_with_local_defaults()?;
                 let containers = docker.containers();
-                let c = containers.get(&container.id);
+                let c = containers.(&container.id);
 
                 let details = c.inspect().await?;
 
@@ -926,7 +944,7 @@ impl Infrastructure for DockerInfrastructure {
 fn not_found_to_none<T>(result: Result<T, ShipLiftError>) -> Result<Option<T>, ShipLiftError> {
     match result {
         Ok(value) => Ok(Some(value)),
-        Err(ShipLiftError::Fault { code, .. }) if code.as_u16() == 404u16 => Ok(None),
+        // TODO Err(ShipLiftError::Fault { code, .. }) if code.as_u16() == 404u16 => Ok(None),
         Err(err) => Err(err),
     }
 }
@@ -960,8 +978,8 @@ async fn pull(image: &Image, config: &Config) -> Result<Vec<serde_json::Value>, 
 }
 
 fn find_port(
-    container_details: &ContainerDetails,
-    labels: Option<&HashMap<String, String>>,
+    container_details: &ContainerInspectResponse,
+    labels: &Option<HashMap<String, String>>,
 ) -> Result<u16, DockerInfrastructureError> {
     if let Some(port) = labels.and_then(|labels| labels.get(CONTAINER_PORT_LABEL)) {
         match port.parse::<u16>() {
@@ -974,7 +992,7 @@ fn find_port(
             }),
         }
     } else {
-        Ok(match &container_details.network_settings.ports {
+        Ok(match &container_details.network_settings.and_then(|s|s.ports) {
             None => 80u16,
             Some(ports) => {
                 let ports_regex = Regex::new(r#"^(?P<port>\d+).*"#).unwrap();
@@ -990,79 +1008,54 @@ fn find_port(
     }
 }
 
-impl TryFrom<&ContainerDetails> for Service {
+impl TryFrom<ContainerInspectResponse> for Service {
     type Error = DockerInfrastructureError;
 
     fn try_from(
-        container_details: &ContainerDetails,
+        container_details: ContainerInspectResponse,
     ) -> Result<Service, DockerInfrastructureError> {
-        let labels = container_details.config.labels.as_ref();
+        let mut labels = container_details.config.and_then(|config| config.labels);
 
-        let app_name = match labels.and_then(|labels| labels.get(APP_NAME_LABEL)) {
+        let app_name = match labels.and_then(|mut labels| labels.remove(APP_NAME_LABEL)) {
             Some(name) => name,
             None => {
                 return Err(DockerInfrastructureError::MissingAppNameLabel {
-                    container_id: container_details.id.clone(),
+                    container_id: container_details.id.unwrap(),
                 });
             }
         };
 
-        let started_at = container_details.state.started_at;
-        let status = if container_details.state.running {
-            ServiceStatus::Running
-        } else {
-            ServiceStatus::Paused
-        };
-
-        let mut builder = ServiceBuilder::new()
-            .id(container_details.id.clone())
-            .app_name(app_name.clone())
-            .config(ServiceConfig::try_from(container_details)?)
-            .service_status(status)
-            .started_at(started_at);
-
-        if !container_details.network_settings.ip_address.is_empty() {
-            let addr = IpAddr::from_str(&container_details.network_settings.ip_address)?;
-            let port = find_port(container_details, labels)?;
-            builder = builder.endpoint(addr, port);
-        }
-
-        Ok(builder.build()?)
-    }
-}
-
-impl TryFrom<&ContainerDetails> for ServiceConfig {
-    type Error = DockerInfrastructureError;
-
-    fn try_from(container_details: &ContainerDetails) -> Result<Self, Self::Error> {
-        let labels = container_details.config.labels.as_ref();
-
-        let service_name = match labels.and_then(|labels| labels.get(SERVICE_NAME_LABEL)) {
+        let service_name = match labels.and_then(|mut labels| labels.remove(SERVICE_NAME_LABEL)) {
             Some(name) => name,
             None => {
                 return Err(DockerInfrastructureError::MissingServiceNameLabel {
-                    container_id: container_details.id.clone(),
+                    container_id: container_details.id.unwrap(),
                 });
             }
         };
 
-        let image = match labels.and_then(|labels| labels.get(IMAGE_LABEL)) {
-            Some(image_label) => Image::from_str(image_label).map_err(|err| {
+        let image = match labels.and_then(|mut labels| labels.remove(IMAGE_LABEL)) {
+            Some(image_label) => Image::from_str(&image_label).map_err(|err| {
                 DockerInfrastructureError::UnexpectedImageFormat {
-                    img: image_label.clone(),
+                    img: image_label,
                     err: err.to_string(),
                 }
             }),
-            None => Image::from_str(&container_details.image).map_err(|err| {
-                DockerInfrastructureError::UnexpectedImageFormat {
-                    img: container_details.image.clone(),
-                    err: err.to_string(),
-                }
-            }),
+            None => {
+                let Some(image) = container_details.image else {
+                    todo!()
+                };
+                Image::from_str(&image).map_err(|err| {
+                    DockerInfrastructureError::UnexpectedImageFormat {
+                        img: image,
+                        err: err.to_string(),
+                    }
+                })
+            }
         }?;
         let mut config = ServiceConfig::new(service_name.clone(), image);
 
-        if let Some(lb) = labels.and_then(|labels| labels.get(CONTAINER_TYPE_LABEL)) {
+        if let Some(lb) = labels.and_then(|mut labels| labels.remove(CONTAINER_TYPE_LABEL)) {
             config.set_container_type(lb.parse::<ContainerType>()?);
         }
 
@@ -1075,25 +1068,57 @@ impl TryFrom<&ContainerDetails> for ServiceConfig {
             config.set_env(Some(env));
         }
 
-        Ok(config)
+        let Some(state) = container_details.state else {
+            todo!()
+        };
+
+        let started_at = state
+            .started_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .expect(""); // TODO: error handling
+        let status = if state.running.unwrap_or(false) {
+            ServiceStatus::Running
+        } else {
+            ServiceStatus::Paused
+        };
+
+        let mut builder = ServiceBuilder::new()
+            .id(container_details.id.unwrap())
+            .app_name(app_name)
+            .config(config)
+            .service_status(status)
+            .started_at(started_at.into());
+
+        if let Some(ip_address) = container_details
+            .network_settings
+            .and_then(|settings| settings.ip_address)
+        {
+            let addr = IpAddr::from_str(&ip_address)?;
+            let port = find_port(&container_details, &labels)?;
+            builder = builder.endpoint(addr, port);
+        }
+
+        Ok(builder.build()?)
     }
 }
 
 impl From<ShipLiftError> for DockerInfrastructureError {
     fn from(err: ShipLiftError) -> Self {
-        match &err {
-            ShipLiftError::Fault { code, message } => match code.as_u16() {
-                404u16 => DockerInfrastructureError::ImageNotFound {
-                    internal_message: message.clone(),
-                },
-                _ => DockerInfrastructureError::UnexpectedError {
-                    internal_message: err.to_string(),
-                },
-            },
-            err => DockerInfrastructureError::UnexpectedError {
-                internal_message: err.to_string(),
-            },
+        // match &err {
+        //     ShipLiftError::Fault { code, message } => match code.as_u16() {
+        //         404u16 => DockerInfrastructureError::ImageNotFound {
+        //             internal_message: message.clone(),
+        //         },
+        //         _ => DockerInfrastructureError::UnexpectedError {
+        //             internal_message: err.to_string(),
+        //         },
+        //     },
+        /*err =>*/
+        DockerInfrastructureError::UnexpectedError {
+            internal_message: err.to_string(),
         }
+        // }
     }
 }
 
