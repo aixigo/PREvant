@@ -30,18 +30,13 @@ use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::ServiceConfig;
-use crate::models::{AppName, AppNameError, LogChunk};
+use crate::models::{AppName, AppNameError};
 use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
-use chrono::DateTime;
-use futures::StreamExt;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
 use regex::Regex;
-use rocket::http::hyper::header::CONTENT_DISPOSITION;
-use rocket::http::hyper::header::LINK;
-use rocket::http::{RawStr, Status};
+use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
-use rocket::response::stream::{Event, EventStream};
 use rocket::response::{Responder, Response};
 use rocket::serde::json::Json;
 use rocket::State;
@@ -51,15 +46,17 @@ use std::task::Poll;
 use std::time::Duration;
 use tokio::time::timeout;
 
+mod logs;
+
 pub fn apps_routes() -> Vec<rocket::Route> {
     rocket::routes![
         apps,
         delete_app,
         create_app,
-        logs,
+        logs::logs,
+        logs::stream_logs,
         change_status,
         status_change,
-        stream_logs
     ]
 }
 
@@ -190,84 +187,6 @@ async fn change_status(
     Ok(ServiceStatusResponse { service })
 }
 
-#[get("/<app_name>/logs/<service_name>?<log_query..>", format = "text/plain")]
-async fn logs<'r>(
-    app_name: Result<AppName, AppNameError>,
-    service_name: &'r str,
-    log_query: LogQuery,
-    apps: &State<Arc<Apps>>,
-) -> HttpResult<LogsResponse<'r>> {
-    let app_name = app_name?;
-
-    let since = match log_query.since {
-        None => None,
-        Some(since) => match DateTime::parse_from_rfc3339(&since) {
-            Ok(since) => Some(since),
-            Err(err) => {
-                return Err(
-                    HttpApiProblem::with_title(http_api_problem::StatusCode::BAD_REQUEST)
-                        .detail(format!("{}", err))
-                        .into(),
-                );
-            }
-        },
-    };
-
-    let log_chunk = apps
-        .get_logs(&app_name, service_name, &since, &log_query.limit)
-        .await?;
-
-    Ok(LogsResponse {
-        log_chunk,
-        app_name,
-        service_name,
-        limit: log_query.limit,
-        as_attachment: log_query.as_attachment,
-    })
-}
-
-#[get(
-    "/<app_name>/logs/<service_name>?<log_query..>",
-    format = "text/event-stream",
-    rank = 2
-)]
-async fn stream_logs<'r>(
-    app_name: Result<AppName, AppNameError>,
-    service_name: &'r str,
-    log_query: LogQuery,
-    apps: &'r State<Arc<Apps>>,
-) -> HttpResult<EventStream![Event + 'r]> {
-    let app_name = app_name.unwrap();
-    let since = match &log_query.since {
-        None => None,
-        Some(since) => match DateTime::parse_from_rfc3339(&since) {
-            Ok(since) => Some(since),
-            Err(err) => {
-                return Err(
-                    HttpApiProblem::with_title(http_api_problem::StatusCode::BAD_REQUEST)
-                        .detail(format!("{}", err))
-                        .into(),
-                );
-            }
-        },
-    };
-
-    Ok(EventStream! {
-        let mut log_chunk = apps
-            .stream_logs(&app_name, service_name, &since, &log_query.limit)
-            .await;
-
-        while let Some(result) = log_chunk.as_mut().next().await {
-            match result {
-                Ok((_, log_line)) => yield Event::data(log_line),
-                Err(_e) => {
-                    break;
-                }
-            }
-        }
-    })
-}
-
 #[derive(Debug, PartialEq)]
 pub enum RunOptions {
     Sync,
@@ -308,22 +227,6 @@ fn map_join_error(err: tokio::task::JoinError) -> HttpApiError {
         .into()
 }
 
-pub struct LogsResponse<'a> {
-    log_chunk: Option<LogChunk>,
-    app_name: AppName,
-    service_name: &'a str,
-    limit: Option<usize>,
-    as_attachment: bool,
-}
-
-#[derive(FromForm)]
-struct LogQuery {
-    since: Option<String>,
-    limit: Option<usize>,
-    #[field(name = "asAttachment")]
-    as_attachment: bool,
-}
-
 #[derive(FromForm)]
 pub struct CreateAppOptions {
     #[field(name = "replicateFrom")]
@@ -333,60 +236,6 @@ pub struct CreateAppOptions {
 impl CreateAppOptions {
     fn replicate_from(&self) -> &Option<AppName> {
         &self.replicate_from
-    }
-}
-
-impl<'r> Responder<'r, 'static> for LogsResponse<'r> {
-    fn respond_to(self, _request: &'r Request) -> Result<Response<'static>, Status> {
-        use std::io::Cursor;
-        let log_chunk = match self.log_chunk {
-            None => {
-                let payload = HttpApiProblem::with_title(http_api_problem::StatusCode::NOT_FOUND)
-                    .json_bytes();
-                return Response::build()
-                    .status(Status::NotFound)
-                    .raw_header("Content-type", "application/problem+json")
-                    .sized_body(payload.len(), Cursor::new(payload))
-                    .ok();
-            }
-            Some(log_chunk) => log_chunk,
-        };
-
-        let from = *log_chunk.until() + chrono::Duration::milliseconds(1);
-
-        let next_logs_url = match self.limit {
-            Some(limit) => format!(
-                "/api/apps/{}/logs/{}?limit={}&since={}",
-                self.app_name,
-                self.service_name,
-                limit,
-                RawStr::new(&from.to_rfc3339()).percent_encode(),
-            ),
-            None => format!(
-                "/api/apps/{}/logs/{}?since={}",
-                self.app_name,
-                self.service_name,
-                RawStr::new(&from.to_rfc3339()).percent_encode(),
-            ),
-        };
-
-        let content_dispositon_value = if self.as_attachment {
-            format!(
-                "attachment; filename=\"{}_{}_{}.txt\"",
-                self.app_name,
-                self.service_name,
-                log_chunk.until().format("%Y%m%d_%H%M%S")
-            )
-        } else {
-            String::from("inline")
-        };
-
-        let log_lines = log_chunk.log_lines();
-        Response::build()
-            .raw_header(LINK.as_str(), format!("<{}>;rel=next", next_logs_url))
-            .raw_header(CONTENT_DISPOSITION.as_str(), content_dispositon_value)
-            .sized_body(log_lines.len(), Cursor::new(log_lines.clone()))
-            .ok()
     }
 }
 
@@ -603,14 +452,13 @@ mod tests {
         use crate::models::{AppName, AppStatusChangeId};
         use crate::sc;
         use assert_json_diff::assert_json_include;
+        use rocket::http::ContentType;
         use rocket::http::Header;
         use rocket::http::Status;
-        use rocket::http::{Accept, ContentType};
         use rocket::local::asynchronous::Client;
         use serde_json::json;
         use serde_json::Value;
         use std::convert::From;
-        use std::str::FromStr;
         use std::sync::Arc;
 
         async fn set_up_rocket_with_dummy_infrastructure_and_a_running_app(
@@ -620,7 +468,7 @@ mod tests {
             let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
             let _result = apps
                 .create_or_update(
-                    &AppName::from_str("master").unwrap(),
+                    &AppName::master(),
                     &AppStatusChangeId::new(),
                     None,
                     &vec![sc!("service-a")],
@@ -837,87 +685,6 @@ mod tests {
 
             let response = get.dispatch().await;
             assert_eq!(response.status(), Status::BadRequest);
-        }
-
-        #[tokio::test]
-        async fn log_weblink_with_no_limit() -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
-
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-
-            let response = client
-                .get("/api/apps/master/logs/service-a")
-                .header(Accept::Text)
-                .dispatch()
-                .await;
-            let mut link_header = response.headers().get("Link");
-            assert_eq!(
-                link_header.next(),
-                Some(
-                    "</api/apps/master/logs/service-a?since=2019-07-18T07:35:00.001%2B00:00>;rel=next"
-                )
-            );
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn log_weblink_with_some_limit() -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
-
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-
-            let response = client
-                .get("/api/apps/master/logs/service-a?limit=20000&since=2019-07-22T08:42:47-00:00")
-                .header(Accept::Text)
-                .dispatch()
-                .await;
-            let mut link_header = response.headers().get("Link");
-            assert_eq!(
-                link_header.next(),
-                Some("</api/apps/master/logs/service-a?limit=20000&since=2019-07-18T07:35:00.001%2B00:00>;rel=next")
-            );
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn log_content_disposition_for_downloading_as_attachment(
-        ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
-
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-
-            let response = client
-                .get("/api/apps/master/logs/service-a?limit=20000&since=2019-07-22T08:42:47-00:00&asAttachment=true")
-                .header(Accept::Text)
-                .dispatch()
-                .await;
-            let mut link_header = response.headers().get("Content-Disposition");
-            assert_eq!(
-                link_header.next(),
-                Some("attachment; filename=\"master_service-a_20190718_073500.txt\"")
-            );
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn log_content_disposition_for_displaying_as_inline(
-        ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
-
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-
-            let response = client
-                .get("/api/apps/master/logs/service-a?limit=20000&since=2019-07-22T08:42:47-00:00")
-                .header(Accept::Text)
-                .dispatch()
-                .await;
-            let mut link_header = response.headers().get("Content-Disposition");
-            assert_eq!(link_header.next(), Some("inline"));
-            Ok(())
         }
     }
 
