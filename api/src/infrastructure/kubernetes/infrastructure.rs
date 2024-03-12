@@ -64,7 +64,7 @@ use kube::{
 use log::{debug, warn};
 use multimap::MultiMap;
 use secstr::SecUtf8;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::{From, TryFrom};
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -522,8 +522,23 @@ impl Infrastructure for KubernetesInfrastructure {
         )
         .await?;
 
+        let deployment_unit_service_names = deployment_unit
+            .services()
+            .iter()
+            .map(|s| s.service_name())
+            .collect::<HashSet<_>>();
+
         let services = self.get_services_of_app(app_name).await?;
-        k8s_deployment_unit.filter_by_instances_and_replicas(&services);
+
+        k8s_deployment_unit.filter_by_instances_and_replicas(
+            services
+                .iter()
+                // We must exclude the services that are provided by the deployment_unit
+                // because without that filter a second update of the service would create an
+                // additional Kubernetes deployment instead of updating/merging the existing one
+                // that had been created by the bootstrap containers.
+                .filter(|s| !deployment_unit_service_names.contains(s.service_name())),
+        );
 
         for deployable_service in deployment_unit.services() {
             let (secret, service, deployment, ingress_route, middlewares) = self
