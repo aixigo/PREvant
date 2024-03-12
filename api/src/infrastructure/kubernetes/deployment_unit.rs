@@ -35,6 +35,7 @@ use kube::{
 };
 use serde::Deserialize;
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, HashSet},
     str::FromStr,
 };
@@ -586,17 +587,17 @@ impl K8sDeploymentUnit {
     /// This filters bootstrapped [Deployments](Deployment), [Stateful Sets](StatefulSet), or
     /// [Pods](Pod) by the existing [services](Service) in already deployed application to avoid
     /// that deployments of instances overwrite each other
-    pub(super) fn filter_by_instances_and_replicas(
-        &mut self,
-        services: &[crate::models::service::Service],
-    ) {
+    pub(super) fn filter_by_instances_and_replicas<S>(&mut self, services: S)
+    where
+        S: Iterator,
+        <S as Iterator>::Item: Borrow<crate::models::service::Service>,
+    {
         let service_not_to_be_retained = services
-            .iter()
             .filter(|s| {
-                s.container_type() == &ContainerType::Instance
-                    || s.container_type() == &ContainerType::Replica
+                s.borrow().container_type() == &ContainerType::Instance
+                    || s.borrow().container_type() == &ContainerType::Replica
             })
-            .map(|s| s.service_name())
+            .map(|s| s.borrow().service_name().clone())
             .collect::<HashSet<_>>();
 
         self.deployments.retain(|deployment| {
@@ -1145,12 +1146,14 @@ mod tests {
         )
         .await;
 
-        unit.filter_by_instances_and_replicas(dbg!(&[ServiceBuilder::new()
-            .app_name(AppName::master().to_string())
-            .id(String::from("test"))
-            .config(crate::sc!("nginx", "nginx:1.15"))
-            .build()
-            .unwrap()]));
+        unit.filter_by_instances_and_replicas(std::iter::once(
+            ServiceBuilder::new()
+                .app_name(AppName::master().to_string())
+                .id(String::from("test"))
+                .config(crate::sc!("nginx", "nginx:1.15"))
+                .build()
+                .unwrap(),
+        ));
 
         assert!(unit.deployments.is_empty());
     }
@@ -1183,12 +1186,14 @@ mod tests {
         )
         .await;
 
-        unit.filter_by_instances_and_replicas(dbg!(&[ServiceBuilder::new()
-            .app_name(AppName::master().to_string())
-            .id(String::from("test"))
-            .config(crate::sc!("postgres", "postgres"))
-            .build()
-            .unwrap()]));
+        unit.filter_by_instances_and_replicas(std::iter::once(
+            ServiceBuilder::new()
+                .app_name(AppName::master().to_string())
+                .id(String::from("test"))
+                .config(crate::sc!("postgres", "postgres"))
+                .build()
+                .unwrap(),
+        ));
 
         assert!(!unit.deployments.is_empty());
     }
