@@ -62,7 +62,6 @@ use futures::{StreamExt, TryStreamExt};
 use multimap::MultiMap;
 use regex::Regex;
 use rocket::form::validate::Contains;
-use rocket::http::hyper::Body;
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
 use std::net::{AddrParseError, IpAddr};
@@ -576,18 +575,33 @@ impl DockerInfrastructure {
 
         let docker = Docker::connect_with_socket_defaults()?;
 
+        let mut tar_builder = tar::Builder::new(Vec::new());
+
         for (path, data) in files.into_iter() {
-            docker
-                .upload_to_container(
-                    &container_info.id,
-                    Some(UploadToContainerOptions {
-                        path: path.to_str().unwrap(),
-                        ..Default::default()
-                    }),
-                    Body::from(data.into_unsecure()),
-                )
-                .await?;
+            let mut header = tar::Header::new_gnu();
+            let file_contents = data.into_unsecure();
+            header.set_size(file_contents.as_bytes().len() as u64);
+            header.set_mode(0o644);
+            tar_builder.append_data(
+                &mut header,
+                path.to_path_buf()
+                    .iter()
+                    .skip(1)
+                    .collect::<std::path::PathBuf>(),
+                file_contents.as_bytes(),
+            )?;
         }
+
+        docker
+            .upload_to_container(
+                &container_info.id,
+                Some(UploadToContainerOptions {
+                    path: "/",
+                    ..Default::default()
+                }),
+                tar_builder.into_inner()?.into(),
+            )
+            .await?;
 
         Ok(())
     }
@@ -1241,16 +1255,22 @@ impl TryFrom<ContainerInspectResponse> for Service {
             .service_status(status)
             .started_at(started_at.into());
 
-        if let Some((ports, ip_address)) = container_details
-            .network_settings
-            .and_then(|settings| Some((settings.ports?, settings.ip_address?)))
-        {
-            let addr = IpAddr::from_str(&ip_address)?;
-            let port = find_port(
-                &ports.keys().map(AsRef::as_ref).collect::<Vec<&str>>(),
-                &mut labels,
-            )?;
-            builder = builder.endpoint(addr, port);
+        if let Some(network_settings) = container_details.network_settings {
+            if let Some(ip_address) = network_settings.ip_address.as_ref() {
+                if !ip_address.is_empty() {
+                    let port = find_port(
+                        &network_settings
+                            .ports
+                            .unwrap_or_default()
+                            .keys()
+                            .map(AsRef::as_ref)
+                            .collect::<Vec<&str>>(),
+                        &mut labels,
+                    )?;
+                    let ip_address = IpAddr::from_str(ip_address)?;
+                    builder = builder.endpoint(ip_address, port);
+                }
+            }
         }
 
         Ok(builder.build()?)

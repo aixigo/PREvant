@@ -69,7 +69,7 @@ pub async fn tickets(
 
             let issue_keys = services
                 .keys()
-                .map(|s| format!("{:?}", s))
+                .map(|s| format!("\"{}\"", s))
                 .collect::<Vec<String>>()
                 .join(", ");
 
