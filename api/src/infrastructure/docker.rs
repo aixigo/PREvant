@@ -811,7 +811,7 @@ impl Infrastructure for DockerInfrastructure {
                     }
 
                     log_options.follow(follow);
-                    
+
                     let logs = docker
                         .containers()
                         .get(&container.id)

@@ -51,7 +51,7 @@ impl TraefikIngressRoute {
             entry_points: Vec::new(),
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::path_prefix_rule([app_name.as_str()]),
-                middlewares: vec![TraefikMiddleware::Spec {
+                middlewares: vec![TraefikMiddleware {
                     name: format!("{app_name}-middleware"),
                     spec: Value::Map(middlewares),
                 }],
@@ -77,7 +77,7 @@ impl TraefikIngressRoute {
             entry_points: Vec::new(),
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::path_prefix_rule(&[app_name.as_str(), service_name]),
-                middlewares: vec![TraefikMiddleware::Spec {
+                middlewares: vec![TraefikMiddleware {
                     name: format!("{app_name}-{service_name}-middleware"),
                     spec: Value::Map(middlewares),
                 }],
@@ -97,14 +97,9 @@ impl TraefikIngressRoute {
     pub fn with_existing_routing_rules(
         entry_points: Vec<String>,
         rule: TraefikRouterRule,
-        middlewares: Vec<String>,
+        middlewares: Vec<TraefikMiddleware>,
         cert_resolver: Option<String>,
     ) -> Self {
-        let middlewares = middlewares
-            .into_iter()
-            .map(TraefikMiddleware::Ref)
-            .collect::<Vec<_>>();
-
         Self {
             entry_points,
             routes: vec![TraefikRoute { rule, middlewares }],
@@ -310,16 +305,22 @@ impl TraefikRouterRule {
     }
 }
 
+/// This provides a container possible values that are defined [in the Traefik Middleware
+/// specification](https://doc.traefik.io/traefik/middlewares/http/overview/).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TraefikMiddleware {
-    /// This refers to an existing middleware within the cluster
-    Ref(String),
-    /// This provides a container possible values that are defined [in the Traefik Middleware
-    /// specification](https://doc.traefik.io/traefik/middlewares/http/overview/).
-    Spec {
-        name: String,
-        spec: serde_value::Value,
-    },
+pub struct TraefikMiddleware {
+    pub name: String,
+    pub spec: serde_value::Value,
+}
+
+impl TraefikMiddleware {
+    pub fn name(&self) -> &String {
+        &self.name
+    }
+
+    pub fn spec(&self) -> &serde_value::Value {
+        &self.spec
+    }
 }
 
 #[derive(pest_derive::Parser)]
@@ -717,7 +718,14 @@ mod test {
             entry_points: vec![String::from("web")],
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
-                middlewares: vec![TraefikMiddleware::Ref(String::from("traefik-forward-auth"))],
+                middlewares: vec![TraefikMiddleware {
+                    name: String::from("traefik-forward-auth"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "forwardAuth": {
+                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                        }
+                    })).unwrap()
+                }],
             }],
             tls: Some(TraefikTLS {
                 cert_resolver: String::from("letsencrypt"),
@@ -737,8 +745,15 @@ mod test {
                     )
                     .unwrap(),
                     middlewares: vec![
-                        TraefikMiddleware::Ref(String::from("traefik-forward-auth")),
-                        TraefikMiddleware::Spec {
+                        TraefikMiddleware {
+                            name: String::from("traefik-forward-auth"),
+                            spec: serde_value::to_value(serde_json::json!({
+                                "forwardAuth": {
+                                    "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                                }
+                            })).unwrap()
+                        },
+                        TraefikMiddleware {
                             name: String::from("master-whoami-middleware"),
                             spec: Value::Map(BTreeMap::from([(
                                 Value::String(String::from("stripPrefix")),
@@ -765,7 +780,14 @@ mod test {
             entry_points: vec![String::from("web")],
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
-                middlewares: vec![TraefikMiddleware::Ref(String::from("traefik-forward-auth"))],
+                middlewares: vec![TraefikMiddleware {
+                    name: String::from("traefik-forward-auth"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "forwardAuth": {
+                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                        }
+                    })).unwrap()
+                }],
             }],
             tls: Some(TraefikTLS {
                 cert_resolver: String::from("letsencrypt"),
@@ -785,19 +807,24 @@ mod test {
                     )
                     .unwrap(),
                     middlewares: vec![
-                        TraefikMiddleware::Spec {
+                        TraefikMiddleware {
                             name: String::from("master-whoami-middleware"),
-                            spec: Value::Map(BTreeMap::from([(
-                                Value::String(String::from("stripPrefix")),
-                                Value::Map(BTreeMap::from([(
-                                    Value::String(String::from("prefixes")),
-                                    Value::Seq(vec![Value::String(String::from(
+                            spec: serde_value::to_value(serde_json::json!({
+                                "stripPrefix": {
+                                    "prefixes": [
                                         "/master/whoami/"
-                                    ))])
-                                )]))
-                            )]))
+                                    ]
+                                }
+                            })).unwrap()
                         },
-                        TraefikMiddleware::Ref(String::from("traefik-forward-auth")),
+                        TraefikMiddleware {
+                            name: String::from("traefik-forward-auth"),
+                            spec: serde_value::to_value(serde_json::json!({
+                                "forwardAuth": {
+                                    "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                                }
+                            })).unwrap()
+                        },
                     ],
                 }],
                 tls: Some(TraefikTLS {

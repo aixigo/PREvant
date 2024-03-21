@@ -35,8 +35,8 @@ use super::payloads::{
 };
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
-use crate::infrastructure::traefik::TraefikIngressRoute;
-use crate::infrastructure::Infrastructure;
+use crate::infrastructure::traefik::{TraefikIngressRoute, TraefikMiddleware};
+use crate::infrastructure::{Infrastructure, TraefikRouterRule};
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{
     AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig,
@@ -55,6 +55,7 @@ use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
     core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
 };
+use kube::Resource;
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     client::Client,
@@ -705,9 +706,8 @@ impl Infrastructure for KubernetesInfrastructure {
             .collect::<BTreeMap<_, _>>();
 
         let client = self.client().await?;
-        let services = Api::<V1Service>::all(client.clone())
-            .list(&Default::default())
-            .await?;
+        let api = Api::<V1Service>::all(client);
+        let services = api.list(&Default::default()).await?;
 
         let Some(service) = services.into_iter().find(|s| {
             let Some(spec) = &s.spec else { return false };
@@ -732,25 +732,63 @@ impl Infrastructure for KubernetesInfrastructure {
             return Ok(None);
         };
 
-        let routes = Api::<IngressRoute>::namespaced(client, &service.metadata.namespace.unwrap())
-            .list(&Default::default())
-            .await?;
+        let api = Api::<IngressRoute>::namespaced(
+            api.into_client(),
+            &service.metadata.namespace.clone().unwrap(),
+        );
+        let routes = api.list(&Default::default()).await?;
 
-        for r in routes {
-            if let Some(routes) = &r.spec.routes {
+        let Some((ingress_route, inner_route)) = routes
+            .iter()
+            .filter_map(|r| Some((r, r.spec.routes.as_ref()?)))
+            .filter_map(|(ingress_route, routes)| {
                 for route in routes {
                     for s in &route.services {
-                        if let Some(name) = &service.metadata.name {
-                            if &s.name == name {
-                                return Ok(TraefikIngressRoute::try_from(r).ok());
-                            }
+                        if Some(&s.name) == service.meta().name.as_ref() {
+                            return Some((ingress_route, route.clone()));
                         }
                     }
                 }
-            }
+
+                None
+            })
+            .next()
+        else {
+            return Ok(None);
+        };
+
+        let api = Api::<Middleware>::namespaced(
+            api.into_client(),
+            &service.metadata.namespace.clone().unwrap(),
+        );
+        let mut middlewares = inner_route
+            .middlewares
+            .iter()
+            .flatten()
+            .map(|m| api.get(&m.name))
+            .collect::<FuturesUnordered<_>>();
+
+        let mut traefik_middlewares = Vec::with_capacity(middlewares.len());
+        while let Some(middleware) = middlewares.try_next().await? {
+            let middleware = TraefikMiddleware {
+                name: middleware.metadata.name.expect("There should be a name"),
+                spec: serde_value::to_value(middleware.spec.0).expect("should be convertible"),
+            };
+
+            traefik_middlewares.push(middleware);
         }
 
-        Ok(None)
+        Ok(Some(TraefikIngressRoute::with_existing_routing_rules(
+            ingress_route.spec.entry_points.clone().unwrap_or_default(),
+            TraefikRouterRule::from_str(&inner_route.r#match).unwrap(),
+            traefik_middlewares,
+            ingress_route
+                .spec
+                .tls
+                .clone()
+                .unwrap_or_default()
+                .cert_resolver,
+        )))
     }
 }
 
