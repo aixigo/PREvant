@@ -97,6 +97,7 @@ pub struct TraefikRuleService {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TraefikRuleMiddleware {
     pub name: String,
+    pub namespace: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -163,7 +164,10 @@ impl TryFrom<IngressRoute> for TraefikIngressRoute {
                 .middlewares
                 .unwrap_or_default()
                 .into_iter()
-                .map(|m| m.name)
+                .map(|m| TraefikMiddleware::Ref {
+                    name: m.name,
+                    namespace: m.namespace,
+                })
                 .collect(),
             value.spec.tls.unwrap_or_default().cert_resolver,
         ))
@@ -254,14 +258,18 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
         .iter()
         .flat_map(|route| route.middlewares().iter())
         .filter_map(|middleware| match middleware {
-            crate::infrastructure::traefik::TraefikMiddleware::Ref(name) => {
-                Some(TraefikRuleMiddleware { name: name.clone() })
+            crate::infrastructure::traefik::TraefikMiddleware::Ref { name, namespace } => {
+                Some(TraefikRuleMiddleware {
+                    name: name.clone(),
+                    namespace: namespace.clone(),
+                })
             }
             crate::infrastructure::traefik::TraefikMiddleware::Spec { .. } => None,
         })
         .collect::<Vec<_>>();
     middlewares.extend(middleware.as_ref().map(|m| TraefikRuleMiddleware {
         name: m.metadata.name.clone().unwrap_or_default(),
+        namespace: None,
     }));
 
     let routes = vec![TraefikRuleSpec {
@@ -660,18 +668,22 @@ pub fn ingress_route_payload(app_name: &AppName, service: &DeployableService) ->
                 .middlewares()
                 .iter()
                 .map(|middleware| {
-                    let name = match middleware {
-                        crate::infrastructure::traefik::TraefikMiddleware::Ref(name) => {
-                            name.clone()
-                        }
+                    let (name, namespace) = match middleware {
+                        crate::infrastructure::traefik::TraefikMiddleware::Ref {
+                            name,
+                            namespace,
+                        } => (name.clone(), namespace.clone()),
                         crate::infrastructure::traefik::TraefikMiddleware::Spec {
                             name,
                             spec: _,
-                        } => AppName::from_str(name)
-                            .map(|app_name| app_name.to_rfc1123_namespace_id())
-                            .unwrap_or_else(|_| name.clone()),
+                        } => (
+                            AppName::from_str(name)
+                                .map(|app_name| app_name.to_rfc1123_namespace_id())
+                                .unwrap_or_else(|_| name.clone()),
+                            None,
+                        ),
                     };
-                    TraefikRuleMiddleware { name }
+                    TraefikRuleMiddleware { name, namespace }
                 })
                 .collect::<Vec<_>>();
 
@@ -736,7 +748,7 @@ pub fn middleware_payload(
             r.middlewares()
                 .iter()
                 .filter_map(|middleware| match middleware {
-                    TraefikMiddleware::Ref(_) => None,
+                    TraefikMiddleware::Ref { .. } => None,
                     TraefikMiddleware::Spec { name, spec } => Some((
                         AppName::from_str(name)
                             .map(|app_name| app_name.to_rfc1123_namespace_id())

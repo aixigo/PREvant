@@ -97,14 +97,9 @@ impl TraefikIngressRoute {
     pub fn with_existing_routing_rules(
         entry_points: Vec<String>,
         rule: TraefikRouterRule,
-        middlewares: Vec<String>,
+        middlewares: Vec<TraefikMiddleware>,
         cert_resolver: Option<String>,
     ) -> Self {
-        let middlewares = middlewares
-            .into_iter()
-            .map(TraefikMiddleware::Ref)
-            .collect::<Vec<_>>();
-
         Self {
             entry_points,
             routes: vec![TraefikRoute { rule, middlewares }],
@@ -313,7 +308,10 @@ impl TraefikRouterRule {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TraefikMiddleware {
     /// This refers to an existing middleware within the cluster
-    Ref(String),
+    Ref {
+        name: String,
+        namespace: Option<String>,
+    },
     /// This provides a container possible values that are defined [in the Traefik Middleware
     /// specification](https://doc.traefik.io/traefik/middlewares/http/overview/).
     Spec {
@@ -717,7 +715,10 @@ mod test {
             entry_points: vec![String::from("web")],
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
-                middlewares: vec![TraefikMiddleware::Ref(String::from("traefik-forward-auth"))],
+                middlewares: vec![TraefikMiddleware::Ref {
+                    name: String::from("traefik-forward-auth"),
+                    namespace: None,
+                }],
             }],
             tls: Some(TraefikTLS {
                 cert_resolver: String::from("letsencrypt"),
@@ -737,7 +738,10 @@ mod test {
                     )
                     .unwrap(),
                     middlewares: vec![
-                        TraefikMiddleware::Ref(String::from("traefik-forward-auth")),
+                        TraefikMiddleware::Ref {
+                            name: String::from("traefik-forward-auth"),
+                            namespace: None
+                        },
                         TraefikMiddleware::Spec {
                             name: String::from("master-whoami-middleware"),
                             spec: Value::Map(BTreeMap::from([(
@@ -765,7 +769,10 @@ mod test {
             entry_points: vec![String::from("web")],
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
-                middlewares: vec![TraefikMiddleware::Ref(String::from("traefik-forward-auth"))],
+                middlewares: vec![TraefikMiddleware::Ref {
+                    name: String::from("traefik-forward-auth"),
+                    namespace: None,
+                }],
             }],
             tls: Some(TraefikTLS {
                 cert_resolver: String::from("letsencrypt"),
@@ -797,7 +804,10 @@ mod test {
                                 )]))
                             )]))
                         },
-                        TraefikMiddleware::Ref(String::from("traefik-forward-auth")),
+                        TraefikMiddleware::Ref {
+                            name: String::from("traefik-forward-auth"),
+                            namespace: None
+                        },
                     ],
                 }],
                 tls: Some(TraefikTLS {
