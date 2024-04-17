@@ -98,7 +98,7 @@ impl<'a> Registry<'a> {
     ) -> Result<(&'i Image, ImageInfo), (&'i Image, OciDistributionError)> {
         debug!("Resolve image manifest for {:?}", image);
 
-        let mut client = Client::new(ClientConfig {
+        let client = Client::new(ClientConfig {
             platform_resolver: Some(Box::new(|entries| {
                 oci_distribution::client::current_platform_resolver(entries).or(
                     // There are cases where current_platform_resolver fails, e.g. in tests on
