@@ -66,7 +66,7 @@ impl<'a> Hooks<'a> {
                 Self::register_configs_as_global_property(&mut context, &services);
                 context
                     .register_global_property(
-                        "appName",
+                        boa_engine::js_string!("appName"),
                         JsValue::String(app_name.to_string().into()),
                         Attribute::READONLY,
                     )
@@ -123,7 +123,11 @@ impl<'a> Hooks<'a> {
             JsValue::from_json(&js_configs, context).expect("Unable to read JSON value");
 
         context
-            .register_global_property("serviceConfigs", js_configs, Attribute::READONLY)
+            .register_global_property(
+                boa_engine::js_string!("serviceConfigs"),
+                js_configs,
+                Attribute::READONLY,
+            )
             .expect("Property registration failed unexpectedly");
     }
 
