@@ -85,7 +85,13 @@ impl K8sDeploymentUnit {
                     name: format!("bootstrap-{i}"),
                     image: Some(bc.image().to_string()),
                     image_pull_policy: Some(String::from("Always")),
-                    args: Some(bc.templated_args(app_name, &base_url)?),
+                    args: Some(bc.templated_args(
+                        app_name,
+                        &base_url,
+                        Some(serde_json::json!({
+                            "namespace": app_name.to_rfc1123_namespace_id()
+                        })),
+                    )?),
                     ..Default::default()
                 })
             })

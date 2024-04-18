@@ -181,6 +181,10 @@ The list of available handlebars variables for bootstrap container arguments:
 - `application`: The companion's application information
   - `name`: The application name
   - `baseUrl`: The URL that all services in the application share
+- `infrastructure`: Holds information that are specific to the underlying
+  infrastructure.
+  - 'namespace' (Kubernetes): the name of the namespace where the application
+    will be installed in.
 
 [docker-compose]: https://docs.docker.com/compose/
 [handlebars]: https://handlebarsjs.com/

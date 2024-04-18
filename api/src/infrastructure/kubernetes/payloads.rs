@@ -227,9 +227,15 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
         .routes()
         .iter()
         .flat_map(|route| route.middlewares().iter())
-        .map(|middleware| TraefikRuleMiddlewareRef {
-            name: middleware.name().clone(),
-            namespace: None,
+        .filter_map(|middleware| {
+            if middleware.is_strip_prefix() {
+                return None;
+            }
+
+            Some(TraefikRuleMiddlewareRef {
+                name: middleware.name().clone(),
+                namespace: None,
+            })
         })
         .collect::<Vec<_>>();
     middlewares_refs.extend(middleware.as_ref().map(|m| TraefikRuleMiddlewareRef {
@@ -268,12 +274,18 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
         .routes()
         .iter()
         .flat_map(|r| r.middlewares().iter())
-        .map(|middleware| Middleware {
-            metadata: kube::core::ObjectMeta {
-                name: Some(middleware.name().clone()),
-                ..Default::default()
-            },
-            spec: MiddlewareSpec(serde_json::json!(middleware.spec())),
+        .filter_map(|middleware| {
+            if middleware.is_strip_prefix() {
+                return None;
+            }
+
+            Some(Middleware {
+                metadata: kube::core::ObjectMeta {
+                    name: Some(middleware.name().clone()),
+                    ..Default::default()
+                },
+                spec: MiddlewareSpec(serde_json::json!(middleware.spec())),
+            })
         })
         .collect::<Vec<_>>();
 
@@ -1673,6 +1685,137 @@ mod tests {
                             "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
                         }
                     })).unwrap(),
+                }],
+                None,
+            ),
+        ).unwrap();
+
+        assert_eq!(
+            route,
+            IngressRoute {
+                metadata: ObjectMeta {
+                    name: Some(String::from("my-ingress")),
+                    ..Default::default()
+                },
+                spec: IngressRouteSpec {
+                    entry_points: Some(vec![]),
+                    routes: Some(vec![TraefikRuleSpec {
+                        kind: String::from("Rule"),
+                        r#match: String::from("Host(`my.machine`)"),
+                        services: vec![TraefikRuleService {
+                            kind: Some(String::from("Service")),
+                            name: String::from("backend-service"),
+                            port: Some(8080)
+                        }],
+                        middlewares: Some(vec![
+                            TraefikRuleMiddlewareRef {
+                                name: String::from("auth"),
+                                namespace: None
+                            },
+                            TraefikRuleMiddlewareRef {
+                                name: String::from("my-ingress-middleware"),
+                                namespace: None
+                            }
+                        ])
+                    }]),
+                    tls: None
+                }
+            }
+        );
+
+        assert_eq!(
+            middlewares,
+            vec![
+                Middleware {
+                    metadata: ObjectMeta {
+                        name: Some(String::from("auth")),
+                        ..Default::default()
+                    },
+                    spec: MiddlewareSpec(serde_json::json!({
+                        "forwardAuth": {
+                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                        }
+                    }))
+                },
+                Middleware {
+                    metadata: ObjectMeta {
+                        name: Some(String::from("my-ingress-middleware")),
+                        ..Default::default()
+                    },
+                    spec: MiddlewareSpec(serde_json::json!({
+                        "stripPrefix": {
+                            "prefixes": [
+                                "/my-service/"
+                            ]
+                        }
+                    }))
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn convert_k8s_ingress_to_traefik_ingress_with_existing_path_prefixes() {
+        let (route, middlewares) = super::convert_k8s_ingress_to_traefik_ingress(
+            Ingress {
+                metadata: ObjectMeta {
+                    name: Some(String::from("my-ingress")),
+                    annotations: Some(BTreeMap::from([
+                        (
+                            String::from("nginx.ingress.kubernetes.io/use-regex"),
+                            String::from("true"),
+                        ),
+                        (
+                            String::from("nginx.ingress.kubernetes.io/rewrite-target"),
+                            String::from("/$2"),
+                        ),
+                    ])),
+                    ..Default::default()
+                },
+                spec: Some(k8s_openapi::api::networking::v1::IngressSpec {
+                    ingress_class_name: Some(String::from("nginx")),
+                    rules: Some(vec![k8s_openapi::api::networking::v1::IngressRule {
+                        http: Some(k8s_openapi::api::networking::v1::HTTPIngressRuleValue {
+                            paths: vec![k8s_openapi::api::networking::v1::HTTPIngressPath {
+                                path: Some(String::from("/my-service/")),
+                                backend: k8s_openapi::api::networking::v1::IngressBackend {
+                                    service: Some(
+                                        k8s_openapi::api::networking::v1::IngressServiceBackend {
+                                            name: String::from("backend-service"),
+                                            port: Some(k8s_openapi::api::networking::v1::ServiceBackendPort {
+                                                number: Some(8080),
+                                                ..Default::default()
+                                            })
+                                        },
+                                    ),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }],
+                        }),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            TraefikIngressRoute::with_existing_routing_rules(
+                Vec::new(),
+                TraefikRouterRule::from_str("Host(`my.machine`)").unwrap(),
+                vec![TraefikMiddleware {
+                    name: String::from("auth"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "forwardAuth": {
+                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                        }
+                    })).unwrap(),
+                }, TraefikMiddleware {
+                    name: String::from("prevant-default-prefix"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "stripPrefix": {
+                            "prefixes": [ "/some-other-path" ]
+                        }
+                    })).unwrap()
                 }],
                 None,
             ),
