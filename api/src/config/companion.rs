@@ -204,11 +204,17 @@ impl BootstrappingContainer {
         &self.image
     }
 
-    pub fn templated_args(
+    /// * `infrastructure` - Additional parameter that holds infrastructure specific information
+    ///   such [Kubernetes namespace](https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/)
+    pub fn templated_args<S>(
         &self,
         app_name: &AppName,
         base_url: &Option<Url>,
-    ) -> Result<Vec<String>, RenderError> {
+        infrastructure: Option<S>,
+    ) -> Result<Vec<String>, RenderError>
+    where
+        S: serde::Serialize,
+    {
         let handlebars = Handlebars::new();
 
         #[derive(Serialize)]
@@ -218,13 +224,17 @@ impl BootstrappingContainer {
             #[serde(skip_serializing_if = "Option::is_none")]
             base_url: &'a Option<Url>,
         }
+
         // TODO: apply same pattern as for companions. {{application.name}}, {{service.…}}…
         #[derive(Serialize)]
-        struct Data<'a> {
+        struct Data<'a, S> {
             application: AppData<'a>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            infrastructure: Option<S>,
         }
 
         let data = Data {
+            infrastructure,
             application: AppData {
                 name: app_name,
                 base_url,
@@ -292,7 +302,9 @@ mod tests {
 
         assert_eq!(container.image, Image::from_str("busybox").unwrap());
         assert_eq!(
-            container.templated_args(&AppName::master(), &None).unwrap(),
+            container
+                .templated_args(&AppName::master(), &None, None::<String>)
+                .unwrap(),
             Vec::<String>::new()
         );
     }
@@ -311,7 +323,9 @@ mod tests {
 
         assert_eq!(container.image, Image::from_str("busybox").unwrap());
         assert_eq!(
-            container.templated_args(&AppName::master(), &None).unwrap(),
+            container
+                .templated_args(&AppName::master(), &None, None::<String>)
+                .unwrap(),
             vec![String::from("echo"), String::from("Hello master")]
         );
     }
@@ -333,13 +347,41 @@ mod tests {
             container
                 .templated_args(
                     &AppName::master(),
-                    &Some(Url::parse("http://example.com").unwrap())
+                    &Some(Url::parse("http://example.com").unwrap()),
+                    None::<String>
                 )
                 .unwrap(),
             vec![
                 String::from("echo"),
                 String::from("Hello http://example.com/")
             ]
+        );
+    }
+
+    #[test]
+    fn should_parse_companion_bootstrap_containers_and_template_infrastructure_information() {
+        let companions = companions_from_str!(
+            r#"
+            [[bootstrapping.containers]]
+            image = "busybox"
+            args = [ "echo", "Hello {{infrastructure.namespace}}" ]
+            "#
+        );
+
+        let container = &companions.bootstrapping.containers[0];
+
+        assert_eq!(container.image, Image::from_str("busybox").unwrap());
+        assert_eq!(
+            container
+                .templated_args(
+                    &AppName::master(),
+                    &None,
+                    Some(serde_json::json!({
+                        "namespace": "my-namespace"
+                    }))
+                )
+                .unwrap(),
+            vec![String::from("echo"), String::from("Hello my-namespace")]
         );
     }
 }

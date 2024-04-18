@@ -52,7 +52,7 @@ impl TraefikIngressRoute {
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::path_prefix_rule([app_name.as_str()]),
                 middlewares: vec![TraefikMiddleware {
-                    name: format!("{app_name}-middleware"),
+                    name: format!("{}-middleware", app_name.to_rfc1123_namespace_id()),
                     spec: Value::Map(middlewares),
                 }],
             }],
@@ -320,6 +320,18 @@ impl TraefikMiddleware {
 
     pub fn spec(&self) -> &serde_value::Value {
         &self.spec
+    }
+
+    pub fn is_strip_prefix(&self) -> bool {
+        match &self.spec {
+            serde_value::Value::Map(m)
+                if m.get(&serde_value::Value::String(String::from("stripPrefix")))
+                    .is_some() =>
+            {
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -944,5 +956,66 @@ mod test {
 
             assert_eq!(url, Url::parse("https://example.com").ok());
         }
+    }
+
+    #[test]
+    fn use_rfc1123_middleware_name_when_creating_rule_with_app_only_defaults() {
+        let route = TraefikIngressRoute::with_app_only_defaults(
+            &AppName::from_str("ALL-CAPS-APP-NAME").unwrap(),
+        );
+
+        assert_eq!(
+            route,
+            TraefikIngressRoute {
+                entry_points: Vec::new(),
+                routes: vec![TraefikRoute {
+                    rule: TraefikRouterRule::from_str("PathPrefix(`/ALL-CAPS-APP-NAME/`)").unwrap(),
+                    middlewares: vec![TraefikMiddleware {
+                        name: String::from("all-caps-app-name-middleware"),
+                        spec: serde_value::to_value(serde_json::json!({
+                            "stripPrefix": {
+                                "prefixes": [
+                                    "/ALL-CAPS-APP-NAME/"
+                                ]
+                            }
+                        }))
+                        .unwrap()
+                    }]
+                }],
+                tls: None
+            }
+        )
+    }
+
+    #[test]
+    fn is_strip_prefix_middleware() {
+        let middleware = TraefikMiddleware {
+            name: String::from("all-caps-app-name-middleware"),
+            spec: serde_value::to_value(serde_json::json!({
+                "stripPrefix": {
+                    "prefixes": [
+                        "/ALL-CAPS-APP-NAME/"
+                    ]
+                }
+            }))
+            .unwrap(),
+        };
+
+        assert!(middleware.is_strip_prefix());
+    }
+
+    #[test]
+    fn is_not_strip_prefix_middleware() {
+        let middleware = TraefikMiddleware {
+            name: String::from("traefik-forward-auth"),
+            spec: serde_value::to_value(serde_json::json!({
+                "forwardAuth": {
+                    "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                }
+            }))
+            .unwrap(),
+        };
+
+        assert!(!middleware.is_strip_prefix());
     }
 }
