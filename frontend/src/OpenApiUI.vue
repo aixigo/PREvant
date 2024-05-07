@@ -38,7 +38,7 @@
                </div>
 
                <div class="ra-modal-body">
-                  <div :id="`swagger-ui-${this._uid}`"></div>
+                  <div :id="`swagger-ui-${this.$.uid}`"></div>
                </div>
             </div>
          </div>
@@ -47,7 +47,7 @@
 </template>
 
 <style type="text/css">
-   @import "~swagger-ui/dist/swagger-ui.css";
+   @import "swagger-ui/dist/swagger-ui.css";
 
    /* Fixes swagger ui response column width */
    .ra-modal-container .col.response-col_status {
@@ -130,7 +130,7 @@
       mounted() {
          SwaggerUI( {
             url: this.$route.params.url,
-            dom_id: `#swagger-ui-${this._uid}`
+            dom_id: `#swagger-ui-${this.$.uid}`
          } );
       },
       methods: {

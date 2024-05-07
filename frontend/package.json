@@ -1,46 +1,34 @@
 {
-  "name": "preview-servant-frontend",
-  "version": "0.9.0",
-  "license": "MIT",
-  "private": true,
-  "scripts": {
-    "serve": "vue-cli-service serve",
-    "build": "vue-cli-service build"
-  },
-  "dependencies": {
-    "@fortawesome/fontawesome-free": "^5.15.4",
-    "@fortawesome/fontawesome-svg-core": "^1.2.36",
-    "@fortawesome/free-solid-svg-icons": "^5.15.4",
-    "@fortawesome/vue-fontawesome": "^3.0.3",
-    "@vue/compat": "^3.2.47",
-    "bootstrap-material-design": "^4.1.3",
-    "core-js": "^3.20.2",
-    "current-script-polyfill": "^1.0.0",
-    "esprima": "^4.0.1",
-    "jquery": "^3.6.0",
-    "moment": "^2.29.1",
-    "parse-link-header": "^2.0.0",
-    "popper.js": "^1.16.1",
-    "swagger-ui": "^4.18.2",
-    "vue": "^3.2.47",
-    "vue-router": "^4.1.6",
-    "vue-virtual-scroller": "^2.0.0-beta.8",
-    "vuex": "^4.1.0"
-  },
-  "devDependencies": {
-    "@babel/polyfill": "^7.12.1",
-    "@babel/preset-env": "^7.21.4",
-    "@vue/cli-plugin-babel": "^5.0.8",
-    "@vue/cli-plugin-vuex": "^5.0.8",
-    "@vue/cli-service": "^5.0.8",
-    "@vue/compiler-sfc": "^3.2.47",
-    "sass": "1.62.0",
-    "sass-loader": "^13.2.2"
-  },
-  "browserslist": [
-    "ie >= 11",
-    "Firefox >= 60",
-    "Firefox ESR",
-    "Chrome >= 60"
-  ]
+   "name": "preview-servant-frontend",
+   "version": "0.9.0",
+   "license": "MIT",
+   "private": true,
+   "scripts": {
+      "serve": "vite",
+      "build": "vite build"
+   },
+   "dependencies": {
+      "@fortawesome/fontawesome-free": "^5.15.4",
+      "@fortawesome/fontawesome-svg-core": "^1.2.36",
+      "@fortawesome/free-solid-svg-icons": "^5.15.4",
+      "@fortawesome/vue-fontawesome": "^3.0.3",
+      "@vue/compat": "^3.4.27",
+      "bootstrap-material-design": "^4.1.3",
+      "core-js": "^3.37.1",
+      "jquery": "^3.7.1",
+      "moment": "^2.30.1",
+      "http-link-header": "^1.1.3",
+      "popper.js": "^1.16.1",
+      "swagger-ui": "^4.19.0",
+      "vue": "^3.4.27",
+      "vue-router": "^4.3.2",
+      "vue-virtual-scroller": "^2.0.0-beta.8",
+      "vuex": "^4.1.0"
+   },
+   "devDependencies": {
+      "@rollup/plugin-inject": "^5.0.5",
+      "@vitejs/plugin-vue": "^5.0.4",
+      "sass": "1.77.1",
+      "vite": "^5.2.11"
+   }
 }
