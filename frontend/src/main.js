@@ -23,10 +23,8 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-import 'current-script-polyfill';
-
 // Bootstrap material design library
-import $ from 'jquery/dist/jquery.js';
+import $ from 'jquery';
 import 'popper.js';
 import 'bootstrap-material-design/dist/css/bootstrap-material-design.css';
 import 'bootstrap-material-design/dist/js/bootstrap-material-design.js';
@@ -35,12 +33,8 @@ $(document).ready(() => {
      $('body').bootstrapMaterialDesign();
 });
 
-import { Vue, createApp, configureCompat } from 'vue';
+import { createApp, } from 'vue';
 import { createRouter, createWebHashHistory } from 'vue-router';
-
-configureCompat({
-  RENDER_FUNCTION: false,
-})
 
 import './scss/theme.scss';
 import App from './App.vue';

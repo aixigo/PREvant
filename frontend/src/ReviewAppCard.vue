@@ -81,19 +81,16 @@
                     :class="{ 'is-expanded': isExpanded( container ) }"
                     @click="toggleContainer( container )">
 
-                  <template>
-                     <i v-if="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
-                     <i v-else="!isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
-                  </template>
-                  <template>
-                     <i v-if="container.name.endsWith( 'openid' )" class="ra-icons  material-icons">security</i>
-                     <i v-else-if="container.name.endsWith( '-proxy' )" class="ra-icons  material-icons">call_split</i>
-                     <i v-else-if="container.name.endsWith( '-frontend' )" class="ra-icons  material-icons">web</i>
-                     <i v-else-if="container.name.endsWith( '-service' )" class="ra-icons  material-icons">dns</i>
-                     <i v-else-if="container.name.endsWith( '-api' )" class="ra-icons  material-icons">developer_board</i>
-                     <i v-else-if="container.name.endsWith( '-db' ) || container.name.endsWith( '-database' )" class="ra-icons  material-icons">archive</i>
-                     <i v-else class="ra-icons  material-icons">link</i>
-                  </template>
+                  <i v-if="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
+                  <i v-else="!isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
+
+                  <i v-if="container.name.endsWith( 'openid' )" class="ra-icons  material-icons">security</i>
+                  <i v-else-if="container.name.endsWith( '-proxy' )" class="ra-icons  material-icons">call_split</i>
+                  <i v-else-if="container.name.endsWith( '-frontend' )" class="ra-icons  material-icons">web</i>
+                  <i v-else-if="container.name.endsWith( '-service' )" class="ra-icons  material-icons">dns</i>
+                  <i v-else-if="container.name.endsWith( '-api' )" class="ra-icons  material-icons">developer_board</i>
+                  <i v-else-if="container.name.endsWith( '-db' ) || container.name.endsWith( '-database' )" class="ra-icons  material-icons">archive</i>
+                  <i v-else class="ra-icons  material-icons">link</i>
                </div>
 
                <div class="ra-container__infos">
@@ -121,8 +118,8 @@
                      </div>
 
                      <div v-if="container.version && container.version.dateModified" class="ra-build-infos">
-                        <span>{{ container.version.dateModified | date }}</span>,
-                        <span>{{ container.version.dateModified | time }}</span>
+                        <span>{{ formatBuildDate( container.version.dateModified ) }}</span>,
+                        <span>{{ formatBuildTime( container.version.dateModified ) }}</span>
                      </div>
                   </div>
                </div>
@@ -132,8 +129,8 @@
                         :class="badgeClass( container.type )">{{ container.type }}</span>
                   <span v-if="container.version && container.version.gitCommit"
                         class="ra-build-infos ra-build-infos__hash text-right"
-                        :title="container.version | version">
-                     {{ container.version | slicedVersion }}
+                        :title="formatVersion( container.version )">
+                     {{ formatSlicedVersion( container.version ) }}
                      <!-- only for layout -->
                      <!-- c63ae57… -->
                   </span>
@@ -175,36 +172,6 @@
          'duplicate-app-dialog': DuplicateAppDialog,
          'shutdown-app-dialog': ShutdownAppDialog,
       },
-      filters: {
-         date(buildDateTime) {
-            if (buildDateTime == null) {
-               return 'N/A';
-            }
-
-            const date = moment(buildDateTime);
-            if (date.isValid()) {
-               return date.toDate().toLocaleDateString()
-            }
-            return buildDateTime;
-         },
-         time(buildDateTime) {
-            if (buildDateTime == null) {
-               return 'N/A';
-            }
-
-            const date = moment(buildDateTime);
-            if (date.isValid()) {
-               return date.toDate().toLocaleTimeString()
-            }
-            return buildDateTime;
-         },
-         version(v) {
-            return formatVersion(v);
-         },
-         slicedVersion(v) {
-            return formatSlicedVersion(v);
-         }
-      },
       props: {
          reviewApp: {type: Object}
       },
@@ -215,7 +182,7 @@
             if (containers && containers.length) {
                containers.forEach(({name, version, openApiUrl}) => {
                   const expanded = version != null || openApiUrl != null;
-                  this.$set(this.expandedContainers, [name], expanded);
+                  this.expandedContainers[name] = expanded;
                });
             }
          }
@@ -285,7 +252,7 @@
             return '';
          },
          toggleContainer(container) {
-            this.$set(this.expandedContainers, [container.name], !this.isExpanded(container));
+            this.expandedContainers[container.name] = !this.isExpanded(container);
          },
          isExpanded(container) {
             if (this.expandedContainers[container.name] == undefined) {
@@ -307,6 +274,29 @@
          .map(({version}) => version.dateModified)
          .reduce(max, 0);
    };
+
+   function formatBuildDate(buildDateTime) {
+      if (buildDateTime == null) {
+         return 'N/A';
+      }
+
+      const date = moment(buildDateTime);
+      if (date.isValid()) {
+         return date.toDate().toLocaleDateString()
+      }
+      return buildDateTime;
+   }
+   function formatBuildTime(buildDateTime) {
+      if (buildDateTime == null) {
+         return 'N/A';
+      }
+
+      const date = moment(buildDateTime);
+      if (date.isValid()) {
+         return date.toDate().toLocaleTimeString()
+      }
+      return buildDateTime;
+   }
 
    function formatVersion(version) {
       if (version.softwareVersion != null) {

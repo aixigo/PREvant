@@ -24,10 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-import Vue from 'vue';
-import Vuex from 'vuex'
-
-Vue.use( Vuex );
+import { Store } from 'vuex'
 
 const SERVICE_TYPE_ORDER = [
     'instance',
@@ -36,7 +33,7 @@ const SERVICE_TYPE_ORDER = [
     'service-companion'
 ];
 
-export default new Vuex.Store( {
+export default new Store( {
    state: {
       fetchInProgress: false,
       apps: {},

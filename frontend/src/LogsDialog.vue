@@ -72,7 +72,7 @@
 </style>
 
 <script>
-   import parseLinkHeader from 'parse-link-header';
+   import LinkHeader from 'http-link-header';
    import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
    import Dialog from './Dialog.vue';
    import moment from 'moment';
@@ -200,9 +200,12 @@
          const link = response.headers.get('Link');
          let rel = null;
          if (link != null) {
-            const linkHeader = parseLinkHeader(link);
-            if (linkHeader.next != null) {
-               rel = linkHeader.next.url;
+            const ref = LinkHeader.parse(link).refs.find(ref => {
+               return ref.rel === "next";
+            });
+
+            if (ref != null) {
+               rel = ref.uri;
             }
          }
 
