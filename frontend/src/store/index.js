@@ -164,12 +164,6 @@ export default new Store( {
          }
       },
 
-      storeVersion( state, e ) {
-         e.forEach( ({ name, containerIndex, version }) => {
-            Vue.set( state.apps[ name ][ containerIndex ], 'version', version );
-         } );
-      },
-
       updateServiceStatus( state, { appName, serviceName, serviceStatus } ) {
          const service = state.apps[appName].find(service => service.name == serviceName);
          service.state.status = serviceStatus;

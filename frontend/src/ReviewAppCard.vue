@@ -195,7 +195,7 @@
                this.reviewApp.containers
                   .filter(container => !!container.version)
                   .forEach(container => {
-                     res[container.name] = formatVersion(container.version);
+                     res[container.name] = this.formatVersion(container.version);
                   });
             }
 
@@ -263,6 +263,58 @@
          },
          changeState(event, service) {
             this.$emit('changeState', this.reviewApp.name, service);
+         },
+
+         formatBuildDate(buildDateTime) {
+            if (buildDateTime == null) {
+               return 'N/A';
+            }
+
+            const date = moment(buildDateTime);
+            if (date.isValid()) {
+               return date.toDate().toLocaleDateString()
+            }
+            return buildDateTime;
+         },
+         formatBuildTime(buildDateTime) {
+            if (buildDateTime == null) {
+               return 'N/A';
+            }
+
+            const date = moment(buildDateTime);
+            if (date.isValid()) {
+               return date.toDate().toLocaleTimeString()
+            }
+            return buildDateTime;
+         },
+
+         formatVersion(version) {
+            if (version.softwareVersion != null) {
+               if (version.gitCommit != null) {
+                  return `${version.softwareVersion} (Commit: ${version.gitCommit})`;
+               } else {
+                  return version.softwareVersion;
+               }
+            }
+
+            if (version.gitCommit != null) {
+               return version.gitCommit;
+            }
+
+            return '';
+         },
+
+
+         formatSlicedVersion(version) {
+            if (version.softwareVersion != null) {
+               return version.softwareVersion.slice(0, 16);
+            }
+
+            if (version.gitCommit != null) {
+               return version.gitCommit.slice(0, 7);
+            }
+
+            return '';
          }
       }
    }
@@ -275,54 +327,4 @@
          .reduce(max, 0);
    };
 
-   function formatBuildDate(buildDateTime) {
-      if (buildDateTime == null) {
-         return 'N/A';
-      }
-
-      const date = moment(buildDateTime);
-      if (date.isValid()) {
-         return date.toDate().toLocaleDateString()
-      }
-      return buildDateTime;
-   }
-   function formatBuildTime(buildDateTime) {
-      if (buildDateTime == null) {
-         return 'N/A';
-      }
-
-      const date = moment(buildDateTime);
-      if (date.isValid()) {
-         return date.toDate().toLocaleTimeString()
-      }
-      return buildDateTime;
-   }
-
-   function formatVersion(version) {
-      if (version.softwareVersion != null) {
-         if (version.gitCommit != null) {
-            return `${version.softwareVersion} (Commit: ${version.gitCommit})`;
-         } else {
-            return version.softwareVersion;
-         }
-      }
-
-      if (version.gitCommit != null) {
-         return version.gitCommit;
-      }
-
-      return '';
-   }
-
-   function formatSlicedVersion(version) {
-      if (version.softwareVersion != null) {
-         return version.softwareVersion.slice(0, 16);
-      }
-
-      if (version.gitCommit != null) {
-         return version.gitCommit.slice(0, 7);
-      }
-
-      return '';
-   }
 </script>
