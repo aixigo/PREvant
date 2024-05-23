@@ -1,24 +1,26 @@
 use reqwest::{ClientBuilder, Response};
-use std::collections::HashMap;
 use std::time::Duration;
-use testcontainers::{core::WaitFor, Container, Image, ImageArgs};
+use testcontainers::{
+    core::{Mount, WaitFor},
+    ContainerAsync, Image, ImageArgs,
+};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Default)]
 pub struct TraefikArgs;
 
 pub struct Traefik {
-    volumes: HashMap<String, String>,
+    mounts: Vec<Mount>,
 }
 
 impl Default for Traefik {
     fn default() -> Self {
-        let mut volumes = HashMap::new();
-        volumes.insert(
-            String::from("/var/run/docker.sock"),
-            String::from("/var/run/docker.sock"),
-        );
-        Self { volumes }
+        let mut mounts = Vec::new();
+        mounts.push(Mount::bind_mount(
+            "/var/run/docker.sock",
+            "/var/run/docker.sock",
+        ));
+        Self { mounts }
     }
 }
 
@@ -51,17 +53,17 @@ impl Image for Traefik {
         )]
     }
 
-    fn volumes(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
-        Box::new(self.volumes.iter())
+    fn mounts(&self) -> Box<dyn Iterator<Item = &Mount> + '_> {
+        Box::new(self.mounts.iter())
     }
 }
 
 pub async fn make_request(
-    traefik: &Container<'_, Traefik>,
+    traefik: &ContainerAsync<Traefik>,
     app_name: &Uuid,
     service_name: &str,
 ) -> Response {
-    let port = traefik.get_host_port_ipv4(80);
+    let port = traefik.get_host_port_ipv4(80).await;
 
     backoff::future::retry(
         backoff::ExponentialBackoffBuilder::new()

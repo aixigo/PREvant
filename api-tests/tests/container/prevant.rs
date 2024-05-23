@@ -1,12 +1,15 @@
 use crate::common::Service;
 use reqwest::{Client, Response, StatusCode};
 use std::collections::HashMap;
-use testcontainers::{core::WaitFor, Container, Image};
+use testcontainers::{
+    core::{Mount, WaitFor},
+    ContainerAsync, Image,
+};
 use uuid::Uuid;
 
 pub struct PREvant {
     env_vars: HashMap<String, String>,
-    volumes: HashMap<String, String>,
+    mounts: Vec<Mount>,
 }
 
 impl Default for PREvant {
@@ -14,13 +17,13 @@ impl Default for PREvant {
         let mut env_vars = HashMap::new();
         env_vars.insert(String::from("ROCKET_CLI_COLORS"), String::from("false"));
 
-        let mut volumes = HashMap::new();
-        volumes.insert(
-            String::from("/var/run/docker.sock"),
-            String::from("/var/run/docker.sock"),
-        );
+        let mut mounts = Vec::new();
+        mounts.push(Mount::bind_mount(
+            "/var/run/docker.sock",
+            "/var/run/docker.sock",
+        ));
 
-        Self { volumes, env_vars }
+        Self { mounts, env_vars }
     }
 }
 
@@ -38,8 +41,8 @@ impl Image for PREvant {
         vec![WaitFor::message_on_stderr("Rocket has launched from")]
     }
 
-    fn volumes(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
-        Box::new(self.volumes.iter())
+    fn mounts(&self) -> Box<dyn Iterator<Item = &Mount> + '_> {
+        Box::new(self.mounts.iter())
     }
 
     fn env_vars(&self) -> Box<dyn Iterator<Item = (&String, &String)> + '_> {
@@ -48,10 +51,10 @@ impl Image for PREvant {
 }
 
 pub async fn deploy_app(
-    prevant: &Container<'_, PREvant>,
+    prevant: &ContainerAsync<PREvant>,
     services: &Vec<Service>,
 ) -> Result<Uuid, Response> {
-    let port = prevant.get_host_port_ipv4(80);
+    let port = prevant.get_host_port_ipv4(80).await;
 
     let app_name = Uuid::new_v4();
 
@@ -69,10 +72,10 @@ pub async fn deploy_app(
 }
 
 pub async fn replicate_app(
-    prevant: &Container<'_, PREvant>,
+    prevant: &ContainerAsync<PREvant>,
     from_app_name: &Uuid,
 ) -> Result<Uuid, Response> {
-    let port = prevant.get_host_port_ipv4(80);
+    let port = prevant.get_host_port_ipv4(80).await;
 
     let app_name = Uuid::new_v4();
 
@@ -92,8 +95,11 @@ pub async fn replicate_app(
     }
 }
 
-pub async fn delete_app(prevant: &Container<'_, PREvant>, app_name: &Uuid) -> Result<(), Response> {
-    let port = prevant.get_host_port_ipv4(80);
+pub async fn delete_app(
+    prevant: &ContainerAsync<PREvant>,
+    app_name: &Uuid,
+) -> Result<(), Response> {
+    let port = prevant.get_host_port_ipv4(80).await;
 
     let res = Client::new()
         .delete(&format!("http://localhost:{}/api/apps/{}", port, app_name))
@@ -108,11 +114,11 @@ pub async fn delete_app(prevant: &Container<'_, PREvant>, app_name: &Uuid) -> Re
 }
 
 pub async fn logs(
-    prevant: &Container<'_, PREvant>,
+    prevant: &ContainerAsync<PREvant>,
     app_name: &Uuid,
     service_name: &str,
 ) -> Result<String, Response> {
-    let port = prevant.get_host_port_ipv4(80);
+    let port = prevant.get_host_port_ipv4(80).await;
 
     let res = Client::new()
         .get(&format!(

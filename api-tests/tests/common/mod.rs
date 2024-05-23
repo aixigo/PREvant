@@ -1,7 +1,4 @@
-use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use testcontainers::clients::Cli;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,16 +41,4 @@ impl Service {
         self.env = Some(e);
         self
     }
-}
-
-lazy_static! {
-    static ref INIT_LOGGER: AtomicBool = AtomicBool::new(true);
-}
-
-pub fn docker() -> Cli {
-    if let Ok(_) = INIT_LOGGER.compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed) {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    }
-
-    Cli::default()
 }
