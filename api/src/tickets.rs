@@ -52,8 +52,8 @@ pub async fn tickets(
             return Err(ListTicketsError::MissingIssueTrackingConfiguration.into());
         }
         Some(jira_config) => {
-            let services = apps_service.get_apps().await?;
-            if services.is_empty() {
+            let app_names = apps_service.fetch_app_names().await?;
+            if app_names.is_empty() {
                 return Ok(Json(tickets));
             }
 
@@ -69,8 +69,8 @@ pub async fn tickets(
                     }
                 });
 
-            let mut futures = services
-                .keys()
+            let mut futures = app_names
+                .iter()
                 .map(|app_name| jira.issue(app_name))
                 .collect::<FuturesUnordered<_>>();
 

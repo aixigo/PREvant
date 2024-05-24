@@ -29,7 +29,7 @@ pub use app_status_change_id::{AppStatusChangeId, AppStatusChangeIdError};
 pub use image::Image;
 pub use logs_chunks::LogChunk;
 pub use request_info::RequestInfo;
-pub use service::{ContainerType, ServiceBuilder, ServiceBuilderError};
+pub use service::ContainerType;
 pub use service_config::{Environment, EnvironmentVariable, ServiceConfig};
 pub use web_host_meta::WebHostMeta;
 

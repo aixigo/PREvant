@@ -27,7 +27,7 @@
 use crate::apps::delete_app_sync;
 use crate::apps::Apps;
 use crate::http_result::HttpResult;
-use crate::models::service::Service;
+use crate::models::service::Services;
 use crate::models::web_hook_info::WebHookInfo;
 use crate::models::AppName;
 use rocket::serde::json::Json;
@@ -39,7 +39,7 @@ use std::sync::Arc;
 pub async fn webhooks(
     apps: &State<Arc<Apps>>,
     web_hook_info: WebHookInfo,
-) -> HttpResult<Json<Vec<Service>>> {
+) -> HttpResult<Json<Services>> {
     info!(
         "Deleting app {:?} through web hook {:?} with event {:?}",
         web_hook_info.get_app_name(),

@@ -27,18 +27,27 @@
 use super::traefik::TraefikIngressRoute;
 use crate::config::ContainerConfig;
 use crate::deployment::DeploymentUnit;
-use crate::models::service::{Service, ServiceStatus};
+use crate::models::service::{Service, ServiceStatus, Services};
 use crate::models::{AppName, ContainerType, ServiceConfig, WebHostMeta};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
+use dyn_clone::DynClone;
 use futures::stream::BoxStream;
-use multimap::MultiMap;
+use std::collections::{HashMap, HashSet};
 
 #[async_trait]
-pub trait Infrastructure: Send + Sync {
-    /// Returns a `MultiMap` of `app-name` and the running services for this app.
-    async fn get_services(&self) -> Result<MultiMap<AppName, Service>>;
+pub trait Infrastructure: Send + Sync + DynClone {
+    /// Returns a `map` of `app-name` and the running services for this app.
+    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>>;
+
+    async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
+        Ok(self
+            .fetch_services()
+            .await?
+            .into_keys()
+            .collect::<HashSet<_>>())
+    }
 
     /// Deploys the services of the given set of `ServiceConfig`.
     ///
@@ -53,9 +62,9 @@ pub trait Infrastructure: Send + Sync {
         status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Vec<Service>>;
+    ) -> Result<Services>;
 
-    async fn get_status_change(&self, _status_id: &str) -> Result<Option<Vec<Service>>> {
+    async fn get_status_change(&self, _status_id: &str) -> Result<Option<Services>> {
         Ok(None)
     }
 
@@ -63,7 +72,7 @@ pub trait Infrastructure: Send + Sync {
     ///
     /// The implementation must ensure that it returns the services that have been
     /// stopped.
-    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<Vec<Service>>;
+    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<Services>;
 
     /// Streams the log lines with a the corresponding timestamps in it.
     async fn get_logs<'a>(
@@ -111,18 +120,16 @@ pub trait HttpForwarder {
 impl dyn Infrastructure {
     /// Returns the configuration of all services running for the given application name.
     pub async fn get_configs_of_app(&self, app_name: &AppName) -> Result<Vec<ServiceConfig>> {
-        let services = self.get_services().await?;
-        Ok(services
-            .get_vec(app_name)
-            .map_or_else(Vec::new, |services| {
-                services
-                    .iter()
-                    .filter(|service| {
-                        *service.container_type() == ContainerType::Instance
-                            || *service.container_type() == ContainerType::Replica
-                    })
-                    .map(|service| service.config().clone())
-                    .collect()
-            }))
+        let mut services = self.fetch_services().await?;
+        Ok(services.remove(app_name).map_or_else(Vec::new, |services| {
+            services
+                .into_iter()
+                .filter(|service| {
+                    *service.container_type() == ContainerType::Instance
+                        || *service.container_type() == ContainerType::Replica
+                })
+                .map(|service| service.config)
+                .collect()
+        }))
     }
 }

@@ -808,7 +808,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{deployment::deployment_unit::DeploymentUnitBuilder, models::ServiceBuilder};
+    use crate::{deployment::deployment_unit::DeploymentUnitBuilder, models::service::State};
+    use chrono::Utc;
     use k8s_openapi::api::{
         apps::v1::DeploymentSpec,
         core::v1::{ContainerPort, EnvVar, PodTemplateSpec},
@@ -1142,14 +1143,14 @@ mod tests {
         )
         .await;
 
-        unit.filter_by_instances_and_replicas(std::iter::once(
-            ServiceBuilder::new()
-                .app_name(AppName::master().to_string())
-                .id(String::from("test"))
-                .config(crate::sc!("nginx", "nginx:1.15"))
-                .build()
-                .unwrap(),
-        ));
+        unit.filter_by_instances_and_replicas(std::iter::once(crate::models::service::Service {
+            id: String::from("test"),
+            config: crate::sc!("nginx", "nginx:1.15"),
+            state: State {
+                status: crate::models::service::ServiceStatus::Running,
+                started_at: Utc::now(),
+            },
+        }));
 
         assert!(unit.deployments.is_empty());
     }
@@ -1182,14 +1183,14 @@ mod tests {
         )
         .await;
 
-        unit.filter_by_instances_and_replicas(std::iter::once(
-            ServiceBuilder::new()
-                .app_name(AppName::master().to_string())
-                .id(String::from("test"))
-                .config(crate::sc!("postgres", "postgres"))
-                .build()
-                .unwrap(),
-        ));
+        unit.filter_by_instances_and_replicas(std::iter::once(crate::models::service::Service {
+            id: String::from("test"),
+            config: crate::sc!("postgres", "postgres"),
+            state: State {
+                status: crate::models::service::ServiceStatus::Running,
+                started_at: Utc::now(),
+            },
+        }));
 
         assert!(!unit.deployments.is_empty());
     }

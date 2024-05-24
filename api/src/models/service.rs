@@ -24,34 +24,83 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::models::{web_host_meta::WebHostMeta, ServiceConfig};
+use crate::models::{web_host_meta::WebHostMeta, AppName, ServiceConfig};
 use chrono::{DateTime, Utc};
-use serde::ser::{Serialize, Serializer};
+use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde::Deserialize;
 use std::fmt::Display;
 use std::str::FromStr;
 use url::Url;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Services(Vec<Service>);
+
+impl Services {
+    pub fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn into_iter(self) -> impl Iterator<Item = Service> {
+        self.0.into_iter()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Service> {
+        self.0.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl Serialize for Services {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+
+        for service in self.iter() {
+            seq.serialize_element(service)?;
+        }
+
+        serde::ser::SerializeSeq::end(seq)
+    }
+}
+
+impl From<Vec<Service>> for Services {
+    fn from(services: Vec<Service>) -> Self {
+        if services.is_empty() {
+            return Self::empty();
+        }
+
+        let mut services = services;
+        services.sort_by_key(|service| service.config.service_name().clone());
+        Self(services)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Service {
     /// An unique identifier of the service, e.g. the container id
-    id: String,
-    app_name: String,
-    base_url: Option<Url>,
-    web_host_meta: Option<WebHostMeta>,
-    state: State,
-    config: ServiceConfig,
+    pub id: String,
+    pub state: State,
+    pub config: ServiceConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
-    status: ServiceStatus,
+    pub status: ServiceStatus,
     #[serde(skip)]
-    started_at: DateTime<Utc>,
+    pub started_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum ServiceStatus {
     Running,
@@ -59,17 +108,6 @@ pub enum ServiceStatus {
 }
 
 impl Service {
-    pub fn app_name(&self) -> &String {
-        &self.app_name
-    }
-
-    fn service_url(&self) -> Option<Url> {
-        self.base_url.clone().map(|url| {
-            url.join(&format!("/{}/{}/", &self.app_name, self.service_name()))
-                .unwrap()
-        })
-    }
-
     pub fn id(&self) -> &String {
         &self.id
     }
@@ -82,10 +120,6 @@ impl Service {
         self.config.container_type()
     }
 
-    pub fn config(&self) -> &ServiceConfig {
-        &self.config
-    }
-
     pub fn started_at(&self) -> &DateTime<Utc> {
         &self.state.started_at
     }
@@ -96,6 +130,59 @@ impl Service {
 }
 
 impl Serialize for Service {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut s = serializer.serialize_map(Some(3))?;
+        s.serialize_entry("name", self.service_name())?;
+        s.serialize_entry("type", self.config.container_type())?;
+        s.serialize_entry("state", &self.state)?;
+
+        s.end()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServiceWithHostMeta {
+    /// An unique identifier of the service, e.g. the container id
+    id: String,
+    service_url: Option<Url>,
+    web_host_meta: WebHostMeta,
+    state: State,
+    config: ServiceConfig,
+}
+
+impl ServiceWithHostMeta {
+    pub fn from_service_and_web_host_meta(
+        service: Service,
+        web_host_meta: WebHostMeta,
+        base_url: Url,
+        app_name: &AppName,
+    ) -> Self {
+        let service_url = if !web_host_meta.is_valid() {
+            None
+        } else {
+            let mut base_url = base_url;
+            base_url.path_segments_mut().expect("").extend([
+                app_name,
+                service.config.service_name(),
+                &String::from(""),
+            ]);
+            Some(base_url)
+        };
+
+        Self {
+            id: service.id,
+            service_url,
+            web_host_meta,
+            state: service.state,
+            config: service.config,
+        }
+    }
+}
+
+impl Serialize for ServiceWithHostMeta {
     fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
     where
         S: Serializer,
@@ -105,7 +192,7 @@ impl Serialize for Service {
         struct Service<'a> {
             name: &'a String,
             #[serde(skip_serializing_if = "Option::is_none")]
-            url: Option<String>,
+            url: &'a Option<Url>,
             #[serde(rename = "type")]
             service_type: String,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,23 +213,21 @@ impl Serialize for Service {
             date_modified: Option<DateTime<Utc>>,
         }
 
-        let open_api_url = self.web_host_meta.clone().and_then(|meta| meta.openapi());
-        let version = match &self.web_host_meta {
-            Some(meta) if !meta.is_empty() => Some(Version {
-                git_commit: meta.commit(),
-                software_version: meta.version(),
-                date_modified: meta.date_modified(),
-            }),
-            _ => None,
+        let open_api_url = self.web_host_meta.openapi();
+        let version = if !self.web_host_meta.is_empty() {
+            Some(Version {
+                git_commit: self.web_host_meta.commit(),
+                software_version: self.web_host_meta.version(),
+                date_modified: self.web_host_meta.date_modified(),
+            })
+        } else {
+            None
         };
 
         let s = Service {
-            name: self.service_name(),
-            url: match self.web_host_meta {
-                Some(ref meta) if meta.is_valid() => self.service_url().map(|url| url.to_string()),
-                _ => None,
-            },
-            service_type: self.container_type().to_string(),
+            name: self.config.service_name(),
+            url: &self.service_url,
+            service_type: self.config.container_type().to_string(),
             version,
             open_api_url,
             state: &self.state,
@@ -152,108 +237,29 @@ impl Serialize for Service {
     }
 }
 
-#[derive(Debug)]
-pub struct ServiceBuilder {
-    id: Option<String>,
-    app_name: Option<String>,
-    config: Option<ServiceConfig>,
-    status: Option<ServiceStatus>,
-    started_at: Option<DateTime<Utc>>,
-    base_url: Option<Url>,
-    web_host_meta: Option<WebHostMeta>,
-}
+#[derive(Clone)]
+pub struct ServicesWithHostMeta(Vec<ServiceWithHostMeta>);
 
-impl ServiceBuilder {
-    pub fn new() -> Self {
-        ServiceBuilder {
-            id: None,
-            app_name: None,
-            status: None,
-            started_at: None,
-            base_url: None,
-            web_host_meta: None,
-            config: None,
+impl Serialize for ServicesWithHostMeta {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+
+        for service in self.0.iter() {
+            seq.serialize_element(service)?;
         }
-    }
 
-    pub fn build(self) -> Result<Service, ServiceBuilderError> {
-        let id = self.id.ok_or(ServiceBuilderError::MissingId)?;
-        let app_name = self.app_name.ok_or(ServiceBuilderError::MissingAppName)?;
-        let config = self
-            .config
-            .ok_or(ServiceBuilderError::MissingServiceConfiguration)?;
-        let started_at = self.started_at.unwrap_or_else(Utc::now);
-
-        Ok(Service {
-            id,
-            app_name,
-            config,
-            base_url: self.base_url,
-            web_host_meta: self.web_host_meta,
-            state: State {
-                started_at,
-                status: self.status.unwrap_or(ServiceStatus::Running),
-            },
-        })
-    }
-
-    pub fn id(mut self, id: String) -> Self {
-        self.id = Some(id);
-        self
-    }
-
-    pub fn app_name(mut self, app_name: String) -> Self {
-        self.app_name = Some(app_name);
-        self
-    }
-
-    pub fn started_at(mut self, started_at: DateTime<Utc>) -> Self {
-        self.started_at = Some(started_at);
-        self
-    }
-
-    pub fn service_status(mut self, service_status: ServiceStatus) -> Self {
-        self.status = Some(service_status);
-        self
-    }
-
-    pub fn base_url(mut self, base_url: Url) -> Self {
-        self.base_url = Some(base_url);
-        self
-    }
-
-    pub fn web_host_meta(mut self, web_host_meta: WebHostMeta) -> Self {
-        self.web_host_meta = Some(web_host_meta);
-        self
-    }
-
-    pub fn config(mut self, config: ServiceConfig) -> Self {
-        self.config = Some(config);
-        self
+        serde::ser::SerializeSeq::end(seq)
     }
 }
 
-#[derive(Debug, thiserror::Error, PartialEq)]
-pub enum ServiceBuilderError {
-    #[error("An ID must be provided.")]
-    MissingId,
-    #[error("An app name must be provided.")]
-    MissingAppName,
-    #[error("A service configuration must be provided.")]
-    MissingServiceConfiguration,
-}
-
-impl From<Service> for ServiceBuilder {
-    fn from(service: Service) -> Self {
-        ServiceBuilder {
-            id: Some(service.id),
-            app_name: Some(service.app_name),
-            config: Some(service.config),
-            status: Some(service.state.status),
-            started_at: Some(service.state.started_at),
-            base_url: service.base_url,
-            web_host_meta: service.web_host_meta,
-        }
+impl From<Vec<ServiceWithHostMeta>> for ServicesWithHostMeta {
+    fn from(services: Vec<ServiceWithHostMeta>) -> Self {
+        let mut services = services;
+        services.sort_by_key(|service| service.config.service_name().clone());
+        Self(services)
     }
 }
 
@@ -307,101 +313,122 @@ pub enum ServiceError {
 
 #[cfg(test)]
 mod tests {
+    use assert_json_diff::assert_json_eq;
+
     use super::*;
-    use crate::sc;
 
     #[test]
-    fn should_build_service() {
-        let started_at = Utc::now();
-
-        let service = ServiceBuilder::new()
-            .id("some-random-id".to_string())
-            .app_name("master".to_string())
-            .config(sc!("nginx", "nginx"))
-            .started_at(started_at)
-            .build()
-            .unwrap();
-
-        assert_eq!(service.id(), "some-random-id");
-        assert_eq!(service.app_name(), "master");
-        assert_eq!(service.config(), &sc!("nginx", "nginx"));
-        assert_eq!(service.started_at(), &started_at);
-        assert_eq!(service.state.status, ServiceStatus::Running);
-    }
-
-    #[test]
-    fn should_build_service_with_service_status() {
-        let service = ServiceBuilder::new()
-            .id("some-random-id".to_string())
-            .app_name("master".to_string())
-            .config(sc!("nginx", "nginx"))
-            .started_at(Utc::now())
-            .service_status(ServiceStatus::Paused)
-            .build()
-            .unwrap();
-
-        assert_eq!(service.state.status, ServiceStatus::Paused);
-    }
-
-    #[test]
-    fn should_build_service_with_base_url() {
-        let url = Url::parse("http://example.com").unwrap();
-
-        let service = ServiceBuilder::new()
-            .id("some-random-id".to_string())
-            .app_name("master".to_string())
-            .config(sc!("nginx", "nginx"))
-            .started_at(Utc::now())
-            .base_url(url.clone())
-            .build()
-            .unwrap();
-
-        assert_eq!(
-            service.service_url(),
-            Some(url.join("/master/nginx/").unwrap())
+    fn serialize_service() {
+        assert_json_eq!(
+            serde_json::json!({
+                "name": "mariadb",
+                "type": "instance",
+                "state": {
+                    "status": "running"
+                }
+            }),
+            serde_json::to_value(Service {
+                id: String::from("some id"),
+                state: State {
+                    status: ServiceStatus::Running,
+                    started_at: Utc::now(),
+                },
+                config: crate::sc!("mariadb", "mariadb:latest")
+            })
+            .unwrap()
         );
     }
 
     #[test]
-    fn should_build_service_with_web_host_meta() {
-        let meta = WebHostMeta::empty();
-
-        let service = ServiceBuilder::new()
-            .id("some-random-id".to_string())
-            .app_name("master".to_string())
-            .config(sc!("nginx", "nginx"))
-            .started_at(Utc::now())
-            .web_host_meta(meta.clone())
-            .build()
-            .unwrap();
-
-        assert_eq!(service.web_host_meta, Some(meta));
+    fn serialize_services() {
+        assert_json_eq!(
+            serde_json::json!([{
+                "name": "mariadb",
+                "type": "instance",
+                "state": {
+                    "status": "running"
+                }
+            }, {
+                "name": "postgres",
+                "type": "instance",
+                "state": {
+                    "status": "running"
+                }
+            }]),
+            serde_json::to_value(Services::from(vec![
+                Service {
+                    id: String::from("some id"),
+                    state: State {
+                        status: ServiceStatus::Running,
+                        started_at: Utc::now(),
+                    },
+                    config: crate::sc!("postgres", "postgres:latest")
+                },
+                Service {
+                    id: String::from("some id"),
+                    state: State {
+                        status: ServiceStatus::Running,
+                        started_at: Utc::now(),
+                    },
+                    config: crate::sc!("mariadb", "mariadb:latest")
+                }
+            ]))
+            .unwrap()
+        );
     }
 
     #[test]
-    fn should_not_build_service_missing_id() {
-        let err = ServiceBuilder::new().build().unwrap_err();
-        assert_eq!(err, ServiceBuilderError::MissingId);
-    }
+    fn serialize_services_with_web_host_meta() {
+        let base_url = Url::from_str("http://prevant.example.com").unwrap();
+        let app_name = AppName::master();
 
-    #[test]
-    fn should_not_build_service_missing_app_name() {
-        let err = ServiceBuilder::new()
-            .id("some-container-id".to_string())
-            .build()
-            .unwrap_err();
-
-        assert_eq!(err, ServiceBuilderError::MissingAppName);
-    }
-
-    #[test]
-    fn should_not_build_service_missing_config() {
-        let err = ServiceBuilder::new()
-            .id("some-container-id".to_string())
-            .app_name("master".to_string())
-            .build()
-            .unwrap_err();
-
-        assert_eq!(err, ServiceBuilderError::MissingServiceConfiguration);
+        assert_json_eq!(
+            serde_json::json!([{
+                "name": "mariadb",
+                "type": "instance",
+                "state": {
+                    "status": "running"
+                },
+                "url": "http://prevant.example.com/master/mariadb/",
+                "version": {
+                    "softwareVersion": "1.2.3"
+                }
+            }, {
+                "name": "postgres",
+                "type": "instance",
+                "state": {
+                    "status": "running"
+                }
+            }]),
+            serde_json::to_value(ServicesWithHostMeta::from(vec![
+                ServiceWithHostMeta::from_service_and_web_host_meta(
+                    Service {
+                        id: String::from("some id"),
+                        state: State {
+                            status: ServiceStatus::Running,
+                            started_at: Utc::now(),
+                        },
+                        config: crate::sc!("postgres", "postgres:latest")
+                    },
+                    WebHostMeta::invalid(),
+                    base_url.clone(),
+                    &app_name
+                ),
+                ServiceWithHostMeta::from_service_and_web_host_meta(
+                    Service {
+                        id: String::from("some id"),
+                        state: State {
+                            status: ServiceStatus::Running,
+                            started_at: Utc::now(),
+                        },
+                        config: crate::sc!("mariadb", "mariadb:latest")
+                    },
+                    WebHostMeta::with_version(String::from("1.2.3")),
+                    base_url,
+                    &app_name
+                )
+            ]))
+            .unwrap()
+        );
     }
 }

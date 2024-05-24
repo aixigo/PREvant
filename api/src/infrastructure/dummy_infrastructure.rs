@@ -28,24 +28,25 @@ use crate::config::ContainerConfig;
 use crate::deployment::deployment_unit::DeployableService;
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::Infrastructure;
-use crate::models::service::{Service, ServiceStatus};
-use crate::models::{AppName, ServiceBuilder, ServiceConfig};
+use crate::models::service::{Service, ServiceStatus, Services, State};
+use crate::models::{AppName, ServiceConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use futures::stream::{self, BoxStream};
 use multimap::MultiMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::TraefikIngressRoute;
 
 #[cfg(test)]
+#[derive(Clone)]
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
-    services: Mutex<MultiMap<AppName, DeployableService>>,
+    services: Arc<Mutex<MultiMap<AppName, DeployableService>>>,
     base_ingress_route: Option<TraefikIngressRoute>,
 }
 
@@ -54,7 +55,7 @@ impl DummyInfrastructure {
     pub fn new() -> Self {
         Self {
             delay: None,
-            services: Mutex::new(MultiMap::new()),
+            services: Arc::new(Mutex::new(MultiMap::new())),
             base_ingress_route: None,
         }
     }
@@ -62,7 +63,7 @@ impl DummyInfrastructure {
     pub fn with_delay(delay: Duration) -> Self {
         Self {
             delay: Some(delay),
-            services: Mutex::new(MultiMap::new()),
+            services: Arc::new(Mutex::new(MultiMap::new())),
             base_ingress_route: None,
         }
     }
@@ -70,7 +71,7 @@ impl DummyInfrastructure {
     pub fn with_base_route(base_ingress_route: TraefikIngressRoute) -> Self {
         Self {
             delay: None,
-            services: Mutex::new(MultiMap::new()),
+            services: Arc::new(Mutex::new(MultiMap::new())),
             base_ingress_route: Some(base_ingress_route),
         }
     }
@@ -97,27 +98,28 @@ impl DummyInfrastructure {
 #[cfg(test)]
 #[async_trait]
 impl Infrastructure for DummyInfrastructure {
-    async fn get_services(&self) -> Result<MultiMap<AppName, Service>> {
-        let mut s = MultiMap::new();
+    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>> {
+        let mut s = HashMap::new();
 
         let services = self.services.lock().unwrap();
         for (app, configs) in services.iter_all() {
+            let mut services = Vec::with_capacity(configs.len());
             for config in configs {
-                let service = ServiceBuilder::new()
-                    .id(format!("{}", config.service_name()))
-                    .app_name(app.to_string())
-                    .config(ServiceConfig::clone(config))
-                    .service_status(ServiceStatus::Running)
-                    .started_at(
-                        DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
+                let service = Service {
+                    id: config.service_name().clone(),
+                    config: ServiceConfig::clone(config),
+                    state: State {
+                        status: ServiceStatus::Running,
+                        started_at: DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
                             .unwrap()
                             .with_timezone(&Utc),
-                    )
-                    .build()
-                    .unwrap();
+                    },
+                };
 
-                s.insert(AppName::from_str(app).unwrap(), service);
+                services.push(service);
             }
+
+            s.insert(AppName::from_str(app).unwrap(), Services::from(services));
         }
 
         Ok(s)
@@ -128,7 +130,7 @@ impl Infrastructure for DummyInfrastructure {
         _status_id: &str,
         deployment_unit: &DeploymentUnit,
         _container_config: &ContainerConfig,
-    ) -> Result<Vec<Service>> {
+    ) -> Result<Services> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
@@ -151,45 +153,44 @@ impl Infrastructure for DummyInfrastructure {
             .get_vec(app_name)
             .unwrap()
             .iter()
-            .map(|sc| {
-                ServiceBuilder::new()
-                    .app_name(app_name.to_string())
-                    .id(sc.service_name().clone())
-                    .config(ServiceConfig::clone(&sc))
-                    .started_at(
-                        DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
-                            .unwrap()
-                            .with_timezone(&Utc),
-                    )
-                    .build()
-                    .unwrap()
+            .map(|sc| Service {
+                id: sc.service_name().clone(),
+                config: ServiceConfig::clone(&sc),
+                state: State {
+                    status: ServiceStatus::Running,
+                    started_at: DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                },
             })
-            .collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+            .into())
     }
 
-    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Vec<Service>> {
+    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Services> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
 
         match services.remove(&app_name) {
-            Some(services) => Ok(services
-                .into_iter()
-                .map(|sc| {
-                    ServiceBuilder::new()
-                        .app_name(app_name.to_string())
-                        .id(sc.service_name().clone())
-                        .config(ServiceConfig::clone(&sc))
-                        .started_at(
-                            DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
-                                .unwrap()
-                                .with_timezone(&Utc),
-                        )
-                        .build()
-                        .unwrap()
-                })
-                .collect()),
-            None => Ok(vec![]),
+            Some(services) => Ok(Services::from(
+                services
+                    .into_iter()
+                    .map(|sc| Service {
+                        id: sc.service_name().clone(),
+                        config: ServiceConfig::clone(&sc),
+                        state: State {
+                            status: ServiceStatus::Running,
+                            started_at: DateTime::parse_from_rfc3339(
+                                "2019-07-18T07:25:00.000000000Z",
+                            )
+                            .unwrap()
+                            .with_timezone(&Utc),
+                        },
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+            None => Ok(Services::empty()),
         }
     }
 
