@@ -31,10 +31,10 @@ use crate::infrastructure::{
     HttpForwarder, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
 };
-use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
-use crate::models::{
-    AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig, WebHostMeta,
+use crate::models::service::{
+    ContainerType, Service, ServiceError, ServiceStatus, Services, State,
 };
+use crate::models::{AppName, Environment, Image, ServiceConfig, WebHostMeta};
 use anyhow::{anyhow, Result};
 use async_stream::stream;
 use async_trait::async_trait;
@@ -71,6 +71,7 @@ use tokio::net::TcpStream;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
+#[derive(Clone)]
 pub struct DockerInfrastructure {
     config: Config,
 }
@@ -177,9 +178,7 @@ impl DockerInfrastructure {
                 ..Default::default()
             })
             .await?;
-        let network_id = network_create_info
-            .id
-            .expect("id is mandatory for a Docker Network.");
+        let network_id = network_create_info.id;
 
         debug!("Created network for app {app_name} with id {network_id}");
 
@@ -280,7 +279,7 @@ impl DockerInfrastructure {
         &self,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Vec<Service>, DockerInfrastructureError> {
+    ) -> Result<Services, DockerInfrastructureError> {
         let app_name = deployment_unit.app_name();
         let services = deployment_unit.services();
         let network_id = self.create_or_get_network_id(app_name).await?;
@@ -306,19 +305,19 @@ impl DockerInfrastructure {
             services.push(service?);
         }
 
-        Ok(services)
+        Ok(Services::from(services))
     }
 
     async fn stop_services_impl(
         &self,
         app_name: &AppName,
-    ) -> Result<Vec<Service>, DockerInfrastructureError> {
+    ) -> Result<Services, DockerInfrastructureError> {
         let container_details = match self
             .get_container_details(Some(app_name), None)
             .await?
             .get_vec(app_name)
         {
-            None => return Ok(vec![]),
+            None => return Ok(Services::empty()),
             Some(services) => services.clone(),
         };
 
@@ -377,7 +376,7 @@ impl DockerInfrastructure {
         self.delete_network(app_name).await?;
         self.delete_volume_mount(app_name).await?;
 
-        Ok(services)
+        Ok(Services::from(services))
     }
 
     async fn start_container(
@@ -792,16 +791,19 @@ impl DockerInfrastructure {
             if let Some(details) = not_found_to_none(inspect(container).await)? {
                 let app_name = match app_name {
                     Some(app_name) => app_name.clone(),
-                    None => details
-                        .config
-                        .as_ref()
-                        .and_then(|con| {
-                            con.labels.as_ref().and_then(|lab| {
-                                lab.get(APP_NAME_LABEL)
-                                    .and_then(|app_name| AppName::from_str(app_name).ok())
-                            })
+                    None => match details.config.as_ref().and_then(|con| {
+                        con.labels.as_ref().and_then(|lab| {
+                            lab.get(APP_NAME_LABEL)
+                                .and_then(|app_name| AppName::from_str(app_name).ok())
                         })
-                        .unwrap(),
+                    }) {
+                        Some(app_name) => app_name,
+                        None => {
+                            return Err(DockerInfrastructureError::MissingAppNameLabel {
+                                container_id: details.id.unwrap_or_default(),
+                            })
+                        }
+                    },
                 };
                 container_details.insert(app_name, details);
             }
@@ -813,11 +815,13 @@ impl DockerInfrastructure {
 
 #[async_trait]
 impl Infrastructure for DockerInfrastructure {
-    async fn get_services(&self) -> Result<MultiMap<AppName, Service>> {
-        let mut apps = MultiMap::new();
+    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>> {
+        let mut apps = HashMap::new();
         let container_details = self.get_container_details(None, None).await?;
 
         for (app_name, details_vec) in container_details.into_iter() {
+            let mut services = Vec::with_capacity(details_vec.len());
+
             for details in details_vec {
                 let service = match Service::try_from(details) {
                     Ok(service) => service,
@@ -827,8 +831,10 @@ impl Infrastructure for DockerInfrastructure {
                     }
                 };
 
-                apps.insert(app_name.clone(), service);
+                services.push(service);
             }
+
+            apps.insert(app_name, Services::from(services));
         }
 
         Ok(apps)
@@ -839,7 +845,7 @@ impl Infrastructure for DockerInfrastructure {
         status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Vec<Service>> {
+    ) -> Result<Services> {
         let deployment_container = self
             .create_status_change_container(status_id, deployment_unit.app_name())
             .await?;
@@ -853,7 +859,7 @@ impl Infrastructure for DockerInfrastructure {
         Ok(result?)
     }
 
-    async fn get_status_change(&self, status_id: &str) -> Result<Option<Vec<Service>>> {
+    async fn get_status_change(&self, status_id: &str) -> Result<Option<Services>> {
         Ok(
             match self
                 .find_status_change_container(status_id)
@@ -878,7 +884,7 @@ impl Infrastructure for DockerInfrastructure {
                         }
                     }
 
-                    Some(services)
+                    Some(services.into())
                 }
                 None => None,
             },
@@ -886,7 +892,7 @@ impl Infrastructure for DockerInfrastructure {
     }
 
     /// Deletes all services for the given `app_name`.
-    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<Vec<Service>> {
+    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<Services> {
         let deployment_container = self
             .create_status_change_container(status_id, app_name)
             .await?;
@@ -1094,7 +1100,7 @@ impl HttpForwarder for DockerHttpForwarder {
                 let ip = network_settings
                     .networks?
                     .into_iter()
-                    .find_map(|(_, network)| Some(network.ip_address?))?;
+                    .find_map(|(_, network)| network.ip_address)?;
 
                 Some(ip)
             })
@@ -1235,15 +1241,6 @@ impl TryFrom<ContainerInspectResponse> for Service {
         let container_id = container_details
             .id
             .expect("id is mandatory for a docker container");
-        let app_name = match labels
-            .as_mut()
-            .and_then(|labels| labels.remove(APP_NAME_LABEL))
-        {
-            Some(name) => name,
-            None => {
-                return Err(DockerInfrastructureError::MissingAppNameLabel { container_id });
-            }
-        };
 
         let service_name = match labels
             .as_mut()
@@ -1313,13 +1310,14 @@ impl TryFrom<ContainerInspectResponse> for Service {
             _ => ServiceStatus::Paused,
         };
 
-        Ok(ServiceBuilder::new()
-            .id(container_id.clone())
-            .app_name(app_name.clone())
-            .config(config)
-            .service_status(status)
-            .started_at(started_at.into())
-            .build()?)
+        Ok(Service {
+            id: container_id,
+            config,
+            state: State {
+                status,
+                started_at: started_at.into(),
+            },
+        })
     }
 }
 
@@ -1356,14 +1354,6 @@ impl From<ServiceError> for DockerInfrastructureError {
             err => DockerInfrastructureError::UnexpectedError {
                 err: anyhow::Error::new(err),
             },
-        }
-    }
-}
-
-impl From<ServiceBuilderError> for DockerInfrastructureError {
-    fn from(err: ServiceBuilderError) -> Self {
-        DockerInfrastructureError::UnexpectedError {
-            err: anyhow::Error::new(err),
         }
     }
 }
@@ -1614,10 +1604,9 @@ mod tests {
         let service = Service::try_from(details).unwrap();
 
         assert_eq!(service.id(), "some-random-id");
-        assert_eq!(service.app_name(), "master");
-        assert_eq!(service.config().service_name(), "nginx");
+        assert_eq!(service.config.service_name(), "nginx");
         assert_eq!(
-            &service.config().image().to_string(),
+            &service.config.image().to_string(),
             "docker.io/library/nginx:latest"
         );
     }
@@ -1656,10 +1645,9 @@ mod tests {
         let service = Service::try_from(details).unwrap();
 
         assert_eq!(service.id(), "some-random-id");
-        assert_eq!(service.app_name(), "master");
-        assert_eq!(service.config().service_name(), "nginx");
+        assert_eq!(service.config.service_name(), "nginx");
         assert_eq!(
-            service.config().image().to_string(),
+            service.config.image().to_string(),
             "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913"
         );
     }
@@ -1678,7 +1666,7 @@ mod tests {
         let service = Service::try_from(details).unwrap();
 
         assert_eq!(
-            service.config().env().unwrap().get(0).unwrap(),
+            service.config.env().unwrap().get(0).unwrap(),
             &EnvironmentVariable::with_replicated(
                 String::from("MYSQL_ROOT_PASSWORD"),
                 SecUtf8::from("example")

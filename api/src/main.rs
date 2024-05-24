@@ -105,13 +105,16 @@ async fn main() -> Result<(), StartUpError> {
     // Arc<Apps> needs to be replace with Apps
     let apps = Arc::new(apps);
 
+    let app_updates = apps.app_updates().await;
+
     let (host_meta_cache, host_meta_crawler) = host_meta_crawling();
-    host_meta_crawler.spawn(apps.clone());
+    host_meta_crawler.spawn(apps.clone(), app_updates.clone());
 
     let _rocket = rocket::build()
         .manage(config)
         .manage(apps)
         .manage(host_meta_cache)
+        .manage(app_updates)
         .mount(
             "/",
             FileServer::new(Path::new("frontend"), Options::Index | Options::Missing),

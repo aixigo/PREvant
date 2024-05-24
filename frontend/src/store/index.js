@@ -177,46 +177,37 @@ export function createStore(router) {
       },
       actions: {
          fetchData( context ) {
+            function fetchTicketsHandler(response) {
+               if( response.ok ) {
+                  if( response.status === 200 ) {
+                     return response.json();
+                  }
+                  else {
+                     return Promise.resolve({});
+                  }
+               }
+               if( response.headers.get('Content-Type') === 'application/problem+json' ) {
+                  return response.json();
+               }
+               return response.text().then( detail => ({
+                  type: 'cannot-fetch-tickets',
+                  title: 'Cannot fetch tickets',
+                  detail
+               }));
+            }
+
             context.commit( 'startFetch' );
 
-            Promise.all([
-               fetch( '/api/apps' )
-                  .then( response => {
-                     if( response.ok && response.status === 200 ) {
-                        return response.json();
-                     }
-                     if( response.headers.get('Content-Type') === 'application/problem+json' ) {
-                        return response.json();
-                     }
-                     return response.text().then( detail => ({
-                        type: 'cannot-fetch-apps',
-                        title: 'Cannot fetch apps',
-                        detail
-                     }));
-                  } ),
-               fetch( '/api/apps/tickets' )
-                  .then( response => {
-                     if( response.ok ) {
-                        if( response.status === 200 ) {
-                           return response.json();
-                        }
-                        else {
-                           return Promise.resolve({});
-                        }
-                     }
-                     if( response.headers.get('Content-Type') === 'application/problem+json' ) {
-                        return response.json();
-                     }
-                     return response.text().then( detail => ({
-                        type: 'cannot-fetch-tickets',
-                        title: 'Cannot fetch tickets',
-                        detail
-                     }));
-                  } )
-            ]).then((values) => {
+            const appEvents = new EventSource('/api/apps');
+            appEvents.addEventListener('message', (event) => {
+               const apps = JSON.parse(event.data);
+
                context.commit( 'endFetch' );
-               context.commit( "storeTickets", values[1] );
-               context.commit( "storeApps", values[0] );
+               context.commit("storeApps", apps);
+
+               fetch( '/api/apps/tickets' )
+                  .then(fetchTicketsHandler)
+                  .then(tickets => context.commit("storeTickets", tickets));
             });
          },
 

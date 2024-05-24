@@ -76,6 +76,19 @@ impl WebHostMeta {
         }
     }
 
+    #[cfg(test)]
+    pub fn with_version(version: String) -> Self {
+        Self {
+            properties: Some(Properties {
+                version: Some(version),
+                commit: None,
+                date_modified: None,
+            }),
+            links: None,
+            valid: true,
+        }
+    }
+
     pub fn is_valid(&self) -> bool {
         self.valid
     }

@@ -28,23 +28,27 @@ use crate::apps::HostMetaCache;
 use crate::apps::{Apps, AppsError};
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::request_info::RequestInfo;
-use crate::models::service::{Service, ServiceStatus};
+use crate::models::service::{Service, ServiceStatus, Services, ServicesWithHostMeta};
 use crate::models::{AppName, AppNameError};
 use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
 use create_app_payload::CreateAppPayload;
 use http_api_problem::{HttpApiProblem, StatusCode};
-use multimap::MultiMap;
 use regex::Regex;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
+use rocket::response::stream::{Event, EventStream};
 use rocket::response::{Responder, Response};
 use rocket::serde::json::Json;
-use rocket::State;
+use rocket::{Shutdown, State};
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
+use tokio::select;
+use tokio::sync::watch::Receiver;
 use tokio::time::timeout;
+use tokio_stream::StreamExt;
 
 mod create_app_payload;
 mod logs;
@@ -52,6 +56,7 @@ mod logs;
 pub fn apps_routes() -> Vec<rocket::Route> {
     rocket::routes![
         apps,
+        stream_apps,
         delete_app,
         create_app,
         logs::logs,
@@ -61,16 +66,49 @@ pub fn apps_routes() -> Vec<rocket::Route> {
     ]
 }
 
-#[get("/", format = "application/json")]
+#[get("/", format = "application/json", rank = 1)]
 async fn apps(
     apps: &State<Arc<Apps>>,
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
-) -> HttpResult<Json<MultiMap<AppName, Service>>> {
-    let services = apps.get_apps().await?;
+) -> HttpResult<Json<HashMap<AppName, ServicesWithHostMeta>>> {
+    let services = apps.fetch_apps().await?;
     Ok(Json(
         host_meta_cache.update_meta_data(services, &request_info),
     ))
+}
+
+#[get("/", format = "text/event-stream", rank = 2)]
+async fn stream_apps(
+    apps_updates: &State<Receiver<HashMap<AppName, Services>>>,
+    mut end: Shutdown,
+    request_info: RequestInfo,
+    host_meta_cache: HostMetaCache,
+) -> EventStream![] {
+    let mut services = apps_updates.inner().borrow().clone();
+
+    let mut app_changes =
+        tokio_stream::wrappers::WatchStream::from_changes(apps_updates.inner().clone());
+    let mut host_meta_cache_updates = host_meta_cache.cache_updates();
+
+    EventStream! {
+        yield Event::json(&host_meta_cache.update_meta_data(services.clone(), &request_info));
+
+        loop {
+            select! {
+                Some(new_services) = app_changes.next() => {
+                    debug!("New app list update: sending app service update");
+                    services = new_services;
+                }
+                Some(_t) = host_meta_cache_updates.next() => {
+                    debug!("New host meta cache update: sending app service update");
+                }
+                _ = &mut end => break,
+            };
+
+            yield Event::json(&host_meta_cache.update_meta_data(services.clone(), &request_info));
+        }
+    }
 }
 
 #[get("/<app_name>/status-changes/<status_id>", format = "application/json")]
@@ -79,7 +117,7 @@ async fn status_change(
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
     apps: &State<Arc<Apps>>,
     options: RunOptions,
-) -> HttpResult<AsyncCompletion<Json<Vec<Service>>>> {
+) -> HttpResult<AsyncCompletion<Json<Services>>> {
     let app_name = app_name?;
     let status_id = status_id?;
 
@@ -88,7 +126,9 @@ async fn status_change(
 
     match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name, status_id)),
-        Poll::Ready(Ok(_)) => Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into()),
+        Poll::Ready(Ok(_)) => {
+            Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into())
+        }
         Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
@@ -98,7 +138,7 @@ pub async fn delete_app(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
     options: RunOptions,
-) -> HttpResult<AsyncCompletion<Json<Vec<Service>>>> {
+) -> HttpResult<AsyncCompletion<Json<Services>>> {
     let app_name = app_name?;
     let app_name_cloned = app_name.clone();
     let status_id = AppStatusChangeId::new();
@@ -116,7 +156,7 @@ pub async fn delete_app(
 pub async fn delete_app_sync(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
-) -> HttpResult<Json<Vec<Service>>> {
+) -> HttpResult<Json<Services>> {
     match delete_app(app_name, apps, RunOptions::Sync).await? {
         AsyncCompletion::Pending(_, _) => {
             Err(HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR).into())
@@ -136,7 +176,7 @@ pub async fn create_app(
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
     options: RunOptions,
-) -> HttpResult<AsyncCompletion<Json<Vec<Service>>>> {
+) -> HttpResult<AsyncCompletion<Json<Services>>> {
     let payload = payload.map_err(HttpApiError::from)?;
 
     let status_id = AppStatusChangeId::new();
@@ -447,6 +487,7 @@ mod tests {
     mod url_rendering {
         use crate::apps::{AppsService, HostMetaCache};
         use crate::infrastructure::Dummy;
+        use crate::models::service::Services;
         use crate::models::{AppName, AppStatusChangeId};
         use crate::sc;
         use assert_json_diff::assert_json_include;
@@ -456,6 +497,7 @@ mod tests {
         use rocket::local::asynchronous::Client;
         use serde_json::json;
         use serde_json::Value;
+        use std::collections::HashMap;
         use std::convert::From;
         use std::sync::Arc;
 
@@ -477,6 +519,7 @@ mod tests {
             let rocket = rocket::build()
                 .manage(host_meta_cache)
                 .manage(apps)
+                .manage(tokio::sync::watch::channel::<HashMap<AppName, Services>>(HashMap::new()).1)
                 .mount("/", routes![crate::apps::routes::apps])
                 .mount("/api/apps", crate::apps::apps_routes());
             Ok(Client::tracked(rocket).await.expect("valid rocket"))
@@ -503,13 +546,14 @@ mod tests {
             let body_str = response.into_string().await.expect("valid response body");
             let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
 
-            assert_json_include!(actual: value_in_json, expected: json!({
-             "master": [
-                    {
-                     "url":"http://prevant.com:8433/master/service-a/"
-                    }
-                ]
-            }));
+            assert_json_include!(
+                actual: value_in_json,
+                expected: json!({
+                    "master": [{
+                        "url":"http://prevant.com:8433/master/service-a/"
+                    }]
+                }
+            ));
 
             Ok(())
         }
@@ -533,13 +577,14 @@ mod tests {
 
             let body_str = response.into_string().await.expect("valid response body");
             let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-            assert_json_include!(actual: value_in_json, expected: json!({
-             "master": [
-                    {
-                     "url":"https://localhost/master/service-a/"
-                    }
-                ]
-            }));
+            assert_json_include!(
+                actual: value_in_json,
+                expected: json!({
+                    "master": [{
+                        "url":"https://localhost/master/service-a/"
+                    }]
+                }
+            ));
 
             Ok(())
         }
@@ -562,13 +607,14 @@ mod tests {
 
             let body_str = response.into_string().await.expect("valid response body");
             let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-            assert_json_include!(actual: value_in_json, expected: json!({
-             "master": [
-                    {
-                     "url":"http://prevant.com/master/service-a/"
-                    }
-                ]
-            }));
+            assert_json_include!(
+                actual: value_in_json,
+                expected: json!({
+                    "master": [{
+                        "url":"http://prevant.com/master/service-a/"
+                    }]
+                }
+            ));
 
             Ok(())
         }
@@ -592,13 +638,14 @@ mod tests {
 
             let body_str = response.into_string().await.expect("valid response body");
             let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-            assert_json_include!(actual: value_in_json, expected: json!({
-             "master": [
-                    {
-                     "url":"http://localhost:8433/master/service-a/"
-                    }
-                ]
-            }));
+            assert_json_include!(
+                actual: value_in_json,
+                expected: json!({
+                    "master": [{
+                        "url":"http://localhost:8433/master/service-a/"
+                    }]
+                }
+            ));
 
             Ok(())
         }
@@ -620,13 +667,14 @@ mod tests {
 
             let body_str = response.into_string().await.expect("valid response body");
             let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-            assert_json_include!(actual: value_in_json, expected: json!({
-             "master": [
-                    {
-                     "url":"http://localhost/master/service-a/"
-                    }
-                ]
-            }));
+            assert_json_include!(
+                actual: value_in_json,
+                expected: json!({
+                    "master": [{
+                        "url":"http://localhost/master/service-a/"
+                    }]
+                }
+            ));
 
             Ok(())
         }
