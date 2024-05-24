@@ -37,15 +37,16 @@ use futures::stream::{self, BoxStream};
 use multimap::MultiMap;
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::TraefikIngressRoute;
 
 #[cfg(test)]
+#[derive(Clone)]
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
-    services: Mutex<MultiMap<AppName, DeployableService>>,
+    services: Arc<Mutex<MultiMap<AppName, DeployableService>>>,
     base_ingress_route: Option<TraefikIngressRoute>,
 }
 
@@ -54,7 +55,7 @@ impl DummyInfrastructure {
     pub fn new() -> Self {
         Self {
             delay: None,
-            services: Mutex::new(MultiMap::new()),
+            services: Arc::new(Mutex::new(MultiMap::new())),
             base_ingress_route: None,
         }
     }
@@ -62,7 +63,7 @@ impl DummyInfrastructure {
     pub fn with_delay(delay: Duration) -> Self {
         Self {
             delay: Some(delay),
-            services: Mutex::new(MultiMap::new()),
+            services: Arc::new(Mutex::new(MultiMap::new())),
             base_ingress_route: None,
         }
     }
@@ -70,7 +71,7 @@ impl DummyInfrastructure {
     pub fn with_base_route(base_ingress_route: TraefikIngressRoute) -> Self {
         Self {
             delay: None,
-            services: Mutex::new(MultiMap::new()),
+            services: Arc::new(Mutex::new(MultiMap::new())),
             base_ingress_route: Some(base_ingress_route),
         }
     }

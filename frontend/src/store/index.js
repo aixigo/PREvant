@@ -175,6 +175,25 @@ export default new Store( {
    },
    actions: {
       fetchData( context ) {
+         function fetchTicketsHandler(response) {
+            if( response.ok ) {
+               if( response.status === 200 ) {
+                  return response.json();
+               }
+               else {
+                  return Promise.resolve({});
+               }
+            }
+            if( response.headers.get('Content-Type') === 'application/problem+json' ) {
+               return response.json();
+            }
+            return response.text().then( detail => ({
+               type: 'cannot-fetch-tickets',
+               title: 'Cannot fetch tickets',
+               detail
+            }));
+         }
+
          context.commit( 'startFetch' );
 
          Promise.all([
@@ -192,29 +211,21 @@ export default new Store( {
                      detail
                   }));
                } ),
-            fetch( '/api/apps/tickets' )
-               .then( response => {
-                  if( response.ok ) {
-                     if( response.status === 200 ) {
-                        return response.json();
-                     }
-                     else {
-                        return Promise.resolve({});
-                     }
-                  }
-                  if( response.headers.get('Content-Type') === 'application/problem+json' ) {
-                     return response.json();
-                  }
-                  return response.text().then( detail => ({
-                     type: 'cannot-fetch-tickets',
-                     title: 'Cannot fetch tickets',
-                     detail
-                  }));
-               } )
+            fetch( '/api/apps/tickets' ).then(fetchTicketsHandler)
          ]).then((values) => {
             context.commit( 'endFetch' );
             context.commit( "storeTickets", values[1] );
             context.commit( "storeApps", values[0] );
+         }).then(() => {
+            const appEvents = new EventSource('/api/apps');
+            appEvents.addEventListener('message', (event) => {
+               const apps = JSON.parse(event.data);
+               context.commit("storeApps", apps);
+
+               fetch( '/api/apps/tickets' )
+                  .then(fetchTicketsHandler)
+                  .then(tickets => context.commit("storeTickets", tickets));
+            });
          });
       },
 

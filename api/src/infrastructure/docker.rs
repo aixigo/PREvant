@@ -71,6 +71,7 @@ use tokio::net::TcpStream;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
+#[derive(Clone)]
 pub struct DockerInfrastructure {
     config: Config,
 }

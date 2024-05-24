@@ -34,18 +34,22 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use http::header::{HOST, USER_AGENT};
 use multimap::MultiMap;
+use rocket::outcome::Outcome;
+use rocket::request::{self, FromRequest, Request};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
+use tokio::sync::watch::{self, Receiver, Sender};
+use tokio_stream::wrappers::WatchStream;
 use yansi::Paint;
 
 pub struct HostMetaCache {
     reader_factory: ReadHandleFactory<Key, Arc<Value>>,
+    update_watch_rx: Receiver<DateTime<Utc>>,
 }
 pub struct HostMetaCrawler {
     writer: WriteHandle<Key, Arc<Value>>,
+    update_watch_tx: Sender<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -61,13 +65,19 @@ struct Value {
 }
 
 pub fn new() -> (HostMetaCache, HostMetaCrawler) {
+    // TODO: eventually we should replace evmap with the watch channel.
     let (reader, writer) = evmap::new();
+    let (update_watch_tx, update_watch_rx) = watch::channel(Utc::now());
 
     (
         HostMetaCache {
             reader_factory: reader.factory(),
+            update_watch_rx,
         },
-        HostMetaCrawler { writer },
+        HostMetaCrawler {
+            writer,
+            update_watch_tx,
+        },
     )
 }
 
@@ -104,18 +114,57 @@ impl HostMetaCache {
 
         assigned_apps
     }
+
+    pub fn cache_updates(&self) -> WatchStream<DateTime<Utc>> {
+        WatchStream::from_changes(self.update_watch_rx.clone())
+    }
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for HostMetaCache {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
+        match request.rocket().state::<HostMetaCache>() {
+            Some(cache) => Outcome::Success(Self {
+                reader_factory: cache.reader_factory.clone(),
+                update_watch_rx: cache.update_watch_rx.clone(),
+            }),
+            None => todo!(),
+        }
+    }
 }
 
 impl HostMetaCrawler {
-    pub fn spawn(mut self, apps: Arc<Apps>) {
+    pub fn spawn(mut self, apps: Arc<Apps>, apps_updates: Receiver<MultiMap<AppName, Service>>) {
         let timestamp_prevant_startup = Utc::now();
 
         tokio::spawn(async move {
+            let mut apps_updates = WatchStream::new(apps_updates);
+            let mut services = MultiMap::new();
             loop {
-                sleep(Duration::from_secs(5)).await;
-                if let Err(err) = self.crawl(apps.clone(), timestamp_prevant_startup).await {
+                // TODO: include shutdown handle
+                tokio::select! {
+                    Some(new_services) = apps_updates.next() => {
+                        MultiMap::clear(&mut services);
+                        services.extend(new_services);
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                        if services.is_empty() {
+                            continue;
+                        }
+                    }
+                    else => continue,
+                };
+
+                if let Err(err) = self
+                    .crawl(apps.clone(), &services, timestamp_prevant_startup)
+                    .await
+                {
                     error!("Cannot load apps: {}", err);
                 }
+
+                self.update_watch_tx.send_replace(Utc::now());
             }
         });
     }
@@ -123,11 +172,9 @@ impl HostMetaCrawler {
     async fn crawl(
         &mut self,
         all_apps: Arc<Apps>,
+        apps: &MultiMap<AppName, Service>,
         since_timestamp: DateTime<Utc>,
     ) -> Result<(), AppsError> {
-        debug!("Resolving list of apps for web host meta cache.");
-        let apps = all_apps.get_apps().await?;
-
         self.clear_stale_web_host_meta(&apps);
 
         let services_without_host_meta = apps
@@ -181,6 +228,7 @@ impl HostMetaCrawler {
         }
 
         self.writer.refresh();
+
         Ok(())
     }
 
@@ -233,12 +281,10 @@ impl HostMetaCrawler {
             return Vec::with_capacity(0);
         }
 
-        let infrastructure = apps.infrastructure();
-
         let mut futures = services_without_host_meta
             .into_iter()
             .map(|(key, service)| async {
-                let http_forwarder = match infrastructure.http_forwarder().await {
+                let http_forwarder = match apps.http_forwarder().await {
                     Ok(portforwarder) => portforwarder,
                     Err(err) => {
                         error!(

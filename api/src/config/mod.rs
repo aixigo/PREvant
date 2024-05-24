@@ -45,7 +45,6 @@ use std::fmt::Display;
 use std::io::Error as IOError;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::usize;
 use toml::de::Error as TomlError;
 
 mod app_selector;
@@ -273,7 +272,7 @@ impl Config {
     }
 
     pub fn app_limit(&self) -> Option<usize> {
-        return self.applications.max;
+        self.applications.max
     }
 }
 
