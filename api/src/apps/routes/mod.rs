@@ -37,20 +37,25 @@ use multimap::MultiMap;
 use regex::Regex;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
+use rocket::response::stream::{Event, EventStream};
 use rocket::response::{Responder, Response};
 use rocket::serde::json::Json;
-use rocket::State;
+use rocket::{Shutdown, State};
 use std::future::Future;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
+use tokio::select;
+use tokio::sync::watch::Sender;
 use tokio::time::timeout;
+use tokio_stream::StreamExt;
 
 mod logs;
 
 pub fn apps_routes() -> Vec<rocket::Route> {
     rocket::routes![
         apps,
+        stream_apps,
         delete_app,
         create_app,
         logs::logs,
@@ -60,7 +65,7 @@ pub fn apps_routes() -> Vec<rocket::Route> {
     ]
 }
 
-#[get("/", format = "application/json")]
+#[get("/", format = "application/json", rank = 1)]
 async fn apps(
     apps: &State<Arc<Apps>>,
     request_info: RequestInfo,
@@ -70,6 +75,31 @@ async fn apps(
     Ok(Json(
         host_meta_cache.update_meta_data(services, &request_info),
     ))
+}
+
+#[get("/", format = "text/event-stream", rank = 2)]
+async fn stream_apps(
+    apps_updates: &State<Sender<MultiMap<AppName, Service>>>,
+    mut end: Shutdown,
+    request_info: RequestInfo,
+    host_meta_cache: HostMetaCache,
+) -> EventStream![] {
+    let mut rx = tokio_stream::wrappers::WatchStream::from_changes(apps_updates.subscribe());
+    EventStream! {
+        loop {
+            let services = select! {
+                services = rx.next() => match services {
+                    Some(services) => services,
+                    None => break,
+                },
+                _ = &mut end => break,
+            };
+
+            let services = host_meta_cache.update_meta_data(services, &request_info);
+
+            yield Event::json(&services);
+        }
+    }
 }
 
 #[get("/<app_name>/status-changes/<status_id>", format = "application/json")]
@@ -449,9 +479,11 @@ mod tests {
     mod url_rendering {
         use crate::apps::{AppsService, HostMetaCache};
         use crate::infrastructure::Dummy;
+        use crate::models::service::Service;
         use crate::models::{AppName, AppStatusChangeId};
         use crate::sc;
         use assert_json_diff::assert_json_include;
+        use multimap::MultiMap;
         use rocket::http::ContentType;
         use rocket::http::Header;
         use rocket::http::Status;
@@ -478,6 +510,9 @@ mod tests {
             let rocket = rocket::build()
                 .manage(host_meta_cache)
                 .manage(apps)
+                .manage(
+                    tokio::sync::watch::channel::<MultiMap<AppName, Service>>(MultiMap::new()).0,
+                )
                 .mount("/", routes![crate::apps::routes::apps])
                 .mount("/api/apps", crate::apps::apps_routes());
             Ok(Client::tracked(rocket).await.expect("valid rocket"))

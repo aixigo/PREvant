@@ -39,6 +39,9 @@ use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
 use clap::Parser;
+use models::service::Service;
+use models::AppName;
+use multimap::MultiMap;
 use rocket::fs::{FileServer, Options};
 use serde_yaml::{from_reader, to_string, Value};
 use std::fs::File;
@@ -108,14 +111,18 @@ async fn main() -> Result<(), StartUpError> {
         }
     };
 
+    let (apps_updates_sender, _) =
+        tokio::sync::watch::channel::<MultiMap<AppName, Service>>(MultiMap::new());
+
     let (host_meta_cache, host_meta_crawler) = host_meta_crawling();
     let apps = Arc::new(apps);
-    host_meta_crawler.spawn(apps.clone());
+    host_meta_crawler.spawn(apps.clone(), apps_updates_sender.clone());
 
     let _rocket = rocket::build()
         .manage(config)
         .manage(apps)
         .manage(host_meta_cache)
+        .manage(apps_updates_sender)
         .mount(
             "/",
             FileServer::new(Path::new("frontend"), Options::Index | Options::Missing),
