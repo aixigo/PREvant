@@ -215,6 +215,15 @@ export default new Store( {
             context.commit( 'endFetch' );
             context.commit( "storeTickets", values[1] );
             context.commit( "storeApps", values[0] );
+         }).then(() => {
+            const appEvents = new EventSource('/api/apps');
+            appEvents.addEventListener('message', (event) => {
+               const apps = JSON.parse(event.data);
+               context.commit("storeApps", apps);
+
+               // TODO: fetching tickets needs to be implemented too
+               // until then, a refresh of the page is required.
+            });
          });
       },
 

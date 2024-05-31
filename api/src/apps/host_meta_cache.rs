@@ -30,11 +30,14 @@ use crate::models::{AppName, RequestInfo, WebHostMeta};
 use chrono::{DateTime, Utc};
 use evmap::{ReadHandleFactory, WriteHandle};
 use multimap::MultiMap;
+use rocket::outcome::Outcome;
+use rocket::request::{self, FromRequest, Request};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::watch::Sender;
 use tokio::time::sleep;
 use yansi::Paint;
 
@@ -103,15 +106,33 @@ impl HostMetaCache {
     }
 }
 
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for HostMetaCache {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
+        match request.rocket().state::<HostMetaCache>() {
+            Some(cache) => Outcome::Success(Self {
+                reader_factory: cache.reader_factory.clone(),
+            }),
+            None => todo!(),
+        }
+    }
+}
+
 impl HostMetaCrawler {
-    pub fn spawn(mut self, apps: Arc<Apps>) {
+    pub fn spawn(mut self, apps: Arc<Apps>, apps_updates: Sender<MultiMap<AppName, Service>>) {
         let timestamp_prevant_startup = Utc::now();
 
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
-                if let Err(err) = self.crawl(&apps, timestamp_prevant_startup).await {
-                    error!("Cannot load apps: {}", err);
+                match self.crawl(&apps, timestamp_prevant_startup).await {
+                    Err(err) => error!("Cannot load apps: {}", err),
+                    Ok(apps) => {
+                        debug!("Notifying about apps status");
+                        apps_updates.send_replace(apps);
+                    }
                 }
             }
         });
@@ -121,7 +142,7 @@ impl HostMetaCrawler {
         &mut self,
         apps: &Arc<Apps>,
         since_timestamp: DateTime<Utc>,
-    ) -> Result<(), AppsError> {
+    ) -> Result<MultiMap<AppName, Service>, AppsError> {
         debug!("Resolving list of apps for web host meta cache.");
         let apps = apps.get_apps().await?;
 
@@ -145,7 +166,7 @@ impl HostMetaCrawler {
             .collect::<Vec<(Key, Service)>>();
 
         if services_without_host_meta.is_empty() {
-            return Ok(());
+            return Ok(apps);
         }
 
         debug!(
@@ -174,7 +195,8 @@ impl HostMetaCrawler {
         }
 
         self.writer.refresh();
-        Ok(())
+
+        Ok(apps)
     }
 
     fn clear_stale_web_host_meta(&mut self, apps: &MultiMap<AppName, Service>) {
