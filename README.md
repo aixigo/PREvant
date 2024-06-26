@@ -50,7 +50,26 @@ of them.
 
 # Usage
 
-Have a look at the examples directory. There you can find examples that deploy PREvant in different container environments:
+In this section, it is discussed how different container environments 
+(Docker and Kubernetes) benefit PREvant.PREvant utilizes both Docker and 
+Kubernetes because they are exceptional tools for managing microservices but both 
+environments function differently. Docker uses network connection and alias to 
+communicate with each other and usually a load balancer like Traefik can enhance 
+this communication. Docker is quick and developer friendly and usually a good way 
+to test out applications in a non-integrative way. For example, a sandbox deployment 
+by the developer.
+
+Whereas, Kubernetes orchestrates microservices in a distributed fashion and does 
+load balancing on its own. User doesn’t need to worry about resource management, 
+scaling and recovering the application, Kubernetes will do that on its own based on 
+the configurations setup in the node. Kubernetes is usually used to deploy complete 
+suite applications in production and even testing internally in an integrative fashion. 
+Kubernetes is highly scalable and resilient compared to Docker. 
+
+Therefore, having both container environments, allows PREvant to efficiently manage 
+complex microservices architectures, facilitating scalability and resilience. In this 
+section examples that deploy PREvant in different container environments can be found:
+
 
 - [Docker](examples/Docker/README.md)
 - [Kubernetes](examples/Kubernetes/README.md) (requires at least Kubernetes 1.15)
