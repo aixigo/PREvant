@@ -86,21 +86,28 @@ This sample document contains the relevant information displayed in the frontend
 - The git commit id of the service (see `https://git-scm.com/docs/git-commit`)
 - The link to the API specification (see `https://github.com/OAI/OpenAPI-Specification`)
 
-In order to generate the correct link the API specification PREvant adds following headers to each of these requests:
+In order to generate the correct link to the API specification, PREvant adds following headers to each of these requests:
 
 - [`Forwarded` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Forwarded) with `host` and `proto`.
 - `X-Forwarded-Prefix` (used by some reverse proxies, cf. [Traefik](https://docs.traefik.io/basics/) and [Zuul](https://cloud.spring.io/spring-cloud-static/Finchley.SR1/multi/multi__router_and_filter_zuul.html)).
 
 # Development
 
-See [development](Develop.md)
+In the [Development](Develop.md) section, you can view the detailed guide on,
+how to develop/run PREvant.
+
+Developers looking to contribute to PREvant can engage through GitHub by
+addressing issues, enhancing documentation, and submitting pull requests. The
+project's open-source nature encourages collaboration and innovation from the
+developer community.
+
 
 # Further Readings
 
 PREvant's concept has been published in the [Joint Post-proceedings of the First and Second International Conference on Microservices (Microservices 2017/2019): PREvant (Preview Servant): Composing Microservices into Reviewable and Testable Applications](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5).
 This paper is based on [the abstract](https://www.conf-micro.services/2019/papers/Microservices_2019_paper_14.pdf) that has been published at the conference [_Microservices 2019_ in Dortmund](https://www.conf-micro.services/2019/).
 
-The talk is available on [YouTube](http://www.youtube.com/watch?v=O9GxapQR5bk). Click on the image to start the playback:
+The talk delivered at the conference is available on [YouTube](http://www.youtube.com/watch?v=O9GxapQR5bk). Click on the image to start the playback:
 
 [![Video “PREvant: Composing Microservices into Reviewable and Testable Applications” at Microservices 2019](http://img.youtube.com/vi/O9GxapQR5bk/0.jpg)](http://www.youtube.com/watch?v=O9GxapQR5bk)
 
