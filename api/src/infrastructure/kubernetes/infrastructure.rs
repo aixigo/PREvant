@@ -508,17 +508,22 @@ impl Infrastructure for KubernetesInfrastructure {
 
         let client = self.client().await?;
 
+        let bootstrapping_containers = self.config.companion_bootstrapping_containers(
+            app_name,
+            &deployment_unit.app_base_route().to_url(),
+            Some(serde_json::json!({
+                "namespace": app_name.to_rfc1123_namespace_id()
+            })),
+        )?;
+
         let bootstrap_image_pull_secret = self.image_pull_secret(
             app_name,
-            self.config
-                .companion_bootstrapping_containers()
-                .iter()
-                .map(|bc| bc.image()),
+            bootstrapping_containers.iter().map(|bc| bc.image()),
         );
         let mut k8s_deployment_unit = K8sDeploymentUnit::bootstrap(
             deployment_unit,
             client.clone(),
-            self.config.companion_bootstrapping_containers(),
+            &bootstrapping_containers,
             bootstrap_image_pull_secret,
         )
         .await?;

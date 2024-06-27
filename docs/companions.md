@@ -89,6 +89,8 @@ The list of available handlebars variables:
 
 - `application`: The companion's application information
   - `name`: The application name
+  - `baseUrl`: The URL that all services in the application share (only
+    available on K8s at the moment)
 - `services`: An array of the services of the application. Each element has the
   following structure:
   - `name`: The service name which is equivalent to the network alias
@@ -101,6 +103,9 @@ PREvant provides some handlebars helpers which can be used to generate more comp
 
 - `{{#isCompanion <type>}}` A conditional handlerbars block helper that checks if the given service type matches any companion type.
 - `isNotCompanion <type>` A conditional handlerbars block helper that checks if the given service type does not match any companion type.
+
+Additionally, check out the [builtin extra helpers][builtin-extra-helpers]
+PREvant offers via the [Handlebars Rust library][handlebars-rust].
 
 ### Service Based
 
@@ -127,6 +132,8 @@ The list of available handlebars variables:
 
 - `application`: The companion's application information
   - `name`: The application name
+  - `baseUrl`: The URL that all services in the application share (only
+    available on K8s at the moment)
 - `service`: The companion's service containing the following fields:
   - `name`: The service name which is equivalent to the network alias
   - `port`: The exposed port of the service
@@ -216,7 +223,8 @@ args = [
 ]
 ```
 
-The list of available handlebars variables for bootstrap container arguments:
+The list of available handlebars variables for bootstrap container arguments
+and the container image:
 
 - `application`: The companion's application information
   - `name`: The application name
@@ -226,8 +234,13 @@ The list of available handlebars variables for bootstrap container arguments:
   - 'namespace' (Kubernetes): the name of the namespace where the application
     will be installed in.
 
+Additionally, check out the [builtin extra helpers][builtin-extra-helpers]
+PREvant offers via the [Handlebars Rust library][handlebars-rust].
+
 [docker-compose]: https://docs.docker.com/compose/
 [handlebars]: https://handlebarsjs.com/
+[handlebars-rust]: https://github.com/sunng87/handlebars-rust/
+[builtin-extra-helpers]: https://github.com/sunng87/handlebars-rust/blob/master/src/helpers/helper_extras.rs#L6
 [helm-chart]: https://helm.sh/docs/topics/charts/
 [k8s-manifest]: https://kubernetes.io/docs/reference/glossary/?all=true#term-manifest
 [keycloak]: https://www.keycloak.org/
