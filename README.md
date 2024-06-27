@@ -19,14 +19,14 @@ Through PREvant's web interface domain experts, managers, developers, and sales 
 An *application*, that PREvant manages, is a composition of microservices based
 on an “architectural pattern that arranges an application as a collection of
 loosely coupled, fine-grained services, communicating through lightweight
-protocols.”  ([Wikipedia][wiki-microservices]).Each application has a unique
+protocols.”  ([Wikipedia][wiki-microservices]) Each application has a unique
 name which is the key to perform actions like creating, duplicating, modifying,
 or deleting these applications via REST API or Web UI.
 
 In each application, PREvant manages the microservices as *services* which need
-to be available in the format of  Docker images, known more specifically as [OCI
-Image Format]. At least one service needs to be available for an application.
-PREvant manages the following kind of services:
+to be available in the [OCI Image Format][oci-image-spec] (a.k.a. Docker
+images). At least one service needs to be available for an application. PREvant
+manages the following kind of services:
 
 - *Instance*: a service labeled as instance is a service that has been
   configured explicitly when creating or updating an application.
