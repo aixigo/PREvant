@@ -93,10 +93,13 @@ In order to generate the correct link to the API specification, PREvant adds fol
 
 # Development
 
-In the [Development](Develop.md) section, you can view the detailed guide on, how to develop/run PREvant.
+In the [Development](Develop.md) section, you can view the detailed guide on,
+how to develop/run PREvant.
 
-Developers looking to contribute to PREvant can engage through GitHub by addressing issues, enhancing documentation, 
-and submitting pull requests. The project's open-source nature encourages collaboration and innovation from the developer community.
+Developers looking to contribute to PREvant can engage through GitHub by
+addressing issues, enhancing documentation, and submitting pull requests. The
+project's open-source nature encourages collaboration and innovation from the
+developer community.
 
 
 # Further Readings
