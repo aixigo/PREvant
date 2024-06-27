@@ -49,7 +49,7 @@ of them.
   For example, a [PostgreSQL][postgres] container can be started for each service to provide it
   with a dedicated database.
 
-  Further instructions to configure Companions can be seen [here](../docs/companions.md).
+Further instructions to configure Companions can be seen [here](../docs/companions.md).
 
 # Usage
 
