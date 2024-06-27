@@ -42,7 +42,7 @@ Additionally, PREvant provides a way of creating service every time it creates
 an application. These services are called *companions* and there are two types
 of them.
 
-- Application wide companion/App companion: is a unique service for the entire application.
+- Application wide companion (short app companion): is a unique service for the entire application.
   For example, a [Kafka][kafka] instance can be started automatically every time an application
   is created, so that all services within the application can synchronize via events.
 - Service companion:  A companion can also be attached to a specific service a user wants to deploy.
