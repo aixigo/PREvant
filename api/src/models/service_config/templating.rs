@@ -25,24 +25,31 @@
  */
 
 use crate::models::service::ContainerType;
-use crate::models::{Environment, EnvironmentVariable, ServiceConfig};
+use crate::models::{AppName, Environment, EnvironmentVariable, ServiceConfig};
 use handlebars::{
-    Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderError, Renderable,
+    Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderError,
+    RenderErrorReason, Renderable,
 };
 use secstr::SecUtf8;
 use serde_value::Value;
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use url::Url;
 
 impl ServiceConfig {
-    pub fn apply_templating(&self, app_name: &String) -> Result<Self, RenderError> {
+    pub fn apply_templating(
+        &self,
+        app_name: &AppName,
+        base_url: &Option<Url>,
+    ) -> Result<Self, RenderError> {
         let parameters = TemplateParameters {
             application: ApplicationTemplateParameter {
-                name: app_name.clone(),
+                name: app_name,
+                base_url,
             },
             services: None,
             service: Some(ServiceTemplateParameter {
-                name: self.service_name().clone(),
+                name: self.service_name(),
                 container_type: self.container_type().clone(),
                 port: self.port(),
             }),
@@ -53,16 +60,18 @@ impl ServiceConfig {
 
     pub fn apply_templating_for_service_companion(
         &self,
-        app_name: &String,
+        app_name: &AppName,
+        base_url: &Option<Url>,
         service_config: &Self,
     ) -> Result<Self, RenderError> {
         let parameters = TemplateParameters {
             application: ApplicationTemplateParameter {
-                name: app_name.clone(),
+                name: app_name,
+                base_url,
             },
             services: None,
             service: Some(ServiceTemplateParameter {
-                name: service_config.service_name().clone(),
+                name: service_config.service_name(),
                 container_type: service_config.container_type().clone(),
                 port: service_config.port(),
             }),
@@ -73,18 +82,20 @@ impl ServiceConfig {
 
     pub fn apply_templating_for_application_companion(
         &self,
-        app_name: &String,
-        service_configs: &Vec<Self>,
+        app_name: &AppName,
+        base_url: &Option<Url>,
+        service_configs: &[Self],
     ) -> Result<Self, RenderError> {
         let parameters = TemplateParameters {
             application: ApplicationTemplateParameter {
-                name: app_name.clone(),
+                name: app_name,
+                base_url,
             },
             services: Some(
                 service_configs
                     .iter()
                     .map(|c| ServiceTemplateParameter {
-                        name: c.service_name().clone(),
+                        name: c.service_name(),
                         container_type: c.container_type().clone(),
                         port: c.port(),
                     })
@@ -109,9 +120,8 @@ impl ServiceConfig {
         }
 
         if let Some(files) = self.files() {
-            templated_config.set_files(Some(apply_templates_with_secrets(
-                &reg, parameters, &files,
-            )?));
+            templated_config
+                .set_files(Some(apply_templates_with_secrets(&reg, parameters, files)?));
         }
 
         if let Some(labels) = self.labels() {
@@ -160,7 +170,7 @@ impl Environment {
 }
 
 fn is_not_companion<'reg, 'rc>(
-    h: &Helper<'reg, 'rc>,
+    h: &Helper<'rc>,
     r: &'reg Handlebars,
     ctx: &'rc Context,
     rc: &mut RenderContext<'reg, 'rc>,
@@ -169,11 +179,14 @@ fn is_not_companion<'reg, 'rc>(
     let s = h
         .param(0)
         .map(|v| v.value())
-        .map(|v| v.as_str().unwrap())
-        .ok_or(RenderError::new("parameter type is required"))?;
+        .and_then(|v| v.as_str())
+        .ok_or(RenderErrorReason::ParamNotFoundForIndex(
+            "parameter type is required",
+            0,
+        ))?;
 
     let container_type = ContainerType::from_str(s)
-        .map_err(|e| RenderError::new(format!("Invalid type parameter {:?}. {}", s, e)))?;
+        .map_err(|e| RenderErrorReason::Other(format!("Invalid type parameter {:?}. {}", s, e)))?;
 
     match container_type {
         ContainerType::ServiceCompanion | ContainerType::ApplicationCompanion => h
@@ -188,7 +201,7 @@ fn is_not_companion<'reg, 'rc>(
 }
 
 fn is_companion<'reg, 'rc>(
-    h: &Helper<'reg, 'rc>,
+    h: &Helper<'rc>,
     r: &'reg Handlebars,
     ctx: &'rc Context,
     rc: &mut RenderContext<'reg, 'rc>,
@@ -197,11 +210,14 @@ fn is_companion<'reg, 'rc>(
     let s = h
         .param(0)
         .map(|v| v.value())
-        .map(|v| v.as_str().unwrap())
-        .ok_or(RenderError::new("parameter type is required"))?;
+        .and_then(|v| v.as_str())
+        .ok_or(RenderErrorReason::ParamNotFoundForIndex(
+            "parameter type is required",
+            0,
+        ))?;
 
     let container_type = ContainerType::from_str(s)
-        .map_err(|e| RenderError::new(format!("Invalid type paramter {:?}. {}", s, e)))?;
+        .map_err(|e| RenderErrorReason::Other(format!("Invalid type paramter {:?}. {}", s, e)))?;
 
     match container_type {
         ContainerType::ServiceCompanion | ContainerType::ApplicationCompanion => h
@@ -298,20 +314,23 @@ fn apply_templating_to_middleware_value(
 }
 
 #[derive(Serialize)]
-struct TemplateParameters {
-    application: ApplicationTemplateParameter,
-    services: Option<Vec<ServiceTemplateParameter>>,
-    service: Option<ServiceTemplateParameter>,
+struct TemplateParameters<'a> {
+    application: ApplicationTemplateParameter<'a>,
+    services: Option<Vec<ServiceTemplateParameter<'a>>>,
+    service: Option<ServiceTemplateParameter<'a>>,
 }
 
 #[derive(Serialize)]
-struct ApplicationTemplateParameter {
-    name: String,
+#[serde(rename_all = "camelCase")]
+struct ApplicationTemplateParameter<'a> {
+    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_url: &'a Option<Url>,
 }
 
 #[derive(Serialize)]
-struct ServiceTemplateParameter {
-    name: String,
+struct ServiceTemplateParameter<'a> {
+    name: &'a str,
     port: u16,
     #[serde(rename = "type")]
     container_type: ContainerType,
@@ -334,7 +353,7 @@ mod tests {
         config.set_env(Some(Environment::new(Vec::new())));
 
         let templated_config = config
-            .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
+            .apply_templating_for_application_companion(&AppName::master(), &None, &Vec::new())
             .unwrap();
 
         assert_eq!(templated_config.service_name(), "postgres-master");
@@ -368,7 +387,7 @@ mod tests {
             ),
         ];
         let templated_config = config
-            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .apply_templating_for_application_companion(&AppName::master(), &None, &service_configs)
             .unwrap();
 
         let env = templated_config.env().unwrap().get(0).unwrap();
@@ -401,7 +420,7 @@ mod tests {
             ),
         ];
         let templated_config = config
-            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .apply_templating_for_application_companion(&AppName::master(), &None, &service_configs)
             .unwrap();
 
         for (k, v) in templated_config.labels().unwrap().iter() {
@@ -428,7 +447,7 @@ mod tests {
         ])));
 
         let templated_config =
-            config.apply_templating_for_application_companion(&String::from("master"), &vec![]);
+            config.apply_templating_for_application_companion(&AppName::master(), &None, &vec![]);
 
         assert_eq!(templated_config.is_err(), true);
     }
@@ -465,7 +484,7 @@ location /{{name}} {
             ),
         ];
         let templated_config = config
-            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .apply_templating_for_application_companion(&AppName::master(), &None, &service_configs)
             .unwrap();
 
         assert_eq!(
@@ -528,7 +547,7 @@ location /{{name}} {
         config.set_files(Some(files));
 
         let templated_config = config
-            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .apply_templating_for_application_companion(&AppName::master(), &None, &service_configs)
             .unwrap();
 
         assert_eq!(
@@ -582,7 +601,7 @@ location /service-b {
                 r#"{{#each services}}
 {{~#isCompanion type}}
 location /{{name}} {
-    proxy_pass http://{{~name~}};
+    proxy_pass {{../application.baseUrl}}{{~name~}};
 }
 {{/isCompanion}}
 {{/each}}"#,
@@ -591,17 +610,27 @@ location /{{name}} {
         config.set_files(Some(files));
 
         let templated_config = config
-            .apply_templating_for_application_companion(&String::from("master"), &service_configs)
+            .apply_templating_for_application_companion(
+                &AppName::master(),
+                &Url::from_str("http://my-host/").ok(),
+                &service_configs,
+            )
             .unwrap();
 
         assert_eq!(
-            templated_config.files().unwrap().get(&mount_path).unwrap(),
-            &SecUtf8::from(
+            templated_config
+                .files()
+                .unwrap()
+                .get(&mount_path)
+                .unwrap()
+                .clone()
+                .into_unsecure(),
+            String::from(
                 r#"location /service-c {
-    proxy_pass http://service-c;
+    proxy_pass http://my-host/service-c;
 }
 location /service-d {
-    proxy_pass http://service-d;
+    proxy_pass http://my-host/service-d;
 }
 "#
             )
@@ -620,7 +649,7 @@ location /service-d {
         ));
 
         let templated_config = config
-            .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
+            .apply_templating_for_application_companion(&AppName::master(), &None, &Vec::new())
             .unwrap();
 
         let router = templated_config.router().unwrap();
@@ -645,7 +674,7 @@ location /service-d {
         config.set_middlewares(middlewares);
 
         let templated_config = config
-            .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
+            .apply_templating_for_application_companion(&AppName::master(), &None, &Vec::new())
             .unwrap();
 
         let middlewares = templated_config.middlewares().unwrap();
@@ -686,7 +715,7 @@ location /service-d {
         config.set_middlewares(middlewares);
 
         let templated_config = config
-            .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
+            .apply_templating_for_application_companion(&AppName::master(), &None, &Vec::new())
             .unwrap();
 
         let middlewares = templated_config.middlewares().unwrap();
@@ -722,7 +751,8 @@ location /service-d {
 
         let config = config
             .apply_templating_for_service_companion(
-                &String::from("master"),
+                &AppName::master(),
+                &None,
                 &sc!("wordpress", "wordpress:alpine"),
             )
             .unwrap();
@@ -744,7 +774,8 @@ location /service-d {
 
         let config = config
             .apply_templating_for_service_companion(
-                &String::from("master"),
+                &AppName::master(),
+                &None,
                 &sc!("wordpress", "wordpress:alpine"),
             )
             .unwrap();
@@ -766,7 +797,8 @@ location /service-d {
 
         let config = config
             .apply_templating_for_service_companion(
-                &String::from("master"),
+                &AppName::master(),
+                &None,
                 &sc!("wordpress", "wordpress:alpine"),
             )
             .unwrap();
