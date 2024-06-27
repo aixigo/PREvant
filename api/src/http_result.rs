@@ -57,8 +57,7 @@ impl<'r> Responder<'r, 'static> for HttpApiError {
             .status(
                 self.0
                     .status
-                    .map(|status| Status::from_code(status.as_u16()))
-                    .flatten()
+                    .and_then(|status| Status::from_code(status.as_u16()))
                     .unwrap_or_default(),
             )
             .sized_body(paylaod.len(), Cursor::new(paylaod))
