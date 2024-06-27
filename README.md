@@ -50,31 +50,36 @@ of them.
 
 # Usage
 
-In this section, it is discussed how different container environments 
-(Docker and Kubernetes) benefit PREvant.PREvant utilizes both Docker and 
-Kubernetes because they are exceptional tools for managing microservices but both 
-environments function differently. Docker uses network connection and alias to 
-communicate with each other and usually a load balancer like Traefik can enhance 
-this communication. Docker is quick and developer friendly and usually a good way 
-to test out applications in a non-integrative way. For example, a sandbox deployment 
-by the developer.
+In this section, it is discussed how different container environments (Docker
+and Kubernetes) benefit PREvant.PREvant utilizes both Docker and Kubernetes
+because they are exceptional tools for managing microservices but both
+environments function differently. Docker uses network connection and alias to
+communicate with each other and usually a load balancer like Traefik can enhance
+this communication. Docker is quick and developer friendly and usually a good
+way to test out applications in a non-integrative way. For example, a sandbox
+deployment by the developer.
 
-Whereas, Kubernetes orchestrates microservices in a distributed fashion and does 
-load balancing on its own. User doesn’t need to worry about resource management, 
-scaling and recovering the application, Kubernetes will do that on its own based on 
-the configurations setup in the node. Kubernetes is usually used to deploy complete 
-suite applications in production and even testing internally in an integrative fashion. 
-Kubernetes is highly scalable and resilient compared to Docker. 
+Whereas, Kubernetes orchestrates microservices in a distributed fashion and does
+load balancing on its own. User doesn’t need to worry about resource management,
+scaling and recovering the application, Kubernetes will do that on its own based
+on the configurations setup in the node. Kubernetes is usually used to deploy
+complete suite applications in production and even testing internally in an
+integrative fashion. Kubernetes is highly scalable and resilient compared to
+Docker. 
 
-Therefore, having both container environments, allows PREvant to efficiently manage 
-complex microservices architectures, facilitating scalability and resilience. In this 
-section examples that deploy PREvant in different container environments can be found:
+Therefore, having both container environments, allows PREvant to efficiently
+manage complex microservices architectures, facilitating scalability and
+resilience. In this section examples that deploy PREvant in different container
+environments can be found:
 
 
 - [Docker](examples/Docker/README.md)
-- [Kubernetes](examples/Kubernetes/README.md) (requires at least Kubernetes 1.15)
+- [Kubernetes](examples/Kubernetes/README.md) (requires at least Kubernetes
+  1.15)
 
-If you want to customize PREvant's behaviour, you can mount a TOML file into the container at the path `/app/config.toml`. You will find more information about the configuration [here](api/README.md).
+If you want to customize PREvant's behaviour, you can mount a TOML file into the
+container at the path `/app/config.toml`. You will find more information about
+the configuration [here](api/README.md).
 
 # Requirements for Your Services
 
