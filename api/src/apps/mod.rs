@@ -284,15 +284,20 @@ impl AppsService {
             .resolve_image_infos(&images)
             .await?;
 
+        let base_traefik_ingress_route = self
+            .infrastructure
+            .base_traefik_ingress_route()
+            .await
+            .ok()
+            .flatten();
+
         let deployment_unit_builder = deployment_unit_builder
             .extend_with_image_infos(image_infos)
-            .apply_templating()?
+            .apply_templating(&base_traefik_ingress_route.as_ref().and_then(|r| r.to_url()))?
             .apply_hooks(&self.config)
             .await?;
 
-        let deployment_unit = if let Ok(Some(base_traefik_ingress_route)) =
-            self.infrastructure.base_traefik_ingress_route().await
-        {
+        let deployment_unit = if let Some(base_traefik_ingress_route) = base_traefik_ingress_route {
             trace!(
                 "The base URL for {app_name} is: {:?}",
                 base_traefik_ingress_route

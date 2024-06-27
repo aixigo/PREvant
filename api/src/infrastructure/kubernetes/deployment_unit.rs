@@ -39,7 +39,6 @@ use std::{
     collections::{BTreeMap, HashSet},
     str::FromStr,
 };
-use url::Url;
 
 #[derive(Default)]
 pub(super) struct K8sDeploymentUnit {
@@ -64,7 +63,6 @@ impl K8sDeploymentUnit {
         client: Client,
         bootstrapping_containers: &[BootstrappingContainer],
         image_pull_secret: Option<Secret>,
-        base_url: Option<Url>,
     ) -> Result<(String, Vec<impl AsyncBufReadExt>), Error> {
         let image_pull_secrets = match image_pull_secret {
             Some(image_pull_secret) => {
@@ -85,13 +83,7 @@ impl K8sDeploymentUnit {
                     name: format!("bootstrap-{i}"),
                     image: Some(bc.image().to_string()),
                     image_pull_policy: Some(String::from("Always")),
-                    args: Some(bc.templated_args(
-                        app_name,
-                        &base_url,
-                        Some(serde_json::json!({
-                            "namespace": app_name.to_rfc1123_namespace_id()
-                        })),
-                    )?),
+                    args: Some(bc.args().to_vec()),
                     ..Default::default()
                 })
             })
@@ -199,7 +191,6 @@ impl K8sDeploymentUnit {
             client.clone(),
             bootstrapping_container,
             image_pull_secret,
-            deployment_unit.app_base_route().to_url(),
         )
         .await?;
 
@@ -832,7 +823,7 @@ mod tests {
             .extend_with_config(&Default::default())
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating()
+            .apply_templating(&None)
             .unwrap()
             .apply_hooks(&Default::default())
             .await

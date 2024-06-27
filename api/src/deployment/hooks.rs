@@ -276,7 +276,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating()?
+            .apply_templating(&None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -328,7 +328,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating()?
+            .apply_templating(&None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -366,7 +366,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating()?
+            .apply_templating(&None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -413,7 +413,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating()?
+            .apply_templating(&None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -463,7 +463,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating()?
+            .apply_templating(&None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -503,7 +503,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating()?
+            .apply_templating(&None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -539,7 +539,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating()?
+            .apply_templating(&None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -566,7 +566,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating()?
+            .apply_templating(&None)?
             .apply_hooks(&config)
             .await
         {
