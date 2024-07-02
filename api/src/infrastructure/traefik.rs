@@ -90,6 +90,13 @@ impl TraefikIngressRoute {
         Self::with_existing_routing_rules(Vec::new(), rule, Vec::new(), None)
     }
 
+    pub fn with_rule_and_middlewares(
+        rule: TraefikRouterRule,
+        middlewares: Vec<TraefikMiddleware>,
+    ) -> Self {
+        Self::with_existing_routing_rules(Vec::new(), rule, middlewares, None)
+    }
+
     /// Constructs a new [`TraefikIngressRoute`] that is based on existing list of
     /// [entrypoints](https://doc.traefik.io/traefik/routing/entrypoints/),
     /// [rules and middlewares](https://doc.traefik.io/traefik/routing/routers/), and

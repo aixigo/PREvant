@@ -206,7 +206,7 @@ pub struct Router {
 impl Router {
     #[cfg(test)]
     pub fn new(rule: String, priority: Option<i32>) -> Self {
-        Router { rule, priority }
+        Self { rule, priority }
     }
 
     pub fn rule(&self) -> &String {
