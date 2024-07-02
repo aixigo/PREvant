@@ -23,7 +23,7 @@ For developing against a local Kubernetes cluster you can use [k3d](https://k3d.
 2. Start PREvant with Kubernetes (it will infer the cluster configuration by searching for kube-config file or in-cluster environment variables)
 
    ```bash
-   cargo run -- --runtime.type Kubernetes
+   cargo run -- --runtime-type Kubernetes
    ```
 
 3. Deploy some containers and observe the result [here](http://localhost/master/whoami/):

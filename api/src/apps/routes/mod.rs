@@ -290,7 +290,8 @@ impl From<AppsError> for HttpApiError {
             AppsError::AppNotFound { .. } => StatusCode::NOT_FOUND,
             AppsError::AppIsInDeployment { .. } => StatusCode::CONFLICT,
             AppsError::AppIsInDeletion { .. } => StatusCode::CONFLICT,
-            AppsError::InfrastructureError { .. }
+            AppsError::FailedToParseTraefikRule { .. }
+            | AppsError::InfrastructureError { .. }
             | AppsError::InvalidServerConfiguration { .. }
             | AppsError::InvalidTemplateFormat { .. }
             | AppsError::InvalidDeploymentHook => {

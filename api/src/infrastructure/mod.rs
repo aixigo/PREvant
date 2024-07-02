@@ -31,7 +31,7 @@ pub use dummy_infrastructure::DummyInfrastructure as Dummy;
 pub use infrastructure::Infrastructure;
 pub use kubernetes::KubernetesInfrastructure as Kubernetes;
 use serde_json::{map::Map, Value};
-pub use traefik::{TraefikIngressRoute, TraefikRouterRule};
+pub use traefik::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule};
 
 mod docker;
 #[cfg(test)]

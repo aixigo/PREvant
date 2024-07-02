@@ -26,10 +26,11 @@
 use crate::apps::AppsServiceError;
 use crate::config::{Config, StorageStrategy};
 use crate::deployment::hooks::Hooks;
-use crate::infrastructure::TraefikIngressRoute;
+use crate::infrastructure::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule};
 use crate::models::{AppName, ContainerType, Image, ServiceConfig};
 use crate::registry::ImageInfo;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 pub struct Initialized {
     app_name: AppName,
@@ -396,16 +397,17 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                         .is_none()
                 })
                 .map(|service_companion| {
-                    (
+                    Ok((
                         service_companion.templated_companion.service_name().clone(),
                         self.deployable_service(
                             service_companion.templated_companion,
                             service_companion.strategy,
                             service_companion.storage_strategy,
                             image_infos,
-                        ),
-                    )
-                }),
+                        )?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, AppsServiceError>>()?,
         );
 
         let mut templating_only_service_configs =
@@ -435,7 +437,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                         strategy,
                         storage_strategy,
                         image_infos,
-                    ),
+                    )?,
                 );
             }
         }
@@ -462,11 +464,49 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
         strategy: &crate::config::DeploymentStrategy,
         storage_strategy: &StorageStrategy,
         image_infos: &HashMap<Image, ImageInfo>,
-    ) -> DeployableService {
-        let ingress_route = TraefikIngressRoute::with_defaults(
-            &self.stage.app_name,
-            raw_service_config.service_name(),
-        );
+    ) -> Result<DeployableService, AppsServiceError> {
+        let ingress_route =
+            match raw_service_config.routing() {
+                None => TraefikIngressRoute::with_defaults(
+                    &self.stage.app_name,
+                    raw_service_config.service_name(),
+                ),
+                Some(routing) => match &routing.rule {
+                    Some(rule) => TraefikIngressRoute::with_rule_and_middlewares(
+                        TraefikRouterRule::from_str(rule).map_err(|err| {
+                            AppsServiceError::FailedToParseTraefikRule {
+                                raw_rule: rule.clone(),
+                                err,
+                            }
+                        })?,
+                        routing
+                            .additional_middlewares
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (name, spec))| TraefikMiddleware {
+                                name: format!("custom-middleware-{i}"),
+                                spec: serde_value::to_value(serde_json::json!({
+                                    name: spec.clone()
+                                }))
+                                .unwrap(),
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    None => TraefikIngressRoute::with_defaults_and_additional_middleware(
+                        &self.stage.app_name,
+                        raw_service_config.service_name(),
+                        routing.additional_middlewares.iter().enumerate().map(
+                            |(i, (name, spec))| TraefikMiddleware {
+                                name: format!("custom-middleware-{i}"),
+                                spec: serde_value::to_value(serde_json::json!({
+                                    name: spec.clone()
+                                }))
+                                .unwrap(),
+                            },
+                        ),
+                    ),
+                },
+            };
 
         let volume_paths = match image_infos.get(raw_service_config.image()) {
             None => Vec::new(),
@@ -481,7 +521,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 .collect(),
         };
 
-        match strategy {
+        Ok(match strategy {
             crate::config::DeploymentStrategy::RedeployAlways => DeployableService {
                 raw_service_config,
                 ingress_route,
@@ -513,7 +553,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 strategy: DeploymentStrategy::RedeployNever,
                 declared_volumes,
             },
-        }
+        })
     }
 
     fn container_type_index(container_type: &ContainerType) -> i32 {
@@ -1212,6 +1252,137 @@ mod tests {
                 .next(),
             Some(_)
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_apply_rule_for_companion() -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [companions.adminer]
+            serviceName = 'adminer'
+            type = 'application'
+            image = 'adminer:4.8.1'
+
+            [companions.adminer.routing]
+            rule = "PathPrefix(`/{{application.name}}/adminer/sub-path`)"
+
+            [companions.adminer.routing.additionalMiddlewares]
+            headers = { 'customRequestHeaders' = { 'X-Forwarded-Prefix' =  '/{{application.name}}/adminer/sub-path' } }
+            stripPrefix = { 'prefixes' = [ '/{{application.name}}/adminer/sub-path' ] }
+        "#
+        );
+
+        let app_name = AppName::master();
+        let service_configs = vec![sc!("http1", "nginx:1.13")];
+
+        let unit = DeploymentUnitBuilder::init(app_name, service_configs)
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .extend_with_image_infos(HashMap::new())
+            .apply_templating()?
+            .apply_hooks(&config)
+            .await?
+            .build();
+
+        let configs: Vec<_> = unit.services;
+        assert_eq!(configs[0].service_name(), "adminer");
+        assert_eq!(
+            configs[0].ingress_route().routes()[0].rule(),
+            &TraefikRouterRule::from_str("PathPrefix(`/master/adminer/sub-path`)").unwrap()
+        );
+        assert_eq!(
+            configs[0].ingress_route().routes()[0].middlewares(),
+            &vec![
+                crate::infrastructure::TraefikMiddleware {
+                    name: String::from("custom-middleware-0"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "headers": {
+                            "customRequestHeaders": {
+                                "X-Forwarded-Prefix": "/master/adminer/sub-path"
+                            }
+                        }
+                    }))
+                    .unwrap()
+                },
+                crate::infrastructure::TraefikMiddleware {
+                    name: String::from("custom-middleware-1"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "stripPrefix": {
+                            "prefixes": [
+                                "/master/adminer/sub-path"
+                            ]
+                        }
+                    }))
+                    .unwrap()
+                },
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_apply_rule_for_companion_with_additional_middleware(
+    ) -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [companions.adminer]
+            serviceName = 'adminer'
+            type = 'application'
+            image = 'adminer:4.8.1'
+
+            [companions.adminer.routing.additionalMiddlewares]
+            headers = { 'customRequestHeaders' = { 'X-Forwarded-Prefix' =  '/{{application.name}}/adminer/' } }
+        "#
+        );
+
+        let app_name = AppName::master();
+        let service_configs = vec![sc!("http1", "nginx:1.13")];
+
+        let unit = DeploymentUnitBuilder::init(app_name, service_configs)
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .extend_with_image_infos(HashMap::new())
+            .apply_templating()?
+            .apply_hooks(&config)
+            .await?
+            .build();
+
+        let configs: Vec<_> = unit.services;
+        assert_eq!(configs[0].service_name(), "adminer");
+        assert_eq!(
+            configs[0].ingress_route().routes()[0].rule(),
+            &TraefikRouterRule::from_str("PathPrefix(`/master/adminer/`)").unwrap()
+        );
+        assert_eq!(
+            configs[0].ingress_route().routes()[0].middlewares(),
+            &vec![
+                crate::infrastructure::TraefikMiddleware {
+                    name: String::from("master-adminer-middleware"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "stripPrefix": {
+                            "prefixes": [
+                                "/master/adminer/"
+                            ]
+                        }
+                    }))
+                    .unwrap()
+                },
+                crate::infrastructure::TraefikMiddleware {
+                    name: String::from("custom-middleware-0"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "headers": {
+                            "customRequestHeaders": {
+                                "X-Forwarded-Prefix": "/master/adminer/"
+                            }
+                        }
+                    }))
+                    .unwrap()
+                },
+            ]
+        );
 
         Ok(())
     }

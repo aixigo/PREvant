@@ -25,7 +25,7 @@
  */
 use crate::config::AppSelector;
 use crate::models::service::ContainerType;
-use crate::models::{AppName, Environment, Image, Router, ServiceConfig};
+use crate::models::{AppName, Environment, Image, ServiceConfig};
 use handlebars::{Handlebars, RenderError};
 use secstr::SecUtf8;
 use serde_value::Value;
@@ -56,8 +56,7 @@ pub(super) struct Companion {
     files: Option<BTreeMap<PathBuf, SecUtf8>>,
     #[serde(default = "AppSelector::default")]
     app_selector: AppSelector,
-    router: Option<Router>,
-    middlewares: Option<BTreeMap<String, Value>>,
+    routing: Option<Routing>,
     #[serde(default)]
     storage_strategy: StorageStrategy,
 }
@@ -86,6 +85,15 @@ pub enum DeploymentStrategy {
     RedeployOnImageUpdate,
     #[serde(rename = "redeploy-never")]
     RedeployNever,
+}
+
+/// Helper that configures the service routing for Traefik (see
+/// [here](https://docs.traefik.io/routing/routers/)).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Routing {
+    pub rule: Option<String>,
+    pub additional_middlewares: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -146,6 +154,8 @@ impl Companion {
     }
 }
 
+// TODO: this From implementation and companion_configs provides a circular dependency between
+// config and ServiceConfig
 impl From<Companion> for ServiceConfig {
     fn from(companion: Companion) -> ServiceConfig {
         let mut config =
@@ -164,12 +174,8 @@ impl From<Companion> for ServiceConfig {
             config.set_files(Some(files.clone()));
         }
 
-        if let Some(router) = &companion.router {
-            config.set_router(router.clone());
-        }
-
-        if let Some(middlewares) = &companion.middlewares {
-            config.set_middlewares(middlewares.clone());
+        if let Some(routing) = &companion.routing {
+            config.set_routing(routing.clone());
         }
 
         config.set_container_type(companion.companion_type.into());

@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::config::Routing;
 use crate::models::service::ContainerType;
 use crate::models::{Environment, EnvironmentVariable, ServiceConfig};
 use handlebars::{
@@ -118,17 +119,19 @@ impl ServiceConfig {
             templated_config.set_labels(Some(apply_templates(&reg, parameters, labels)?));
         }
 
-        if let Some(router) = self.router() {
-            let rule = reg.render_template(router.rule(), &parameters)?;
-            templated_config.set_router(router.with_rule(rule));
-        }
+        if let Some(routing) = self.routing() {
+            let rule = match &routing.rule {
+                Some(rule) => Some(reg.render_template(rule, &parameters)?),
+                None => None,
+            };
 
-        if let Some(middlewares) = self.middlewares() {
-            templated_config.set_middlewares(apply_templating_to_middlewares(
-                &reg,
-                parameters,
-                middlewares,
-            )?);
+            let additional_middlewares =
+                apply_templating_to_middlewares(&reg, parameters, &routing.additional_middlewares)?;
+
+            templated_config.set_routing(Routing {
+                rule,
+                additional_middlewares,
+            });
         }
 
         Ok(templated_config)
@@ -321,7 +324,8 @@ struct ServiceTemplateParameter {
 mod tests {
 
     use super::*;
-    use crate::models::{Image, Router};
+    use crate::config::Routing;
+    use crate::models::Image;
     use crate::sc;
     use std::path::PathBuf;
 
@@ -614,17 +618,17 @@ location /service-d {
             String::from("api-gateway"),
             Image::from_str("api-gateway").unwrap(),
         );
-        config.set_router(Router::new(
-            "PathPrefix(`/{{application.name}}/`)".to_string(),
-            None,
-        ));
+        config.set_routing(Routing {
+            rule: Some("PathPrefix(`/{{application.name}}/`)".to_string()),
+            additional_middlewares: BTreeMap::new(),
+        });
 
         let templated_config = config
             .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
             .unwrap();
 
-        let router = templated_config.router().unwrap();
-        assert_eq!(router.rule(), &"PathPrefix(`/master/`)".to_string())
+        let routing = templated_config.routing().unwrap();
+        assert_eq!(routing.rule, Some(String::from("PathPrefix(`/master/`)")))
     }
 
     #[test]
@@ -635,37 +639,29 @@ location /service-d {
         );
 
         let headers = serde_value::to_value(serde_json::json!({
-            "customRequestHeaders": [
-                "/{{application.name}}"
-            ]
+            "prefixes": [ "/{{application.name}}" ]
         }))
         .unwrap();
         let mut middlewares = BTreeMap::new();
-        middlewares.insert("headers".to_string(), headers);
-        config.set_middlewares(middlewares);
+        middlewares.insert("stripPrefixes".to_string(), headers);
+
+        config.set_routing(Routing {
+            rule: None,
+            additional_middlewares: middlewares,
+        });
 
         let templated_config = config
             .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
             .unwrap();
 
-        let middlewares = templated_config.middlewares().unwrap();
-        match middlewares.get("headers").unwrap() {
-            Value::Map(headers) => {
-                match headers
-                    .get(&Value::String("customRequestHeaders".to_string()))
-                    .unwrap()
-                {
-                    Value::Seq(custom_request_headers) => {
-                        match custom_request_headers.get(0).unwrap() {
-                            Value::String(value) => assert_eq!(value, "/master"),
-                            _ => panic!("Should be a string value"),
-                        }
-                    }
-                    _ => panic!("should be a array"),
-                }
-            }
-            _ => panic!("should be a map"),
-        }
+        let routing = templated_config.routing().unwrap();
+        assert_eq!(
+            routing.additional_middlewares.get("stripPrefixes").unwrap(),
+            &serde_value::to_value(serde_json::json!({
+                "prefixes": [ "/master" ]
+            }))
+            .unwrap(),
+        );
     }
 
     #[test]
@@ -683,33 +679,26 @@ location /service-d {
         .unwrap();
         let mut middlewares = BTreeMap::new();
         middlewares.insert("headers".to_string(), headers);
-        config.set_middlewares(middlewares);
+
+        config.set_routing(Routing {
+            rule: None,
+            additional_middlewares: middlewares,
+        });
 
         let templated_config = config
             .apply_templating_for_application_companion(&String::from("master"), &Vec::new())
             .unwrap();
 
-        let middlewares = templated_config.middlewares().unwrap();
-        match middlewares.get("headers").unwrap() {
-            Value::Map(headers) => {
-                match headers
-                    .get(&Value::String("customRequestHeaders".to_string()))
-                    .unwrap()
-                {
-                    Value::Map(custom_request_headers) => {
-                        match custom_request_headers
-                            .get(&Value::String("X-Forwarded-Path".to_string()))
-                            .unwrap()
-                        {
-                            Value::String(path) => assert_eq!(path, "/master"),
-                            _ => panic!("Should be string"),
-                        }
-                    }
-                    _ => panic!("should be a map"),
+        let routing = templated_config.routing().unwrap();
+        assert_eq!(
+            routing.additional_middlewares.get("headers").unwrap(),
+            &serde_value::to_value(serde_json::json!({
+                "customRequestHeaders": {
+                    "X-Forwarded-Path": "/master"
                 }
-            }
-            _ => panic!("should be a map"),
-        }
+            }))
+            .unwrap(),
+        )
     }
 
     #[test]

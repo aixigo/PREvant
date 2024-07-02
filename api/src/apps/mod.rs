@@ -426,6 +426,8 @@ pub enum AppsServiceError {
     UnableToResolveImage { error: RegistryError },
     #[fail(display = "Invalid deployment hook.")]
     InvalidDeploymentHook,
+    #[fail(display = "Failed to parse traefik rule ({}): {}", raw_rule, err)]
+    FailedToParseTraefikRule { raw_rule: String, err: String },
 }
 
 impl From<ConfigError> for AppsServiceError {
