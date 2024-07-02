@@ -26,18 +26,19 @@
 
 pub use self::companion::BootstrappingContainer;
 pub use self::companion::DeploymentStrategy;
+pub use self::companion::Routing;
 pub use self::companion::StorageStrategy;
 use self::companion::{Companion, CompanionType, Companions};
 pub use self::container::ContainerConfig;
 pub use self::runtime::Runtime;
 use crate::models::AppName;
 use crate::models::ServiceConfig;
-pub(self) use app_selector::AppSelector;
+use app_selector::AppSelector;
 use clap::Parser;
 use figment::providers::{Env, Format, Toml};
 use figment::value::{Dict, Map, Tag, Value};
 use figment::{Metadata, Profile};
-pub(self) use secret::Secret;
+use secret::Secret;
 use secstr::SecUtf8;
 use std::collections::BTreeMap;
 use std::convert::From;

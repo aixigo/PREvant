@@ -61,6 +61,17 @@ impl TraefikIngressRoute {
     }
 
     pub fn with_defaults(app_name: &AppName, service_name: &str) -> Self {
+        Self::with_defaults_and_additional_middleware(app_name, service_name, std::iter::empty())
+    }
+
+    pub fn with_defaults_and_additional_middleware<I>(
+        app_name: &AppName,
+        service_name: &str,
+        additional_middlewares: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = TraefikMiddleware>,
+    {
         let mut prefixes = BTreeMap::new();
         prefixes.insert(
             Value::String(String::from("prefixes")),
@@ -73,14 +84,17 @@ impl TraefikIngressRoute {
             Value::Map(prefixes),
         );
 
+        let mut middlewares = vec![TraefikMiddleware {
+            name: format!("{app_name}-{service_name}-middleware"),
+            spec: Value::Map(middlewares),
+        }];
+        middlewares.extend(additional_middlewares);
+
         Self {
             entry_points: Vec::new(),
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::path_prefix_rule(&[app_name.as_str(), service_name]),
-                middlewares: vec![TraefikMiddleware {
-                    name: format!("{app_name}-{service_name}-middleware"),
-                    spec: Value::Map(middlewares),
-                }],
+                middlewares,
             }],
             tls: None,
         }
@@ -88,6 +102,13 @@ impl TraefikIngressRoute {
 
     pub fn with_rule(rule: TraefikRouterRule) -> Self {
         Self::with_existing_routing_rules(Vec::new(), rule, Vec::new(), None)
+    }
+
+    pub fn with_rule_and_middlewares(
+        rule: TraefikRouterRule,
+        middlewares: Vec<TraefikMiddleware>,
+    ) -> Self {
+        Self::with_existing_routing_rules(Vec::new(), rule, middlewares, None)
     }
 
     /// Constructs a new [`TraefikIngressRoute`] that is based on existing list of

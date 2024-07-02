@@ -45,6 +45,44 @@ Furthermore, you can provide labels through handlebars templating:
 "com.github.prevant" = "bar-{{application.name}}"
 ```
 
+#### Routing
+
+If you need to customize the routing behaviour of companions you can adjust it
+for companions. For example, [Adminer](https://hub.docker.com/_/adminer) needs
+some adjustments to accept logins running behind a reverse proxy (which is
+Traefik).
+
+```toml
+[companions.adminer]
+type = 'application'
+image = 'adminer:4.8.1'
+
+[companions.adminer.routing.additionalMiddlewares]
+headers = { 'customRequestHeaders' = { 'X-Forwarded-Prefix' =  '/{{application.name}}/adminer' } }
+```
+
+In addition, you can overwrite the whole routing of the companion. For example,
+if you want to make the Adminer available under
+`/{{application.name}}/adminer/sub-path/` you can provide following
+configuration.
+
+```toml
+[companions.adminer]
+type = 'application'
+image = 'adminer:4.8.1'
+
+[companions.adminer.routing]
+rule = 'PathPrefix(`/{{application.name}}/adminer/sub-path`)'
+
+[companions.adminer.routing.additionalMiddlewares]
+headers = { 'customRequestHeaders' = { 'X-Forwarded-Prefix' =  '/{{application.name}}/adminer/sub-path' } }
+stripPrefix = { 'prefixes' = [ '/{{application.name}}/adminer/sub-path' ] }
+```
+
+Please, note that PREvant in the latter case does not set the [StripPrefix
+Middleware](https://doc.traefik.io/traefik/middlewares/http/stripprefix/) and
+it needs to be recreated.
+
 #### Template Variables
 
 The list of available handlebars variables:

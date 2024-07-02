@@ -23,14 +23,13 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+use crate::config::Routing;
 use crate::models::service::ContainerType;
 use crate::models::Image;
 pub use environment::{Environment, EnvironmentVariable};
 use secstr::SecUtf8;
 use serde::Deserialize;
-use serde_value::Value;
 use std::collections::BTreeMap;
-use std::hash::Hash;
 use std::path::PathBuf;
 
 mod environment;
@@ -51,9 +50,7 @@ pub struct ServiceConfig {
     #[serde(skip)]
     port: u16,
     #[serde(skip)]
-    router: Option<Router>,
-    #[serde(skip)]
-    middlewares: Option<BTreeMap<String, Value>>,
+    routing: Option<Routing>,
 }
 
 impl ServiceConfig {
@@ -66,8 +63,7 @@ impl ServiceConfig {
             labels: None,
             container_type: ContainerType::Instance,
             port: 80,
-            router: None,
-            middlewares: None,
+            routing: None,
         }
     }
 
@@ -145,26 +141,12 @@ impl ServiceConfig {
         self.port
     }
 
-    pub fn set_router(&mut self, router: Router) {
-        self.router = Some(router);
+    pub fn set_routing(&mut self, routing: Routing) {
+        self.routing = Some(routing);
     }
 
-    pub fn router<'a, 'b: 'a>(&'b self) -> Option<&'a Router> {
-        match &self.router {
-            None => None,
-            Some(router) => Some(router),
-        }
-    }
-
-    pub fn set_middlewares(&mut self, middlewares: BTreeMap<String, Value>) {
-        self.middlewares = Some(middlewares);
-    }
-
-    pub fn middlewares<'a, 'b: 'a>(&'b self) -> Option<&BTreeMap<String, Value>> {
-        match &self.middlewares {
-            None => None,
-            Some(middlewares) => Some(middlewares),
-        }
+    pub fn routing<'a, 'b: 'a>(&'b self) -> Option<&'a Routing> {
+        self.routing.as_ref()
     }
 
     /// Copy labels, envs and files from other into self.
@@ -192,31 +174,6 @@ impl ServiceConfig {
         let mut labels = other.labels.as_ref().cloned().unwrap_or_default();
         labels.extend(self.labels.as_ref().cloned().unwrap_or_default());
         self.labels = Some(labels);
-    }
-}
-
-/// Helper that configures the service routing for Traefik (see
-/// [here](https://docs.traefik.io/routing/routers/)).
-#[derive(Clone, Debug, Hash, Deserialize, Eq, PartialEq)]
-pub struct Router {
-    rule: String,
-    priority: Option<i32>,
-}
-
-impl Router {
-    #[cfg(test)]
-    pub fn new(rule: String, priority: Option<i32>) -> Self {
-        Router { rule, priority }
-    }
-
-    pub fn rule(&self) -> &String {
-        &self.rule
-    }
-
-    pub fn with_rule(&self, rule: String) -> Self {
-        let mut r = self.clone();
-        r.rule = rule;
-        r
     }
 }
 

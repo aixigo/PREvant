@@ -30,7 +30,7 @@ pub use image::Image;
 pub use logs_chunks::LogChunk;
 pub use request_info::RequestInfo;
 pub use service::{ContainerType, ServiceBuilder, ServiceBuilderError};
-pub use service_config::{Environment, EnvironmentVariable, Router, ServiceConfig};
+pub use service_config::{Environment, EnvironmentVariable, ServiceConfig};
 pub use web_host_meta::WebHostMeta;
 
 mod app_name;
