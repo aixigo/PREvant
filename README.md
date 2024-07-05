@@ -14,7 +14,7 @@ setups) into reviewable applications, creating preview environments for testing
 new features before they are finalized. This reduces the complexity and speeds
 up the development process, aligning with agile methodologies.
 
-The name PREvant short for _Preview servant, pronounced like "prevent"
+The name PREvant short for _Preview servant_, pronounced like "prevent"
 (`prɪˈvɛnt`), reflects its role in preventing development errors by enabling
 early reviews through its web interface, where stakeholders can assess and give
 feedback on application developments efficiently.   
