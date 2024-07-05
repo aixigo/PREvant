@@ -6,7 +6,7 @@
 
 PREvant is a web-based software tool that acts as a testing and review platform,
 simplifying the deployment and management of microservices for development
-teams.Operating as a Docker container, it connects continuous integration
+teams. Operating as a Docker container, it connects continuous integration
 pipelines with container orchestration platforms, allowing developers to ensure
 features align with domain expert requirements. PREvant's RESTful API helps to
 integrate microservices from different branches (in multi-repo development
