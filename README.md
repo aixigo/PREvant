@@ -31,10 +31,10 @@ manages the following kind of services:
 - *Instance*: a service labeled as instance is a service that has been
   configured explicitly when creating or updating an application.
 - *Replica*: a service labeled as replica is a service that has been replicated
-from another application. By default if you create an application under any name
-PREvant will replicate all instances from the application *master*.
-Alternatively, any other application can be specified as a source of
-replication.
+  from another application. By default if you create an application under any name
+  PREvant will replicate all instances from the application *master*.
+  Alternatively, any other application can be specified as a source of
+  replication.
 
 ## Companions
 
