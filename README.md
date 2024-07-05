@@ -38,7 +38,7 @@ replication.
 
 ## Companions
 
-Additionally, PREvant provides a way of creating service every time it creates
+Additionally, PREvant provides a way of deploying services every time it creates
 an application. These services are called *companions* and there are two types
 of them.
 
