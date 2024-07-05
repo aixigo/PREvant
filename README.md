@@ -51,7 +51,7 @@ of them.
 # Usage
 
 In this section, it is discussed how different container environments (Docker
-and Kubernetes) benefit PREvant.PREvant utilizes both Docker and Kubernetes
+and Kubernetes) benefit PREvant. PREvant utilizes both Docker and Kubernetes
 because they are exceptional tools for managing microservices but both
 environments function differently. Docker uses network connection and alias to
 communicate with each other and usually a load balancer like Traefik can enhance
