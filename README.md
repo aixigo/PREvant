@@ -33,7 +33,7 @@ experts can review and demonstrate the application development.
 An *application*, that PREvant manages, is a composition of microservices based
 on an “architectural pattern that arranges an application as a collection of
 loosely coupled, fine-grained services, communicating through lightweight
-protocols.” ([Wikipedia][wiki-microservices]) Each application has a unique
+protocols.”  ([Wikipedia][wiki-microservices]) Each application has a unique
 name which is the key to perform actions like creating, duplicating, modifying,
 or deleting these applications via REST API or Web UI.
 
@@ -45,22 +45,27 @@ manages the following kind of services:
 - *Instance*: a service labeled as instance is a service that has been
   configured explicitly when creating or updating an application.
 - *Replica*: a service labeled as replica is a service that has been replicated
-  from another application. By default if you create an application under any
-  name PREvant will replicate all instances from the application *master*.
+  from another application. By default if you create an application under any name
+  PREvant will replicate all instances from the application *master*.
   Alternatively, any other application can be specified as a source of
   replication.
 
-Additionally, PREvant provides a way of creating service everytime it creates
+## Companions
+
+Additionally, PREvant provides a way of deploying services every time it creates
 an application. These services are called *companions* and there are two types
 of them.
 
-- An application wide companion (app companion) is an unique service for the
-  whole application. For example, a [Kafka][kafka] instance can be started
-  automatically everytime you create an application so that all services within
-  the application can synchronize via events.
-- A companion can also be attached to a service a user wants to deploy (service
-  companion). For example, a [PostgreSQL][postgres] container can be started
-  for each service to provide a dedicated database for it.
+- Application wide companion (short app companion): is a unique service for the
+  entire application. For example, a [Kafka][kafka] instance can be started
+  automatically every time an application is created, so that all services
+  within the application can synchronize via events.
+- Service companion:  A companion can also be attached to a specific service a
+  user wants to deploy. For example, a [PostgreSQL][postgres] container can be
+  started for each service to provide it with a dedicated database.
+
+Further instructions to configure Companions can be seen
+[here](../docs/companions.md).
 
 # Usage
 
