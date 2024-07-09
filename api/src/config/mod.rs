@@ -38,7 +38,6 @@ use clap::Parser;
 use figment::providers::{Env, Format, Toml};
 use figment::value::{Dict, Map, Tag, Value};
 use figment::{Metadata, Profile};
-use secret::Secret;
 use secstr::SecUtf8;
 use std::collections::BTreeMap;
 use std::convert::From;
@@ -140,7 +139,7 @@ pub enum JiraAuth {
 
 #[derive(Clone, Deserialize)]
 struct Service {
-    secrets: Option<Vec<Secret>>,
+    secrets: Option<Vec<secret::Secret>>,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -209,8 +208,17 @@ impl Config {
         })
     }
 
-    pub fn companion_bootstrapping_containers(&self) -> &Vec<BootstrappingContainer> {
-        self.companions.companion_bootstrapping_containers()
+    pub fn companion_bootstrapping_containers<S>(
+        &self,
+        app_name: &AppName,
+        base_url: &Option<url::Url>,
+        infrastructure: Option<S>,
+    ) -> Result<Vec<BootstrappingContainer>, handlebars::RenderError>
+    where
+        S: serde::Serialize,
+    {
+        self.companions
+            .companion_bootstrapping_containers(app_name, base_url, infrastructure)
     }
 
     fn companion_configs<P>(
