@@ -69,12 +69,12 @@ Further instructions to configure Companions can be seen
 
 # Usage
 
-Have a look at the examples directory. There you can find examples that deploy PREvant in different container environments:
+In this section, you'll find examples of deploying PREvant in various container environments:
 
-- [Docker](examples/Docker/README.md)
-- [Kubernetes](examples/Kubernetes/README.md) (requires at least Kubernetes 1.15)
+- For Docker, refer to [Docker](examples/Docker/README.md)
+- For Kubernetes (requires at least Kubernetes 1.15), refer to [Kubernetes](examples/Kubernetes/README.md)
 
-If you want to customize PREvant's behaviour, you can mount a TOML file into the container at the path `/app/config.toml`. You will find more information about the configuration [here](api/README.md).
+To customize the behavior of PREvant, you can mount a TOML file into the container at `/app/config.toml`. More details about the configuration can be found [here](api/README.md).
 
 # Requirements for Your Services
 
