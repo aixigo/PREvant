@@ -1,8 +1,17 @@
-The image `aixigo/prevant` provides the REST-API in order to deploy containers and to compose them into reviewable application.
+In this section, you can find all the configuration guidelines.
 
-# Configuration
+Note: The image `aixigo/prevant` provides the REST-API in order to deploy containers and to compose them into reviewable application.
 
-In order to configure PREvant create a [TOML](https://github.com/toml-lang/toml) file that is mounted to the container's path `/app/config.toml` (path can be changed by the CLI option `--config`). Additionally, PREvant utilizes [figment][1] to read configuration options from file, environment variable, and from some CLI options.
+# Configuration and Customization
+
+Users can customize PREvant's operations by adjusting settings in a
+configuration file [TOML](https://github.com/toml-lang/toml) that is mounted to
+the container's path `/app/config.toml` (path can be changed by the CLI option
+`--config`). This allows the system to adapt to various deployment environments
+and specific user needs. Additionally, PREvant utilizes [figment][1] (a library
+for declaring and combining configuration sources and extracting typed values
+from the combined sources), to read configuration options from file, environment
+variable, and from some CLI options.
 
 ## Runtime Configuration
 
