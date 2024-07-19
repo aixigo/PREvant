@@ -65,7 +65,7 @@ of them.
   started for each service to provide it with a dedicated database.
 
 Further instructions to configure Companions can be seen
-[here](../docs/companions.md).
+[here](docs/companions.md).
 
 # Usage
 
