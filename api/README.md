@@ -65,11 +65,11 @@ password = ''
 
 ## Services
 
-PREvant provides central configuration options for services deployed through its REST-API. For example, you can define that PREvant mounts a secret for a specific service of an application.
+PREvant offers centralized configuration options for services deployed via its REST-API. For example, you can specify that PREvant mounts a secret for a specific service of an application.
 
 ### Secrets
 
-As secrets in [Docker Swarm](https://docs.docker.com/engine/swarm/secrets/) and [Docker-Compose](https://docs.docker.com/compose/compose-file/#secrets) PREvant mounts secrets und `/run/secrets/<secret_name>`. Therefore, you can use following configuration section to define secrets for each service.
+Similar to secrets in [Docker Swarm](https://docs.docker.com/engine/swarm/secrets/) and [Docker-Compose](https://docs.docker.com/compose/compose-file/#secrets), PREvant mounts secrets under `/run/secrets/<secret_name>`. Therefore, you can use the following configuration section to define secrets for each service.
 
 Following example provides two secrets for the service `nginx`, mounted at `/run/secrets/cert.pem` and `/run/secrets/key.pem`, available for the application `master`.
 
