@@ -35,7 +35,7 @@ storageClass = 'local-path'
 
 ## Container Options
 
-Create a table `containers` with following options:
+A table containers can be created with the with the option of Restricting the memory usage of containers, as shown below. You can create a table `containers` with following options:
 
 ```toml
 [containers]
