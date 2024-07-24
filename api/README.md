@@ -1,4 +1,3 @@
-In this section, you can find all the configuration guidelines.
 
 Note: The image `aixigo/prevant` provides the REST-API in order to deploy containers and to compose them into reviewable application.
 
