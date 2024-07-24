@@ -48,7 +48,7 @@ memory_limit = '1g'
 
 Application names are compared to issues which will be linked to cards on the frontend. Therefore, the REST backend needs to be able to compare the application names with issue tracking information.
 
-Currently, Jira as a tracking system is supported.
+Currently, Jira is supported as the tracking system.
 
 ```toml
 [jira]
