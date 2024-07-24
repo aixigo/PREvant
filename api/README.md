@@ -145,7 +145,7 @@ password = "your-private-token"
 
 ## Configure With Environment Variables
 
-As stated above, PREvant utilizes [figment][1] to resolve configuration values from file, environment variables, and CLI options. The following examples provide a reference on how environment variables can be used to configure PREvant:
+As stated above, PREvant utilizes [figment][1] to resolve configuration values from file, environment variables, and CLI options. The following example shows how environment variables can be used to configure PREvant:
 
 ```bash
 # Configure downwardApi label path
