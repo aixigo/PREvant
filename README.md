@@ -69,7 +69,7 @@ Further instructions to configure Companions can be seen
 
 # Usage
 
-In this section, you'll find examples of deploying PREvant in various container environments:
+In this section, you'll find examples of deploying PREvant in container environments:
 
 - For Docker, refer to [Docker](examples/Docker/README.md)
 - For Kubernetes (requires at least Kubernetes 1.15), refer to [Kubernetes example](examples/Kubernetes/README.md)
