@@ -42,7 +42,8 @@ storageClass = 'local-path'
 
 ## Container Options
 
-Create a table `containers` with following options:
+The following table `containers` can be used to set some global options for all the OCI containers that PREvant deploys.
+For example, restricting the memory usage of containers, as shown below. For full reference see the example below:
 
 ```toml
 [containers]
