@@ -197,7 +197,7 @@ the objects generated from the HTTP request payload (all bootstrapped
 companions will be considered as application companions). Thus you can add or
 overwrite configurations. For example, you can change the image used or an
 environment variable. If you overwrite any configuration the companion will be
-turned into an instance (as PREvant did before).
+turned into an instance (as PREvant did previously).
 
 The following configuration block depicts that an image
 `registry.example.com/user/bootstrap-helm-chart:lastet` is based on a [Helm
