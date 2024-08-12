@@ -97,7 +97,7 @@ The list of available handlebars variables:
 
 #### Handlebar Helpers
 
-PREvant provides some handlebars helpers which can be used to generate more complex configuration files. See handlerbar's [block helper documentation](https://handlebarsjs.com/block_helpers.html) for more details.
+PREvant provides some handlebars helpers which can be used to generate more complex configuration files. See Handlebar's [block helper documentation](https://handlebarsjs.com/guide/block-helpers.html#basic-blocks) for more details.
 
 - `{{#isCompanion <type>}}` A conditional handlerbars block helper that checks if the given service type matches any companion type.
 - `isNotCompanion <type>` A conditional handlerbars block helper that checks if the given service type does not match any companion type.
