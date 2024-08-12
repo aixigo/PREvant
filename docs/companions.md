@@ -104,8 +104,8 @@ PREvant provides some handlebars helpers which can be used to generate more comp
 
 ### Service Based
 
-The service-based companions work the in the same way as the application-based
-services. Make sure, that the `serviceName` is unique by using handlebars
+The service-based companions functions the same way as the application-based
+services. Ensure that the `serviceName` is unique by using handlebars
 templating.
 
 ```toml
