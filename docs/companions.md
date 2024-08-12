@@ -134,7 +134,9 @@ The list of available handlebars variables:
 
 ### Deployment Strategy
 
-Companions offer different deployment strategies so that a companion could be restarted or not under certain conditions. Therefore, PREvant offers following configuration flags:
+Companions offer different deployment strategies, enabling a companion to be
+restarted or remain running based on specific conditions. Therefore, PREvant
+offers following configuration flags:
 
 ```toml
 [companions.openid]
@@ -143,10 +145,10 @@ image = 'private.example.com/library/openid:latest'
 deploymentStrategy = 'redeploy-on-image-update'
 ```
 
-`deploymentStrategy` offers the following values and if a companion exists for an app following strategy will be applied:
+`deploymentStrategy` offers the following values and if a companion exists for an app, following strategy will be applied:
 
 - `redeploy-always` (_default_): Re-deploys the companion every time there is a new deployment request.
-- `redeploy-on-image-update`: Re-deploys the companion if there is a more rescent image available.
+- `redeploy-on-image-update`: Re-deploys the companion if there is a newer image version available.
 - `redeploy-never`: Even if there is a new deployment request the companion won't be redeployed and stays running.
 
 ### Storage Strategy
