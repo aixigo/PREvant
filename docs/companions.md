@@ -1,7 +1,7 @@
 # Companion Configuration
 
 For better understanding, take a look at [Companions
-section](https://github.com/aixigo/PREvant?tab=readme-ov-file#companions) to
+section](../README.md#companions) to
 grasp what a companion is. The following sections provide example configurations
 for these use cases.
 
