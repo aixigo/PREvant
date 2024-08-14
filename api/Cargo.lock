@@ -246,9 +246,9 @@ dependencies = [
 
 [[package]]
 name = "boa_ast"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b6fb81ca0f301f33aff7401e2ffab37dc9e0e4a1cf0ccf6b34f4d9e60aa0682"
+checksum = "b49637e7ecb7c541c46c3e885d4c49326ad8076dbfb88bef2cf3165d8ea7df2b"
 dependencies = [
  "bitflags 2.6.0",
  "boa_interner",
@@ -260,9 +260,9 @@ dependencies = [
 
 [[package]]
 name = "boa_engine"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "600e4e4a65b26efcef08a7b1cf2899d3845a32e82e067ee3b75eaf7e413ff31c"
+checksum = "411558b4cbc7d0303012e26721815e612fed78179313888fd5dd8d6c50d70099"
 dependencies = [
  "arrayvec",
  "bitflags 2.6.0",
@@ -272,6 +272,7 @@ dependencies = [
  "boa_macros",
  "boa_parser",
  "boa_profiler",
+ "boa_string",
  "bytemuck",
  "cfg-if",
  "dashmap",
@@ -286,7 +287,6 @@ dependencies = [
  "num-traits",
  "num_enum",
  "once_cell",
- "paste",
  "pollster",
  "portable-atomic",
  "rand",
@@ -305,21 +305,22 @@ dependencies = [
 
 [[package]]
 name = "boa_gc"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c055ef3cd87ea7db014779195bc90c6adfc35de4902e3b2fe587adecbd384578"
+checksum = "8eff345a85a39cf9b8ed863198947d61e6df2b1d774002b57341158b0ce2c525"
 dependencies = [
  "boa_macros",
  "boa_profiler",
+ "boa_string",
  "hashbrown 0.14.5",
  "thin-vec",
 ]
 
 [[package]]
 name = "boa_interner"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cacc9caf022d92195c827a3e5bf83f96089d4bfaff834b359ac7b6be46e9187"
+checksum = "72b779280420804c70da9043d152c84eb96e2f7c9e7d1ec3262decf59f9349df"
 dependencies = [
  "boa_gc",
  "boa_macros",
@@ -333,9 +334,9 @@ dependencies = [
 
 [[package]]
 name = "boa_macros"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6be9c93793b60dac381af475b98634d4b451e28336e72218cad9a20176218dbc"
+checksum = "25e0097fa69cde4c95f9869654004340fbbe2bcf3ce9189ba2a31a65ac40e0a1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -345,9 +346,9 @@ dependencies = [
 
 [[package]]
 name = "boa_parser"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e8592556849f0619ed142ce2b3a19086769314a8d657f93a5765d06dbce4818"
+checksum = "dd63fe8faf62561fc8c50f9402687e8cfde720b57d292fb3b4ac17c821878ac1"
 dependencies = [
  "bitflags 2.6.0",
  "boa_ast",
@@ -364,9 +365,22 @@ dependencies = [
 
 [[package]]
 name = "boa_profiler"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0d8372f2d5cbac600a260de87877141b42da1e18d2c7a08ccb493a49cbd55c0"
+checksum = "cd9da895f0df9e2a97b36c1f98e0c5d2ab963abc8679d80f2a66f7bcb211ce90"
+
+[[package]]
+name = "boa_string"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9ca6668df83fcd3c2903f6f296b7180421908c5b478ebe0d1c468be9fd60e1c"
+dependencies = [
+ "fast-float",
+ "paste",
+ "rustc-hash",
+ "sptr",
+ "static_assertions",
+]
 
 [[package]]
 name = "bollard"
@@ -1372,9 +1386,9 @@ dependencies = [
 
 [[package]]
 name = "icu_collections"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "137d96353afc8544d437e8a99eceb10ab291352699573b0de5b08bda38c78c60"
+checksum = "db2fa452206ebee18c4b5c2274dbf1de17008e874b4dc4f0aea9d01ca79e4526"
 dependencies = [
  "displaydoc",
  "yoke",
@@ -1384,9 +1398,9 @@ dependencies = [
 
 [[package]]
 name = "icu_locid"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c0aa2536adc14c07e2a521e95512b75ed8ef832f0fdf9299d4a0a45d2be2a9d"
+checksum = "13acbb8371917fc971be86fc8057c41a64b521c184808a698c02acc242dbf637"
 dependencies = [
  "displaydoc",
  "litemap",
@@ -1397,9 +1411,9 @@ dependencies = [
 
 [[package]]
 name = "icu_locid_transform"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c17d8f6524fdca4471101dd71f0a132eb6382b5d6d7f2970441cb25f6f435a"
+checksum = "01d11ac35de8e40fdeda00d9e1e9d92525f3f9d887cdd7aa81d727596788b54e"
 dependencies = [
  "displaydoc",
  "icu_locid",
@@ -1411,15 +1425,15 @@ dependencies = [
 
 [[package]]
 name = "icu_locid_transform_data"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "545c6c3e8bf9580e2dafee8de6f9ec14826aaf359787789c7724f1f85f47d3dc"
+checksum = "fdc8ff3388f852bede6b579ad4e978ab004f139284d7b28715f773507b946f6e"
 
 [[package]]
 name = "icu_normalizer"
-version = "1.4.3"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "accb85c5b2e76f8dade22978b3795ae1e550198c6cfc7e915144e17cd6e2ab56"
+checksum = "19ce3e0da2ec68599d193c93d088142efd7f9c5d6fc9b803774855747dc6a84f"
 dependencies = [
  "displaydoc",
  "icu_collections",
@@ -1435,15 +1449,15 @@ dependencies = [
 
 [[package]]
 name = "icu_normalizer_data"
-version = "1.4.1"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3744fecc0df9ce19999cdaf1f9f3a48c253431ce1d67ef499128fe9d0b607ab"
+checksum = "f8cafbf7aa791e9b22bec55a167906f9e1215fd475cd22adfcf660e03e989516"
 
 [[package]]
 name = "icu_properties"
-version = "1.4.3"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db9e559598096627aeca8cdfb98138a70eb4078025f8d1d5f2416a361241f756"
+checksum = "93d6020766cfc6302c15dbbc9c8778c37e62c14427cb7f6e601d849e092aeef5"
 dependencies = [
  "displaydoc",
  "icu_collections",
@@ -1456,15 +1470,15 @@ dependencies = [
 
 [[package]]
 name = "icu_properties_data"
-version = "1.4.1"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e70a8b51ee5dd4ff8f20ee9b1dd1bc07afc110886a3747b1fec04cc6e5a15815"
+checksum = "67a8effbc3dd3e4ba1afa8ad918d5684b8868b3b26500753effea8d2eed19569"
 
 [[package]]
 name = "icu_provider"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba58e782287eb6950247abbf11719f83f5d4e4a5c1f2cd490d30a334bc47c2f4"
+checksum = "6ed421c8a8ef78d3e2dbc98a973be2f3770cb42b606e3ab18d6237c4dfde68d9"
 dependencies = [
  "displaydoc",
  "icu_locid",
@@ -1479,9 +1493,9 @@ dependencies = [
 
 [[package]]
 name = "icu_provider_macros"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2abdd3a62551e8337af119c5899e600ca0c88ec8f23a46c60ba216c803dcf1a"
+checksum = "1ec89e9337638ecdc08744df490b221a7399bf8d164eb52a665454e60e075ad6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1566,9 +1580,9 @@ checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
 
 [[package]]
 name = "itertools"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
 dependencies = [
  "either",
 ]
@@ -2496,9 +2510,9 @@ checksum = "7a66a03ae7c801facd77a29370b4faec201768915ac14a721ba36f20bc9c209b"
 
 [[package]]
 name = "regress"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0eae2a1ebfecc58aff952ef8ccd364329abe627762f5bf09ff42eb9d98522479"
+checksum = "16fe0a24af5daaae947294213d2fd2646fbf5e1fbacc1d4ba3e84b2393854842"
 dependencies = [
  "hashbrown 0.14.5",
  "memchr",
@@ -2654,9 +2668,9 @@ checksum = "719b953e2095829ee67db738b3bfa9fa368c94900df327b3f07fe6e794d2fe1f"
 
 [[package]]
 name = "rustc-hash"
-version = "1.1.0"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+checksum = "583034fd73374156e66797ed8e5b0d5690409c9226b22d87cb7f19821c05d152"
 
 [[package]]
 name = "rustix"

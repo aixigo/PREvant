@@ -15,7 +15,7 @@ path = "src/main.rs"
 async-trait = "0.1"
 async-stream = "0.3"
 base64 = "0.22"
-boa_engine = "0.18"
+boa_engine = "0.19"
 bollard = { version = "0.16", features = ["chrono"] }
 bytesize = { version = "1.3", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
