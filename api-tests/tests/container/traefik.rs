@@ -2,7 +2,7 @@ use reqwest::{ClientBuilder, Response};
 use std::time::Duration;
 use testcontainers::{
     core::{Mount, WaitFor},
-    ContainerAsync, Image, ImageArgs,
+    ContainerAsync, Image,
 };
 use uuid::Uuid;
 
@@ -24,8 +24,8 @@ impl Default for Traefik {
     }
 }
 
-impl ImageArgs for TraefikArgs {
-    fn into_iterator(self) -> Box<dyn Iterator<Item = String>> {
+impl Image for Traefik {
+    fn cmd(&self) -> impl IntoIterator<Item = impl Into<std::borrow::Cow<'_, str>>> {
         Box::new(
             vec![
                 "--api".to_string(),
@@ -35,16 +35,12 @@ impl ImageArgs for TraefikArgs {
             .into_iter(),
         )
     }
-}
 
-impl Image for Traefik {
-    type Args = TraefikArgs;
-
-    fn name(&self) -> String {
-        "traefik".to_string()
+    fn name(&self) -> &str {
+        "traefik"
     }
-    fn tag(&self) -> String {
-        "v1.7-alpine".to_string()
+    fn tag(&self) -> &str {
+        "v1.7-alpine"
     }
 
     fn ready_conditions(&self) -> Vec<WaitFor> {
@@ -53,7 +49,7 @@ impl Image for Traefik {
         )]
     }
 
-    fn mounts(&self) -> Box<dyn Iterator<Item = &Mount> + '_> {
+    fn mounts(&self) -> impl IntoIterator<Item = &Mount> {
         Box::new(self.mounts.iter())
     }
 }
@@ -63,7 +59,10 @@ pub async fn make_request(
     app_name: &Uuid,
     service_name: &str,
 ) -> Response {
-    let port = traefik.get_host_port_ipv4(80).await;
+    let port = traefik
+        .get_host_port_ipv4(80)
+        .await
+        .expect("Traefik must export port");
 
     backoff::future::retry(
         backoff::ExponentialBackoffBuilder::new()

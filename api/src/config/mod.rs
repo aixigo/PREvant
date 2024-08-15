@@ -249,17 +249,19 @@ impl Config {
         &'b self,
         registry_host: &str,
     ) -> Option<(&'a str, &'a SecUtf8)> {
-        self.registries
-            .get(registry_host)
-            .and_then(|registry| Some((registry.username.as_ref()?.as_str(), registry.password.as_ref()?)))
+        self.registries.get(registry_host).and_then(|registry| {
+            Some((
+                registry.username.as_ref()?.as_str(),
+                registry.password.as_ref()?,
+            ))
+        })
     }
 
-    pub fn registry_mirror<'a, 'b: 'a>(
-        &'b self,
-        registry_host: &str,
-    ) -> Option<&'a str> {
-        self.registries.get(registry_host).and_then(|registry| registry.mirror.as_ref())
-            .map(| mirror | mirror.as_str())
+    pub fn registry_mirror<'a, 'b: 'a>(&'b self, registry_host: &str) -> Option<&'a str> {
+        self.registries
+            .get(registry_host)
+            .and_then(|registry| registry.mirror.as_ref())
+            .map(|mirror| mirror.as_str())
     }
 }
 
@@ -284,11 +286,11 @@ impl Service {
     }
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[fail(display = "Cannot open config file. {}", error)]
+    #[error("Cannot open config file. {error}")]
     CannotOpenConfigFile { error: IOError },
-    #[fail(display = "Invalid config file format. {}", error)]
+    #[error("Invalid config file format. {error}")]
     ConfigFormatError { error: TomlError },
 }
 

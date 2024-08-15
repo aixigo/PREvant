@@ -30,6 +30,7 @@ use crate::deployment::DeploymentUnit;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::{AppName, ServiceBuilder, ServiceConfig};
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use futures::stream::{self, BoxStream};
@@ -96,7 +97,7 @@ impl DummyInfrastructure {
 #[cfg(test)]
 #[async_trait]
 impl Infrastructure for DummyInfrastructure {
-    async fn get_services(&self) -> Result<MultiMap<AppName, Service>, failure::Error> {
+    async fn get_services(&self) -> Result<MultiMap<AppName, Service>> {
         let mut s = MultiMap::new();
 
         let services = self.services.lock().unwrap();
@@ -127,7 +128,7 @@ impl Infrastructure for DummyInfrastructure {
         _status_id: &str,
         deployment_unit: &DeploymentUnit,
         _container_config: &ContainerConfig,
-    ) -> Result<Vec<Service>, failure::Error> {
+    ) -> Result<Vec<Service>> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
@@ -149,11 +150,7 @@ impl Infrastructure for DummyInfrastructure {
         Ok(vec![])
     }
 
-    async fn stop_services(
-        &self,
-        _status_id: &str,
-        app_name: &AppName,
-    ) -> Result<Vec<Service>, failure::Error> {
+    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Vec<Service>> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
@@ -186,7 +183,7 @@ impl Infrastructure for DummyInfrastructure {
         _from: &'a Option<DateTime<FixedOffset>>,
         _limit: &'a Option<usize>,
         _follow: bool,
-    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String), failure::Error>> {
+    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String)>> {
         Box::pin(stream::iter(
             vec![
                 (
@@ -212,13 +209,11 @@ impl Infrastructure for DummyInfrastructure {
         _app_name: &AppName,
         _service_name: &str,
         _status: ServiceStatus,
-    ) -> Result<Option<Service>, failure::Error> {
+    ) -> Result<Option<Service>> {
         Ok(None)
     }
 
-    async fn base_traefik_ingress_route(
-        &self,
-    ) -> Result<Option<TraefikIngressRoute>, failure::Error> {
+    async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>> {
         Ok(self.base_ingress_route.clone())
     }
 

@@ -25,8 +25,6 @@
  */
 
 #[macro_use]
-extern crate failure;
-#[macro_use]
 extern crate lazy_static;
 #[macro_use]
 extern crate rocket;
@@ -43,7 +41,6 @@ use rocket::fs::{FileServer, Options};
 use serde_yaml::{from_reader, to_string, Value};
 use std::fs::File;
 use std::path::Path;
-use std::process;
 use std::sync::Arc;
 
 mod apps;
@@ -100,13 +97,8 @@ async fn main() -> Result<(), StartUpError> {
     })?;
 
     let infrastructure = create_infrastructure(&config);
-    let apps = match Apps::new(config.clone(), infrastructure) {
-        Ok(apps_service) => apps_service,
-        Err(e) => {
-            error!("Cannot create apps service: {}", e);
-            process::exit(0x0200);
-        }
-    };
+    let apps = Apps::new(config.clone(), infrastructure)
+        .map_err(|e| StartUpError::CannotCreateApps { err: e.to_string() })?;
 
     let (host_meta_cache, host_meta_crawler) = host_meta_crawling();
     let apps = Arc::new(apps);
@@ -130,12 +122,14 @@ async fn main() -> Result<(), StartUpError> {
     Ok(())
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 enum StartUpError {
-    #[fail(display = "Cannot read configuration: {}", err)]
+    #[error("Cannot read configuration: {err}")]
     InvalidConfiguration { err: String },
-    #[fail(display = "Cannot start HTTP server: {}", err)]
+    #[error("Cannot start HTTP server: {err}")]
     CannotStartWebServer { err: String },
+    #[error("Cannot create apps service: {err}")]
+    CannotCreateApps { err: String },
 }
 
 impl std::convert::From<rocket::Error> for StartUpError {

@@ -59,11 +59,11 @@ impl<'r> FromParam<'r> for AppStatusChangeId {
     }
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum AppStatusChangeIdError {
-    #[fail(display = "Failed to parse UUID: {}", err)]
+    #[error("Failed to parse UUID: {err}")]
     UuidError { err: String },
-    #[fail(display = "Invalid url encoded parameter: {}", err)]
+    #[error("Invalid url encoded parameter: {err}")]
     InvalidUrlDecodedParam { err: String },
 }
 

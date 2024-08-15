@@ -11,7 +11,7 @@ use crate::{
     infrastructure::{APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL},
     models::{AppName, ContainerType, Image},
 };
-use failure::Error;
+use anyhow::Result;
 use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt, TryStreamExt};
 use handlebars::RenderError;
 use k8s_openapi::{
@@ -63,7 +63,7 @@ impl K8sDeploymentUnit {
         client: Client,
         bootstrapping_containers: &[BootstrappingContainer],
         image_pull_secret: Option<Secret>,
-    ) -> Result<(String, Vec<impl AsyncBufReadExt>), Error> {
+    ) -> Result<(String, Vec<impl AsyncBufReadExt>)> {
         let image_pull_secrets = match image_pull_secret {
             Some(image_pull_secret) => {
                 let image_pull_secrets = vec![LocalObjectReference {
@@ -139,10 +139,9 @@ impl K8sDeploymentUnit {
                         break;
                     }
                     "Failed" | "Unknown" => {
-                        return Err(KubernetesInfrastructureError::UnexpectedError {
-                            internal_message: format!(
-                                "Bootstrap pod {pod_name} for {app_name} failed"
-                            ),
+                        return Err(KubernetesInfrastructureError::BootstrapContainerFailed {
+                            pod_name,
+                            app_name: app_name.clone(),
                         }
                         .into());
                     }
@@ -179,7 +178,7 @@ impl K8sDeploymentUnit {
         client: Client,
         bootstrapping_container: &[BootstrappingContainer],
         image_pull_secret: Option<Secret>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self> {
         if bootstrapping_container.is_empty() {
             return Ok(Default::default());
         }
@@ -207,7 +206,7 @@ impl K8sDeploymentUnit {
     async fn parse_from_log_streams<L>(
         deployment_unit: &DeploymentUnit,
         log_streams: L,
-    ) -> Result<Self, Error>
+    ) -> Result<Self>
     where
         L: IntoIterator,
         <L as IntoIterator>::Item: AsyncBufReadExt,
@@ -732,7 +731,7 @@ impl K8sDeploymentUnit {
         self,
         client: Client,
         app_name: &AppName,
-    ) -> Result<Vec<Deployment>, Error> {
+    ) -> Result<Vec<Deployment>> {
         let mut deployments = Vec::with_capacity(self.deployments.len());
 
         for role in self.roles {
@@ -780,7 +779,7 @@ impl K8sDeploymentUnit {
     }
 }
 
-async fn create_or_patch<T>(client: Client, app_name: &AppName, payload: T) -> Result<T, Error>
+async fn create_or_patch<T>(client: Client, app_name: &AppName, payload: T) -> Result<T>
 where
     T: serde::Serialize + Clone + std::fmt::Debug + for<'a> serde::Deserialize<'a>,
     T: kube::core::Resource<Scope = kube::core::NamespaceResourceScope>,

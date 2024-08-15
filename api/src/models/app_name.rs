@@ -113,14 +113,11 @@ impl<'r> FromFormField<'r> for AppName {
     }
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum AppNameError {
-    #[fail(
-        display = "Invalid characters in app name: “{}” are invalid.",
-        invalid_chars
-    )]
+    #[error("Invalid characters in app name: “{invalid_chars}” are invalid.")]
     InvalidChars { invalid_chars: String },
-    #[fail(display = "Invalid url encoded parameter: {}", err)]
+    #[error("Invalid url encoded parameter: {err}")]
     InvalidUrlDecodedParam { err: String },
 }
 
