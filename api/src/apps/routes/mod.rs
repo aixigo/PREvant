@@ -283,7 +283,7 @@ impl<'r> Responder<'r, 'static> for ServiceStatusResponse {
 impl From<AppsError> for HttpApiError {
     fn from(error: AppsError) -> Self {
         let status = match &error {
-            AppsError::UnableToResolveImage { error } => match error {
+            AppsError::UnableToResolveImage { error } => match **error {
                 crate::registry::RegistryError::ImageNotFound { .. } => StatusCode::NOT_FOUND,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             },
@@ -741,10 +741,10 @@ mod tests {
             #[get("/")]
             fn image_auth_failed() -> HttpResult<&'static str> {
                 Err(AppsError::UnableToResolveImage {
-                    error: RegistryError::AuthenticationFailure {
+                    error: Arc::new(RegistryError::AuthenticationFailure {
                         image: String::from("private-registry.example.com/_/postgres"),
                         failure: String::from("403: invalid user name and password"),
-                    },
+                    }),
                 }
                 .into())
             }
@@ -772,10 +772,10 @@ mod tests {
             #[get("/")]
             fn image_not_found() -> HttpResult<&'static str> {
                 Err(AppsError::UnableToResolveImage {
-                    error: RegistryError::UnexpectedError {
+                    error: Arc::new(RegistryError::UnexpectedError {
                         image: String::from("private-registry.example.com/_/postgres"),
-                        internal_message: String::from("unexpected"),
-                    },
+                        err: anyhow::Error::msg("unexpected"),
+                    }),
                 }
                 .into())
             }
@@ -803,9 +803,9 @@ mod tests {
             #[get("/")]
             fn image_not_found() -> HttpResult<&'static str> {
                 Err(AppsError::UnableToResolveImage {
-                    error: RegistryError::ImageNotFound {
+                    error: Arc::new(RegistryError::ImageNotFound {
                         image: String::from("private-registry.example.com/_/postgres"),
-                    },
+                    }),
                 }
                 .into())
             }

@@ -266,13 +266,13 @@ impl ServiceBuilder {
     }
 }
 
-#[derive(Debug, Fail, PartialEq)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ServiceBuilderError {
-    #[fail(display = "An ID must be provided.")]
+    #[error("An ID must be provided.")]
     MissingId,
-    #[fail(display = "An app name must be provided.")]
+    #[error("An app name must be provided.")]
     MissingAppName,
-    #[fail(display = "A service configuration must be provided.")]
+    #[error("A service configuration must be provided.")]
     MissingServiceConfiguration,
 }
 
@@ -331,11 +331,11 @@ impl Display for ContainerType {
     }
 }
 
-#[derive(Debug, Fail, PartialEq)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ServiceError {
-    #[fail(display = "Invalid service type label: {}", label)]
+    #[error("Invalid service type label: {label}")]
     InvalidServiceType { label: String },
-    #[fail(display = "Invalid image: {}", invalid_string)]
+    #[error("Invalid image: {invalid_string}")]
     InvalidImageString { invalid_string: String },
 }
 

@@ -89,29 +89,24 @@ pub async fn tickets(
 impl From<JiraQueryError> for ListTicketsError {
     fn from(err: JiraQueryError) -> Self {
         ListTicketsError::UnexpectedError {
-            internal_message: err.to_string(),
+            err: anyhow::Error::new(err),
         }
     }
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum ListTicketsError {
-    #[fail(display = "No issue tracking configuration")]
+    #[error("No issue tracking configuration")]
     MissingIssueTrackingConfiguration,
-    #[fail(
-        display = "Unexpected issue tracking system error: {}",
-        internal_message
-    )]
-    UnexpectedError { internal_message: String },
+    #[error("Unexpected issue tracking system error: {err}")]
+    UnexpectedError { err: anyhow::Error },
 }
 
 impl From<ListTicketsError> for HttpApiError {
     fn from(error: ListTicketsError) -> Self {
         let status = match error {
             ListTicketsError::MissingIssueTrackingConfiguration => StatusCode::NO_CONTENT,
-            ListTicketsError::UnexpectedError {
-                internal_message: _,
-            } => StatusCode::INTERNAL_SERVER_ERROR,
+            ListTicketsError::UnexpectedError { err: _ } => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         HttpApiProblem::with_title_and_type(status)

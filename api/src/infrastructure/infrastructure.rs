@@ -29,16 +29,16 @@ use crate::config::ContainerConfig;
 use crate::deployment::DeploymentUnit;
 use crate::models::service::{Service, ServiceStatus};
 use crate::models::{AppName, ContainerType, ServiceConfig};
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
-use failure::Error;
 use futures::stream::BoxStream;
 use multimap::MultiMap;
 
 #[async_trait]
 pub trait Infrastructure: Send + Sync {
     /// Returns a `MultiMap` of `app-name` and the running services for this app.
-    async fn get_services(&self) -> Result<MultiMap<AppName, Service>, Error>;
+    async fn get_services(&self) -> Result<MultiMap<AppName, Service>>;
 
     /// Deploys the services of the given set of `ServiceConfig`.
     ///
@@ -53,9 +53,9 @@ pub trait Infrastructure: Send + Sync {
         status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Vec<Service>, Error>;
+    ) -> Result<Vec<Service>>;
 
-    async fn get_status_change(&self, _status_id: &str) -> Result<Option<Vec<Service>>, Error> {
+    async fn get_status_change(&self, _status_id: &str) -> Result<Option<Vec<Service>>> {
         Ok(None)
     }
 
@@ -63,11 +63,7 @@ pub trait Infrastructure: Send + Sync {
     ///
     /// The implementation must ensure that it returns the services that have been
     /// stopped.
-    async fn stop_services(
-        &self,
-        status_id: &str,
-        app_name: &AppName,
-    ) -> Result<Vec<Service>, Error>;
+    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<Vec<Service>>;
 
     /// Streams the log lines with a the corresponding timestamps in it.
     async fn get_logs<'a>(
@@ -77,7 +73,7 @@ pub trait Infrastructure: Send + Sync {
         from: &'a Option<DateTime<FixedOffset>>,
         limit: &'a Option<usize>,
         follow: bool,
-    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String), failure::Error>>;
+    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String)>>;
 
     /// Changes the status of a service, for example, the service might me stopped or started.
     async fn change_status(
@@ -85,11 +81,11 @@ pub trait Infrastructure: Send + Sync {
         app_name: &AppName,
         service_name: &str,
         status: ServiceStatus,
-    ) -> Result<Option<Service>, Error>;
+    ) -> Result<Option<Service>>;
 
     /// Determines the [router rule](https://doc.traefik.io/traefik/routing/routers/) that points
     /// to PREvant it self so services will be reachable on the same route, e.g. host name.
-    async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>, Error> {
+    async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>> {
         Ok(None)
     }
 
@@ -101,10 +97,7 @@ pub trait Infrastructure: Send + Sync {
 
 impl dyn Infrastructure {
     /// Returns the configuration of all services running for the given application name.
-    pub async fn get_configs_of_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Vec<ServiceConfig>, Error> {
+    pub async fn get_configs_of_app(&self, app_name: &AppName) -> Result<Vec<ServiceConfig>> {
         let services = self.get_services().await?;
         Ok(services
             .get_vec(app_name)

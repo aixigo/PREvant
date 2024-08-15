@@ -82,7 +82,7 @@ impl<'a> Registry<'a> {
                         }
                         err => RegistryError::UnexpectedError {
                             image: image.to_string(),
-                            internal_message: err.to_string(),
+                            err: anyhow::Error::new(err),
                         },
                     });
                 }
@@ -121,7 +121,7 @@ impl<'a> Registry<'a> {
         let mut reference = Reference::from_str(&image.to_string())
             .expect("Image should be convertable if it is the Named variant");
 
-        if let Some(mirror) = config.registry_mirror(reference.registry()){
+        if let Some(mirror) = config.registry_mirror(reference.registry()) {
             reference.set_mirror_registry(mirror.to_string());
         }
 
@@ -227,22 +227,13 @@ impl ImageConfig {
     }
 }
 
-#[derive(Debug, Clone, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
-    #[fail(
-        display = "Unexpected docker registry error when resolving manifest for {}: {}",
-        image, internal_message
-    )]
-    UnexpectedError {
-        image: String,
-        internal_message: String,
-    },
-    #[fail(
-        display = "Cannot resolve image {} due to authentication failure: {}",
-        image, failure
-    )]
+    #[error("Unexpected docker registry error when resolving manifest for {image}: {err}")]
+    UnexpectedError { image: String, err: anyhow::Error },
+    #[error("Cannot resolve image {image} due to authentication failure: {failure}")]
     AuthenticationFailure { image: String, failure: String },
-    #[fail(display = "Cannot find image {}", image)]
+    #[error("Cannot find image {image}")]
     ImageNotFound { image: String },
 }
 

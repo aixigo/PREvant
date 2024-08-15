@@ -362,7 +362,7 @@ impl AppsService {
         service_name: &'a str,
         since: &'a Option<DateTime<FixedOffset>>,
         limit: &'a Option<usize>,
-    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String), failure::Error>> {
+    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String), anyhow::Error>> {
         self.infrastructure
             .get_logs(app_name, service_name, since, limit, true)
             .await
@@ -404,34 +404,28 @@ impl AppsService {
 }
 
 /// Defines error cases for the `AppService`
-#[derive(Debug, Clone, Fail)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum AppsServiceError {
     /// Will be used when no app with a given name is found
-    #[fail(display = "Cannot find app {}.", app_name)]
+    #[error("Cannot find app {app_name}.")]
     AppNotFound { app_name: AppName },
-    #[fail(
-        display = "The app {} is currently within deployment by another request.",
-        app_name
-    )]
+    #[error("The app {app_name} is currently within deployment by another request.")]
     AppIsInDeployment { app_name: AppName },
-    #[fail(
-        display = "The app {} is currently within deletion in by another request.",
-        app_name
-    )]
+    #[error("The app {app_name} is currently within deletion in by another request.")]
     AppIsInDeletion { app_name: AppName },
     /// Will be used when the service cannot interact correctly with the infrastructure.
-    #[fail(display = "Cannot interact with infrastructure: {}", error)]
-    InfrastructureError { error: Arc<failure::Error> },
+    #[error("Cannot interact with infrastructure: {error}")]
+    InfrastructureError { error: Arc<anyhow::Error> },
     /// Will be used if the service configuration cannot be loaded.
-    #[fail(display = "Invalid configuration: {}", error)]
+    #[error("Invalid configuration: {error}")]
     InvalidServerConfiguration { error: Arc<ConfigError> },
-    #[fail(display = "Invalid configuration (invalid template): {}", error)]
+    #[error("Invalid configuration (invalid template): {error}")]
     InvalidTemplateFormat { error: Arc<RenderError> },
-    #[fail(display = "Unable to resolve information about image: {}", error)]
-    UnableToResolveImage { error: RegistryError },
-    #[fail(display = "Invalid deployment hook.")]
+    #[error("Unable to resolve information about image: {error}")]
+    UnableToResolveImage { error: Arc<RegistryError> },
+    #[error("Invalid deployment hook.")]
     InvalidDeploymentHook,
-    #[fail(display = "Failed to parse traefik rule ({}): {}", raw_rule, err)]
+    #[error("Failed to parse traefik rule ({raw_rule}): {err}")]
     FailedToParseTraefikRule { raw_rule: String, err: String },
 }
 
@@ -443,8 +437,8 @@ impl From<ConfigError> for AppsServiceError {
     }
 }
 
-impl From<failure::Error> for AppsServiceError {
-    fn from(error: failure::Error) -> Self {
+impl From<anyhow::Error> for AppsServiceError {
+    fn from(error: anyhow::Error) -> Self {
         AppsServiceError::InfrastructureError {
             error: Arc::new(error),
         }
@@ -461,7 +455,9 @@ impl From<RenderError> for AppsServiceError {
 
 impl From<RegistryError> for AppsServiceError {
     fn from(error: RegistryError) -> Self {
-        AppsServiceError::UnableToResolveImage { error }
+        AppsServiceError::UnableToResolveImage {
+            error: Arc::new(error),
+        }
     }
 }
 
@@ -473,6 +469,7 @@ mod tests {
     use crate::models::{EnvironmentVariable, ServiceBuilder};
     use crate::sc;
     use chrono::Utc;
+    use futures::StreamExt;
     use secstr::SecUtf8;
     use std::hash::Hash;
     use std::io::Write;

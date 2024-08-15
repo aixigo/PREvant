@@ -10,8 +10,14 @@ use testcontainers::runners::AsyncRunner;
 
 #[tokio::test]
 async fn should_deploy_nginx() {
-    let traefik = Traefik::default().start().await;
-    let prevant = PREvant::default().start().await;
+    let traefik = Traefik::default()
+        .start()
+        .await
+        .expect("container should be available");
+    let prevant = PREvant::default()
+        .start()
+        .await
+        .expect("container should be available");
 
     let app_name = deploy_app(
         &prevant,
@@ -43,8 +49,14 @@ async fn should_deploy_nginx() {
 
 #[tokio::test]
 async fn should_replicate_mariadb_with_replicated_env() {
-    let _traefik = Traefik::default().start().await;
-    let prevant = PREvant::default().start().await;
+    let _traefik = Traefik::default()
+        .start()
+        .await
+        .expect("container should be available");
+    let prevant = PREvant::default()
+        .start()
+        .await
+        .expect("container should be available");
 
     let db_service = Service::new(String::from("db"), String::from("mariadb:10.3.17"))
         .with_replicated_env(

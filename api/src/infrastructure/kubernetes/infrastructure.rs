@@ -41,10 +41,10 @@ use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus
 use crate::models::{
     AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig,
 };
+use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
-use failure::Error;
 use futures::stream::FuturesUnordered;
 use futures::stream::{self, BoxStream};
 use futures::StreamExt;
@@ -74,27 +74,26 @@ pub struct KubernetesInfrastructure {
     config: PREvantConfig,
 }
 
-#[derive(Debug, Fail, PartialEq)]
+#[derive(Debug, thiserror::Error)]
 pub enum KubernetesInfrastructureError {
-    #[fail(
-        display = "Unexpected Kubernetes interaction error: {}",
-        internal_message
-    )]
-    UnexpectedError { internal_message: String },
-    #[fail(
-        display = "The deployment {} does not provide a label for app name.",
-        deployment_name
-    )]
+    #[error("Unexpected Kubernetes interaction error: {err}")]
+    UnexpectedError { err: anyhow::Error },
+    #[error("The deployment {deployment_name} does not provide a label for app name.")]
     MissingAppNameLabel { deployment_name: String },
-    #[fail(display = "Unknown service type label {}", unknown_label)]
+    #[error("Unknown service type label {unknown_label}")]
     UnknownServiceType { unknown_label: String },
-    #[fail(
-        display = "The deployment {} does not provide a label for image.",
-        deployment_name
-    )]
+    #[error("The deployment {deployment_name} does not provide a label for image.")]
     MissingImageLabel { deployment_name: String },
-    #[fail(display = "The default storage class is missing in kubernetes.")]
+    #[error("The default storage class is missing in kubernetes.")]
     MissingDefaultStorageClass,
+    #[error("The default storage class contains an empty name")]
+    DefaultStorageClassWithoutName,
+    #[error("Missing deployment name")]
+    DeploymentWithoutName,
+    #[error("Missing deployment labels, annotations, or both")]
+    MissingDeploymentAnnotations,
+    #[error("Bootstrap pod {pod_name} for {app_name} failed")]
+    BootstrapContainerFailed { pod_name: String, app_name: AppName },
 }
 
 impl KubernetesInfrastructure {
@@ -105,15 +104,14 @@ impl KubernetesInfrastructure {
     async fn client(&self) -> Result<Client, KubernetesInfrastructureError> {
         let configuration = Config::infer().await.map_err(|err| {
             KubernetesInfrastructureError::UnexpectedError {
-                internal_message: format!(
-                    "Failed to read Kube configuration from cluster env: {err}"
-                ),
+                err: anyhow::Error::new(err)
+                    .context("Failed to read Kube configuration from cluster env"),
             }
         })?;
 
         Client::try_from(configuration).map_err(|err| {
             KubernetesInfrastructureError::UnexpectedError {
-                internal_message: format!("Failed to create client: {}", err),
+                err: anyhow::Error::new(err).context("Failed to create client"),
             }
         })
     }
@@ -369,11 +367,7 @@ impl KubernetesInfrastructure {
                 .await?
                 .metadata
                 .name
-                .ok_or(KubernetesInfrastructureError::UnexpectedError {
-                    internal_message: String::from(
-                        "The default storage class contains an empty name",
-                    ),
-                })?,
+                .ok_or(KubernetesInfrastructureError::DefaultStorageClassWithoutName)?,
         };
 
         let mut persistent_volume_map = HashMap::new();
@@ -461,7 +455,7 @@ impl KubernetesInfrastructure {
 
 #[async_trait]
 impl Infrastructure for KubernetesInfrastructure {
-    async fn get_services(&self) -> Result<MultiMap<AppName, Service>, Error> {
+    async fn get_services(&self) -> Result<MultiMap<AppName, Service>> {
         let client = self.client().await?;
         let mut app_name_and_services = Api::<V1Namespace>::all(client.clone())
             .list(&ListParams {
@@ -502,7 +496,7 @@ impl Infrastructure for KubernetesInfrastructure {
         _status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Vec<Service>, Error> {
+    ) -> Result<Vec<Service>> {
         let app_name = deployment_unit.app_name();
         self.create_namespace_if_necessary(app_name).await?;
 
@@ -571,11 +565,7 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(services)
     }
 
-    async fn stop_services(
-        &self,
-        _status_id: &str,
-        app_name: &AppName,
-    ) -> Result<Vec<Service>, Error> {
+    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Vec<Service>> {
         let services = self.get_services_of_app(app_name).await?;
         if services.is_empty() {
             return Ok(services);
@@ -598,7 +588,7 @@ impl Infrastructure for KubernetesInfrastructure {
         from: &'a Option<DateTime<FixedOffset>>,
         limit: &'a Option<usize>,
         follow: bool,
-    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String), failure::Error>> {
+    ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String)>> {
         let Some((_deployment, Some(pod))) =
             (match self.get_deployment_and_pod(app_name, service_name).await {
                 Ok(result) => result,
@@ -649,7 +639,7 @@ impl Infrastructure for KubernetesInfrastructure {
         app_name: &AppName,
         service_name: &str,
         status: ServiceStatus,
-    ) -> Result<Option<Service>, Error> {
+    ) -> Result<Option<Service>> {
         let Some((mut deployment, pod)) =
             self.get_deployment_and_pod(app_name, service_name).await?
         else {
@@ -681,7 +671,7 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(Some(service))
     }
 
-    async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>, Error> {
+    async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>> {
         let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {
             return Ok(None);
         };
@@ -801,11 +791,11 @@ impl TryFrom<V1Deployment> for ServiceBuilder {
     type Error = KubernetesInfrastructureError;
 
     fn try_from(deployment: V1Deployment) -> Result<Self, Self::Error> {
-        let name = deployment.metadata.name.as_ref().ok_or(
-            KubernetesInfrastructureError::UnexpectedError {
-                internal_message: String::from("Missing deployment name"),
-            },
-        )?;
+        let name = deployment
+            .metadata
+            .name
+            .as_ref()
+            .ok_or(KubernetesInfrastructureError::DeploymentWithoutName)?;
         let mut builder = ServiceBuilder::new()
             .id(name.clone())
             .config(ServiceConfig::try_from(&deployment)?);
@@ -840,11 +830,11 @@ impl TryFrom<&V1Deployment> for ServiceConfig {
     type Error = KubernetesInfrastructureError;
 
     fn try_from(deployment: &V1Deployment) -> Result<Self, Self::Error> {
-        let deployment_name = deployment.metadata.name.as_ref().ok_or_else(|| {
-            KubernetesInfrastructureError::UnexpectedError {
-                internal_message: String::from("Missing deployment name"),
-            }
-        })?;
+        let deployment_name = deployment
+            .metadata
+            .name
+            .as_ref()
+            .ok_or_else(|| KubernetesInfrastructureError::DeploymentWithoutName)?;
 
         if let (Some(labels), Some(annotations)) = (
             &deployment.metadata.labels,
@@ -874,7 +864,7 @@ impl TryFrom<&V1Deployment> for ServiceConfig {
             if let Some(replicated_env) = annotations.get(REPLICATED_ENV_LABEL) {
                 let env = serde_json::from_str::<Environment>(replicated_env).map_err(|err| {
                     KubernetesInfrastructureError::UnexpectedError {
-                        internal_message: err.to_string(),
+                        err: anyhow::Error::new(err),
                     }
                 })?;
                 config.set_env(Some(env));
@@ -886,9 +876,7 @@ impl TryFrom<&V1Deployment> for ServiceConfig {
 
             Ok(config)
         } else {
-            Err(KubernetesInfrastructureError::UnexpectedError {
-                internal_message: String::from("Missing deployment labels, annotations, or both"),
-            })
+            Err(KubernetesInfrastructureError::MissingDeploymentAnnotations)
         }
     }
 }
@@ -896,7 +884,7 @@ impl TryFrom<&V1Deployment> for ServiceConfig {
 impl From<KubeError> for KubernetesInfrastructureError {
     fn from(err: KubeError) -> Self {
         KubernetesInfrastructureError::UnexpectedError {
-            internal_message: err.to_string(),
+            err: anyhow::Error::new(err),
         }
     }
 }
@@ -910,7 +898,7 @@ impl From<ServiceError> for KubernetesInfrastructureError {
                 }
             }
             err => KubernetesInfrastructureError::UnexpectedError {
-                internal_message: err.to_string(),
+                err: anyhow::Error::new(err),
             },
         }
     }
@@ -919,7 +907,7 @@ impl From<ServiceError> for KubernetesInfrastructureError {
 impl From<ServiceBuilderError> for KubernetesInfrastructureError {
     fn from(err: ServiceBuilderError) -> Self {
         KubernetesInfrastructureError::UnexpectedError {
-            internal_message: err.to_string(),
+            err: anyhow::Error::new(err),
         }
     }
 }
@@ -1060,11 +1048,11 @@ mod tests {
         );
 
         let err = ServiceBuilder::try_from(deployment).unwrap_err();
-        assert_eq!(
-            err,
-            KubernetesInfrastructureError::MissingAppNameLabel {
-                deployment_name: "master-nginx".to_string()
-            }
+        assert!(
+            matches!(err, KubernetesInfrastructureError::MissingAppNameLabel {
+                    deployment_name
+                } if deployment_name == "master-nginx".to_string()
+            )
         );
     }
 
@@ -1096,11 +1084,11 @@ mod tests {
         );
 
         let err = ServiceBuilder::try_from(deployment).unwrap_err();
-        assert_eq!(
-            err,
-            KubernetesInfrastructureError::UnknownServiceType {
-                unknown_label: "abc".to_string()
-            }
+        assert!(
+            matches!(err, KubernetesInfrastructureError::UnknownServiceType {
+                    unknown_label
+                } if unknown_label == "abc".to_string()
+            )
         );
     }
 
@@ -1115,11 +1103,10 @@ mod tests {
         );
 
         let err = ServiceBuilder::try_from(deployment).unwrap_err();
-        assert_eq!(
-            err,
+        assert!(matches!(err,
             KubernetesInfrastructureError::MissingImageLabel {
-                deployment_name: "master-nginx".to_string()
-            }
-        );
+                deployment_name
+            } if deployment_name == "master-nginx".to_string()
+        ));
     }
 }
