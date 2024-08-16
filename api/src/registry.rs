@@ -28,10 +28,10 @@ use crate::config::Config;
 use crate::models::Image;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use oci_distribution::client::ClientConfig;
-use oci_distribution::errors::OciDistributionError;
-use oci_distribution::secrets::RegistryAuth;
-use oci_distribution::{Client, Reference};
+use oci_client::client::ClientConfig;
+use oci_client::errors::OciDistributionError;
+use oci_client::secrets::RegistryAuth;
+use oci_client::{Client, Reference};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
@@ -100,7 +100,7 @@ impl<'a> Registry<'a> {
 
         let client = Client::new(ClientConfig {
             platform_resolver: Some(Box::new(|entries| {
-                oci_distribution::client::current_platform_resolver(entries).or(
+                oci_client::client::current_platform_resolver(entries).or(
                     // There are cases where current_platform_resolver fails, e.g. in tests on
                     // MacOS. However it is not safe to assume the current platform that PREvant
                     // runs on it the platform the backend (Docker or Kubernetes) runs on. For
@@ -118,8 +118,12 @@ impl<'a> Registry<'a> {
             ..Default::default()
         });
 
-        let reference = Reference::from_str(&image.to_string())
+        let mut reference = Reference::from_str(&image.to_string())
             .expect("Image should be convertable if it is the Named variant");
+
+        if let Some(mirror) = config.registry_mirror(reference.registry()){
+            reference.set_mirror_registry(mirror.to_string());
+        }
 
         let (_manifest, digest, config) = client
             .pull_manifest_and_config(&reference, &Self::registry_auth(config, &reference))

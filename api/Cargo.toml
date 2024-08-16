@@ -33,7 +33,7 @@ kube = { version = "0.90", default-features = false, features = ["client", "deri
 lazy_static = "1.5"
 log = "0.4"
 multimap = "0.10"
-oci-distribution = "0.11"
+oci-client = "0.12"
 pest = "2.6"
 pest_derive = "2.6"
 regex = "1.10"
