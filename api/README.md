@@ -151,6 +151,14 @@ username = "oauth2"
 password = "your-private-token"
 ```
 
+[Docker hub has a pull rate limit.](https://docs.docker.com/docker-hub/download-rate-limit/)
+If you have a mirror registry then you can configure it as in the following example:
+
+```toml
+[registries.'docker.io']
+mirror = "docker-mirror.example.com/registry"
+```
+
 ## Configure With Environment Variables
 
 As stated above, PREvant utilizes [figment][1] to resolve configuration values from file, environment variables, and CLI options. The following example shows how environment variables can be used to configure PREvant:

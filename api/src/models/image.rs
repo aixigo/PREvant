@@ -219,12 +219,12 @@ impl FromStr for Image {
             image_tag: tag,
         };
 
-        // FIXME: eventually replace Image with oci_distribution::Reference
+        // FIXME: eventually replace Image with oci_client::Reference
         //
         // At the moment the handling of image is a bit weird because it has grown over time and
         // the parsing code had to take into account that Docker forgets about images names if
         // there are multiple applications available with moving image tags.
-        if let Err(_err) = oci_distribution::Reference::from_str(&named.to_string()) {
+        if let Err(_err) = oci_client::Reference::from_str(&named.to_string()) {
             return Err(ServiceError::InvalidImageString {
                 invalid_string: s.to_string(),
             });

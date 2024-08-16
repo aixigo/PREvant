@@ -158,8 +158,9 @@ pub struct Config {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct Registry {
-    username: String,
-    password: SecUtf8,
+    username: Option<String>,
+    password: Option<SecUtf8>,
+    mirror: Option<String>,
 }
 
 impl Config {
@@ -250,7 +251,15 @@ impl Config {
     ) -> Option<(&'a str, &'a SecUtf8)> {
         self.registries
             .get(registry_host)
-            .map(|registry| (registry.username.as_str(), &registry.password))
+            .and_then(|registry| Some((registry.username.as_ref()?.as_str(), registry.password.as_ref()?)))
+    }
+
+    pub fn registry_mirror<'a, 'b: 'a>(
+        &'b self,
+        registry_host: &str,
+    ) -> Option<&'a str> {
+        self.registries.get(registry_host).and_then(|registry| registry.mirror.as_ref())
+            .map(| mirror | mirror.as_str())
     }
 }
 
