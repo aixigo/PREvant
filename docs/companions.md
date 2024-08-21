@@ -1,8 +1,9 @@
 # Companion Configuration
 
-Have a look at the [basic terminology](../README.md) to understand what a
-companion is. For these use cases the following sections provide example
-configurations.
+For better understanding, take a look at [Companions
+section](../README.md#companions) to
+grasp what a companion is. The following sections provide example configurations
+for these use cases.
 
 A simple, but limited configuration of companions can be done via the
 `config.toml` file for [application companions](#application-wide) and [service
