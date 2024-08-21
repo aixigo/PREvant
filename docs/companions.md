@@ -109,8 +109,8 @@ PREvant offers via the [Handlebars Rust library][handlebars-rust].
 
 ### Service Based
 
-The service-based companions work the in the same way as the application-based
-services. Make sure, that the `serviceName` is unique by using handlebars
+The service-based companions work in the same way as the application-based
+services. Ensure that the `serviceName` is unique by using handlebars
 templating.
 
 ```toml
