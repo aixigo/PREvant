@@ -74,7 +74,7 @@ In this section, you'll find examples of deploying PREvant in container environm
 - For Docker, refer to [Docker example](examples/Docker/README.md)
 - For Kubernetes (requires at least Kubernetes 1.15), refer to [Kubernetes example](examples/Kubernetes/README.md)
 
-To customize the behavior of PREvant, you can mount a TOML file into the container at `/app/config.toml`. More details about the configuration can be found [here](api/README.md).
+To customize the behavior of PREvant, you can mount a TOML file into the container at `/app/config.toml`. More details about the configuration can be found [here](docs/configuration.md).
 
 # Requirements for Your Services
 
@@ -112,7 +112,7 @@ In order to generate the correct link to the API specification, PREvant adds fol
 
 # Development
 
-In the [Development](Develop.md) section, you can view the detailed guide on,
+In the [Development](docs/Develop.md) section, you can view the detailed guide on,
 how to develop/run PREvant.
 
 Developers looking to contribute to PREvant can engage through GitHub by
