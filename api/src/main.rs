@@ -100,8 +100,12 @@ async fn main() -> Result<(), StartUpError> {
     let apps = Apps::new(config.clone(), infrastructure)
         .map_err(|e| StartUpError::CannotCreateApps { err: e.to_string() })?;
 
-    let (host_meta_cache, host_meta_crawler) = host_meta_crawling();
+    // TODO: Every interactaion with apps is blocked by the Arc. For example, the background job in
+    // host_meta_crawler blocks every get request for the waiting time.
+    // Arc<Apps> needs to be replace with Apps
     let apps = Arc::new(apps);
+
+    let (host_meta_cache, host_meta_crawler) = host_meta_crawling();
     host_meta_crawler.spawn(apps.clone());
 
     let _rocket = rocket::build()

@@ -36,10 +36,10 @@ use super::payloads::{
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
 use crate::infrastructure::traefik::{TraefikIngressRoute, TraefikMiddleware};
-use crate::infrastructure::{Infrastructure, TraefikRouterRule};
+use crate::infrastructure::{HttpForwarder, Infrastructure, TraefikRouterRule};
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{
-    AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig,
+    AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig, WebHostMeta,
 };
 use anyhow::Result;
 use async_stream::stream;
@@ -49,6 +49,8 @@ use futures::stream::FuturesUnordered;
 use futures::stream::{self, BoxStream};
 use futures::StreamExt;
 use futures::{AsyncBufReadExt, TryStreamExt};
+use http_body_util::{BodyExt, Empty};
+use hyper_util::rt::TokioIo;
 use k8s_openapi::api::core::v1::PersistentVolumeClaim;
 use k8s_openapi::api::storage::v1::StorageClass;
 use k8s_openapi::api::{
@@ -67,7 +69,6 @@ use multimap::MultiMap;
 use secstr::SecUtf8;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::{From, TryFrom};
-use std::net::IpAddr;
 use std::str::FromStr;
 
 pub struct KubernetesInfrastructure {
@@ -122,6 +123,14 @@ impl KubernetesInfrastructure {
         service_name: &str,
     ) -> Result<Option<(V1Deployment, Option<V1Pod>)>, KubernetesInfrastructureError> {
         let client = self.client().await?;
+        Self::get_deployment_and_pod_impl(client, app_name, service_name).await
+    }
+
+    async fn get_deployment_and_pod_impl(
+        client: kube::Client,
+        app_name: &AppName,
+        service_name: &str,
+    ) -> Result<Option<(V1Deployment, Option<V1Pod>)>, KubernetesInfrastructureError> {
         let namespace = app_name.to_rfc1123_namespace_id();
 
         let p = ListParams {
@@ -167,30 +176,13 @@ impl KubernetesInfrastructure {
         let mut builder = ServiceBuilder::try_from(deployment.clone())?;
 
         if let Some(pod) = pod {
-            if let Some(container) = pod.spec.as_ref().and_then(|spec| spec.containers.first()) {
-                builder = builder.started_at(
-                    pod.status
-                        .as_ref()
-                        .and_then(|s| s.start_time.as_ref())
-                        .map(|t| t.0)
-                        .unwrap_or_else(Utc::now),
-                );
-
-                if let Some(ip) = pod.status.as_ref().and_then(|pod| pod.pod_ip.as_ref()) {
-                    let port = container
-                        .ports
-                        .as_ref()
-                        .and_then(|ports| ports.first())
-                        .map(|port| port.container_port as u16)
-                        .unwrap_or(80u16);
-
-                    builder = builder.endpoint(
-                        IpAddr::from_str(ip)
-                            .expect("Kubernetes API should provide valid IP address"),
-                        port,
-                    );
-                }
-            }
+            builder = builder.started_at(
+                pod.status
+                    .as_ref()
+                    .and_then(|s| s.start_time.as_ref())
+                    .map(|t| t.0)
+                    .unwrap_or_else(Utc::now),
+            );
         }
 
         Ok(builder.build()?)
@@ -671,6 +663,11 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(Some(service))
     }
 
+    async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder + Send>> {
+        let client = self.client().await?;
+        Ok(Box::new(K8sHttpForwarder { client }))
+    }
+
     async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>> {
         let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {
             return Ok(None);
@@ -784,6 +781,69 @@ impl Infrastructure for KubernetesInfrastructure {
                 .unwrap_or_default()
                 .cert_resolver,
         )))
+    }
+}
+
+struct K8sHttpForwarder {
+    client: kube::Client,
+}
+
+#[async_trait]
+impl HttpForwarder for K8sHttpForwarder {
+    async fn request_web_host_meta(
+        &self,
+        app_name: &AppName,
+        service_name: &str,
+        request: http::Request<Empty<bytes::Bytes>>,
+    ) -> Result<Option<WebHostMeta>>
+    where
+        Self: Sized,
+    {
+        let Some((_deployment, Some(pod))) = KubernetesInfrastructure::get_deployment_and_pod_impl(
+            self.client.clone(),
+            app_name,
+            service_name,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+
+        let port = pod
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.containers.first())
+            .and_then(|container| {
+                container
+                    .ports
+                    .as_ref()
+                    .and_then(|ports| ports.first())
+                    .map(|port| port.container_port as u16)
+            })
+            .unwrap_or(80u16);
+
+        let client = self.client.clone();
+
+        let pods = Api::<V1Pod>::namespaced(client, &app_name.to_rfc1123_namespace_id());
+        let mut pf = pods
+            .portforward(pod.metadata.name.as_ref().unwrap(), &[port])
+            .await?;
+        let port = pf.take_stream(port).unwrap();
+
+        // let hyper drive the HTTP state in our DuplexStream via a task
+        let (mut sender, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(port)).await?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                warn!("Error in connection: {}", e);
+            }
+        });
+
+        let (_parts, body) = sender.send_request(request).await?.into_parts();
+
+        let body_bytes = body.collect().await?.to_bytes();
+
+        Ok(serde_json::from_slice::<WebHostMeta>(&body_bytes).ok())
     }
 }
 
