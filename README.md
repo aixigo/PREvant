@@ -27,6 +27,17 @@ experts can review and demonstrate the application development.
 
 ![Access the application](assets/screenshot.png "Access the application")
 
+For a more in-depth look at PREvant, check out the detailed explanation in the
+research paper that can be viewed [here in the Further Readings'
+section](../README.md#further-readings).
+
+This paper introduces PREvant (preview servant), a software tool which provides
+a simple RESTful API for deploying and composing containerized microservices as
+reviewable applications. PREvant’s API serves as a connector between continuous
+delivery pipelines of microservices and the infrastructure that hosts the
+applications. Based on the REST API and a web interface developers and domain
+experts at aixigo AG developed quality assurance workflows that help to increase
+and maintain high microservice quality.
 
 ## Basic Terminology
 
