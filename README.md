@@ -50,6 +50,20 @@ manages the following kind of services:
   Alternatively, any other application can be specified as a source of
   replication.
 
+![Composing Microservices](assets/composing-microservices.png "Composing Microservices")
+
+Figure above depicts the separate repositories and continuous delivery pipelines
+for microservices (Ms) Ms A, Ms B, and Ms C. During the build stage, each
+microservice is packaged as a container image and then pushed to a container
+image registry (e.g., a Docker registry), ensuring the services are prepared for
+deployment in the acceptance and manual test stages. In the deployment phase,
+such as the manual test stage shown in above Figure, the continuous delivery
+pipeline can leverage PREvant’s REST API. This REST request creates a
+software-defined network, starts the microservice container, connects it to the
+network, and configures a reverse-proxy, making the service accessible via
+PREvant’s web interface. Subsequent REST calls check for newer versions of the
+container image, and if one is found, the container is updated.
+
 ## Companions
 
 Additionally, PREvant provides a way of deploying services every time it creates
