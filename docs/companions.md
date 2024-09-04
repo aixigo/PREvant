@@ -1,8 +1,9 @@
 # Companion Configuration
 
-Have a look at the [basic terminology](../README.md) to understand what a
-companion is. For these use cases the following sections provide example
-configurations.
+For better understanding, take a look at [Companions
+section](../README.md#companions) to
+grasp what a companion is. The following sections provide example configurations
+for these use cases.
 
 A simple, but limited configuration of companions can be done via the
 `config.toml` file for [application companions](#application-wide) and [service
@@ -109,8 +110,8 @@ PREvant offers via the [Handlebars Rust library][handlebars-rust].
 
 ### Service Based
 
-The service-based companions work the in the same way as the application-based
-services. Make sure, that the `serviceName` is unique by using handlebars
+The service-based companions work in the same way as the application-based
+services. Ensure that the `serviceName` is unique by using handlebars
 templating.
 
 ```toml
@@ -206,7 +207,7 @@ the objects generated from the HTTP request payload (all bootstrapped
 companions will be considered as application companions). Thus you can add or
 overwrite configurations. For example, you can change the image used or an
 environment variable. If you overwrite any configuration the companion will be
-turned into an instance (as PREvant did before).
+turned into an instance.
 
 The following configuration block depicts that an image
 `registry.example.com/user/bootstrap-helm-chart:lastet` is based on a [Helm
