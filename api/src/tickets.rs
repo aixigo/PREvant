@@ -28,6 +28,8 @@ use crate::apps::Apps;
 use crate::config::Config;
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::ticket_info::TicketInfo;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use jira_query::{JiraInstance, JiraQueryError};
 use rocket::serde::json::Json;
@@ -67,31 +69,34 @@ pub async fn tickets(
                     }
                 });
 
-            let issue_keys = services
+            let mut futures = services
                 .keys()
-                .map(|s| format!("\"{}\"", s))
-                .collect::<Vec<String>>()
-                .join(", ");
+                .map(|app_name| jira.issue(&app_name))
+                .collect::<FuturesUnordered<_>>();
 
-            debug!("Search for issues: {}", issue_keys);
-
-            let query = format!("issuekey in ({})&validateQuery=False", issue_keys);
-            let issues = jira.search(&query).await.map_err(ListTicketsError::from)?;
-            for issue in issues {
-                tickets.insert(issue.key.clone(), TicketInfo::from(issue));
+            while let Some(r) = futures.next().await {
+                match r {
+                    Ok(issue) => {
+                        tickets.insert(issue.key.clone(), TicketInfo::from(issue));
+                    }
+                    Err(JiraQueryError::MissingIssues(issues)) => {
+                        debug!("Cannot query issue information for {issues:?}");
+                    }
+                    Err(JiraQueryError::Request(err)) if err.is_decode() => {
+                        debug!("Cannot deserialize issue, assuming it cannot be decoded due to issue not being found: {err}");
+                    }
+                    Err(err) => {
+                        return Err(ListTicketsError::UnexpectedError {
+                            err: anyhow::Error::new(err),
+                        }
+                        .into());
+                    }
+                }
             }
         }
-    }
+    };
 
     Ok(Json(tickets))
-}
-
-impl From<JiraQueryError> for ListTicketsError {
-    fn from(err: JiraQueryError) -> Self {
-        ListTicketsError::UnexpectedError {
-            err: anyhow::Error::new(err),
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
