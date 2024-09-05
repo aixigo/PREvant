@@ -29,7 +29,7 @@ experts can review and demonstrate the application development.
 
 For a more in-depth look at PREvant, check out the detailed explanation in the
 research paper that can be viewed [here in the Further Readings'
-section](../README.md#further-readings).
+section](README.md#further-readings).
 
 This paper introduces PREvant (preview servant), a software tool which provides
 a simple RESTful API for deploying and composing containerized microservices as
