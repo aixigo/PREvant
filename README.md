@@ -37,7 +37,7 @@ reviewable applications. PREvant’s API serves as a connector between continuou
 delivery pipelines of microservices and the infrastructure that hosts the
 applications. Based on the REST API and a web interface developers and domain
 experts at aixigo AG developed quality assurance workflows that help to increase
-and maintain high microservice quality.
+and maintain high microservice quality [Joint Post-proceedings of the First and Second International Conference on Microservices (Microservices 2017/2019): PREvant (Preview Servant): Composing Microservices into Reviewable and Testable Applications](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5).
 
 ## Basic Terminology
 
