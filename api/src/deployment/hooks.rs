@@ -105,7 +105,7 @@ impl<'a> Hooks<'a> {
             return None;
         }
 
-        if dbg!(context.interner().get("deploymentHook")).is_some() {
+        if context.interner().get("deploymentHook").is_some() {
             Some(context)
         } else {
             None

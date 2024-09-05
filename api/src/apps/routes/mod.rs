@@ -283,6 +283,7 @@ impl<'r> Responder<'r, 'static> for ServiceStatusResponse {
 impl From<AppsError> for HttpApiError {
     fn from(error: AppsError) -> Self {
         let status = match &error {
+            AppsError::AppLimitExceeded { .. } => StatusCode::PRECONDITION_FAILED,
             AppsError::UnableToResolveImage { error } => match **error {
                 crate::registry::RegistryError::ImageNotFound { .. } => StatusCode::NOT_FOUND,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,

@@ -29,7 +29,6 @@ use chrono::{DateTime, Utc};
 use serde::ser::{Serialize, Serializer};
 use serde::Deserialize;
 use std::fmt::Display;
-use std::net::IpAddr;
 use std::str::FromStr;
 use url::Url;
 
@@ -39,26 +38,9 @@ pub struct Service {
     id: String,
     app_name: String,
     base_url: Option<Url>,
-    endpoint: Option<ServiceEndpoint>,
     web_host_meta: Option<WebHostMeta>,
     state: State,
     config: ServiceConfig,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct ServiceEndpoint {
-    internal_addr: IpAddr,
-    exposed_port: u16,
-}
-
-impl ServiceEndpoint {
-    fn to_url(&self) -> Url {
-        Url::parse(&format!(
-            "http://{}:{}/",
-            self.internal_addr, self.exposed_port
-        ))
-        .unwrap()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -102,10 +84,6 @@ impl Service {
 
     pub fn config(&self) -> &ServiceConfig {
         &self.config
-    }
-
-    pub fn endpoint_url(&self) -> Option<Url> {
-        self.endpoint.as_ref().map(|endpoint| endpoint.to_url())
     }
 
     pub fn started_at(&self) -> &DateTime<Utc> {
@@ -183,7 +161,6 @@ pub struct ServiceBuilder {
     started_at: Option<DateTime<Utc>>,
     base_url: Option<Url>,
     web_host_meta: Option<WebHostMeta>,
-    endpoint: Option<ServiceEndpoint>,
 }
 
 impl ServiceBuilder {
@@ -195,7 +172,6 @@ impl ServiceBuilder {
             started_at: None,
             base_url: None,
             web_host_meta: None,
-            endpoint: None,
             config: None,
         }
     }
@@ -213,7 +189,6 @@ impl ServiceBuilder {
             app_name,
             config,
             base_url: self.base_url,
-            endpoint: self.endpoint,
             web_host_meta: self.web_host_meta,
             state: State {
                 started_at,
@@ -256,14 +231,6 @@ impl ServiceBuilder {
         self.config = Some(config);
         self
     }
-
-    pub fn endpoint(mut self, addr: IpAddr, port: u16) -> Self {
-        self.endpoint = Some(ServiceEndpoint {
-            internal_addr: addr,
-            exposed_port: port,
-        });
-        self
-    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -286,7 +253,6 @@ impl From<Service> for ServiceBuilder {
             started_at: Some(service.state.started_at),
             base_url: service.base_url,
             web_host_meta: service.web_host_meta,
-            endpoint: service.endpoint,
         }
     }
 }
