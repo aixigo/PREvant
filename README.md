@@ -50,19 +50,23 @@ manages the following kind of services:
   Alternatively, any other application can be specified as a source of
   replication.
 
-![Composing Microservices](assets/composing-microservices.png "Composing Microservices")
+![Composing Microservices](assets/composing-microservices.svg "Composing Microservices")
 
-Figure above depicts the separate repositories and continuous delivery pipelines
-for microservices (Ms) Ms A, Ms B, and Ms C. During the build stage, each
-microservice is packaged as a container image and then pushed to a container
-image registry (e.g., a Docker registry), ensuring the services are prepared for
-deployment in the acceptance and manual test stages. In the deployment phase,
-such as the manual test stage shown in above Figure, the continuous delivery
-pipeline can leverage PREvant’s REST API. This REST request creates a
-software-defined network, starts the microservice container, connects it to the
-network, and configures a reverse-proxy, making the service accessible via
-PREvant’s web interface. Subsequent REST calls check for newer versions of the
-container image, and if one is found, the container is updated.
+Figure [above] illustrates the disjoint repositories and continuous delivery
+pipelines of the microservices order, shipping, and invoice. The build stage
+packages the microservices as a container image and pushes it to a container
+image registry (e.g. a Docker registry) to ensure that the services are ready
+for deployment in the acceptance and manual test stages. In a deployment phase,
+such as the manual test stage depicted in [above] Figure, the continuous
+delivery pipeline can utilize PREvant’s REST API. This REST request creates a
+software-defined network, initiates the container for the microservice, connects
+it to the network, and creates a reverse-proxy configuration, making the service
+accessible through PREvant’s web interface. Subsequent REST calls check whether
+the container image has a newer version, and if so, then the container is
+updated [Joint Post-proceedings of the First and Second International Conference
+on Microservices (Microservices 2017/2019): PREvant (Preview Servant): Composing
+Microservices into Reviewable and Testable
+Applications](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5).
 
 ## Companions
 
