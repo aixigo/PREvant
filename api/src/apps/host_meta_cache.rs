@@ -25,16 +25,19 @@
  */
 
 use crate::apps::{Apps, AppsError};
+use crate::infrastructure::HttpForwarder;
 use crate::models::service::{Service, ServiceBuilder, ServiceStatus};
 use crate::models::{AppName, RequestInfo, WebHostMeta};
 use chrono::{DateTime, Utc};
 use evmap::{ReadHandleFactory, WriteHandle};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use http::header::{HOST, USER_AGENT};
 use multimap::MultiMap;
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tokio::time::sleep;
 use yansi::Paint;
 
@@ -110,7 +113,7 @@ impl HostMetaCrawler {
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
-                if let Err(err) = self.crawl(&apps, timestamp_prevant_startup).await {
+                if let Err(err) = self.crawl(apps.clone(), timestamp_prevant_startup).await {
                     error!("Cannot load apps: {}", err);
                 }
             }
@@ -119,11 +122,11 @@ impl HostMetaCrawler {
 
     async fn crawl(
         &mut self,
-        apps: &Arc<Apps>,
+        all_apps: Arc<Apps>,
         since_timestamp: DateTime<Utc>,
     ) -> Result<(), AppsError> {
         debug!("Resolving list of apps for web host meta cache.");
-        let apps = apps.get_apps().await?;
+        let apps = all_apps.get_apps().await?;
 
         self.clear_stale_web_host_meta(&apps);
 
@@ -152,13 +155,17 @@ impl HostMetaCrawler {
             "Resolving web host meta data for {:?}.",
             services_without_host_meta
                 .iter()
-                .map(|(k, _)| k)
-                .collect::<Vec<_>>()
+                .map(|(k, service)| format!("({}, {})", k.app_name, service.service_name()))
+                .fold(String::new(), |a, b| a + &b + ", ")
         );
         let now = Utc::now();
         let duration_prevant_startup = Utc::now().signed_duration_since(since_timestamp);
-        let resolved_host_meta_infos =
-            Self::resolve_host_meta(services_without_host_meta, duration_prevant_startup).await;
+        let resolved_host_meta_infos = Self::resolve_host_meta(
+            all_apps,
+            services_without_host_meta,
+            duration_prevant_startup,
+        )
+        .await;
         for (key, _service, web_host_meta) in resolved_host_meta_infos {
             if !web_host_meta.is_valid() {
                 continue;
@@ -217,6 +224,7 @@ impl HostMetaCrawler {
     }
 
     async fn resolve_host_meta(
+        apps: Arc<Apps>,
         services_without_host_meta: Vec<(Key, Service)>,
         duration_prevant_startup: chrono::Duration,
     ) -> Vec<(Key, Service, WebHostMeta)> {
@@ -225,21 +233,29 @@ impl HostMetaCrawler {
             return Vec::with_capacity(0);
         }
 
-        let (tx, mut rx) = mpsc::channel(number_of_services);
+        let infrastructure = apps.infrastructure();
 
-        for (key, service) in services_without_host_meta {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let r = Self::resolve_web_host_meta(key, service, duration_prevant_startup).await;
-                if let Err(err) = tx.send(r).await {
-                    error!("Cannot send host meta result: {}", err);
-                }
-            });
-        }
+        let mut futures = services_without_host_meta
+            .into_iter()
+            .map(|(key, service)| async {
+                let http_forwarder = match infrastructure.http_forwarder().await {
+                    Ok(portforwarder) => portforwarder,
+                    Err(err) => {
+                        error!(
+                            "Cannot forward TCP connection for {}, {}: {err}",
+                            key.app_name,
+                            service.service_name()
+                        );
+                        return (key, service, WebHostMeta::empty());
+                    }
+                };
+                Self::resolve_web_host_meta(http_forwarder, key, service, duration_prevant_startup)
+                    .await
+            })
+            .collect::<FuturesUnordered<_>>();
 
         let mut resolved_host_meta_infos = Vec::with_capacity(number_of_services);
-        for _c in 0..number_of_services {
-            let resolved_host_meta = rx.recv().await.unwrap();
+        while let Some(resolved_host_meta) = futures.next().await {
             resolved_host_meta_infos.push(resolved_host_meta);
         }
 
@@ -247,44 +263,53 @@ impl HostMetaCrawler {
     }
 
     async fn resolve_web_host_meta(
+        http_forwarder: Box<dyn HttpForwarder + Send>,
         key: Key,
         service: Service,
         duration_prevant_startup: chrono::Duration,
     ) -> (Key, Service, WebHostMeta) {
-        let url = match service.endpoint_url() {
-            None => return (key, service, WebHostMeta::invalid()),
-            Some(endpoint_url) => endpoint_url.join(".well-known/host-meta.json").unwrap(),
-        };
-
-        let get_request = reqwest::Client::builder()
-            .connect_timeout(Duration::from_millis(500))
-            .timeout(Duration::from_millis(750))
-            .user_agent(format!("PREvant/{}", clap::crate_version!()))
-            .build()
-            .unwrap()
-            .get(&url.to_string())
-            .header("Forwarded", "host=www.prevant.example.com;proto=http")
-            .header(
-                "X-Forwarded-Prefix",
-                format!("/{}/{}", service.app_name(), service.service_name()),
+        let response = http_forwarder
+            .request_web_host_meta(
+                &key.app_name,
+                service.service_name(),
+                http::Request::builder()
+                    // TODO: include real service traefic route, see #169
+                    .header(
+                        USER_AGENT.as_str(),
+                        format!("PREvant/{}", clap::crate_version!()),
+                    )
+                    .method("GET")
+                    .uri("/.well-known/host-meta.json")
+                    .header(HOST, "127.0.0.1")
+                    .header("Connection", "Close")
+                    .header("Forwarded", "host=www.prevant.example.com;proto=http")
+                    .header(
+                        "X-Forwarded-Prefix",
+                        format!("/{}/{}", service.app_name(), service.service_name()),
+                    )
+                    .header("Accept", "application/json")
+                    .body(http_body_util::Empty::<bytes::Bytes>::new())
+                    .unwrap(),
             )
-            .header("Accept", "application/json")
-            .send()
             .await;
 
-        let meta = match get_request {
-            Ok(response) => match response.json::<WebHostMeta>().await {
-                Ok(meta) => meta,
-                Err(err) => {
-                    error!(
-                        "Cannot parse host meta for service {} of {}: {}",
-                        Paint::magenta(service.service_name()),
-                        Paint::magenta(service.app_name()),
-                        err
-                    );
-                    WebHostMeta::empty()
-                }
-            },
+        let meta = match response {
+            Ok(Some(meta)) => {
+                debug!(
+                    "Got host meta for service {} of {}",
+                    Paint::magenta(service.service_name()),
+                    Paint::magenta(service.app_name()),
+                );
+                meta
+            }
+            Ok(None) => {
+                debug!(
+                    "Cannot parse host meta for service {} of {}",
+                    Paint::magenta(service.service_name()),
+                    Paint::magenta(service.app_name()),
+                );
+                WebHostMeta::empty()
+            }
             Err(err) => {
                 debug!(
                     "Cannot acquire host meta for service {} of {}: {}",
@@ -297,7 +322,7 @@ impl HostMetaCrawler {
                 if duration >= chrono::Duration::minutes(5)
                     && duration_prevant_startup >= chrono::Duration::minutes(1)
                 {
-                    error!(
+                    info!(
                         "Service {} is running for {}, therefore, it will be assumed that host-meta.json is not available.",
                         Paint::magenta(service.service_name()), duration
                     );

@@ -28,12 +28,12 @@ use crate::config::{Config, ContainerConfig};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::{
-    Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL,
-    SERVICE_NAME_LABEL, STATUS_ID,
+    HttpForwarder, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
+    REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
 };
 use crate::models::service::{ContainerType, Service, ServiceError, ServiceStatus};
 use crate::models::{
-    AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig,
+    AppName, Environment, Image, ServiceBuilder, ServiceBuilderError, ServiceConfig, WebHostMeta,
 };
 use anyhow::{anyhow, Result};
 use async_stream::stream;
@@ -48,6 +48,7 @@ use bollard::image::CreateImageOptions;
 use bollard::network::{
     ConnectNetworkOptions, CreateNetworkOptions, DisconnectNetworkOptions, ListNetworksOptions,
 };
+use bollard::secret::Port;
 use bollard::service::{
     ContainerCreateResponse, ContainerInspectResponse, ContainerStateStatusEnum, ContainerSummary,
     CreateImageInfo, EndpointSettings, HostConfig, RestartPolicy, RestartPolicyNameEnum,
@@ -59,13 +60,14 @@ use chrono::{DateTime, FixedOffset};
 use futures::stream::BoxStream;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
+use http_body_util::BodyExt;
+use hyper_util::rt::TokioIo;
 use multimap::MultiMap;
-use regex::Regex;
 use rocket::form::validate::Contains;
 use std::collections::HashMap;
 use std::convert::{From, TryFrom};
-use std::net::{AddrParseError, IpAddr};
 use std::str::FromStr;
+use tokio::net::TcpStream;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
@@ -87,8 +89,6 @@ pub enum DockerInfrastructureError {
     UnexpectedError { err: anyhow::Error },
     #[error("Unknown service type label: {unknown_label}")]
     UnknownServiceType { unknown_label: String },
-    #[error("Unexpected container address: {err}")]
-    InvalidContainerAddress { err: anyhow::Error },
     #[error("Unexpected state for container: {container_id}")]
     InvalidContainerState { container_id: String },
     #[error("Unexpected image details for container: {container_id}")]
@@ -396,7 +396,7 @@ impl DockerInfrastructure {
             self.pull_image(app_name, service).await?;
         }
         let mut image_to_delete = None;
-        if let Some(ref container_info) = self.get_app_container(app_name, service_name).await? {
+        if let Some(ref container_info) = Self::get_app_container(app_name, service_name).await? {
             let container_details = docker
                 .inspect_container(
                     container_info
@@ -712,7 +712,6 @@ impl DockerInfrastructure {
     }
 
     async fn get_containers(
-        &self,
         filters: HashMap<String, Vec<String>>,
     ) -> Result<Vec<ContainerSummary>, BollardError> {
         let docker = Docker::connect_with_socket_defaults()?;
@@ -727,7 +726,6 @@ impl DockerInfrastructure {
     }
 
     async fn get_app_containers(
-        &self,
         app_name: Option<&AppName>,
         service_name: Option<&str>,
     ) -> Result<Vec<ContainerSummary>, BollardError> {
@@ -748,7 +746,7 @@ impl DockerInfrastructure {
                 .push(service_name_filter);
         }
 
-        self.get_containers(filters).await
+        Self::get_containers(filters).await
     }
 
     async fn get_status_change_containers(
@@ -768,15 +766,14 @@ impl DockerInfrastructure {
         }
 
         let filters = HashMap::from([("label".to_string(), label_filters)]);
-        self.get_containers(filters).await
+        Self::get_containers(filters).await
     }
 
     async fn get_app_container(
-        &self,
         app_name: &AppName,
         service_name: &str,
     ) -> Result<Option<ContainerSummary>, BollardError> {
-        self.get_app_containers(Some(app_name), Some(service_name))
+        Self::get_app_containers(Some(app_name), Some(service_name))
             .await
             .map(|list| list.into_iter().next())
     }
@@ -788,7 +785,7 @@ impl DockerInfrastructure {
     ) -> Result<MultiMap<AppName, ContainerInspectResponse>, DockerInfrastructureError> {
         debug!("Resolve container details for app {app_name:?}");
 
-        let container_list = self.get_app_containers(app_name, service_name).await?;
+        let container_list = Self::get_app_containers(app_name, service_name).await?;
 
         let mut container_details = MultiMap::new();
         for container in container_list.into_iter() {
@@ -910,8 +907,8 @@ impl Infrastructure for DockerInfrastructure {
         follow: bool,
     ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String)>> {
         stream! {
-            match self
-                .get_app_container(&AppName::from_str(app_name).unwrap(), service_name)
+            match Self::
+                get_app_container(&AppName::from_str(app_name).unwrap(), service_name)
                 .await
             {
                 Ok(None) => {}
@@ -978,7 +975,7 @@ impl Infrastructure for DockerInfrastructure {
         service_name: &str,
         status: ServiceStatus,
     ) -> Result<Option<Service>> {
-        match self.get_app_container(app_name, service_name).await? {
+        match Self::get_app_container(app_name, service_name).await? {
             Some(container) => {
                 let docker = Docker::connect_with_socket_defaults()?;
                 let details = docker
@@ -1062,6 +1059,64 @@ impl Infrastructure for DockerInfrastructure {
             }
             None => Ok(None),
         }
+    }
+
+    async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder + Send>> {
+        Ok(Box::new(DockerHttpForwarder {}))
+    }
+}
+
+struct DockerHttpForwarder;
+
+#[async_trait]
+impl HttpForwarder for DockerHttpForwarder {
+    async fn request_web_host_meta(
+        &self,
+        app_name: &AppName,
+        service_name: &str,
+        request: http::Request<http_body_util::Empty<bytes::Bytes>>,
+    ) -> Result<Option<WebHostMeta>> {
+        let Some(container_details) =
+            DockerInfrastructure::get_app_container(app_name, service_name).await?
+        else {
+            return Ok(None);
+        };
+
+        let labels = container_details.labels;
+        let port = find_port(
+            container_details.ports.unwrap_or_default().as_slice(),
+            &labels,
+        )?;
+
+        let Some(ip) = container_details
+            .network_settings
+            .and_then(|network_settings| {
+                let ip = network_settings
+                    .networks?
+                    .into_iter()
+                    .find_map(|(_, network)| Some(network.ip_address?))?;
+
+                Some(ip)
+            })
+        else {
+            return Err(anyhow::Error::msg("Found no IP address")
+                .context(format!("app {app_name}, service name {service_name}")));
+        };
+
+        let stream = TcpStream::connect(format!("{ip}:{port}")).await?;
+        let (mut sender, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                warn!("Error in connection: {}", e);
+            }
+        });
+
+        let (_parts, body) = sender.send_request(request).await?.into_parts();
+
+        let body_bytes = body.collect().await?.to_bytes();
+
+        Ok(serde_json::from_slice::<WebHostMeta>(&body_bytes).ok())
     }
 }
 
@@ -1147,12 +1202,12 @@ async fn inspect(container: ContainerSummary) -> Result<ContainerInspectResponse
 }
 
 fn find_port(
-    ports: &[&str],
-    labels: &mut Option<HashMap<String, String>>,
+    ports: &[Port],
+    labels: &Option<HashMap<String, String>>,
 ) -> Result<u16, DockerInfrastructureError> {
     if let Some(port) = labels
-        .as_mut()
-        .and_then(|labels| labels.remove(CONTAINER_PORT_LABEL))
+        .as_ref()
+        .and_then(|labels| labels.get(CONTAINER_PORT_LABEL))
     {
         match port.parse::<u16>() {
             Ok(port) => Ok(port),
@@ -1162,12 +1217,9 @@ fn find_port(
             }),
         }
     } else {
-        let ports_regex = Regex::new(r#"^(?P<port>\d+).*"#).unwrap();
         Ok(ports
             .iter()
-            .filter_map(|port| ports_regex.captures(port))
-            .map(|captures| String::from(captures.name("port").unwrap().as_str()))
-            .filter_map(|port| port.parse::<u16>().ok())
+            .map(|port| port.private_port)
             .min()
             .unwrap_or(80u16))
     }
@@ -1261,32 +1313,13 @@ impl TryFrom<ContainerInspectResponse> for Service {
             _ => ServiceStatus::Paused,
         };
 
-        let mut builder = ServiceBuilder::new()
+        Ok(ServiceBuilder::new()
             .id(container_id.clone())
             .app_name(app_name.clone())
             .config(config)
             .service_status(status)
-            .started_at(started_at.into());
-
-        if let Some(network_settings) = container_details.network_settings {
-            if let Some(ip_address) = network_settings.ip_address.as_ref() {
-                if !ip_address.is_empty() {
-                    let port = find_port(
-                        &network_settings
-                            .ports
-                            .unwrap_or_default()
-                            .keys()
-                            .map(AsRef::as_ref)
-                            .collect::<Vec<&str>>(),
-                        &mut labels,
-                    )?;
-                    let ip_address = IpAddr::from_str(ip_address)?;
-                    builder = builder.endpoint(ip_address, port);
-                }
-            }
-        }
-
-        Ok(builder.build()?)
+            .started_at(started_at.into())
+            .build()?)
     }
 }
 
@@ -1323,14 +1356,6 @@ impl From<ServiceError> for DockerInfrastructureError {
             err => DockerInfrastructureError::UnexpectedError {
                 err: anyhow::Error::new(err),
             },
-        }
-    }
-}
-
-impl From<AddrParseError> for DockerInfrastructureError {
-    fn from(err: AddrParseError) -> Self {
-        DockerInfrastructureError::InvalidContainerAddress {
-            err: anyhow::Error::new(err),
         }
     }
 }
@@ -1612,7 +1637,7 @@ mod tests {
             error,
             DockerInfrastructureError::UnexpectedImageFormat {
                 img,
-                err,
+                ..
             }
             if img == String::from("\n")// TODO && err == String::from("Invalid image: \n")
         ));

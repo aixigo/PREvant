@@ -6,7 +6,7 @@ use crate::{
 use chrono::DateTime;
 use futures::stream::StreamExt;
 use http_api_problem::HttpApiProblem;
-use reqwest::header::{ACCEPT, CONTENT_DISPOSITION, LINK};
+use rocket::http::hyper::header::{ACCEPT, CONTENT_DISPOSITION, LINK};
 use rocket::{
     http::{Accept, ContentType, RawStr, Status},
     request::FromRequest,
@@ -67,7 +67,7 @@ pub(super) async fn stream_logs<'r>(
     let app_name = app_name?;
     let since = match &log_query.since {
         None => None,
-        Some(since) => match DateTime::parse_from_rfc3339(&since) {
+        Some(since) => match DateTime::parse_from_rfc3339(since) {
             Ok(since) => Some(since),
             Err(err) => {
                 return Err(
@@ -197,9 +197,8 @@ impl<'r> FromRequest<'r> for AcceptingPlainText {
 mod test {
     use super::*;
     use crate::{apps::HostMetaCache, infrastructure::Dummy, models::AppStatusChangeId, sc};
-    use reqwest::header::CONTENT_TYPE;
     use rocket::{
-        http::{Accept, Header},
+        http::{hyper::header::CONTENT_TYPE, Accept, Header},
         local::asynchronous::Client,
     };
 

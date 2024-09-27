@@ -40,6 +40,17 @@ storageSize = '10g'
 storageClass = 'local-path'
 ```
 
+## Application Options
+
+The following table `applications` can be used to set some global options for
+all applications that PREVant deploys.
+
+```toml
+[applications]
+# Restrict the number of applications that can be deployed.
+max = 10
+```
+
 ## Container Options
 
 The following table `containers` can be used to set some global options for all the OCI containers that PREvant deploys.
