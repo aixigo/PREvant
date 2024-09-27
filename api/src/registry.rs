@@ -128,7 +128,7 @@ impl<'a> Registry<'a> {
         let (_manifest, digest, config) = client
             .pull_manifest_and_config(&reference, &Self::registry_auth(config, &reference))
             .await
-            .map_err(|err| (image, dbg!(err)))?;
+            .map_err(|err| (image, err))?;
 
         let blob = match serde_json::from_str::<ImageBlob>(&config) {
             Ok(blob) => ImageInfo {

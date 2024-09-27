@@ -147,7 +147,24 @@ impl Infrastructure for DummyInfrastructure {
             info!("started {} for {}.", config.service_name(), app_name);
             services.insert(app_name.clone(), config.clone());
         }
-        Ok(vec![])
+        Ok(services
+            .get_vec(app_name)
+            .unwrap()
+            .iter()
+            .map(|sc| {
+                ServiceBuilder::new()
+                    .app_name(app_name.to_string())
+                    .id(sc.service_name().clone())
+                    .config(ServiceConfig::clone(&sc))
+                    .started_at(
+                        DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
+                            .unwrap()
+                            .with_timezone(&Utc),
+                    )
+                    .build()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>())
     }
 
     async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Vec<Service>> {
@@ -219,5 +236,9 @@ impl Infrastructure for DummyInfrastructure {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    async fn http_forwarder(&self) -> Result<Box<dyn super::HttpForwarder + Send>> {
+        unimplemented!("Currently not supported by the dummy infra")
     }
 }

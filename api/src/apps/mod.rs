@@ -139,6 +139,10 @@ impl AppsService {
         })
     }
 
+    pub fn infrastructure(&self) -> &dyn Infrastructure {
+        self.infrastructure.as_ref()
+    }
+
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
     pub async fn get_apps(&self) -> Result<MultiMap<AppName, Service>, AppsServiceError> {
@@ -252,6 +256,22 @@ impl AppsService {
         replicate_from: Option<AppName>,
         service_configs: &[ServiceConfig],
     ) -> Result<Vec<Service>, AppsServiceError> {
+        if let Some(app_limit) = self.config.app_limit() {
+            let apps = self.get_apps().await?;
+
+            if apps
+                .keys()
+                // filtering the app_name that is send because otherwise clients wouldn't be able
+                // to update an existing application.
+                .filter(|existing_app_name| *existing_app_name != app_name)
+                .count()
+                + 1
+                > app_limit
+            {
+                return Err(AppsError::AppLimitExceeded { limit: app_limit });
+            }
+        }
+
         let mut configs = service_configs.to_vec();
 
         let replicate_from_app_name = replicate_from.unwrap_or_else(AppName::master);
@@ -406,9 +426,10 @@ impl AppsService {
 /// Defines error cases for the `AppService`
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AppsServiceError {
-    /// Will be used when no app with a given name is found
     #[error("Cannot find app {app_name}.")]
     AppNotFound { app_name: AppName },
+    #[error("Cannot create more than {limit} apps")]
+    AppLimitExceeded { limit: usize },
     #[error("The app {app_name} is currently within deployment by another request.")]
     AppIsInDeployment { app_name: AppName },
     #[error("The app {app_name} is currently within deletion in by another request.")]
@@ -1252,5 +1273,79 @@ Log msg 3 of service-a of app master
     ) -> bool {
         let set: HashSet<T> = i2.collect();
         i1.all(|x| set.contains(&x))
+    }
+
+    #[tokio::test]
+    async fn do_not_create_app_when_exceeding_application_number_limit(
+    ) -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [applications]
+            max = 1
+        "#
+        );
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &AppName::master(),
+            &AppStatusChangeId::new(),
+            None,
+            &vec![sc!("service-a"), sc!("service-b")],
+        )
+        .await?;
+
+        let result = apps
+            .create_or_update(
+                &AppName::from_str("other").unwrap(),
+                &AppStatusChangeId::new(),
+                None,
+                &vec![sc!("service-a"), sc!("service-b")],
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AppsServiceError::AppLimitExceeded { limit: 1 })
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn do_update_app_when_exceeding_application_number_limit() -> Result<(), AppsServiceError>
+    {
+        let config = config_from_str!(
+            r#"
+            [applications]
+            max = 1
+        "#
+        );
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &AppName::master(),
+            &AppStatusChangeId::new(),
+            None,
+            &vec![sc!("service-a"), sc!("service-b")],
+        )
+        .await?;
+
+        let result = apps
+            .create_or_update(
+                &AppName::master(),
+                &AppStatusChangeId::new(),
+                None,
+                &vec![sc!("service-c")],
+            )
+            .await;
+
+        assert!(matches!(
+            dbg!(result),
+            Ok(services) if services.len() == 3
+        ));
+
+        Ok(())
     }
 }

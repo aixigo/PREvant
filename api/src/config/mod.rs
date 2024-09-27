@@ -45,6 +45,7 @@ use std::fmt::Display;
 use std::io::Error as IOError;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::usize;
 use toml::de::Error as TomlError;
 
 mod app_selector;
@@ -146,6 +147,8 @@ struct Service {
 pub struct Config {
     #[serde(default)]
     runtime: Runtime,
+    #[serde(default)]
+    applications: Applications,
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
     #[serde(default)]
@@ -161,6 +164,11 @@ struct Registry {
     username: Option<String>,
     password: Option<SecUtf8>,
     mirror: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+struct Applications {
+    max: Option<usize>,
 }
 
 impl Config {
@@ -262,6 +270,10 @@ impl Config {
             .get(registry_host)
             .and_then(|registry| registry.mirror.as_ref())
             .map(|mirror| mirror.as_str())
+    }
+
+    pub fn app_limit(&self) -> Option<usize> {
+        return self.applications.max;
     }
 }
 

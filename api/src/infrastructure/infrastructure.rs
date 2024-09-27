@@ -28,7 +28,7 @@ use super::traefik::TraefikIngressRoute;
 use crate::config::ContainerConfig;
 use crate::deployment::DeploymentUnit;
 use crate::models::service::{Service, ServiceStatus};
-use crate::models::{AppName, ContainerType, ServiceConfig};
+use crate::models::{AppName, ContainerType, ServiceConfig, WebHostMeta};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
@@ -83,6 +83,8 @@ pub trait Infrastructure: Send + Sync {
         status: ServiceStatus,
     ) -> Result<Option<Service>>;
 
+    async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder + Send>>;
+
     /// Determines the [router rule](https://doc.traefik.io/traefik/routing/routers/) that points
     /// to PREvant it self so services will be reachable on the same route, e.g. host name.
     async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>> {
@@ -93,6 +95,17 @@ pub trait Infrastructure: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any {
         panic!("This should be only use in test environments with following approach: https://stackoverflow.com/a/33687996/5088458")
     }
+}
+
+/// Makes sure that HTTP requests from PREvant will be forwarded to the running services.
+#[async_trait]
+pub trait HttpForwarder {
+    async fn request_web_host_meta(
+        &self,
+        app_name: &AppName,
+        service_name: &str,
+        request: http::Request<http_body_util::Empty<bytes::Bytes>>,
+    ) -> Result<Option<WebHostMeta>>;
 }
 
 impl dyn Infrastructure {
