@@ -37,19 +37,6 @@ protocols.”  ([Wikipedia][wiki-microservices]) Each application has a unique
 name which is the key to perform actions like creating, duplicating, modifying,
 or deleting these applications via REST API or Web UI.
 
-In each application, PREvant manages the microservices as *services* which need
-to be available in the [OCI Image Format][oci-image-spec] (a.k.a. Docker
-images). At least one service needs to be available for an application. PREvant
-manages the following kind of services:
-
-- *Instance*: a service labeled as instance is a service that has been
-  configured explicitly when creating or updating an application.
-- *Replica*: a service labeled as replica is a service that has been replicated
-  from another application. By default if you create an application under any name
-  PREvant will replicate all instances from the application *master*.
-  Alternatively, any other application can be specified as a source of
-  replication.
-
 ![Composing Microservices](assets/composing-microservices.svg "Composing Microservices")
 
 Figure [above] illustrates the disjoint repositories and continuous delivery
@@ -67,6 +54,19 @@ updated [Joint Post-proceedings of the First and Second International Conference
 on Microservices (Microservices 2017/2019): PREvant (Preview Servant): Composing
 Microservices into Reviewable and Testable
 Applications](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5).
+
+In each application, PREvant manages the microservices as *services* which need
+to be available in the [OCI Image Format][oci-image-spec] (a.k.a. Docker
+images). At least one service needs to be available for an application. PREvant
+manages the following kind of services:
+
+- *Instance*: a service labeled as instance is a service that has been
+  configured explicitly when creating or updating an application.
+- *Replica*: a service labeled as replica is a service that has been replicated
+  from another application. By default if you create an application under any name
+  PREvant will replicate all instances from the application *master*.
+  Alternatively, any other application can be specified as a source of
+  replication.
 
 ## Companions
 

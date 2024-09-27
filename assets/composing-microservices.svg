@@ -8,12 +8,12 @@
    xmlns:xlink="http://www.w3.org/1999/xlink"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   width="628.67004pt"
-   height="322.93369pt"
-   viewBox="0 0 628.67003 322.93367"
+   width="572.80969pt"
+   height="297.54263pt"
+   viewBox="0 0 572.80968 297.54262"
    version="1.2"
    id="svg11470"
-   sodipodi:docname="microservices6.svg"
+   sodipodi:docname="microservices7.svg"
    inkscape:version="0.92.4 (5da689c313, 2019-01-14)">
   <metadata
      id="metadata11474">
@@ -46,7 +46,7 @@
      fit-margin-bottom="0"
      inkscape:zoom="1.0338285"
      inkscape:cx="521.1356"
-     inkscape:cy="124.85887"
+     inkscape:cy="91.004149"
      inkscape:window-x="-9"
      inkscape:window-y="-9"
      inkscape:window-maximized="1"
@@ -7662,6 +7662,6 @@
      y="0"
      x="0"
      id="use9029"
-     transform="matrix(1.6149478,0,0,1.5505947,8.7851441,-1.2901429)"
+     transform="matrix(1.4667369,0,0,1.4286773,8.8966364,-1.1887038)"
      xlink:href="#surface49873" />
 </svg>
