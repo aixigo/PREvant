@@ -17,7 +17,7 @@ up the development process, aligning with agile methodologies.
 The name PREvant short for _Preview servant_, pronounced like "prevent"
 (`prɪˈvɛnt`), reflects its role in preventing development errors by enabling
 early reviews through its web interface, where stakeholders can assess and give
-feedback on application developments efficiently.   
+feedback on application developments efficiently.
 
 
 ![In a nutshell](assets/in-a-nutshell.svg "In a nutshell")
@@ -31,13 +31,17 @@ For a more in-depth look at PREvant, check out the detailed explanation in the
 research paper that can be viewed [here in the Further Readings'
 section](README.md#further-readings).
 
-This paper introduces PREvant (preview servant), a software tool which provides
-a simple RESTful API for deploying and composing containerized microservices as
-reviewable applications. PREvant’s API serves as a connector between continuous
-delivery pipelines of microservices and the infrastructure that hosts the
-applications. Based on the REST API and a web interface developers and domain
-experts at aixigo AG developed quality assurance workflows that help to increase
-and maintain high microservice quality [Joint Post-proceedings of the First and Second International Conference on Microservices (Microservices 2017/2019): PREvant (Preview Servant): Composing Microservices into Reviewable and Testable Applications](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5).
+> This paper introduces PREvant (preview servant), a software tool which
+> provides a simple RESTful API for deploying and composing containerized
+> microservices as reviewable applications. PREvant’s API serves as a connector
+> between continuous delivery pipelines of microservices and the infrastructure
+> that hosts the applications. Based on the REST API and a web interface
+> developers and domain experts at aixigo AG developed quality assurance
+> workflows that help to increase and maintain high microservice quality [Joint
+> Post-proceedings of the First and Second International Conference on
+> Microservices (Microservices 2017/2019): PREvant (Preview Servant): Composing
+> Microservices into Reviewable and Testable
+> Applications](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5).
 
 ## Basic Terminology
 
