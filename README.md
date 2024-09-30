@@ -17,7 +17,7 @@ up the development process, aligning with agile methodologies.
 The name PREvant short for _Preview servant_, pronounced like "prevent"
 (`prɪˈvɛnt`), reflects its role in preventing development errors by enabling
 early reviews through its web interface, where stakeholders can assess and give
-feedback on application developments efficiently.   
+feedback on application developments efficiently.
 
 
 ![In a nutshell](assets/in-a-nutshell.svg "In a nutshell")
@@ -36,6 +36,24 @@ loosely coupled, fine-grained services, communicating through lightweight
 protocols.”  ([Wikipedia][wiki-microservices]) Each application has a unique
 name which is the key to perform actions like creating, duplicating, modifying,
 or deleting these applications via REST API or Web UI.
+
+![Composing Microservices](assets/composing-microservices.svg "Composing Microservices")
+
+> Figure [above] illustrates the disjoint repositories and continuous delivery
+> pipelines of the microservices order, shipping, and invoice. The build stage
+> packages the microservices as a container image and pushes it to a container
+> image registry (e.g. a Docker registry) to ensure that the services are ready
+> for deployment in the acceptance and manual test stages. In a deployment phase,
+> such as the manual test stage depicted in [above] Figure, the continuous
+> delivery pipeline can utilize PREvant’s REST API. This REST request creates a
+> software-defined network, initiates the container for the microservice, connects
+> it to the network, and creates a reverse-proxy configuration, making the service
+> accessible through PREvant’s web interface. Subsequent REST calls check whether
+> the container image has a newer version, and if so, then the container is
+> updated [Joint Post-proceedings of the First and Second International Conference
+> on Microservices (Microservices 2017/2019): PREvant (Preview Servant): Composing
+> Microservices into Reviewable and Testable
+> Applications](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5).
 
 In each application, PREvant manages the microservices as *services* which need
 to be available in the [OCI Image Format][oci-image-spec] (a.k.a. Docker
