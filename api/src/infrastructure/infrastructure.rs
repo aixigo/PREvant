@@ -32,13 +32,24 @@ use crate::models::{AppName, ContainerType, ServiceConfig, WebHostMeta};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
+use dyn_clone::DynClone;
 use futures::stream::BoxStream;
 use multimap::MultiMap;
+use std::collections::HashSet;
 
 #[async_trait]
-pub trait Infrastructure: Send + Sync {
+pub trait Infrastructure: Send + Sync + DynClone {
     /// Returns a `MultiMap` of `app-name` and the running services for this app.
     async fn get_services(&self) -> Result<MultiMap<AppName, Service>>;
+
+    async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
+        Ok(self
+            .get_services()
+            .await?
+            .keys()
+            .map(AppName::clone)
+            .collect::<HashSet<_>>())
+    }
 
     /// Deploys the services of the given set of `ServiceConfig`.
     ///

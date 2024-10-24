@@ -71,6 +71,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::{From, TryFrom};
 use std::str::FromStr;
 
+#[derive(Clone)]
 pub struct KubernetesInfrastructure {
     config: PREvantConfig,
 }
@@ -448,8 +449,30 @@ impl KubernetesInfrastructure {
 #[async_trait]
 impl Infrastructure for KubernetesInfrastructure {
     async fn get_services(&self) -> Result<MultiMap<AppName, Service>> {
+        let mut app_name_and_services = self
+            .fetch_app_names()
+            .await?
+            .into_iter()
+            .map(|app_name| async {
+                self.get_services_of_app(&app_name)
+                    .await
+                    .map(|services| (app_name, services))
+            })
+            .map(Box::pin)
+            .collect::<FuturesUnordered<_>>();
+
+        let mut apps = MultiMap::new();
+        while let Some(res) = app_name_and_services.next().await {
+            let (app_name, services) = res?;
+            apps.insert_many(app_name, services);
+        }
+
+        Ok(apps)
+    }
+
+    async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
         let client = self.client().await?;
-        let mut app_name_and_services = Api::<V1Namespace>::all(client.clone())
+        Ok(Api::<V1Namespace>::all(client)
             .list(&ListParams {
                 label_selector: Some(APP_NAME_LABEL.to_string()),
                 ..Default::default()
@@ -466,21 +489,7 @@ impl Infrastructure for KubernetesInfrastructure {
             .filter_map(|ns| {
                 AppName::from_str(ns.metadata.labels.as_ref()?.get(APP_NAME_LABEL)?).ok()
             })
-            .map(|app_name| async {
-                self.get_services_of_app(&app_name)
-                    .await
-                    .map(|services| (app_name, services))
-            })
-            .map(Box::pin)
-            .collect::<FuturesUnordered<_>>();
-
-        let mut apps = MultiMap::new();
-        while let Some(res) = app_name_and_services.next().await {
-            let (app_name, services) = res?;
-            apps.insert_many(app_name, services);
-        }
-
-        Ok(apps)
+            .collect::<HashSet<_>>())
     }
 
     async fn deploy_services(

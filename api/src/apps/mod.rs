@@ -30,6 +30,7 @@ pub use crate::apps::AppsService as Apps;
 pub use crate::apps::AppsServiceError as AppsError;
 use crate::config::{Config, ConfigError};
 use crate::deployment::deployment_unit::DeploymentUnitBuilder;
+use crate::infrastructure::HttpForwarder;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
@@ -47,6 +48,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+use tokio::sync::watch::Receiver;
 
 pub struct AppsService {
     config: Config,
@@ -139,14 +141,51 @@ impl AppsService {
         })
     }
 
-    pub fn infrastructure(&self) -> &dyn Infrastructure {
-        self.infrastructure.as_ref()
+    async fn http_forwarder(&self) -> anyhow::Result<Box<dyn HttpForwarder + Send>> {
+        self.infrastructure.http_forwarder().await
+    }
+
+    pub async fn fetch_app_names(&self) -> Result<HashSet<AppName>, AppsServiceError> {
+        Ok(self.infrastructure.fetch_app_names().await?)
     }
 
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
     pub async fn get_apps(&self) -> Result<MultiMap<AppName, Service>, AppsServiceError> {
         Ok(self.infrastructure.get_services().await?)
+    }
+
+    /// Provides a [`Receiver`](tokio::sync::watch::Receiver) that notifies about changes of the
+    /// list of running [`apps`](AppsService::get_apps).
+    pub async fn app_updates(&self) -> Receiver<MultiMap<AppName, Service>> {
+        let infrastructure = dyn_clone::clone_box(&*self.infrastructure);
+        let (tx, rx) = tokio::sync::watch::channel::<MultiMap<AppName, Service>>(MultiMap::new());
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+
+                match infrastructure.get_services().await {
+                    Ok(service) => {
+                        tx.send_if_modified(move |state| {
+                            if &service != state {
+                                debug!("List of apps changed, sending updates.");
+                                *state = service;
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        error!("Cannot crawl apps from infrastructure: {err}");
+                        tx.send_replace(MultiMap::new());
+                    }
+                }
+            }
+        });
+
+        rx
     }
 
     fn create_or_get_app_guard(
