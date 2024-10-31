@@ -213,6 +213,7 @@ mod test {
                 &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-a")],
+                None,
             )
             .await?;
 

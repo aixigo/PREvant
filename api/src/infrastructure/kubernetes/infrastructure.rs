@@ -269,7 +269,7 @@ impl KubernetesInfrastructure {
                 );
                 Ok(())
             }
-            Err(KubeError::Api(ErrorResponse { code, .. })) if code == 409 => {
+            Err(KubeError::Api(ErrorResponse { code: 409, .. })) => {
                 debug!("Namespace {} already exists.", app_name);
                 Ok(())
             }
@@ -500,6 +500,7 @@ impl Infrastructure for KubernetesInfrastructure {
             Some(serde_json::json!({
                 "namespace": app_name.to_rfc1123_namespace_id()
             })),
+            deployment_unit.user_defined_parameters(),
         )?;
 
         let bootstrap_image_pull_secret = self.image_pull_secret(
