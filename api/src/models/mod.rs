@@ -42,5 +42,6 @@ pub mod request_info;
 pub mod service;
 mod service_config;
 pub mod ticket_info;
+pub mod user_defined_parameters;
 pub mod web_hook_info;
 pub mod web_host_meta;

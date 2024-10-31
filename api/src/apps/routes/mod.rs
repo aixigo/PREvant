@@ -29,9 +29,9 @@ use crate::apps::{Apps, AppsError};
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceStatus};
-use crate::models::ServiceConfig;
 use crate::models::{AppName, AppNameError};
 use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
+use create_app_payload::CreateAppPayload;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use multimap::MultiMap;
 use regex::Regex;
@@ -46,6 +46,7 @@ use std::task::Poll;
 use std::time::Duration;
 use tokio::time::timeout;
 
+mod create_app_payload;
 mod logs;
 
 pub fn apps_routes() -> Vec<rocket::Route> {
@@ -127,23 +128,16 @@ pub async fn delete_app_sync(
 #[post(
     "/<app_name>?<create_app_form..>",
     format = "application/json",
-    data = "<service_configs>"
+    data = "<payload>"
 )]
 pub async fn create_app(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
     create_app_form: CreateAppOptions,
-    service_configs: Result<Json<Vec<ServiceConfig>>, rocket::serde::json::Error<'_>>,
+    payload: Result<CreateAppPayload, HttpApiProblem>,
     options: RunOptions,
 ) -> HttpResult<AsyncCompletion<Json<Vec<Service>>>> {
-    let service_configs = service_configs.map_err(|e| {
-        let detail = match e {
-            rocket::serde::json::Error::Parse(_, e) => e.to_string(),
-            e => e.to_string(),
-        };
-
-        HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST).detail(detail)
-    })?;
+    let payload = payload.map_err(HttpApiError::from)?;
 
     let status_id = AppStatusChangeId::new();
     let app_name = app_name?;
@@ -156,7 +150,8 @@ pub async fn create_app(
             &app_name.clone(),
             &status_id,
             replicate_from,
-            &service_configs,
+            &payload.services,
+            payload.user_defined_parameters,
         )
         .await
     };
@@ -283,6 +278,7 @@ impl<'r> Responder<'r, 'static> for ServiceStatusResponse {
 impl From<AppsError> for HttpApiError {
     fn from(error: AppsError) -> Self {
         let status = match &error {
+            AppsError::InvalidUserDefinedParameters { .. } => StatusCode::BAD_REQUEST,
             AppsError::AppLimitExceeded { .. } => StatusCode::PRECONDITION_FAILED,
             AppsError::UnableToResolveImage { error } => match **error {
                 crate::registry::RegistryError::ImageNotFound { .. } => StatusCode::NOT_FOUND,
@@ -474,6 +470,7 @@ mod tests {
                     &AppStatusChangeId::new(),
                     None,
                     &vec![sc!("service-a")],
+                    None,
                 )
                 .await?;
 
@@ -732,7 +729,7 @@ mod tests {
                     "type": "https://httpstatuses.com/400",
                     "status": 400,
                     "title": "Bad Request",
-                    "detail": "Invalid image: private-registry.example.com/_/postgres at line 1 column 51"
+                    "detail": "Invalid image: private-registry.example.com/_/postgres"
                 })
             );
         }
@@ -826,6 +823,167 @@ mod tests {
                     "title": "Not Found",
                     "detail": "Unable to resolve information about image: Cannot find image private-registry.example.com/_/postgres"
                 })
+            );
+        }
+    }
+
+    mod deployment_with_additional_client_parameters {
+        use super::super::*;
+        use crate::{apps::AppsService, config_from_str, infrastructure::Dummy};
+        use assert_json_diff::assert_json_include;
+        use rocket::{http::ContentType, local::asynchronous::Client};
+
+        macro_rules! config_from_str {
+            ( $config_str:expr ) => {
+                toml::from_str::<crate::config::Config>($config_str).unwrap()
+            };
+        }
+
+        async fn create_client() -> Client {
+            let config = config_from_str!(
+                r#"
+                    [companions.adminer]
+                    serviceName = 'adminer{{#if userDefined}}-{{userDefined.test}}{{/if}}'
+                    type = 'application'
+                    image = 'adminer:4.8.1'
+
+                    [companions.templating.userDefinedSchema]
+                    type = "object"
+                    properties = { test = { type = "string" }  }
+                "#
+            );
+
+            let infrastructure = Box::new(Dummy::new());
+            let apps = Arc::new(AppsService::new(config, infrastructure).unwrap());
+
+            let rocket = rocket::build()
+                .manage(apps)
+                .mount("/", routes![crate::apps::routes::create_app]);
+
+            Client::tracked(rocket).await.expect("valid rocket")
+        }
+
+        #[tokio::test]
+        async fn without_user_defined_payload() {
+            let client = create_client().await;
+
+            let response = client
+                .post("/master")
+                .body(
+                    serde_json::json!(
+                        [{
+                            "serviceName": "db",
+                            "image": "postgres"
+                        }]
+                    )
+                    .to_string(),
+                )
+                .header(ContentType::JSON)
+                .dispatch()
+                .await;
+
+            assert_eq!(response.status(), Status::Ok);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_include!(
+                actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                expected: serde_json::json!([{
+                    "name": "adminer",
+                }, {
+                    "name": "db",
+                }])
+            );
+        }
+
+        #[tokio::test]
+        async fn with_invalid_user_defined_payload() {
+            let client = create_client().await;
+
+            let response = client
+                .post("/master")
+                .body(
+                    serde_json::json!({
+                        "services": [{
+                            "serviceName": "db",
+                            "image": "postgres"
+                        }],
+                        "userDefined": "test"
+                    })
+                    .to_string(),
+                )
+                .header(ContentType::JSON)
+                .dispatch()
+                .await;
+
+            assert_eq!(response.status(), Status::BadRequest);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_include!(
+                actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                expected: serde_json::json!({
+                    "status": 400,
+                    "detail": "User defined payload does not match to the configured value: Provided data (\"test\") does not match schema: \"test\" is not of type \"object\""
+                })
+            );
+        }
+
+        #[tokio::test]
+        async fn with_user_defined_payload() {
+            let client = create_client().await;
+
+            let response = client
+                .post("/master")
+                .body(
+                    serde_json::json!({
+                        "services": [{
+                            "serviceName": "db",
+                            "image": "postgres"
+                        }],
+                        "userDefined": { "test": "ud" }
+                    })
+                    .to_string(),
+                )
+                .header(ContentType::JSON)
+                .dispatch()
+                .await;
+
+            assert_eq!(response.status(), Status::Ok);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_include!(
+                actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                expected: serde_json::json!([{
+                    "name": "adminer-ud",
+                }, {
+                    "name": "db",
+                }])
+            );
+        }
+
+        #[tokio::test]
+        async fn with_user_defined_payload_and_without_services() {
+            let client = create_client().await;
+
+            let response = client
+                .post("/master")
+                .body(
+                    serde_json::json!({
+                        "userDefined": { "test": "ud" }
+                    })
+                    .to_string(),
+                )
+                .header(ContentType::JSON)
+                .dispatch()
+                .await;
+
+            assert_eq!(response.status(), Status::Ok);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_include!(
+                actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                expected: serde_json::json!([{
+                    "name": "adminer-ud",
+                }])
             );
         }
     }

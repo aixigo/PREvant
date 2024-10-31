@@ -71,7 +71,7 @@ pub async fn tickets(
 
             let mut futures = services
                 .keys()
-                .map(|app_name| jira.issue(&app_name))
+                .map(|app_name| jira.issue(app_name))
                 .collect::<FuturesUnordered<_>>();
 
             while let Some(r) = futures.next().await {

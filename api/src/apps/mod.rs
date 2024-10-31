@@ -32,6 +32,7 @@ use crate::config::{Config, ConfigError};
 use crate::deployment::deployment_unit::DeploymentUnitBuilder;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{ContainerType, Service, ServiceStatus};
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
 use crate::registry::Registry;
 use crate::registry::RegistryError;
@@ -233,7 +234,25 @@ impl AppsService {
         status_id: &AppStatusChangeId,
         replicate_from: Option<AppName>,
         service_configs: &[ServiceConfig],
+        user_defined_parameters: Option<serde_json::Value>,
     ) -> Result<Vec<Service>, AppsServiceError> {
+        let user_defined_parameters = match (
+            self.config.user_defined_schema_validator(),
+            user_defined_parameters,
+        ) {
+            (None, _) => None,
+            (Some(validator), None) => Some(
+                UserDefinedParameters::new(serde_json::json!({}), &validator).map_err(|e| {
+                    AppsServiceError::InvalidUserDefinedParameters { err: e.to_string() }
+                })?,
+            ),
+            (Some(validator), Some(value)) => {
+                Some(UserDefinedParameters::new(value, &validator).map_err(|e| {
+                    AppsServiceError::InvalidUserDefinedParameters { err: e.to_string() }
+                })?)
+            }
+        };
+
         let guard = self.create_or_get_app_guard(app_name.clone(), AppGuardKind::Deployment)?;
 
         if !guard.is_first() {
@@ -244,8 +263,14 @@ impl AppsService {
 
         guard.notify_with_result(
             self,
-            self.create_or_update_impl(app_name, status_id, replicate_from, service_configs)
-                .await,
+            self.create_or_update_impl(
+                app_name,
+                status_id,
+                replicate_from,
+                service_configs,
+                user_defined_parameters,
+            )
+            .await,
         )
     }
 
@@ -255,6 +280,7 @@ impl AppsService {
         status_id: &AppStatusChangeId,
         replicate_from: Option<AppName>,
         service_configs: &[ServiceConfig],
+        user_defined_parameters: Option<UserDefinedParameters>,
     ) -> Result<Vec<Service>, AppsServiceError> {
         if let Some(app_limit) = self.config.app_limit() {
             let apps = self.get_apps().await?;
@@ -313,7 +339,10 @@ impl AppsService {
 
         let deployment_unit_builder = deployment_unit_builder
             .extend_with_image_infos(image_infos)
-            .apply_templating(&base_traefik_ingress_route.as_ref().and_then(|r| r.to_url()))?
+            .apply_templating(
+                &base_traefik_ingress_route.as_ref().and_then(|r| r.to_url()),
+                user_defined_parameters,
+            )?
             .apply_hooks(&self.config)
             .await?;
 
@@ -423,7 +452,7 @@ impl AppsService {
     }
 }
 
-/// Defines error cases for the `AppService`
+/// Defines error cases for the [`Apps`](Apps)
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum AppsServiceError {
     #[error("Cannot find app {app_name}.")]
@@ -448,6 +477,8 @@ pub enum AppsServiceError {
     InvalidDeploymentHook,
     #[error("Failed to parse traefik rule ({raw_rule}): {err}")]
     FailedToParseTraefikRule { raw_rule: String, err: String },
+    #[error("User defined payload does not match to the configured value: {err}")]
+    InvalidUserDefinedParameters { err: String },
 }
 
 impl From<ConfigError> for AppsServiceError {
@@ -547,6 +578,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
+            None,
         )
         .await?;
 
@@ -570,6 +602,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -578,6 +611,7 @@ mod tests {
             &AppStatusChangeId::new(),
             Some(AppName::master()),
             &vec![sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -604,6 +638,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -612,6 +647,7 @@ mod tests {
             &AppStatusChangeId::new(),
             Some(AppName::master()),
             &vec![sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -620,6 +656,7 @@ mod tests {
             &AppStatusChangeId::new(),
             Some(AppName::master()),
             &vec![sc!("service-a")],
+            None,
         )
         .await?;
 
@@ -655,6 +692,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("mariadb")],
+            None,
         )
         .await?;
 
@@ -694,6 +732,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("mariadb")],
+            None,
         )
         .await?;
 
@@ -722,6 +761,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -760,7 +800,7 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::from_str("master").unwrap();
         let services = vec![sc!("service-a"), sc!("service-b")];
-        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &services)
+        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &services, None)
             .await?;
         for service in services {
             let mut log_stream = apps
@@ -828,6 +868,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
+            None,
         )
         .await?;
         let deployed_apps = apps.get_apps().await?;
@@ -862,7 +903,7 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("openid"), sc!("db")];
-        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
+        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs, None)
             .await?;
         let deployed_apps = apps.get_apps().await?;
 
@@ -912,7 +953,7 @@ Log msg 3 of service-a of app master
             files = ()
         )];
 
-        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
+        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs, None)
             .await?;
 
         let deployed_apps = apps.get_apps().await?;
@@ -971,6 +1012,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![crate::sc!("service-a")],
+            None,
         )
         .await?;
         apps.create_or_update(
@@ -978,6 +1020,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![crate::sc!("service-b")],
+            None,
         )
         .await?;
         apps.create_or_update(
@@ -985,6 +1028,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![crate::sc!("service-c")],
+            None,
         )
         .await?;
 
@@ -1018,6 +1062,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
+            None,
         )
         .await?;
         let deleted_services = apps
@@ -1055,6 +1100,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
+            None,
         )
         .await?;
 
@@ -1106,7 +1152,7 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("db1"), sc!("db2")];
-        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs)
+        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs, None)
             .await?;
         let deployed_apps = apps.get_apps().await?;
 
@@ -1171,6 +1217,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -1200,6 +1247,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -1242,6 +1290,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -1292,6 +1341,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -1301,6 +1351,7 @@ Log msg 3 of service-a of app master
                 &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-a"), sc!("service-b")],
+                None,
             )
             .await;
 
@@ -1329,6 +1380,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            None,
         )
         .await?;
 
@@ -1338,6 +1390,7 @@ Log msg 3 of service-a of app master
                 &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-c")],
+                None,
             )
             .await;
 

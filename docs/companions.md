@@ -97,6 +97,7 @@ The list of available handlebars variables:
   - `name`: The service name which is equivalent to the network alias
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
+- `userDefined`: see [user defined schema configuration](user-defined-schema.md).
 
 #### Handlebar Helpers
 
@@ -139,6 +140,7 @@ The list of available handlebars variables:
   - `name`: The service name which is equivalent to the network alias
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
+- `userDefined`: see [user defined schema configuration](user-defined-schema.md).
 
 ### Deployment Strategy
 
@@ -234,6 +236,7 @@ and the container image:
   infrastructure.
   - 'namespace' (Kubernetes): the name of the namespace where the application
     will be installed in.
+- `userDefined`: see [user defined schema configuration](user-defined-schema.md).
 
 Additionally, check out the [builtin extra helpers][builtin-extra-helpers]
 PREvant offers via the [Handlebars Rust library][handlebars-rust].

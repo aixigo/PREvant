@@ -67,7 +67,7 @@ impl K8sDeploymentUnit {
         let image_pull_secrets = match image_pull_secret {
             Some(image_pull_secret) => {
                 let image_pull_secrets = vec![LocalObjectReference {
-                    name: Some(image_pull_secret.metadata.name.clone().unwrap_or_default()),
+                    name: image_pull_secret.metadata.name.clone().unwrap_or_default(),
                 }];
                 create_or_patch(client.clone(), app_name, image_pull_secret).await?;
                 Some(image_pull_secrets)
@@ -684,7 +684,7 @@ impl K8sDeploymentUnit {
 
     pub(super) fn apply_image_pull_secret(&mut self, image_pull_secret: Secret) {
         let pull_secret_reference = LocalObjectReference {
-            name: Some(image_pull_secret.metadata.name.clone().unwrap_or_default()),
+            name: image_pull_secret.metadata.name.clone().unwrap_or_default(),
         };
         self.secrets.push(image_pull_secret);
 
@@ -788,7 +788,7 @@ where
     let api = Api::namespaced(client.clone(), &app_name.to_rfc1123_namespace_id());
     match api.create(&PostParams::default(), &payload).await {
         Ok(result) => Ok(result),
-        Err(kube::error::Error::Api(kube::error::ErrorResponse { code, .. })) if code == 409 => {
+        Err(kube::error::Error::Api(kube::error::ErrorResponse { code: 409, .. })) => {
             let name = payload.meta().name.clone().unwrap_or_default();
             match api
                 .patch(&name, &PatchParams::default(), &Patch::Merge(&payload))
@@ -822,7 +822,7 @@ mod tests {
             .extend_with_config(&Default::default())
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)
+            .apply_templating(&None, None)
             .unwrap()
             .apply_hooks(&Default::default())
             .await

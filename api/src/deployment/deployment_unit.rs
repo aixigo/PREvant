@@ -29,6 +29,7 @@ use crate::apps::AppsServiceError;
 use crate::config::{Config, StorageStrategy};
 use crate::deployment::hooks::Hooks;
 use crate::infrastructure::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule};
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, ContainerType, Image, ServiceConfig};
 use crate::registry::ImageInfo;
 use std::collections::{HashMap, HashSet};
@@ -90,17 +91,20 @@ pub struct WithResolvedImages {
 pub struct WithAppliedTemplating {
     app_name: AppName,
     services: Vec<DeployableService>,
+    user_defined_parameters: Option<UserDefinedParameters>,
 }
 
 pub struct WithAppliedHooks {
     app_name: AppName,
     services: Vec<DeployableService>,
+    user_defined_parameters: Option<UserDefinedParameters>,
 }
 
 pub struct WithAppliedIngressRoute {
     app_name: AppName,
     services: Vec<DeployableService>,
     route: TraefikIngressRoute,
+    user_defined_parameters: Option<UserDefinedParameters>,
 }
 
 pub struct DeploymentUnitBuilder<Stage> {
@@ -111,6 +115,7 @@ pub struct DeploymentUnit {
     app_name: AppName,
     services: Vec<DeployableService>,
     route: TraefikIngressRoute,
+    user_defined_parameters: Option<UserDefinedParameters>,
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +187,10 @@ impl DeploymentUnit {
 
     pub fn app_base_route(&self) -> &TraefikIngressRoute {
         &self.route
+    }
+
+    pub fn user_defined_parameters(&self) -> &Option<UserDefinedParameters> {
+        &self.user_defined_parameters
     }
 }
 
@@ -319,11 +328,16 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
     pub fn apply_templating(
         self,
         base_url: &Option<Url>,
+        user_defined_parameters: Option<UserDefinedParameters>,
     ) -> Result<DeploymentUnitBuilder<WithAppliedTemplating>, AppsServiceError> {
         let mut services = HashMap::new();
 
         for config in self.stage.configs.iter() {
-            let templated_config = config.apply_templating(&self.stage.app_name, base_url)?;
+            let templated_config = config.apply_templating(
+                &self.stage.app_name,
+                base_url,
+                &user_defined_parameters,
+            )?;
 
             services.insert(
                 config.service_name().clone(),
@@ -361,6 +375,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                         &self.stage.app_name,
                         base_url,
                         service,
+                        &user_defined_parameters,
                     )?;
 
                 service_companions.push(ServiceCompanion {
@@ -426,6 +441,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 &self.stage.app_name,
                 base_url,
                 &templating_only_service_configs,
+                &user_defined_parameters,
             )?;
 
             // If a custom application companion was deployed, its config needs to be merged
@@ -459,6 +475,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
             stage: WithAppliedTemplating {
                 app_name: self.stage.app_name,
                 services: strategies,
+                user_defined_parameters,
             },
         })
     }
@@ -584,6 +601,7 @@ impl DeploymentUnitBuilder<WithAppliedTemplating> {
             stage: WithAppliedHooks {
                 app_name: self.stage.app_name,
                 services,
+                user_defined_parameters: self.stage.user_defined_parameters,
             },
         })
     }
@@ -609,6 +627,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
                 app_name: self.stage.app_name,
                 services: self.stage.services,
                 route,
+                user_defined_parameters: self.stage.user_defined_parameters,
             },
         }
     }
@@ -619,6 +638,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
             app_name: self.stage.app_name,
             services: self.stage.services,
             route,
+            user_defined_parameters: self.stage.user_defined_parameters,
         }
     }
 }
@@ -629,6 +649,7 @@ impl DeploymentUnitBuilder<WithAppliedIngressRoute> {
             app_name: self.stage.app_name,
             services: self.stage.services,
             route: self.stage.route,
+            user_defined_parameters: self.stage.user_defined_parameters,
         }
     }
 }
@@ -683,7 +704,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -721,7 +742,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -776,7 +797,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -823,7 +844,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -867,7 +888,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -902,7 +923,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -941,7 +962,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -995,7 +1016,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(vec![sc!("postgres", "postgres:alpine")])
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1049,7 +1070,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1101,7 +1122,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1152,7 +1173,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1197,7 +1218,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1227,7 +1248,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .apply_base_traefik_ingress_route(TraefikIngressRoute::with_rule(
@@ -1286,7 +1307,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();
@@ -1350,7 +1371,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .apply_templating(&None)?
+            .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
             .build();

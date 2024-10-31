@@ -25,8 +25,10 @@
  */
 use crate::config::AppSelector;
 use crate::models::service::ContainerType;
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, Environment, Image, ServiceConfig};
 use handlebars::{Handlebars, RenderError, RenderErrorReason};
+use jsonschema::Validator;
 use secstr::SecUtf8;
 use serde_value::Value;
 use std::collections::BTreeMap;
@@ -39,6 +41,8 @@ pub(super) struct Companions {
     bootstrapping: Bootstrapping,
     #[serde(flatten)]
     companions: BTreeMap<String, Companion>,
+    #[serde(default)]
+    templating: Templating,
 }
 
 #[derive(Clone, Deserialize)]
@@ -113,6 +117,40 @@ pub struct BootstrappingContainer {
     args: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct Templating {
+    user_defined_schema: Option<serde_json::Value>,
+}
+
+impl<'de> serde::Deserialize<'de> for Templating {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        let user_defined_schema = match value {
+            serde_json::Value::Object(mut obj) => match obj.remove("userDefinedSchema") {
+                None => None,
+                Some(user_defined_schema) => {
+                    if let Err(err) = Validator::new(&user_defined_schema) {
+                        return Err(serde::de::Error::custom(format!(
+                            "Invalid user defined schema: {err}"
+                        )));
+                    }
+
+                    Some(user_defined_schema)
+                }
+            },
+            _ => None,
+        };
+
+        Ok(Self {
+            user_defined_schema,
+        })
+    }
+}
+
 impl Companions {
     pub(super) fn companion_configs<P>(
         &self,
@@ -136,6 +174,11 @@ impl Companions {
             .collect()
     }
 
+    pub(super) fn user_defined_schema_validator(&self) -> Option<Validator> {
+        let schema = self.templating.user_defined_schema.as_ref()?;
+        Validator::new(schema).ok()
+    }
+
     /// Applies templating to all bootstrapping containers and returns the templated set of
     /// containers..
     ///
@@ -146,6 +189,7 @@ impl Companions {
         app_name: &AppName,
         base_url: &Option<Url>,
         infrastructure: Option<S>,
+        user_defined_parameters: &Option<UserDefinedParameters>,
     ) -> Result<Vec<BootstrappingContainer>, RenderError>
     where
         S: serde::Serialize,
@@ -166,6 +210,8 @@ impl Companions {
             application: AppData<'a>,
             #[serde(skip_serializing_if = "Option::is_none")]
             infrastructure: Option<S>,
+            #[serde(skip_serializing_if = "Option::is_none", rename = "userDefined")]
+            user_defined_parameters: &'a Option<UserDefinedParameters>,
         }
 
         let data = Data {
@@ -174,6 +220,7 @@ impl Companions {
                 name: app_name,
                 base_url,
             },
+            user_defined_parameters,
         };
 
         let mut containers = Vec::with_capacity(self.bootstrapping.containers.len());
@@ -278,6 +325,8 @@ impl BootstrappingContainer {
 
 #[cfg(test)]
 mod tests {
+    use jsonschema::Validator;
+
     use super::*;
     use std::str::FromStr;
 
@@ -341,7 +390,7 @@ mod tests {
         );
 
         let containers = &companions
-            .companion_bootstrapping_containers(&AppName::master(), &None, None::<String>)
+            .companion_bootstrapping_containers(&AppName::master(), &None, None::<String>, &None)
             .unwrap();
 
         assert_eq!(containers[0].image, Image::from_str("busybox").unwrap());
@@ -366,6 +415,7 @@ mod tests {
                 &AppName::master(),
                 &Url::parse("http://example.com").ok(),
                 None::<String>,
+                &None,
             )
             .unwrap();
 
@@ -396,6 +446,7 @@ mod tests {
                 Some(serde_json::json!({
                     "namespace": "my-namespace"
                 })),
+                &None,
             )
             .unwrap();
 
@@ -416,9 +467,67 @@ mod tests {
         );
 
         let containers = &companions
-            .companion_bootstrapping_containers(&AppName::master(), &None, None::<String>)
+            .companion_bootstrapping_containers(&AppName::master(), &None, None::<String>, &None)
             .unwrap();
 
         assert_eq!(containers[0].image, Image::from_str("busybox:v0").unwrap());
+    }
+
+    #[test]
+    fn should_parse_companion_bootstrap_containers_with_templated_user_defined_parameters_image() {
+        let companions = companions_from_str!(
+            r#"
+            [[bootstrapping.containers]]
+            image = """busybox:{{userDefined}}"""
+            "#
+        );
+
+        let containers = &companions
+            .companion_bootstrapping_containers(
+                &AppName::master(),
+                &None,
+                None::<String>,
+                &UserDefinedParameters::new(
+                    serde_json::json!("v0"),
+                    &Validator::new(&serde_json::json!({"type": "string"})).unwrap(),
+                )
+                .ok(),
+            )
+            .unwrap();
+
+        assert_eq!(containers[0].image, Image::from_str("busybox:v0").unwrap());
+    }
+
+    #[test]
+    fn should_parse_user_defined_templating_schema() {
+        let companions = companions_from_str!(
+            r#"
+            [templating.userDefinedSchema]
+            type = "string"
+        "#
+        );
+
+        let validator = companions.user_defined_schema_validator().unwrap();
+
+        assert!(validator.is_valid(&serde_json::json!("test")));
+    }
+
+    #[test]
+    fn should_not_parse_user_defined_templating_with_invalid_schema() {
+        use figment::providers::Format;
+        let provider = figment::providers::Toml::string(
+            r#"
+            [companions.templating.userDefinedSchema]
+            type = "i-am-a-teapot"
+        "#,
+        );
+        let config = figment::Figment::from(provider).extract::<crate::config::Config>();
+
+        assert!(matches!(
+            config,
+            Err(figment::Error {
+                kind, ..
+            }) if kind == figment::error::Kind::Message(String::from("Invalid user defined schema: \"i-am-a-teapot\" is not valid under any of the schemas listed in the 'anyOf' keyword"))
+        ));
     }
 }

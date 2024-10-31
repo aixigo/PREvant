@@ -26,6 +26,7 @@
 
 use crate::config::Routing;
 use crate::models::service::ContainerType;
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, Environment, EnvironmentVariable, ServiceConfig};
 use handlebars::{
     Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderError,
@@ -42,6 +43,7 @@ impl ServiceConfig {
         &self,
         app_name: &AppName,
         base_url: &Option<Url>,
+        user_defined_parameters: &Option<UserDefinedParameters>,
     ) -> Result<Self, RenderError> {
         let parameters = TemplateParameters {
             application: ApplicationTemplateParameter {
@@ -54,6 +56,7 @@ impl ServiceConfig {
                 container_type: self.container_type().clone(),
                 port: self.port(),
             }),
+            user_defined_parameters,
         };
 
         self.apply_template(&parameters)
@@ -64,6 +67,7 @@ impl ServiceConfig {
         app_name: &AppName,
         base_url: &Option<Url>,
         service_config: &Self,
+        user_defined_parameters: &Option<UserDefinedParameters>,
     ) -> Result<Self, RenderError> {
         let parameters = TemplateParameters {
             application: ApplicationTemplateParameter {
@@ -76,6 +80,7 @@ impl ServiceConfig {
                 container_type: service_config.container_type().clone(),
                 port: service_config.port(),
             }),
+            user_defined_parameters,
         };
 
         self.apply_template(&parameters)
@@ -86,6 +91,7 @@ impl ServiceConfig {
         app_name: &AppName,
         base_url: &Option<Url>,
         service_configs: &[Self],
+        user_defined_parameters: &Option<UserDefinedParameters>,
     ) -> Result<Self, RenderError> {
         let parameters = TemplateParameters {
             application: ApplicationTemplateParameter {
@@ -103,6 +109,7 @@ impl ServiceConfig {
                     .collect(),
             ),
             service: None,
+            user_defined_parameters,
         };
 
         self.apply_template(&parameters)
@@ -317,10 +324,12 @@ fn apply_templating_to_middleware_value(
 }
 
 #[derive(Serialize)]
-struct TemplateParameters<'a> {
+struct TemplateParameters<'a, 'b> {
     application: ApplicationTemplateParameter<'a>,
     services: Option<Vec<ServiceTemplateParameter<'a>>>,
     service: Option<ServiceTemplateParameter<'a>>,
+    #[serde(rename = "userDefined")]
+    user_defined_parameters: &'b Option<UserDefinedParameters>,
 }
 
 #[derive(Serialize)]
@@ -357,7 +366,12 @@ mod tests {
         config.set_env(Some(Environment::new(Vec::new())));
 
         let templated_config = config
-            .apply_templating_for_application_companion(&AppName::master(), &None, &Vec::new())
+            .apply_templating_for_application_companion(
+                &AppName::master(),
+                &None,
+                &Vec::new(),
+                &None,
+            )
             .unwrap();
 
         assert_eq!(templated_config.service_name(), "postgres-master");
@@ -391,7 +405,12 @@ mod tests {
             ),
         ];
         let templated_config = config
-            .apply_templating_for_application_companion(&AppName::master(), &None, &service_configs)
+            .apply_templating_for_application_companion(
+                &AppName::master(),
+                &None,
+                &service_configs,
+                &None,
+            )
             .unwrap();
 
         let env = templated_config.env().unwrap().get(0).unwrap();
@@ -424,7 +443,12 @@ mod tests {
             ),
         ];
         let templated_config = config
-            .apply_templating_for_application_companion(&AppName::master(), &None, &service_configs)
+            .apply_templating_for_application_companion(
+                &AppName::master(),
+                &None,
+                &service_configs,
+                &None,
+            )
             .unwrap();
 
         for (k, v) in templated_config.labels().unwrap().iter() {
@@ -450,8 +474,12 @@ mod tests {
             ),
         ])));
 
-        let templated_config =
-            config.apply_templating_for_application_companion(&AppName::master(), &None, &vec![]);
+        let templated_config = config.apply_templating_for_application_companion(
+            &AppName::master(),
+            &None,
+            &vec![],
+            &None,
+        );
 
         assert_eq!(templated_config.is_err(), true);
     }
@@ -488,7 +516,12 @@ location /{{name}} {
             ),
         ];
         let templated_config = config
-            .apply_templating_for_application_companion(&AppName::master(), &None, &service_configs)
+            .apply_templating_for_application_companion(
+                &AppName::master(),
+                &None,
+                &service_configs,
+                &None,
+            )
             .unwrap();
 
         assert_eq!(
@@ -551,7 +584,12 @@ location /{{name}} {
         config.set_files(Some(files));
 
         let templated_config = config
-            .apply_templating_for_application_companion(&AppName::master(), &None, &service_configs)
+            .apply_templating_for_application_companion(
+                &AppName::master(),
+                &None,
+                &service_configs,
+                &None,
+            )
             .unwrap();
 
         assert_eq!(
@@ -618,6 +656,7 @@ location /{{name}} {
                 &AppName::master(),
                 &Url::from_str("http://my-host/").ok(),
                 &service_configs,
+                &None,
             )
             .unwrap();
 
@@ -653,7 +692,12 @@ location /service-d {
         });
 
         let templated_config = config
-            .apply_templating_for_application_companion(&AppName::master(), &None, &Vec::new())
+            .apply_templating_for_application_companion(
+                &AppName::master(),
+                &None,
+                &Vec::new(),
+                &None,
+            )
             .unwrap();
 
         let routing = templated_config.routing().unwrap();
@@ -680,7 +724,12 @@ location /service-d {
         });
 
         let templated_config = config
-            .apply_templating_for_application_companion(&AppName::master(), &None, &Vec::new())
+            .apply_templating_for_application_companion(
+                &AppName::master(),
+                &None,
+                &Vec::new(),
+                &None,
+            )
             .unwrap();
 
         let routing = templated_config.routing().unwrap();
@@ -715,7 +764,12 @@ location /service-d {
         });
 
         let templated_config = config
-            .apply_templating_for_application_companion(&AppName::master(), &None, &Vec::new())
+            .apply_templating_for_application_companion(
+                &AppName::master(),
+                &None,
+                &Vec::new(),
+                &None,
+            )
             .unwrap();
 
         let routing = templated_config.routing().unwrap();
@@ -743,6 +797,7 @@ location /service-d {
                 &AppName::master(),
                 &None,
                 &sc!("wordpress", "wordpress:alpine"),
+                &None,
             )
             .unwrap();
 
@@ -766,6 +821,7 @@ location /service-d {
                 &AppName::master(),
                 &None,
                 &sc!("wordpress", "wordpress:alpine"),
+                &None,
             )
             .unwrap();
 
@@ -789,6 +845,7 @@ location /service-d {
                 &AppName::master(),
                 &None,
                 &sc!("wordpress", "wordpress:alpine"),
+                &None,
             )
             .unwrap();
 
@@ -800,5 +857,45 @@ location /service-d {
             "After applying a template, the environment keep that information"
         );
         assert_eq!(env.original().value().unsecure(), "admin-{{service.name}}");
+    }
+
+    #[test]
+    fn should_apply_templating_for_environment_with_user_defined_variable() {
+        let mut config = sc!("db", "maria-db");
+        config.set_env(Some(Environment::new(vec![
+            EnvironmentVariable::with_templating(
+                String::from("DB_USER"),
+                SecUtf8::from("admin-{{userDefined.test}}"),
+            ),
+        ])));
+
+        let config = config
+            .apply_templating_for_service_companion(
+                &AppName::master(),
+                &None,
+                &sc!("wordpress", "wordpress:alpine"),
+                &Some(
+                    UserDefinedParameters::new(
+                        serde_json::json!({
+                            "test": "wordpress"
+                        }),
+                        &jsonschema::validator_for(&serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "test": {
+                                    "type": "string"
+                                }
+                            }
+                        }))
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+
+        let env = config.env().unwrap().get(0).unwrap();
+
+        assert_eq!(env.value().unsecure(), "admin-wordpress");
     }
 }

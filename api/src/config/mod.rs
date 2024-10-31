@@ -31,6 +31,7 @@ pub use self::companion::StorageStrategy;
 use self::companion::{Companion, CompanionType, Companions};
 pub use self::container::ContainerConfig;
 pub use self::runtime::Runtime;
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::AppName;
 use crate::models::ServiceConfig;
 use app_selector::AppSelector;
@@ -38,14 +39,15 @@ use clap::Parser;
 use figment::providers::{Env, Format, Toml};
 use figment::value::{Dict, Map, Tag, Value};
 use figment::{Metadata, Profile};
+use jsonschema::Validator;
 use secstr::SecUtf8;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::convert::From;
 use std::fmt::Display;
 use std::io::Error as IOError;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::usize;
 use toml::de::Error as TomlError;
 
 mod app_selector;
@@ -199,6 +201,10 @@ impl Config {
         self.jira.as_ref().cloned()
     }
 
+    pub fn user_defined_schema_validator(&self) -> Option<Validator> {
+        self.companions.user_defined_schema_validator()
+    }
+
     pub fn service_companion_configs(
         &self,
         app_name: &AppName,
@@ -222,12 +228,17 @@ impl Config {
         app_name: &AppName,
         base_url: &Option<url::Url>,
         infrastructure: Option<S>,
+        user_defined_parameters: &Option<UserDefinedParameters>,
     ) -> Result<Vec<BootstrappingContainer>, handlebars::RenderError>
     where
         S: serde::Serialize,
     {
-        self.companions
-            .companion_bootstrapping_containers(app_name, base_url, infrastructure)
+        self.companions.companion_bootstrapping_containers(
+            app_name,
+            base_url,
+            infrastructure,
+            user_defined_parameters,
+        )
     }
 
     fn companion_configs<P>(
@@ -273,7 +284,7 @@ impl Config {
     }
 
     pub fn app_limit(&self) -> Option<usize> {
-        return self.applications.max;
+        self.applications.max
     }
 }
 
