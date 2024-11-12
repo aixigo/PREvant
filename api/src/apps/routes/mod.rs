@@ -88,7 +88,7 @@ async fn status_change(
 
     match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name, status_id)),
-        Poll::Ready(Ok(_)) => Err(HttpApiProblem::with_title(StatusCode::NOT_FOUND).into()),
+        Poll::Ready(Ok(_)) => Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into()),
         Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
@@ -119,7 +119,7 @@ pub async fn delete_app_sync(
 ) -> HttpResult<Json<Vec<Service>>> {
     match delete_app(app_name, apps, RunOptions::Sync).await? {
         AsyncCompletion::Pending(_, _) => {
-            Err(HttpApiProblem::with_title(StatusCode::INTERNAL_SERVER_ERROR).into())
+            Err(HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR).into())
         }
         AsyncCompletion::Ready(result) => Ok(result),
     }
@@ -217,7 +217,7 @@ where
 }
 
 fn map_join_error(err: tokio::task::JoinError) -> HttpApiError {
-    HttpApiProblem::with_title(StatusCode::INTERNAL_SERVER_ERROR)
+    HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
         .detail(format!("{}", err))
         .into()
 }

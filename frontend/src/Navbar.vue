@@ -44,7 +44,8 @@
 
             <input class="form-control mr-sm-2" type="search" placeholder="Search Apps" aria-label="Search"
                    ref="searchApps"
-                   @keyup="fireSearchEvent">
+                   :value="appNameFilter"
+                   @input="fireSearchEvent">
 
             <a class="btn btn-outline-success my-2 my-sm-0"
                href="https://github.com/aixigo/PREvant" target="_blank">
@@ -69,6 +70,7 @@
 </style>
 
 <script>
+   import { mapGetters } from 'vuex';
    import OpenApiUI from './OpenApiUI.vue';
 
    export default {
@@ -78,9 +80,12 @@
       components: {
          'open-api-ui': OpenApiUI
       },
+      computed: {
+         ...mapGetters( [ 'appNameFilter' ] )
+      },
       methods: {
-         fireSearchEvent() {
-            this.$store.commit( 'filterByAppName', this.$refs.searchApps.value );
+         fireSearchEvent(e) {
+            this.$store.commit( 'filterByAppName', e.target.value);
          }
       }
    }
