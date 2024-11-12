@@ -31,11 +31,11 @@ pub(super) async fn logs<'r>(
         Some(since) => match DateTime::parse_from_rfc3339(&since) {
             Ok(since) => Some(since),
             Err(err) => {
-                return Err(
-                    HttpApiProblem::with_title(http_api_problem::StatusCode::BAD_REQUEST)
-                        .detail(format!("{}", err))
-                        .into(),
-                );
+                return Err(HttpApiProblem::with_title_and_type(
+                    http_api_problem::StatusCode::BAD_REQUEST,
+                )
+                .detail(format!("{}", err))
+                .into());
             }
         },
     };
@@ -70,11 +70,11 @@ pub(super) async fn stream_logs<'r>(
         Some(since) => match DateTime::parse_from_rfc3339(since) {
             Ok(since) => Some(since),
             Err(err) => {
-                return Err(
-                    HttpApiProblem::with_title(http_api_problem::StatusCode::BAD_REQUEST)
-                        .detail(format!("{}", err))
-                        .into(),
-                );
+                return Err(HttpApiProblem::with_title_and_type(
+                    http_api_problem::StatusCode::BAD_REQUEST,
+                )
+                .detail(format!("{}", err))
+                .into());
             }
         },
     };
@@ -108,8 +108,9 @@ impl<'r, 'o: 'r> Responder<'r, 'o> for LogsResponse<'r> {
         use std::io::Cursor;
         let log_chunk = match self.log_chunk {
             None => {
-                let payload = HttpApiProblem::with_title(http_api_problem::StatusCode::NOT_FOUND)
-                    .json_bytes();
+                let payload =
+                    HttpApiProblem::with_title_and_type(http_api_problem::StatusCode::NOT_FOUND)
+                        .json_bytes();
                 return Response::build()
                     .status(Status::NotFound)
                     .raw_header("Content-type", "application/problem+json")

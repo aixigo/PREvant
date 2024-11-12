@@ -23,8 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-
-import { Store } from 'vuex'
+import { Store } from 'vuex';
 
 const SERVICE_TYPE_ORDER = [
     'instance',
@@ -33,267 +32,282 @@ const SERVICE_TYPE_ORDER = [
     'service-companion'
 ];
 
-export default new Store( {
-   state: {
-      fetchInProgress: false,
-      apps: {},
-      appsError: null,
-      tickets: {},
-      ticketsError: null,
-      appNameFilter: ''
-   },
-   getters: {
+export function createStore(router) {
+   const store = new Store( {
+      state: {
+         fetchInProgress: false,
+         apps: {},
+         appsError: null,
+         tickets: {},
+         ticketsError: null,
+         appNameFilter: ''
+      },
+      getters: {
+         appNameFilter: state => state.appNameFilter,
 
-      reviewApps: state => {
-         if ( state.apps === undefined || Object.keys( state.apps ).length == 0 ) {
-            return [];
-         }
-
-         const apps = [
-            appDetails( 'master' ),
-            ...Object.keys( state.apps )
-               .filter( _ => _ != 'master' )
-               .map( appDetails )
-               .sort( byAppNameDesc )
-         ];
-
-         return apps
-             .filter( app => app.name != null )
-             .filter( app => !state.appNameFilter || app.name.toLocaleLowerCase().indexOf( state.appNameFilter ) >= 0 );
-
-         function appDetails( name ) {
-            const appContainers = state.apps[ name ];
-
-            if (appContainers == null) {
-               return {};
+         reviewApps: state => {
+            if ( state.apps === undefined || Object.keys( state.apps ).length == 0 ) {
+               return [];
             }
 
-            const ticket = state.tickets[ name ];
-
-            const containers = [
-               ...appContainers
-                  .map( ( { name, url, openApiUrl, version, type, state } ) => {
-                     return {
-                         name, url, openApiUrl, version, type, status: state.status
-                     };
-                  } )
+            const apps = [
+               appDetails( 'master' ),
+               ...Object.keys( state.apps )
+                  .filter( _ => _ != 'master' )
+                  .map( appDetails )
+                  .sort( byAppNameDesc )
             ];
-            containers.sort( byTypeAndName );
-            return { name, ticket, containers };
-         }
 
-          function byTypeAndName(containerA, containerB) {
-              const typeIndexA = SERVICE_TYPE_ORDER.indexOf(containerA.type);
-              const typeIndexB = SERVICE_TYPE_ORDER.indexOf(containerB.type);
+            return apps
+                .filter( app => app.name != null )
+                .filter( app => !state.appNameFilter || app.name.toLocaleLowerCase().indexOf( state.appNameFilter.toLocaleLowerCase() ) >= 0 );
 
-              if (typeIndexA !== typeIndexB) {
-                  return typeIndexA < typeIndexB ? -1 : 1;
-              }
+            function appDetails( name ) {
+               const appContainers = state.apps[ name ];
 
-              return containerA.name < containerB.name ? -1 : 1;
-          }
+               if (appContainers == null) {
+                  return {};
+               }
 
-         function byAppNameDesc( appA, appB ) {
-            const [ keyA, keyB ] = [ appA, appB ].map( ( { name } ) => name );
-            return keyA > keyB ? -1 : 1;
+               const ticket = state.tickets[ name ];
+
+               const containers = [
+                  ...appContainers
+                     .map( ( { name, url, openApiUrl, version, type, state } ) => {
+                        return {
+                            name, url, openApiUrl, version, type, status: state.status
+                        };
+                     } )
+               ];
+               containers.sort( byTypeAndName );
+               return { name, ticket, containers };
+            }
+
+             function byTypeAndName(containerA, containerB) {
+                 const typeIndexA = SERVICE_TYPE_ORDER.indexOf(containerA.type);
+                 const typeIndexB = SERVICE_TYPE_ORDER.indexOf(containerB.type);
+
+                 if (typeIndexA !== typeIndexB) {
+                     return typeIndexA < typeIndexB ? -1 : 1;
+                 }
+
+                 return containerA.name < containerB.name ? -1 : 1;
+             }
+
+            function byAppNameDesc( appA, appB ) {
+               const [ keyA, keyB ] = [ appA, appB ].map( ( { name } ) => name );
+               return keyA > keyB ? -1 : 1;
+            }
+         },
+
+         errors: state => {
+            const errors = [];
+
+            if( state.appsError ) {
+               errors.push( state.appsError );
+            }
+            if( state.ticketsError ) {
+               errors.push( state.ticketsError );
+            }
+
+            return errors;
+         },
+
+         isFetchInProgress: state => state.fetchInProgress
+      },
+      mutations: {
+         startFetch( state ) {
+            state.fetchInProgress = true;
+         },
+         endFetch( state ) {
+            state.fetchInProgress = false;
+         },
+
+         storeApps( state, appsResponse ) {
+            if( appsResponse.type ) {
+               state.apps = {};
+               state.appsError = appsResponse;
+            }
+            else {
+               state.apps = appsResponse;
+               state.appsError = null;
+            }
+         },
+
+         deleteApp( state, appNameOrResponseError ) {
+            if( appNameOrResponseError.type ) {
+               state.appsError = appNameOrResponseError;
+            }
+            else {
+               delete state.apps[ appNameOrResponseError ];
+               state.appsError = null;
+            }
+         },
+
+         addApp( state, { appName, servicesOrResponseError } ) {
+            if( servicesOrResponseError.type ) {
+               state.appsError = servicesOrResponseError;
+            }
+            else {
+               state.apps[ appName ] = servicesOrResponseError;
+               state.appsError = null;
+            }
+         },
+
+         storeTickets( state, ticketsResponse ) {
+            if( ticketsResponse.type ) {
+               state.tickets = {};
+               state.ticketsError = ticketsResponse;
+            }
+            else {
+               state.tickets = ticketsResponse;
+               state.ticketsError = null;
+            }
+         },
+
+         updateServiceStatus( state, { appName, serviceName, serviceStatus } ) {
+            const service = state.apps[appName].find(service => service.name == serviceName);
+            service.state.status = serviceStatus;
+         },
+
+         filterByAppName( state, appNameFilter ) {
+            state.appNameFilter = appNameFilter.toLocaleLowerCase();
+            router.replace({ query: { appNameFilter } });
          }
       },
+      actions: {
+         fetchData( context ) {
+            context.commit( 'startFetch' );
 
-      errors: state => {
-         const errors = [];
-
-         if( state.appsError ) {
-            errors.push( state.appsError );
-         }
-         if( state.ticketsError ) {
-            errors.push( state.ticketsError );
-         }
-
-         return errors;
-      },
-
-      isFetchInProgress: state => state.fetchInProgress
-   },
-   mutations: {
-      startFetch( state ) {
-         state.fetchInProgress = true;
-      },
-      endFetch( state ) {
-         state.fetchInProgress = false;
-      },
-
-      storeApps( state, appsResponse ) {
-         if( appsResponse.type ) {
-            state.apps = {};
-            state.appsError = appsResponse;
-         }
-         else {
-            state.apps = appsResponse;
-            state.appsError = null;
-         }
-      },
-
-      deleteApp( state, appNameOrResponseError ) {
-         if( appNameOrResponseError.type ) {
-            state.appsError = appNameOrResponseError;
-         }
-         else {
-            delete state.apps[ appNameOrResponseError ];
-            state.appsError = null;
-         }
-      },
-
-      addApp( state, { appName, servicesOrResponseError } ) {
-         if( servicesOrResponseError.type ) {
-            state.appsError = servicesOrResponseError;
-         }
-         else {
-            state.apps[ appName ] = servicesOrResponseError;
-            state.appsError = null;
-         }
-      },
-
-      storeTickets( state, ticketsResponse ) {
-         if( ticketsResponse.type ) {
-            state.tickets = {};
-            state.ticketsError = ticketsResponse;
-         }
-         else {
-            state.tickets = ticketsResponse;
-            state.ticketsError = null;
-         }
-      },
-
-      updateServiceStatus( state, { appName, serviceName, serviceStatus } ) {
-         const service = state.apps[appName].find(service => service.name == serviceName);
-         service.state.status = serviceStatus;
-      },
-
-      filterByAppName( state, appNameFilter ) {
-         state.appNameFilter = appNameFilter.toLocaleLowerCase();
-      }
-   },
-   actions: {
-      fetchData( context ) {
-         context.commit( 'startFetch' );
-
-         Promise.all([
-            fetch( '/api/apps' )
-               .then( response => {
-                  if( response.ok && response.status === 200 ) {
-                     return response.json();
-                  }
-                  if( response.headers.get('Content-Type') === 'application/problem+json' ) {
-                     return response.json();
-                  }
-                  return response.text().then( detail => ({
-                     type: 'cannot-fetch-apps',
-                     title: 'Cannot fetch apps',
-                     detail
-                  }));
-               } ),
-            fetch( '/api/apps/tickets' )
-               .then( response => {
-                  if( response.ok ) {
-                     if( response.status === 200 ) {
+            Promise.all([
+               fetch( '/api/apps' )
+                  .then( response => {
+                     if( response.ok && response.status === 200 ) {
                         return response.json();
                      }
-                     else {
-                        return Promise.resolve({});
+                     if( response.headers.get('Content-Type') === 'application/problem+json' ) {
+                        return response.json();
                      }
+                     return response.text().then( detail => ({
+                        type: 'cannot-fetch-apps',
+                        title: 'Cannot fetch apps',
+                        detail
+                     }));
+                  } ),
+               fetch( '/api/apps/tickets' )
+                  .then( response => {
+                     if( response.ok ) {
+                        if( response.status === 200 ) {
+                           return response.json();
+                        }
+                        else {
+                           return Promise.resolve({});
+                        }
+                     }
+                     if( response.headers.get('Content-Type') === 'application/problem+json' ) {
+                        return response.json();
+                     }
+                     return response.text().then( detail => ({
+                        type: 'cannot-fetch-tickets',
+                        title: 'Cannot fetch tickets',
+                        detail
+                     }));
+                  } )
+            ]).then((values) => {
+               context.commit( 'endFetch' );
+               context.commit( "storeTickets", values[1] );
+               context.commit( "storeApps", values[0] );
+            });
+         },
+
+         changeServiceState( context, { appName, serviceName } ) {
+            const service = context.state.apps[ appName ].find( service => service.name === serviceName );
+            let newStatus;
+            if( service.state.status === 'running' ) {
+               newStatus = 'paused';
+            } else {
+               newStatus = 'running';
+            }
+
+            fetch(`/api/apps/${appName}/states/${serviceName}`, {
+               method: 'PUT',
+               headers: {
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json',
+               },
+               body: JSON.stringify( { status: newStatus } )
+            }).then(response => {
+               if( response.status === 202 ) {
+                  context.commit( "updateServiceStatus", { appName, serviceName, serviceStatus: newStatus } );
+               }
+            });
+         },
+
+         duplicateApp( context, { appToDuplicate, newAppName } ) {
+            context.commit( 'startFetch' );
+
+            fetch(
+               `/api/apps/${newAppName}?replicateFrom=${appToDuplicate}`,
+               {
+                  method: 'POST',
+                  headers: {
+                     'Content-Type': 'application/json',
+                     'Accept': 'application/json'
+                  },
+                  body: JSON.stringify([])
+               } )
+               .then( response => {
+                  const contentType = response.headers.get('Content-Type');
+                  if( contentType === 'application/json' || contentType === 'application/problem+json' ) {
+                     return response.json();
                   }
+                  return response.text().then( detail => ({
+                     type: 'cannot-duplicate-app',
+                     title: 'Cannot duplicate app',
+                     detail
+                  }));
+               })
+               .then( servicesOrResponseError => {
+                  context.commit( 'addApp', { appName: newAppName, servicesOrResponseError } );
+                  context.commit( 'endFetch' );
+               });
+         },
+
+         deleteApp( context, { appName } ) {
+            context.commit( 'startFetch' );
+
+            fetch(`/api/apps/${appName}`, { method: 'DELETE' })
+               .then( response => {
+                  if( response.status == 200 ) {
+                     return appName;
+                  }
+
                   if( response.headers.get('Content-Type') === 'application/problem+json' ) {
                      return response.json();
                   }
                   return response.text().then( detail => ({
-                     type: 'cannot-fetch-tickets',
-                     title: 'Cannot fetch tickets',
+                     type: 'cannot-delete-app',
+                     title: 'Cannot delete app',
                      detail
                   }));
-               } )
-         ]).then((values) => {
-            context.commit( 'endFetch' );
-            context.commit( "storeTickets", values[1] );
-            context.commit( "storeApps", values[0] );
-         });
-      },
-
-      changeServiceState( context, { appName, serviceName } ) {
-         const service = context.state.apps[ appName ].find( service => service.name === serviceName );
-         let newStatus;
-         if( service.state.status === 'running' ) {
-            newStatus = 'paused';
-         } else {
-            newStatus = 'running';
+               })
+               .then( appNameOrResponseError => {
+                  context.commit( 'deleteApp', appNameOrResponseError );
+                  context.commit( 'endFetch' );
+               })
          }
-
-         fetch(`/api/apps/${appName}/states/${serviceName}`, {
-            method: 'PUT',
-            headers: {
-               'Content-Type': 'application/json',
-               'Accept': 'application/json',
-            },
-            body: JSON.stringify( { status: newStatus } )
-         }).then(response => {
-            if( response.status === 202 ) {
-               context.commit( "updateServiceStatus", { appName, serviceName, serviceStatus: newStatus } );
-            }
-         });
-      },
-
-      duplicateApp( context, { appToDuplicate, newAppName } ) {
-         context.commit( 'startFetch' );
-
-         fetch(
-            `/api/apps/${newAppName}?replicateFrom=${appToDuplicate}`,
-            {
-               method: 'POST',
-               headers: {
-                  'Content-Type': 'application/json',
-                  'Accept': 'application/json'
-               },
-               body: JSON.stringify([])
-            } )
-            .then( response => {
-               const contentType = response.headers.get('Content-Type');
-               if( contentType === 'application/json' || contentType === 'application/problem+json' ) {
-                  return response.json();
-               }
-               return response.text().then( detail => ({
-                  type: 'cannot-duplicate-app',
-                  title: 'Cannot duplicate app',
-                  detail
-               }));
-            })
-            .then( servicesOrResponseError => {
-               context.commit( 'addApp', { appName: newAppName, servicesOrResponseError } );
-               context.commit( 'endFetch' );
-            });
-      },
-
-      deleteApp( context, { appName } ) {
-         context.commit( 'startFetch' );
-
-         fetch(`/api/apps/${appName}`, { method: 'DELETE' })
-            .then( response => {
-               if( response.status == 200 ) {
-                  return appName;
-               }
-
-               if( response.headers.get('Content-Type') === 'application/problem+json' ) {
-                  return response.json();
-               }
-               return response.text().then( detail => ({
-                  type: 'cannot-delete-app',
-                  title: 'Cannot delete app',
-                  detail
-               }));
-            })
-            .then( appNameOrResponseError => {
-               context.commit( 'deleteApp', appNameOrResponseError );
-               context.commit( 'endFetch' );
-            })
       }
-   }
-} );
+   } );
 
+
+   router.beforeResolve(to => {
+      if (to.query.appNameFilter) {
+         store.state.appNameFilter = to.query.appNameFilter;
+      }
+      else {
+         store.state.appNameFilter = '';
+      }
+   });
+
+   return store;
+}

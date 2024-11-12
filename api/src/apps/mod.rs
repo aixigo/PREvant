@@ -728,7 +728,7 @@ mod tests {
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &AppName::from_str("master-1.x").unwrap(),
+            &AppName::from_str("master-1x").unwrap(),
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("mariadb")],
@@ -738,7 +738,7 @@ mod tests {
 
         let configs = apps
             .infrastructure
-            .get_configs_of_app(&AppName::from_str("master-1.x").unwrap())
+            .get_configs_of_app(&AppName::from_str("master-1x").unwrap())
             .await?;
         assert_eq!(configs.len(), 1);
 

@@ -601,7 +601,7 @@ mod tests {
         let mut service_config = service_config!("mariadb");
         config.add_secrets_to(
             &mut service_config,
-            &AppName::from_str("master-1.x").unwrap(),
+            &AppName::from_str("master-1x").unwrap(),
         );
 
         let secret_file_content = service_config
@@ -648,7 +648,7 @@ mod tests {
         let mut service_config = service_config!("mariadb");
         config.add_secrets_to(
             &mut service_config,
-            &AppName::from_str("master-1.x").unwrap(),
+            &AppName::from_str("master-1x").unwrap(),
         );
 
         assert_eq!(service_config.files(), None);

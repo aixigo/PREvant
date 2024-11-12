@@ -76,7 +76,7 @@ impl FromStr for AppName {
 
     fn from_str(name: &str) -> Result<Self, Self::Err> {
         lazy_static! {
-            static ref INVALID_CHARS_REGEX: Regex = Regex::new("(\\s|/)").unwrap();
+            static ref INVALID_CHARS_REGEX: Regex = Regex::new("(\\s|/|\\.)").unwrap();
         }
 
         match INVALID_CHARS_REGEX.captures(name) {
@@ -113,7 +113,7 @@ impl<'r> FromFormField<'r> for AppName {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum AppNameError {
     #[error("Invalid characters in app name: “{invalid_chars}” are invalid.")]
     InvalidChars { invalid_chars: String },
@@ -131,7 +131,7 @@ impl From<Utf8Error> for AppNameError {
 
 impl From<AppNameError> for HttpApiError {
     fn from(err: AppNameError) -> Self {
-        HttpApiProblem::with_title(StatusCode::BAD_REQUEST)
+        HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST)
             .detail(format!("{}", err))
             .into()
     }
@@ -159,13 +159,35 @@ mod tests {
     fn should_not_create_app_name_app_name_contains_whitespaces() {
         let app_name = AppName::from_str(" master\n ");
 
-        assert!(app_name.is_err());
+        assert_eq!(
+            app_name,
+            Err(AppNameError::InvalidChars {
+                invalid_chars: String::from(" "),
+            })
+        );
     }
 
     #[test]
     fn should_not_create_app_name_app_name_contains_slashes() {
         let app_name = AppName::from_str("feature/xxx");
 
-        assert!(app_name.is_err());
+        assert_eq!(
+            app_name,
+            Err(AppNameError::InvalidChars {
+                invalid_chars: String::from("/"),
+            })
+        );
+    }
+
+    #[test]
+    fn should_not_create_app_name_app_name_contains_dot() {
+        let app_name = AppName::from_str("feature.xxx");
+
+        assert_eq!(
+            app_name,
+            Err(AppNameError::InvalidChars {
+                invalid_chars: String::from("."),
+            })
+        );
     }
 }

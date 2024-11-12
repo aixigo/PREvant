@@ -59,8 +59,6 @@
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
-
-      <router-view></router-view>
    </div>
 </template>
 

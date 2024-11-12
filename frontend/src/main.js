@@ -37,7 +37,8 @@ import { createApp, } from 'vue';
 import { createRouter, createWebHashHistory } from 'vue-router';
 
 import './scss/theme.scss';
-import App from './App.vue';
+import Main from './Main.vue';
+import Apps from './Apps.vue';
 import Navbar from './Navbar.vue';
 import OpenApiUI from './OpenApiUI.vue';
 import LogsDialog from './LogsDialog.vue';
@@ -45,7 +46,7 @@ import LogsDialog from './LogsDialog.vue';
 import {library} from '@fortawesome/fontawesome-svg-core';
 import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose, faDownload} from '@fortawesome/free-solid-svg-icons';
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome';
-import store from './store';
+import { createStore } from './store';
 
 library.add(faClipboard);
 library.add(faCode);
@@ -57,25 +58,21 @@ library.add(faTerminal);
 library.add(faTrash);
 library.add(faWindowClose);
 
-store.dispatch('fetchData');
-
-const router = createRouter({
+export const router = createRouter({
    history: createWebHashHistory(),
    routes: [
+      { path: '/', component: Apps, query: { appNameFilter: { type: String } } },
       { path: '/open-api-ui/:url', name: 'open-api-ui', component: OpenApiUI },
       { path: '/logs/:app/:service', name: 'logs', component: LogsDialog }
    ]
 });
 
-createApp(App)
-   .component('font-awesome-icon', FontAwesomeIcon)
-   .use(store)
-   .use(router)
-   .mount('#app')
+const store = createStore(router);
+store.dispatch('fetchData');
 
-createApp(Navbar)
+createApp(Main)
    .component('font-awesome-icon', FontAwesomeIcon)
    .use(store)
    .use(router)
-   .mount('#nav')
+   .mount('#main')
 
