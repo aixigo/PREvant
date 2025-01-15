@@ -97,7 +97,7 @@ pub struct Service {
 pub struct State {
     pub status: ServiceStatus,
     #[serde(skip)]
-    pub started_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Serialize, PartialEq)]
@@ -120,7 +120,7 @@ impl Service {
         self.config.container_type()
     }
 
-    pub fn started_at(&self) -> &DateTime<Utc> {
+    pub fn started_at(&self) -> &Option<DateTime<Utc>> {
         &self.state.started_at
     }
 
@@ -237,7 +237,7 @@ impl Serialize for ServiceWithHostMeta {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ServicesWithHostMeta(Vec<ServiceWithHostMeta>);
 
 impl Serialize for ServicesWithHostMeta {
@@ -331,7 +331,7 @@ mod tests {
                 id: String::from("some id"),
                 state: State {
                     status: ServiceStatus::Running,
-                    started_at: Utc::now(),
+                    started_at: Some(Utc::now()),
                 },
                 config: crate::sc!("mariadb", "mariadb:latest")
             })
@@ -360,7 +360,7 @@ mod tests {
                     id: String::from("some id"),
                     state: State {
                         status: ServiceStatus::Running,
-                        started_at: Utc::now(),
+                        started_at: Some(Utc::now()),
                     },
                     config: crate::sc!("postgres", "postgres:latest")
                 },
@@ -368,7 +368,7 @@ mod tests {
                     id: String::from("some id"),
                     state: State {
                         status: ServiceStatus::Running,
-                        started_at: Utc::now(),
+                        started_at: Some(Utc::now()),
                     },
                     config: crate::sc!("mariadb", "mariadb:latest")
                 }
@@ -406,7 +406,7 @@ mod tests {
                         id: String::from("some id"),
                         state: State {
                             status: ServiceStatus::Running,
-                            started_at: Utc::now(),
+                            started_at: Some(Utc::now()),
                         },
                         config: crate::sc!("postgres", "postgres:latest")
                     },
@@ -419,7 +419,7 @@ mod tests {
                         id: String::from("some id"),
                         state: State {
                             status: ServiceStatus::Running,
-                            started_at: Utc::now(),
+                            started_at: Some(Utc::now()),
                         },
                         config: crate::sc!("mariadb", "mariadb:latest")
                     },

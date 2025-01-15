@@ -56,7 +56,7 @@ use bollard::service::{
 };
 use bollard::volume::{CreateVolumeOptions, ListVolumesOptions};
 use bollard::Docker;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Utc};
 use futures::stream::BoxStream;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
@@ -1067,11 +1067,12 @@ impl Infrastructure for DockerInfrastructure {
         }
     }
 
-    async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder + Send>> {
+    async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder>> {
         Ok(Box::new(DockerHttpForwarder {}))
     }
 }
 
+#[derive(Clone)]
 struct DockerHttpForwarder;
 
 #[async_trait]
@@ -1303,7 +1304,7 @@ impl TryFrom<ContainerInspectResponse> for Service {
             .started_at
             .as_deref()
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .expect("started_at is mandatory for a docker container");
+            .map(DateTime::<Utc>::from);
 
         let status = match state.status.unwrap_or(ContainerStateStatusEnum::PAUSED) {
             ContainerStateStatusEnum::RUNNING => ServiceStatus::Running,
@@ -1313,10 +1314,7 @@ impl TryFrom<ContainerInspectResponse> for Service {
         Ok(Service {
             id: container_id,
             config,
-            state: State {
-                status,
-                started_at: started_at.into(),
-            },
+            state: State { status, started_at },
         })
     }
 }

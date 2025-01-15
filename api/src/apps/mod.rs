@@ -142,7 +142,7 @@ impl AppsService {
         })
     }
 
-    async fn http_forwarder(&self) -> anyhow::Result<Box<dyn HttpForwarder + Send>> {
+    async fn http_forwarder(&self) -> anyhow::Result<Box<dyn HttpForwarder>> {
         self.infrastructure.http_forwarder().await
     }
 
@@ -166,11 +166,11 @@ impl AppsService {
             loop {
                 debug!("Fetching list of apps to send updates.");
                 match infrastructure.fetch_services().await {
-                    Ok(service) => {
+                    Ok(services) => {
                         tx.send_if_modified(move |state| {
-                            if &service != state {
+                            if &services != state {
                                 debug!("List of apps changed, sending updates.");
-                                *state = service;
+                                *state = services;
                                 true
                             } else {
                                 false
@@ -1116,9 +1116,11 @@ Log msg 3 of service-a of app master
                 config: crate::sc!("service-a"),
                 state: State {
                     status: ServiceStatus::Running,
-                    started_at: DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
-                        .unwrap()
-                        .with_timezone(&Utc),
+                    started_at: Some(
+                        DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
+                            .unwrap()
+                            .with_timezone(&Utc)
+                    ),
                 }
             }]
             .into(),

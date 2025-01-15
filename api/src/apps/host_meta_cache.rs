@@ -60,7 +60,7 @@ struct Key {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct Value {
-    timestamp: DateTime<Utc>,
+    last_update_timestamp: DateTime<Utc>,
     web_host_meta: WebHostMeta,
 }
 
@@ -170,8 +170,16 @@ impl HostMetaCrawler {
                     else => continue,
                 };
 
+                let http_forwarder = match apps.http_forwarder().await {
+                    Ok(http_forwarder) => http_forwarder,
+                    Err(err) => {
+                        error!("Cannot acquire http forwarder for crawling web host meta: {err}");
+                        continue;
+                    }
+                };
+
                 if let Some(timestamp) = self
-                    .crawl(apps.clone(), &services, timestamp_prevant_startup)
+                    .crawl(http_forwarder, &services, timestamp_prevant_startup)
                     .await
                 {
                     self.update_watch_tx.send_replace(timestamp);
@@ -182,13 +190,13 @@ impl HostMetaCrawler {
 
     async fn crawl(
         &mut self,
-        all_apps: Arc<Apps>,
+        http_forwarder: Box<dyn HttpForwarder>,
         apps: &HashMap<AppName, Services>,
         since_timestamp: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
         self.clear_stale_web_host_meta(apps);
 
-        let services_without_host_meta = apps
+        let running_services_without_host_meta = apps
             .iter()
             .flat_map(|(app_name, services)| {
                 services
@@ -202,16 +210,17 @@ impl HostMetaCrawler {
                         (key, service.clone())
                     })
             })
+            .filter(|(_, service)| *service.status() == ServiceStatus::Running)
             .filter(|(key, _service)| !self.writer.contains_key(key))
             .collect::<Vec<(Key, Service)>>();
 
-        if services_without_host_meta.is_empty() {
+        if running_services_without_host_meta.is_empty() {
             return None;
         }
 
         debug!(
             "Resolving web host meta data for {:?}.",
-            services_without_host_meta
+            running_services_without_host_meta
                 .iter()
                 .map(|(k, service)| format!("({}, {})", k.app_name, service.service_name()))
                 .fold(String::new(), |a, b| a + &b + ", ")
@@ -219,8 +228,8 @@ impl HostMetaCrawler {
         let now = Utc::now();
         let duration_prevant_startup = Utc::now().signed_duration_since(since_timestamp);
         let resolved_host_meta_infos = Self::resolve_host_meta(
-            all_apps,
-            services_without_host_meta,
+            http_forwarder,
+            running_services_without_host_meta,
             duration_prevant_startup,
         )
         .await;
@@ -235,7 +244,7 @@ impl HostMetaCrawler {
             self.writer.insert(
                 key,
                 Arc::new(Value {
-                    timestamp: now,
+                    last_update_timestamp: now,
                     web_host_meta,
                 }),
             );
@@ -267,11 +276,11 @@ impl HostMetaCrawler {
                 };
 
                 match service {
-                    Some(service) => {
-                        *service.status() == ServiceStatus::Paused
-                            || *service.started_at() > value.timestamp
+                    // Return true if the service has been restarted in the meantime
+                    Some(service) if service.started_at().is_some() => {
+                        service.started_at().unwrap() > value.last_update_timestamp
                     }
-                    None => true,
+                    _ => true,
                 }
             })
             .map(|(key, _)| key)
@@ -290,7 +299,7 @@ impl HostMetaCrawler {
     }
 
     async fn resolve_host_meta(
-        apps: Arc<Apps>,
+        http_forwarder: Box<dyn HttpForwarder>,
         services_without_host_meta: Vec<(Key, Service)>,
         duration_prevant_startup: chrono::Duration,
     ) -> Vec<(Key, Service, WebHostMeta)> {
@@ -301,20 +310,17 @@ impl HostMetaCrawler {
 
         let mut futures = services_without_host_meta
             .into_iter()
-            .map(|(key, service)| async {
-                let http_forwarder = match apps.http_forwarder().await {
-                    Ok(portforwarder) => portforwarder,
-                    Err(err) => {
-                        error!(
-                            "Cannot forward TCP connection for {}, {}: {err}",
-                            key.app_name,
-                            service.service_name()
-                        );
-                        return (key, service, WebHostMeta::empty());
-                    }
-                };
-                Self::resolve_web_host_meta(http_forwarder, key, service, duration_prevant_startup)
+            .map(|(key, service)| {
+                let http_forwarder = dyn_clone::clone_box(&*http_forwarder);
+                async {
+                    Self::resolve_web_host_meta(
+                        http_forwarder,
+                        key,
+                        service,
+                        duration_prevant_startup,
+                    )
                     .await
+                }
             })
             .collect::<FuturesUnordered<_>>();
 
@@ -383,15 +389,19 @@ impl HostMetaCrawler {
                     err
                 );
 
-                let duration = Utc::now().signed_duration_since(*service.started_at());
-                if duration >= chrono::Duration::minutes(5)
-                    && duration_prevant_startup >= chrono::Duration::minutes(1)
-                {
-                    info!(
-                        "Service {} is running for {}, therefore, it will be assumed that host-meta.json is not available.",
-                        Paint::magenta(service.service_name()), duration
-                    );
-                    WebHostMeta::empty()
+                if let Some(started_at) = service.started_at() {
+                    let duration = Utc::now().signed_duration_since(started_at);
+                    if duration >= chrono::Duration::minutes(5)
+                        && duration_prevant_startup >= chrono::Duration::minutes(1)
+                    {
+                        info!(
+                            "Service {} is running for {}, therefore, it will be assumed that host-meta.json is not available.",
+                            Paint::magenta(service.service_name()), duration
+                        );
+                        WebHostMeta::empty()
+                    } else {
+                        WebHostMeta::invalid()
+                    }
                 } else {
                     WebHostMeta::invalid()
                 }
@@ -399,11 +409,12 @@ impl HostMetaCrawler {
         };
         (key, service, meta)
     }
+
     #[cfg(test)]
     pub fn fake_empty_host_meta_info(&mut self, app_name: AppName, service_id: String) {
         let web_host_meta = WebHostMeta::empty();
         let value = Arc::new(Value {
-            timestamp: chrono::Utc::now(),
+            last_update_timestamp: chrono::Utc::now(),
             web_host_meta,
         });
 
@@ -417,5 +428,161 @@ impl HostMetaCrawler {
 
         self.writer.refresh();
         self.writer.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::service::State;
+    use anyhow::Result;
+    use url::Url;
+
+    #[derive(Clone)]
+    struct DummyHttpForwarder {}
+
+    #[async_trait]
+    impl HttpForwarder for DummyHttpForwarder {
+        async fn request_web_host_meta(
+            &self,
+            _app_name: &AppName,
+            _service_name: &str,
+            _request: http::Request<http_body_util::Empty<bytes::Bytes>>,
+        ) -> Result<Option<WebHostMeta>> {
+            Ok(Some(WebHostMeta::with_version(String::from("1.2.3"))))
+        }
+    }
+
+    #[tokio::test]
+    async fn crawl_host_meta() {
+        let base_url = Url::parse("https://example.com").unwrap();
+        let nginx_service = Service {
+            id: String::from("nginx"),
+            state: State {
+                status: ServiceStatus::Running,
+                started_at: Some(Utc::now()),
+            },
+            config: crate::sc!("nginx", "nginx:latest"),
+        };
+        let forwarder = Box::new(DummyHttpForwarder {});
+        let apps = HashMap::from([(
+            AppName::master(),
+            Services::from(vec![nginx_service.clone()]),
+        )]);
+
+        let (cache, mut crawler) = super::new();
+        crawler.crawl(forwarder, &apps, Utc::now()).await;
+
+        let apps = cache.update_meta_data(apps, &RequestInfo::new(base_url.clone()));
+        assert_eq!(
+            apps,
+            HashMap::from([(
+                AppName::master(),
+                ServicesWithHostMeta::from(vec![
+                    ServiceWithHostMeta::from_service_and_web_host_meta(
+                        nginx_service,
+                        WebHostMeta::with_version(String::from("1.2.3")),
+                        base_url,
+                        &AppName::master()
+                    )
+                ]),
+            )])
+        )
+    }
+
+    #[tokio::test]
+    async fn crawl_no_host_meta_for_paused_service() {
+        let base_url = Url::parse("https://example.com").unwrap();
+        let nginx_service = Service {
+            id: String::from("nginx"),
+            state: State {
+                status: ServiceStatus::Paused,
+                started_at: None,
+            },
+            config: crate::sc!("nginx", "nginx:latest"),
+        };
+
+        let forwarder = Box::new(DummyHttpForwarder {});
+        let apps = HashMap::from([(
+            AppName::master(),
+            Services::from(vec![nginx_service.clone()]),
+        )]);
+
+        let (cache, mut crawler) = super::new();
+        crawler.crawl(forwarder, &apps, Utc::now()).await;
+
+        let apps = cache.update_meta_data(apps, &RequestInfo::new(base_url.clone()));
+        assert_eq!(
+            apps,
+            HashMap::from([(
+                AppName::master(),
+                ServicesWithHostMeta::from(vec![
+                    ServiceWithHostMeta::from_service_and_web_host_meta(
+                        nginx_service,
+                        WebHostMeta::empty(),
+                        base_url,
+                        &AppName::master()
+                    )
+                ]),
+            )])
+        )
+    }
+
+    #[tokio::test]
+    async fn clear_host_meta_for_paused_service() {
+        let base_url = Url::parse("https://example.com").unwrap();
+
+        // populate the host meta cache first
+        let nginx_service = Service {
+            id: String::from("nginx"),
+            state: State {
+                status: ServiceStatus::Running,
+                started_at: Some(Utc::now()),
+            },
+            config: crate::sc!("nginx", "nginx:latest"),
+        };
+
+        let forwarder = Box::new(DummyHttpForwarder {});
+        let apps = HashMap::from([(
+            AppName::master(),
+            Services::from(vec![nginx_service]),
+        )]);
+
+        let (cache, mut crawler) = super::new();
+        crawler.crawl(forwarder, &apps, Utc::now()).await;
+
+        // recrawl data for paused nginx
+        let nginx_service = Service {
+            id: String::from("nginx"),
+            state: State {
+                status: ServiceStatus::Paused,
+                started_at: None,
+            },
+            config: crate::sc!("nginx", "nginx:latest"),
+        };
+
+        let forwarder = Box::new(DummyHttpForwarder {});
+        let apps = HashMap::from([(
+            AppName::master(),
+            Services::from(vec![nginx_service.clone()]),
+        )]);
+
+        crawler.crawl(forwarder, &apps, Utc::now()).await;
+
+        let apps = cache.update_meta_data(apps, &RequestInfo::new(base_url.clone()));
+        assert_eq!(
+            apps,
+            HashMap::from([(
+                AppName::master(),
+                ServicesWithHostMeta::from(vec![
+                    ServiceWithHostMeta::from_service_and_web_host_meta(
+                        nginx_service,
+                        WebHostMeta::empty(),
+                        base_url,
+                        &AppName::master()
+                    )
+                ]),
+            )])
+        )
     }
 }

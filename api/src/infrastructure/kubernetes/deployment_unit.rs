@@ -1148,7 +1148,7 @@ mod tests {
             config: crate::sc!("nginx", "nginx:1.15"),
             state: State {
                 status: crate::models::service::ServiceStatus::Running,
-                started_at: Utc::now(),
+                started_at: Some(Utc::now()),
             },
         }));
 
@@ -1188,7 +1188,7 @@ mod tests {
             config: crate::sc!("postgres", "postgres"),
             state: State {
                 status: crate::models::service::ServiceStatus::Running,
-                started_at: Utc::now(),
+                started_at: Some(Utc::now()),
             },
         }));
 

@@ -35,6 +35,11 @@ pub struct RequestInfo {
 }
 
 impl RequestInfo {
+    #[cfg(test)]
+    pub fn new(base_url: Url) -> Self {
+        Self { base_url }
+    }
+
     pub fn get_base_url(&self) -> &Url {
         &self.base_url
     }

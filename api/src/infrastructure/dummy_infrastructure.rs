@@ -110,9 +110,11 @@ impl Infrastructure for DummyInfrastructure {
                     config: ServiceConfig::clone(config),
                     state: State {
                         status: ServiceStatus::Running,
-                        started_at: DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
-                            .unwrap()
-                            .with_timezone(&Utc),
+                        started_at: Some(
+                            DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
+                                .unwrap()
+                                .with_timezone(&Utc),
+                        ),
                     },
                 };
 
@@ -158,9 +160,11 @@ impl Infrastructure for DummyInfrastructure {
                 config: ServiceConfig::clone(&sc),
                 state: State {
                     status: ServiceStatus::Running,
-                    started_at: DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
-                        .unwrap()
-                        .with_timezone(&Utc),
+                    started_at: Some(
+                        DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
+                            .unwrap()
+                            .with_timezone(&Utc),
+                    ),
                 },
             })
             .collect::<Vec<_>>()
@@ -181,11 +185,11 @@ impl Infrastructure for DummyInfrastructure {
                         config: ServiceConfig::clone(&sc),
                         state: State {
                             status: ServiceStatus::Running,
-                            started_at: DateTime::parse_from_rfc3339(
-                                "2019-07-18T07:25:00.000000000Z",
-                            )
-                            .unwrap()
-                            .with_timezone(&Utc),
+                            started_at: Some(
+                                DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
+                                    .unwrap()
+                                    .with_timezone(&Utc),
+                            ),
                         },
                     })
                     .collect::<Vec<_>>(),
@@ -239,7 +243,7 @@ impl Infrastructure for DummyInfrastructure {
         self
     }
 
-    async fn http_forwarder(&self) -> Result<Box<dyn super::HttpForwarder + Send>> {
+    async fn http_forwarder(&self) -> Result<Box<dyn super::HttpForwarder>> {
         unimplemented!("Currently not supported by the dummy infra")
     }
 }
