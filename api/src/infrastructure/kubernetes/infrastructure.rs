@@ -651,7 +651,7 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(Some(service))
     }
 
-    async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder + Send>> {
+    async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder>> {
         let client = self.client().await?;
         Ok(Box::new(K8sHttpForwarder { client }))
     }
@@ -772,6 +772,7 @@ impl Infrastructure for KubernetesInfrastructure {
     }
 }
 
+#[derive(Clone)]
 struct K8sHttpForwarder {
     client: kube::Client,
 }
@@ -858,16 +859,12 @@ impl TryFrom<(V1Deployment, Option<V1Pod>)> for Service {
             })
             .unwrap_or(ServiceStatus::Paused);
 
-        let started_at = deployment_and_pod
-            .1
-            .map(|pod| {
-                pod.status
-                    .as_ref()
-                    .and_then(|s| s.start_time.as_ref())
-                    .map(|t| t.0)
-                    .unwrap_or_else(Utc::now)
-            })
-            .unwrap_or_else(Utc::now);
+        let started_at = deployment_and_pod.1.and_then(|pod| {
+            pod.status
+                .as_ref()
+                .and_then(|s| s.start_time.as_ref())
+                .map(|t| t.0)
+        });
 
         Ok(Service {
             id: name,

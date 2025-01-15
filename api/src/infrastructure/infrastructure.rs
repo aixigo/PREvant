@@ -92,7 +92,7 @@ pub trait Infrastructure: Send + Sync + DynClone {
         status: ServiceStatus,
     ) -> Result<Option<Service>>;
 
-    async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder + Send>>;
+    async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder>>;
 
     /// Determines the [router rule](https://doc.traefik.io/traefik/routing/routers/) that points
     /// to PREvant it self so services will be reachable on the same route, e.g. host name.
@@ -108,7 +108,7 @@ pub trait Infrastructure: Send + Sync + DynClone {
 
 /// Makes sure that HTTP requests from PREvant will be forwarded to the running services.
 #[async_trait]
-pub trait HttpForwarder {
+pub trait HttpForwarder: Send + Sync + DynClone {
     async fn request_web_host_meta(
         &self,
         app_name: &AppName,
