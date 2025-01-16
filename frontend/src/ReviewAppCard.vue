@@ -111,9 +111,8 @@
                   <div class="ra-build-infos__wrapper"
                        v-if="isExpanded( container )">
                      <div class="ra-build-infos">
-                        <template v-if="container.openApiUrl">
-                           <router-link :to="{ name: 'open-api-ui', params: {  url: container.openApiUrl }, meta: { title: container.name }}">API Documentation</router-link>
-                        </template>
+                        <router-link v-if="container.openApiUrl" :to="{ name: 'open-api-ui', params: {  url: container.openApiUrl }, meta: { title: container.name }}">Open API Documentation</router-link>
+                        <router-link v-if="container.asyncApiUrl" :to="{ name: 'async-api-ui', params: { url: container.asyncApiUrl }, meta: { title: container.name }}">Async API Documentation</router-link>
                         <router-link :to="{ name: 'logs', params: {  app: reviewApp.name, service: container.name }}">Logs</router-link>
                      </div>
 
@@ -256,7 +255,7 @@
          },
          isExpanded(container) {
             if (this.expandedContainers[container.name] == undefined) {
-               return container.openApiUrl != null;
+               return container.openApiUrl != null || container.asyncApiUrl != null;
             }
 
             return this.expandedContainers[container.name] == true;

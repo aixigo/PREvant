@@ -73,9 +73,9 @@ export function createStore(router) {
 
                const containers = [
                   ...appContainers
-                     .map( ( { name, url, openApiUrl, version, type, state } ) => {
+                     .map( ( { name, url, openApiUrl, asyncApiUrl, version, type, state } ) => {
                         return {
-                            name, url, openApiUrl, version, type, status: state.status
+                            name, url, openApiUrl, asyncApiUrl, version, type, status: state.status
                         };
                      } )
                ];

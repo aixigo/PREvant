@@ -198,7 +198,9 @@ impl Serialize for ServiceWithHostMeta {
             #[serde(skip_serializing_if = "Option::is_none")]
             version: Option<Version>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            open_api_url: Option<Url>,
+            open_api_url: Option<&'a Url>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            async_api_url: Option<&'a Url>,
             state: &'a State,
         }
 
@@ -230,6 +232,7 @@ impl Serialize for ServiceWithHostMeta {
             service_type: self.config.container_type().to_string(),
             version,
             open_api_url,
+            async_api_url: self.web_host_meta.asyncapi(),
             state: &self.state,
         };
 
