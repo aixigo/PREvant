@@ -104,13 +104,24 @@ impl WebHostMeta {
         }
     }
 
-    pub fn openapi(&self) -> Option<Url> {
-        match &self.links {
+    pub fn openapi(&self) -> Option<&Url> {
+        match self.links.as_ref() {
             None => None,
             Some(links) => links
                 .iter()
                 .find(|link| link.rel == "https://github.com/OAI/OpenAPI-Specification")
-                .map(|link| link.href.clone()),
+                .map(|link| &link.href),
+        }
+    }
+
+
+    pub fn asyncapi(&self) -> Option<&Url> {
+        match self.links.as_ref() {
+            None => None,
+            Some(links) => links
+                .iter()
+                .find(|link| link.rel == "https://github.com/asyncapi/spec")
+                .map(|link| &link.href),
         }
     }
 
@@ -280,7 +291,7 @@ mod tests {
 
         assert_eq!(
             meta.openapi(),
-            Some(Url::parse("https://speca.io/speca/petstore-api").unwrap())
+            Some(&Url::parse("https://speca.io/speca/petstore-api").unwrap())
         );
     }
 
@@ -299,7 +310,43 @@ mod tests {
 
         assert_eq!(
             meta.openapi(),
-            Some(Url::parse("http://example.com/speca/petstore-api").unwrap())
+            Some(&Url::parse("http://example.com/speca/petstore-api").unwrap())
+        );
+    }
+
+    #[test]
+    fn should_parse_meta_with_asyncapi_property() {
+        let json = r#"{
+          "links":[{
+            "rel": "https://github.com/asyncapi/spec",
+            "href":"https://raw.githubusercontent.com/asyncapi/spec/refs/heads/master/examples/streetlights-kafka-asyncapi.yml"
+          }]
+        }"#;
+
+        let meta = serde_json::from_str::<WebHostMeta>(json).unwrap();
+
+        assert_eq!(
+            meta.asyncapi(),
+            Some(&Url::parse("https://raw.githubusercontent.com/asyncapi/spec/refs/heads/master/examples/streetlights-kafka-asyncapi.yml").unwrap())
+        );
+    }
+
+    #[test]
+    fn should_replace_base_url_in_async_links() {
+        let json = r#"{
+          "links":[{
+            "rel": "https://github.com/asyncapi/spec",
+            "href":"https://raw.githubusercontent.com/asyncapi/spec/refs/heads/master/examples/streetlights-kafka-asyncapi.yml"
+          }]
+        }"#;
+
+        let meta = serde_json::from_str::<WebHostMeta>(json)
+            .unwrap()
+            .with_base_url(&Url::parse("http://example.com").unwrap());
+
+        assert_eq!(
+            meta.asyncapi(),
+            Some(&Url::parse("http://example.com/asyncapi/spec/refs/heads/master/examples/streetlights-kafka-asyncapi.yml").unwrap())
         );
     }
 }

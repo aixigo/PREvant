@@ -126,6 +126,10 @@ When you request the list of apps and services running through the frontend, PRE
     {
       "rel": "https://github.com/OAI/OpenAPI-Specification",
       "href": "https://example.com/master/service-name/swagger.json"
+    },
+    {
+      "rel": "https://github.com/asyncapi/spec",
+      "href": "https://github.com/asyncapi/spec/blob/master/examples/streetlights-kafka-asyncapi.yml"
     }
   ]
 }
@@ -136,7 +140,8 @@ This sample document contains the relevant information displayed in the frontend
 - The software version of the service (see `https://schema.org/softwareVersion`)
 - The build time of the service (see `https://schema.org/dateModified`)
 - The git commit id of the service (see `https://git-scm.com/docs/git-commit`)
-- The link to the API specification (see `https://github.com/OAI/OpenAPI-Specification`)
+- The link to the OpenAPI specification (see `https://github.com/OAI/OpenAPI-Specification`)
+- The link to the AsyncAPI specification (see `https://github.com/asyncapi/spec`)
 
 In order to generate the correct link to the API specification, PREvant adds following headers to each of these requests:
 

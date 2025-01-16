@@ -40,6 +40,7 @@ import './scss/theme.scss';
 import Main from './Main.vue';
 import Apps from './Apps.vue';
 import Navbar from './Navbar.vue';
+import AsyncApiUI from './AsyncApiUI.vue';
 import OpenApiUI from './OpenApiUI.vue';
 import LogsDialog from './LogsDialog.vue';
 
@@ -63,6 +64,7 @@ export const router = createRouter({
    routes: [
       { path: '/', component: Apps, query: { appNameFilter: { type: String } } },
       { path: '/open-api-ui/:url', name: 'open-api-ui', component: OpenApiUI },
+      { path: '/async-api-ui/:url', name: 'async-api-ui', component: AsyncApiUI },
       { path: '/logs/:app/:service', name: 'logs', component: LogsDialog }
    ]
 });

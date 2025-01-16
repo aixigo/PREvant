@@ -404,7 +404,12 @@ components:
           type: string
           format: url
           example: https://speca.io/speca/petstore-api
-          description: The URL pointing to the OpenAPI specification of the service
+          description: The URL pointing to the [OpenAPI specification](https://github.com/OAI/OpenAPI-Specification) of the service
+        asyncApiUrl:
+          type: string
+          format: url
+          example: https://raw.githubusercontent.com/asyncapi/spec/refs/heads/master/examples/streetlights-kafka-asyncapi.yml
+          description: The URL pointing to the [AsyncAPI specification](https://github.com/asyncapi/spec) of the service
       required:
         - name
         - type
