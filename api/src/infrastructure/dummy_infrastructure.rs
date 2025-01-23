@@ -34,6 +34,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use futures::stream::{self, BoxStream};
+use log::info;
 use multimap::MultiMap;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -125,6 +126,10 @@ impl Infrastructure for DummyInfrastructure {
         }
 
         Ok(s)
+    }
+
+    async fn fetch_services_of_app(&self, _app_name: &AppName) -> Result<Option<Services>> {
+        todo!()
     }
 
     async fn deploy_services(

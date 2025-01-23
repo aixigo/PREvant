@@ -30,12 +30,13 @@ use crate::http_result::HttpResult;
 use crate::models::service::Services;
 use crate::models::web_hook_info::WebHookInfo;
 use crate::models::AppName;
+use log::info;
 use rocket::serde::json::Json;
 use rocket::State;
 use std::str::FromStr;
 use std::sync::Arc;
 
-#[post("/webhooks", format = "application/json", data = "<web_hook_info>")]
+#[rocket::post("/webhooks", format = "application/json", data = "<web_hook_info>")]
 pub async fn webhooks(
     apps: &State<Arc<Apps>>,
     web_hook_info: WebHookInfo,

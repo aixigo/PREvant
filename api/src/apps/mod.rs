@@ -44,6 +44,9 @@ use futures::StreamExt;
 use handlebars::RenderError;
 pub use host_meta_cache::new as host_meta_crawling;
 pub use host_meta_cache::HostMetaCache;
+use log::debug;
+use log::error;
+use log::trace;
 pub use routes::{apps_routes, delete_app_sync};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
@@ -144,6 +147,22 @@ impl AppsService {
 
     async fn http_forwarder(&self) -> anyhow::Result<Box<dyn HttpForwarder>> {
         self.infrastructure.http_forwarder().await
+    }
+
+    pub async fn fetch_service_config(
+        &self,
+        app_name: &AppName,
+        service_name: &str,
+    ) -> Result<Option<Service>, AppsServiceError> {
+        Ok(self
+            .infrastructure
+            .fetch_services_of_app(app_name)
+            .await?
+            .and_then(|services| {
+                services
+                    .into_iter()
+                    .find(|service| service.service_name() == service_name)
+            }))
     }
 
     pub async fn fetch_app_names(&self) -> Result<HashSet<AppName>, AppsServiceError> {

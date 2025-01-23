@@ -33,14 +33,19 @@ pub use self::container::ContainerConfig;
 pub use self::runtime::Runtime;
 use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::AppName;
+use crate::models::Image;
 use crate::models::ServiceConfig;
-use app_selector::AppSelector;
 use clap::Parser;
 use figment::providers::{Env, Format, Toml};
 use figment::value::{Dict, Map, Tag, Value};
 use figment::{Metadata, Profile};
+use handlebars::Handlebars;
+use handlebars::RenderError;
+use handlebars::RenderErrorReason;
 use jsonschema::Validator;
 use secstr::SecUtf8;
+use selectors::AppSelector;
+use selectors::ImageSelector;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::convert::From;
@@ -49,12 +54,13 @@ use std::io::Error as IOError;
 use std::path::PathBuf;
 use std::str::FromStr;
 use toml::de::Error as TomlError;
+use url::Url;
 
-mod app_selector;
 mod companion;
 mod container;
 mod runtime;
 mod secret;
+mod selectors;
 
 #[derive(Default, Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -159,6 +165,9 @@ pub struct Config {
     hooks: Option<BTreeMap<String, PathBuf>>,
     #[serde(default)]
     registries: BTreeMap<String, Registry>,
+    #[serde(default)]
+    #[serde(rename = "staticHostMeta")]
+    static_host_meta: Vec<StaticHostMetaRaw>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -286,6 +295,62 @@ impl Config {
     pub fn app_limit(&self) -> Option<usize> {
         self.applications.max
     }
+
+    pub fn static_host_meta(&self, image: &Image) -> Result<Option<StaticHostMeta>, RenderError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Img {
+            tag: String,
+        }
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Data {
+            image: Img,
+        }
+
+        let handlebars = Handlebars::new();
+        let data = Data {
+            image: Img {
+                tag: image.tag().unwrap_or_default(),
+            },
+        };
+
+        self.static_host_meta
+            .iter()
+            .find(|static_host_meta| static_host_meta.image_selector.matches(image))
+            .map(|static_host_meta| {
+                let open_api_spec_url = static_host_meta
+                    .open_api_spec_url
+                    .as_ref()
+                    .map(|url| handlebars.render_template(&url, &data))
+                    .transpose()?
+                    .map(|url| {
+                        Url::parse(&url).map_err(|e| RenderErrorReason::Other(e.to_string()))
+                    })
+                    .transpose()?;
+
+                Ok(StaticHostMeta {
+                    image_tag_as_version: static_host_meta.image_tag_as_version,
+                    open_api_spec_url,
+                })
+            })
+            .transpose()
+    }
+}
+
+#[derive(Clone, Default, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct StaticHostMetaRaw {
+    image_selector: ImageSelector,
+    #[serde(default)]
+    image_tag_as_version: bool,
+    open_api_spec_url: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct StaticHostMeta {
+    pub image_tag_as_version: bool,
+    pub open_api_spec_url: Option<Url>,
 }
 
 impl JiraConfig {

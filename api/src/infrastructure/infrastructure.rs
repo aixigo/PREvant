@@ -41,6 +41,8 @@ pub trait Infrastructure: Send + Sync + DynClone {
     /// Returns a `map` of `app-name` and the running services for this app.
     async fn fetch_services(&self) -> Result<HashMap<AppName, Services>>;
 
+    async fn fetch_services_of_app(&self, app_name: &AppName) -> Result<Option<Services>>;
+
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
         Ok(self
             .fetch_services()
@@ -119,6 +121,8 @@ pub trait HttpForwarder: Send + Sync + DynClone {
 
 impl dyn Infrastructure {
     /// Returns the configuration of all services running for the given application name.
+    ///
+    /// Please, note that this returns only instances and replicas
     pub async fn get_configs_of_app(&self, app_name: &AppName) -> Result<Vec<ServiceConfig>> {
         let mut services = self.fetch_services().await?;
         Ok(services.remove(app_name).map_or_else(Vec::new, |services| {

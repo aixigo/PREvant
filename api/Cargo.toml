@@ -45,6 +45,7 @@ pest = "2.7"
 pest_derive = "2.7"
 regex = "1.11"
 regex-syntax = "0.8"
+reqwest = "0.12"
 rocket = { version = "0.5", features = ["json"] }
 schemars = "0.8"
 secstr = { version = "0.5", features = ["serde"] }

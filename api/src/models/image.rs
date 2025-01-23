@@ -126,7 +126,6 @@ impl PartialEq for Image {
 }
 
 impl Image {
-    #[cfg(test)]
     pub fn tag(&self) -> Option<String> {
         match &self {
             Image::Digest { .. } => None,

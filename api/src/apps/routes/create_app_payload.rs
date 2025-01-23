@@ -98,14 +98,15 @@ mod tests {
     use rocket::{http::ContentType, local::asynchronous::Client};
     use serde_json::json;
 
+    #[rocket::post("/", data = "<data>")]
+    fn test_route(
+        data: Result<CreateAppPayload, HttpApiProblem>,
+    ) -> Result<&'static str, HttpApiError> {
+        data.map(|_| "dummy").map_err(HttpApiError::from)
+    }
+
     async fn create_client() -> Client {
-        #[post("/", data = "<data>")]
-        fn test_route(
-            data: Result<CreateAppPayload, HttpApiProblem>,
-        ) -> Result<&'static str, HttpApiError> {
-            data.map(|_| "dummy").map_err(HttpApiError::from)
-        }
-        let rocket = rocket::build().mount("/", routes![test_route]);
+        let rocket = rocket::build().mount("/", rocket::routes![test_route]);
 
         Client::tracked(rocket).await.expect("valid rocket")
     }

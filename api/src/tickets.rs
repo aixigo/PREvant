@@ -32,6 +32,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use jira_query::{JiraInstance, JiraQueryError};
+use log::debug;
 use rocket::serde::json::Json;
 use rocket::State;
 use std::collections::HashMap;
@@ -40,7 +41,7 @@ use std::sync::Arc;
 
 /// Analyzes running containers and returns a map of `review-app-name` with the
 /// corresponding `TicketInfo`.
-#[get("/apps/tickets", format = "application/json")]
+#[rocket::get("/apps/tickets", format = "application/json")]
 pub async fn tickets(
     config_state: &State<Config>,
     apps_service: &State<Arc<Apps>>,
