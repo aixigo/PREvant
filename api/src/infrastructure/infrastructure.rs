@@ -28,7 +28,7 @@ use super::traefik::TraefikIngressRoute;
 use crate::config::ContainerConfig;
 use crate::deployment::DeploymentUnit;
 use crate::models::service::{Service, ServiceStatus, Services};
-use crate::models::{AppName, ContainerType, ServiceConfig, WebHostMeta};
+use crate::models::{AppName, WebHostMeta};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
@@ -40,6 +40,8 @@ use std::collections::{HashMap, HashSet};
 pub trait Infrastructure: Send + Sync + DynClone {
     /// Returns a `map` of `app-name` and the running services for this app.
     async fn fetch_services(&self) -> Result<HashMap<AppName, Services>>;
+
+    async fn fetch_services_of_app(&self, app_name: &AppName) -> Result<Option<Services>>;
 
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
         Ok(self
@@ -115,21 +117,4 @@ pub trait HttpForwarder: Send + Sync + DynClone {
         service_name: &str,
         request: http::Request<http_body_util::Empty<bytes::Bytes>>,
     ) -> Result<Option<WebHostMeta>>;
-}
-
-impl dyn Infrastructure {
-    /// Returns the configuration of all services running for the given application name.
-    pub async fn get_configs_of_app(&self, app_name: &AppName) -> Result<Vec<ServiceConfig>> {
-        let mut services = self.fetch_services().await?;
-        Ok(services.remove(app_name).map_or_else(Vec::new, |services| {
-            services
-                .into_iter()
-                .filter(|service| {
-                    *service.container_type() == ContainerType::Instance
-                        || *service.container_type() == ContainerType::Replica
-                })
-                .map(|service| service.config)
-                .collect()
-        }))
-    }
 }

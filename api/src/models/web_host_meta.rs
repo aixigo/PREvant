@@ -76,7 +76,36 @@ impl WebHostMeta {
         }
     }
 
-    #[cfg(test)]
+    pub fn with_version_and_open_api_spec_link(
+        version: Option<String>,
+        open_api_spec_url: Option<Url>,
+    ) -> Self {
+        match (version, open_api_spec_url) {
+            (None, None) => Self::empty(),
+            (None, Some(open_api_spec_url)) => Self {
+                properties: None,
+                links: Some(vec![Link {
+                    rel: String::from("https://github.com/OAI/OpenAPI-Specification"),
+                    href: open_api_spec_url,
+                }]),
+                valid: true,
+            },
+            (Some(version), None) => Self::with_version(version),
+            (Some(version), Some(open_api_spec_url)) => Self {
+                properties: Some(Properties {
+                    version: Some(version),
+                    commit: None,
+                    date_modified: None,
+                }),
+                links: Some(vec![Link {
+                    rel: String::from("https://github.com/OAI/OpenAPI-Specification"),
+                    href: open_api_spec_url,
+                }]),
+                valid: true,
+            },
+        }
+    }
+
     pub fn with_version(version: String) -> Self {
         Self {
             properties: Some(Properties {
@@ -113,7 +142,6 @@ impl WebHostMeta {
                 .map(|link| &link.href),
         }
     }
-
 
     pub fn asyncapi(&self) -> Option<&Url> {
         match self.links.as_ref() {

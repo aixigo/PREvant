@@ -33,14 +33,19 @@ pub use self::container::ContainerConfig;
 pub use self::runtime::Runtime;
 use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::AppName;
+use crate::models::Image;
 use crate::models::ServiceConfig;
-use app_selector::AppSelector;
 use clap::Parser;
 use figment::providers::{Env, Format, Toml};
 use figment::value::{Dict, Map, Tag, Value};
 use figment::{Metadata, Profile};
+use handlebars::Handlebars;
+use handlebars::RenderError;
+use handlebars::RenderErrorReason;
 use jsonschema::Validator;
 use secstr::SecUtf8;
+use selectors::AppSelector;
+use selectors::ImageSelector;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::convert::From;
@@ -49,12 +54,13 @@ use std::io::Error as IOError;
 use std::path::PathBuf;
 use std::str::FromStr;
 use toml::de::Error as TomlError;
+use url::Url;
 
-mod app_selector;
 mod companion;
 mod container;
 mod runtime;
 mod secret;
+mod selectors;
 
 #[derive(Default, Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -66,6 +72,10 @@ pub struct CliArgs {
     /// Sets the container backend type, e.g. Docker or Kubernetes
     #[clap(short, long)]
     runtime_type: Option<RuntimeTypeCliFlag>,
+
+    /// Sets the base URL where PREvant is hosted. Useful if your are debugging a remote cluster.
+    #[clap(long)]
+    base_url: Option<Url>,
 }
 
 #[derive(Clone)]
@@ -113,6 +123,13 @@ impl figment::Provider for CliArgs {
             );
         }
 
+        if let Some(base_url) = &self.base_url {
+            dict.insert(
+                String::from("baseUrl"),
+                figment::value::Value::String(Tag::Default, base_url.to_string()),
+            );
+        }
+
         let mut data = Map::new();
         data.insert(Profile::Default, dict);
 
@@ -147,6 +164,8 @@ struct Service {
 
 #[derive(Clone, Default, Deserialize)]
 pub struct Config {
+    #[serde(default, rename = "baseUrl")]
+    pub base_url: Option<Url>,
     #[serde(default)]
     runtime: Runtime,
     #[serde(default)]
@@ -159,6 +178,9 @@ pub struct Config {
     hooks: Option<BTreeMap<String, PathBuf>>,
     #[serde(default)]
     registries: BTreeMap<String, Registry>,
+    #[serde(default)]
+    #[serde(rename = "staticHostMeta")]
+    static_host_meta: Vec<StaticHostMetaRaw>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -286,6 +308,109 @@ impl Config {
     pub fn app_limit(&self) -> Option<usize> {
         self.applications.max
     }
+
+    pub fn static_host_meta<'a, 'b: 'a>(
+        &'b self,
+        image: &Image,
+    ) -> Result<Option<StaticHostMeta<'a>>, RenderError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Img {
+            tag: String,
+        }
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Data {
+            image: Img,
+        }
+
+        let handlebars = Handlebars::new();
+        let data = Data {
+            image: Img {
+                tag: image.tag().unwrap_or_default(),
+            },
+        };
+
+        self.static_host_meta
+            .iter()
+            .find(|static_host_meta| static_host_meta.image_selector.matches(image))
+            .map(|static_host_meta| {
+                Ok(StaticHostMeta {
+                    image_tag_as_version: static_host_meta.image_tag_as_version,
+                    open_api_spec: static_host_meta
+                        .open_api_spec
+                        .as_ref()
+                        .map(|spec| -> Result<(String, Option<&String>), RenderError> {
+                            Ok((
+                                handlebars.render_template(&spec.source_url, &data)?,
+                                spec.sub_path.as_ref(),
+                            ))
+                        })
+                        .transpose()?
+                        .map(|(url, sub_path)| -> Result<OpenApiSpec, RenderError> {
+                            Ok(OpenApiSpec {
+                                source_url: Url::parse(&url)
+                                    .map_err(|e| RenderErrorReason::Other(e.to_string()))?,
+                                sub_path,
+                            })
+                        })
+                        .transpose()?,
+                })
+            })
+            .transpose()
+    }
+}
+
+#[derive(Clone, Default, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct StaticHostMetaRaw {
+    image_selector: ImageSelector,
+    #[serde(default)]
+    image_tag_as_version: bool,
+    open_api_spec: Option<OpenApiSpecRaw>,
+}
+
+#[derive(Clone, Default, Debug)]
+struct OpenApiSpecRaw {
+    source_url: String,
+    sub_path: Option<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for OpenApiSpecRaw {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match serde_json::Value::deserialize(deserializer)? {
+            serde_json::Value::String(source_url) => Ok(OpenApiSpecRaw {
+                source_url,
+                sub_path: None,
+            }),
+            serde_json::Value::Object(mut map) => Ok(OpenApiSpecRaw {
+                source_url: map
+                    .remove("sourceUrl")
+                    .and_then(|url| url.as_str().map(|url| url.to_string()))
+                    .ok_or_else(|| serde::de::Error::custom("sourceUrl is required"))?,
+                sub_path: map
+                    .remove("subPath")
+                    .and_then(|url| url.as_str().map(|url| url.to_string()))
+                    .map(|url| url.to_string()),
+            }),
+            _ => Err(serde::de::Error::custom("Unexpect format.")),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct StaticHostMeta<'a> {
+    pub image_tag_as_version: bool,
+    pub open_api_spec: Option<OpenApiSpec<'a>>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct OpenApiSpec<'a> {
+    pub source_url: Url,
+    pub sub_path: Option<&'a String>,
 }
 
 impl JiraConfig {
@@ -787,6 +912,58 @@ mod tests {
             &JiraAuth::ApiKey {
                 api_key: SecUtf8::from_str("key").unwrap()
             }
+        );
+    }
+
+    #[test]
+    fn should_parse_static_web_host_with_url() {
+        let config = config_from_str!(
+            r#"
+            [[staticHostMeta]]
+            imageSelector = "docker.io/bitnami/schema-registry:.+"
+            openApiSpec = "https://raw.githubusercontent.com/confluentinc/schema-registry/refs/tags/v{{image.tag}}/core/generated/swagger-ui/schema-registry-api-spec.yaml"
+            "#
+        );
+
+        let static_host_meta = config
+            .static_host_meta(&Image::from_str("docker.io/bitnami/schema-registry:7.8.0").unwrap())
+            .unwrap();
+        assert_eq!(
+            static_host_meta,
+            Some(StaticHostMeta {
+                image_tag_as_version: false,
+                open_api_spec: Some(OpenApiSpec {
+                    source_url: Url::parse("https://raw.githubusercontent.com/confluentinc/schema-registry/refs/tags/v7.8.0/core/generated/swagger-ui/schema-registry-api-spec.yaml").unwrap(),
+                    sub_path: None
+                })
+            })
+        );
+    }
+
+    #[test]
+    fn should_parse_static_web_host_with_url_and_subpath() {
+        let config = config_from_str!(
+            r#"
+            [[staticHostMeta]]
+            imageSelector = "docker.io/confluentinc/cp-kafka-rest:.+"
+            openApiSpec = { sourceUrl = "https://raw.githubusercontent.com/confluentinc/kafka-rest/refs/tags/v{{image.tag}}/api/v3/openapi.yaml", subPath = "v3" }
+            "#
+        );
+
+        let static_host_meta = config
+            .static_host_meta(
+                &Image::from_str("docker.io/confluentinc/cp-kafka-rest:7.8.0").unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            static_host_meta,
+            Some(StaticHostMeta {
+                image_tag_as_version: false,
+                open_api_spec: Some(OpenApiSpec {
+                    source_url: Url::parse("https://raw.githubusercontent.com/confluentinc/kafka-rest/refs/tags/v7.8.0/api/v3/openapi.yaml").unwrap(),
+                    sub_path: Some(&String::from("v3")),
+                })
+            })
         );
     }
 }

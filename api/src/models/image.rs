@@ -126,7 +126,6 @@ impl PartialEq for Image {
 }
 
 impl Image {
-    #[cfg(test)]
     pub fn tag(&self) -> Option<String> {
         match &self {
             Image::Digest { .. } => None,
@@ -271,7 +270,7 @@ impl<'de> Deserialize<'de> for Image {
         D: Deserializer<'de>,
     {
         struct ImageVisitor;
-        impl<'de> serde::de::Visitor<'de> for ImageVisitor {
+        impl serde::de::Visitor<'_> for ImageVisitor {
             type Value = Image;
             fn expecting(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
                 write!(formatter, "a string containing a docker image reference")
