@@ -62,6 +62,7 @@ use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
+use log::{debug, error, info, trace, warn};
 use multimap::MultiMap;
 use rocket::form::validate::Contains;
 use std::collections::HashMap;
@@ -194,7 +195,11 @@ impl DockerInfrastructure {
 
         let traefik_container_id = containers
             .into_iter()
-            .find(|c| c.image.as_ref().map_or(false, |s| s.contains("traefik")))
+            .find(|c| {
+                c.image
+                    .as_ref()
+                    .is_some_and(|image| image.contains("traefik"))
+            })
             .and_then(|c| c.id);
 
         if let Some(id) = traefik_container_id {
@@ -222,7 +227,11 @@ impl DockerInfrastructure {
             .await?;
         let traefik_container_id = containers
             .into_iter()
-            .find(|c| c.image.as_ref().map_or(false, |s| s.contains("traefik")))
+            .find(|c| {
+                c.image
+                    .as_ref()
+                    .is_some_and(|image| image.contains("traefik"))
+            })
             .and_then(|c| c.id);
 
         if let Some(id) = traefik_container_id {
@@ -838,6 +847,22 @@ impl Infrastructure for DockerInfrastructure {
         }
 
         Ok(apps)
+    }
+
+    async fn fetch_services_of_app(&self, app_name: &AppName) -> Result<Option<Services>> {
+        let container_details = self.get_container_details(Some(app_name), None).await?;
+
+        if container_details.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(Services::from(
+            container_details
+                .into_iter()
+                .flat_map(|(_, details)| details.into_iter())
+                .filter_map(|details| Service::try_from(details).ok())
+                .collect::<Vec<_>>(),
+        )))
     }
 
     async fn deploy_services(

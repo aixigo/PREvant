@@ -33,6 +33,7 @@ use kube::{
     core::{DynamicObject, ObjectMeta, WatchEvent},
     Api, Client, ResourceExt,
 };
+use log::{debug, error, trace, warn};
 use serde::Deserialize;
 use std::{
     borrow::Borrow,

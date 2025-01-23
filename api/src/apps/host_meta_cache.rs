@@ -25,6 +25,7 @@
  */
 
 use crate::apps::Apps;
+use crate::config::Config;
 use crate::infrastructure::HttpForwarder;
 use crate::models::service::{
     Service, ServiceStatus, ServiceWithHostMeta, Services, ServicesWithHostMeta,
@@ -35,12 +36,15 @@ use evmap::{ReadHandleFactory, WriteHandle};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use http::header::{HOST, USER_AGENT};
+use log::{debug, error, info};
 use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::sync::Arc;
 use tokio::sync::watch::{self, Receiver, Sender};
 use tokio_stream::wrappers::WatchStream;
+use url::Url;
 use yansi::Paint;
 
 pub struct HostMetaCache {
@@ -48,6 +52,7 @@ pub struct HostMetaCache {
     update_watch_rx: Receiver<DateTime<Utc>>,
 }
 pub struct HostMetaCrawler {
+    config: Config,
     writer: WriteHandle<Key, Arc<Value>>,
     update_watch_tx: Sender<DateTime<Utc>>,
 }
@@ -64,7 +69,7 @@ struct Value {
     web_host_meta: WebHostMeta,
 }
 
-pub fn new() -> (HostMetaCache, HostMetaCrawler) {
+pub fn new(config: Config) -> (HostMetaCache, HostMetaCrawler) {
     // TODO: eventually we should replace evmap with the watch channel or with another thread safe
     // alternative..
     let (reader, writer) = evmap::new();
@@ -76,6 +81,7 @@ pub fn new() -> (HostMetaCache, HostMetaCrawler) {
             update_watch_rx,
         },
         HostMetaCrawler {
+            config,
             writer,
             update_watch_tx,
         },
@@ -83,7 +89,7 @@ pub fn new() -> (HostMetaCache, HostMetaCrawler) {
 }
 
 impl HostMetaCache {
-    pub fn update_meta_data(
+    pub fn convert_services_into_services_with_host_meta(
         &self,
         services: HashMap<AppName, Services>,
         request_info: &RequestInfo,
@@ -124,6 +130,32 @@ impl HostMetaCache {
         }
 
         assigned_apps
+    }
+
+    pub fn convert_service_into_service_with_host_meta(
+        &self,
+        app_name: &AppName,
+        service: Service,
+        request_info: &RequestInfo,
+    ) -> ServiceWithHostMeta {
+        let key = Key {
+            app_name: app_name.clone(),
+            service_id: service.id.clone(),
+        };
+
+        let web_host_meta = match self.reader_factory.handle().get_one(&key) {
+            Some(value) => value
+                .web_host_meta
+                .with_base_url(request_info.get_base_url()),
+            None => WebHostMeta::empty(),
+        };
+
+        ServiceWithHostMeta::from_service_and_web_host_meta(
+            service,
+            web_host_meta,
+            request_info.get_base_url().clone(),
+            app_name,
+        )
     }
 
     pub fn cache_updates(&self) -> WatchStream<DateTime<Utc>> {
@@ -188,6 +220,56 @@ impl HostMetaCrawler {
         });
     }
 
+    fn static_web_host_config(
+        &self,
+        apps: &HashMap<AppName, Services>,
+    ) -> HashMap<Key, WebHostMeta> {
+        apps.iter()
+            .flat_map(|(app_name, services)| {
+                services.iter().map(move |service| (app_name, service))
+            })
+            .filter_map(|(app_name, service)| {
+                let service_name = service.service_name();
+                let static_host_meta = match self
+                    .config
+                    .static_host_meta(service.config.image())
+                    .transpose()?
+                {
+                    Ok(static_host_meta) => static_host_meta,
+                    Err(err) => {
+                        error!(
+                            "Cannot get static host meta config for {service_name} in {app_name}: {err}",
+                        );
+                        return None;
+                    }
+                };
+
+                let mut open_api_spec_url = None;
+                let mut version = None;
+
+                if static_host_meta.image_tag_as_version {
+                    version = service.config.image().tag();
+                }
+                if static_host_meta.open_api_spec.is_some() {
+                    open_api_spec_url = Some(
+                        Url::parse(&format!(
+                            "http://localhost/api/apps/{app_name}/static-open-api-spec/{service_name}"
+                        ))
+                        .unwrap(),
+                    );
+                }
+
+                Some((
+                    Key {
+                        app_name: app_name.clone(),
+                        service_id: service.id().to_string(),
+                    },
+                    WebHostMeta::with_version_and_open_api_spec_link(version, open_api_spec_url),
+                ))
+            })
+            .collect::<HashMap<_, _>>()
+    }
+
     async fn crawl(
         &mut self,
         http_forwarder: Box<dyn HttpForwarder>,
@@ -195,6 +277,17 @@ impl HostMetaCrawler {
         since_timestamp: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
         self.clear_stale_web_host_meta(apps);
+
+        let static_web_host_config = self.static_web_host_config(apps);
+        if !static_web_host_config.is_empty() {
+            debug!(
+                "Got static host config for: {}",
+                static_web_host_config
+                    .keys()
+                    .map(|key| format!("({}, {})", key.app_name, key.service_id))
+                    .fold(String::new(), |a, b| a + &b + ", ")
+            );
+        }
 
         let running_services_without_host_meta = apps
             .iter()
@@ -210,37 +303,47 @@ impl HostMetaCrawler {
                         (key, service.clone())
                     })
             })
+            .filter(|(key, _)| !static_web_host_config.contains_key(key))
             .filter(|(_, service)| *service.status() == ServiceStatus::Running)
             .filter(|(key, _service)| !self.writer.contains_key(key))
             .collect::<Vec<(Key, Service)>>();
 
-        if running_services_without_host_meta.is_empty() {
-            return None;
+        let mut updated_host_meta_info_entries = 0;
+        let now = Utc::now();
+        if !running_services_without_host_meta.is_empty() {
+            debug!(
+                "Resolving web host meta data for {:?}.",
+                running_services_without_host_meta
+                    .iter()
+                    .map(|(k, service)| format!("({}, {})", k.app_name, service.service_name()))
+                    .fold(String::new(), |a, b| a + &b + ", ")
+            );
+            let duration_prevant_startup = Utc::now().signed_duration_since(since_timestamp);
+            let resolved_host_meta_infos = Self::resolve_host_meta(
+                http_forwarder,
+                running_services_without_host_meta,
+                duration_prevant_startup,
+            )
+            .await;
+            for (key, _service, web_host_meta) in resolved_host_meta_infos {
+                if !web_host_meta.is_valid() {
+                    continue;
+                }
+
+                updated_host_meta_info_entries += 1;
+
+                self.writer.insert(
+                    key,
+                    Arc::new(Value {
+                        last_update_timestamp: now,
+                        web_host_meta,
+                    }),
+                );
+            }
         }
 
-        debug!(
-            "Resolving web host meta data for {:?}.",
-            running_services_without_host_meta
-                .iter()
-                .map(|(k, service)| format!("({}, {})", k.app_name, service.service_name()))
-                .fold(String::new(), |a, b| a + &b + ", ")
-        );
-        let now = Utc::now();
-        let duration_prevant_startup = Utc::now().signed_duration_since(since_timestamp);
-        let resolved_host_meta_infos = Self::resolve_host_meta(
-            http_forwarder,
-            running_services_without_host_meta,
-            duration_prevant_startup,
-        )
-        .await;
-        let mut updated_host_meta_info_entries = 0;
-        for (key, _service, web_host_meta) in resolved_host_meta_infos {
-            if !web_host_meta.is_valid() {
-                continue;
-            }
-
-            updated_host_meta_info_entries += 1;
-
+        updated_host_meta_info_entries += static_web_host_config.len();
+        for (key, web_host_meta) in static_web_host_config.into_iter() {
             self.writer.insert(
                 key,
                 Arc::new(Value {
@@ -434,14 +537,14 @@ impl HostMetaCrawler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::service::State;
+    use crate::{config_from_str, models::service::State};
     use anyhow::Result;
     use url::Url;
 
     #[derive(Clone)]
     struct DummyHttpForwarder {}
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl HttpForwarder for DummyHttpForwarder {
         async fn request_web_host_meta(
             &self,
@@ -470,10 +573,13 @@ mod tests {
             Services::from(vec![nginx_service.clone()]),
         )]);
 
-        let (cache, mut crawler) = super::new();
+        let (cache, mut crawler) = super::new(Config::default());
         crawler.crawl(forwarder, &apps, Utc::now()).await;
 
-        let apps = cache.update_meta_data(apps, &RequestInfo::new(base_url.clone()));
+        let apps = cache.convert_services_into_services_with_host_meta(
+            apps,
+            &RequestInfo::new(base_url.clone()),
+        );
         assert_eq!(
             apps,
             HashMap::from([(
@@ -482,6 +588,59 @@ mod tests {
                     ServiceWithHostMeta::from_service_and_web_host_meta(
                         nginx_service,
                         WebHostMeta::with_version(String::from("1.2.3")),
+                        base_url,
+                        &AppName::master()
+                    )
+                ]),
+            )])
+        )
+    }
+
+    #[tokio::test]
+    async fn do_not_crawl_host_meta_for_static_host_meta_config() {
+        let base_url = Url::parse("https://example.com").unwrap();
+        let kafka_rest_service = Service {
+            id: String::from("kafka-rest"),
+            state: State {
+                status: ServiceStatus::Running,
+                started_at: Some(Utc::now()),
+            },
+            config: crate::sc!("kafka-rest", "confluentinc/cp-kafka-rest"),
+        };
+        let forwarder = Box::new(DummyHttpForwarder {});
+        let apps = HashMap::from([(
+            AppName::master(),
+            Services::from(vec![kafka_rest_service.clone()]),
+        )]);
+
+        let (cache, mut crawler) = super::new(config_from_str!(
+            r#"
+            [[staticHostMeta]]
+            imageSelector = 'docker.io/confluentinc/cp-kafka-rest:.+'
+            imageTagAsVersion = true
+            openApiSpec = "https://raw.githubusercontent.com/confluentinc/kafka-rest/refs/tags/v{{image.tag}}/api/v3/openapi.yaml"
+            "#
+        ));
+        crawler.crawl(forwarder, &apps, Utc::now()).await;
+
+        let apps = cache.convert_services_into_services_with_host_meta(
+            apps,
+            &RequestInfo::new(base_url.clone()),
+        );
+        assert_eq!(
+            apps,
+            HashMap::from([(
+                AppName::master(),
+                ServicesWithHostMeta::from(vec![
+                    ServiceWithHostMeta::from_service_and_web_host_meta(
+                        kafka_rest_service,
+                        WebHostMeta::with_version_and_open_api_spec_link(
+                            Some(String::from("latest")),
+                            Url::parse(
+                                "https://example.com/api/apps/master/static-open-api-spec/kafka-rest"
+                            )
+                            .ok()
+                        ),
                         base_url,
                         &AppName::master()
                     )
@@ -508,10 +667,13 @@ mod tests {
             Services::from(vec![nginx_service.clone()]),
         )]);
 
-        let (cache, mut crawler) = super::new();
+        let (cache, mut crawler) = super::new(Config::default());
         crawler.crawl(forwarder, &apps, Utc::now()).await;
 
-        let apps = cache.update_meta_data(apps, &RequestInfo::new(base_url.clone()));
+        let apps = cache.convert_services_into_services_with_host_meta(
+            apps,
+            &RequestInfo::new(base_url.clone()),
+        );
         assert_eq!(
             apps,
             HashMap::from([(
@@ -543,12 +705,9 @@ mod tests {
         };
 
         let forwarder = Box::new(DummyHttpForwarder {});
-        let apps = HashMap::from([(
-            AppName::master(),
-            Services::from(vec![nginx_service]),
-        )]);
+        let apps = HashMap::from([(AppName::master(), Services::from(vec![nginx_service]))]);
 
-        let (cache, mut crawler) = super::new();
+        let (cache, mut crawler) = super::new(Config::default());
         crawler.crawl(forwarder, &apps, Utc::now()).await;
 
         // recrawl data for paused nginx
@@ -569,7 +728,10 @@ mod tests {
 
         crawler.crawl(forwarder, &apps, Utc::now()).await;
 
-        let apps = cache.update_meta_data(apps, &RequestInfo::new(base_url.clone()));
+        let apps = cache.convert_services_into_services_with_host_meta(
+            apps,
+            &RequestInfo::new(base_url.clone()),
+        );
         assert_eq!(
             apps,
             HashMap::from([(

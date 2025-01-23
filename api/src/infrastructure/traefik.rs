@@ -198,6 +198,39 @@ impl TraefikIngressRoute {
     }
 }
 
+impl From<Url> for TraefikIngressRoute {
+    fn from(url: Url) -> Self {
+        Self::from(&url)
+    }
+}
+
+impl From<&Url> for TraefikIngressRoute {
+    fn from(url: &Url) -> Self {
+        let mut matches = Vec::with_capacity(2);
+        matches.push(Matcher::Host {
+            domains: vec![url.host().map(|host| host.to_string()).unwrap_or_default()],
+        });
+
+        if url.path() != "/" {
+            matches.push(Matcher::PathPrefix {
+                paths: vec![url.path().to_string()],
+            });
+        }
+
+        Self {
+            entry_points: match url.scheme() {
+                "https" => vec![String::from("websecure")],
+                _ => Vec::new(),
+            },
+            routes: vec![TraefikRoute {
+                rule: TraefikRouterRule { matches },
+                middlewares: Vec::new(),
+            }],
+            tls: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraefikRoute {
     rule: TraefikRouterRule,
@@ -220,7 +253,7 @@ pub struct TraefikRouterRule {
 }
 
 impl TraefikRouterRule {
-    fn path_prefix_from_segments<S>(segments: S) -> String
+    pub fn path_prefix_from_segments<S>(segments: S) -> String
     where
         S: IntoIterator,
         S::Item: AsRef<str>,
@@ -265,6 +298,13 @@ impl TraefikRouterRule {
                 paths: vec![Self::path_prefix_from_segments(segments)],
             }],
         }
+    }
+
+    pub fn first_path_prefix(&self) -> Option<&String> {
+        self.matches.iter().find_map(|m| match m {
+            Matcher::PathPrefix { paths } => paths.first(),
+            _ => None,
+        })
     }
 
     pub fn merge_with(&mut self, other: TraefikRouterRule) {
@@ -344,15 +384,10 @@ impl TraefikMiddleware {
     }
 
     pub fn is_strip_prefix(&self) -> bool {
-        match &self.spec {
+        matches!(&self.spec,
             serde_value::Value::Map(m)
                 if m.get(&serde_value::Value::String(String::from("stripPrefix")))
-                    .is_some() =>
-            {
-                true
-            }
-            _ => false,
-        }
+                    .is_some())
     }
 }
 
@@ -448,11 +483,11 @@ impl Display for TraefikRouterRule {
                 Matcher::PathPrefix { paths } => {
                     write!(f, "PathPrefix(")?;
 
-                    for (i, domain) in paths.iter().enumerate() {
+                    for (i, path) in paths.iter().enumerate() {
                         if i > 0 {
-                            write!(f, ", `{domain}`")?;
+                            write!(f, ", `{path}`")?;
                         } else {
-                            write!(f, "`{domain}`")?;
+                            write!(f, "`{path}`")?;
                         }
                     }
 
@@ -915,6 +950,38 @@ mod test {
                 })
             }
         );
+    }
+
+    mod from_url {
+        use super::*;
+
+        #[test]
+        fn with_host_and_path() {
+            let url = Url::parse("http://prevant.example.com/master/whoami/").unwrap();
+
+            assert_eq!(
+                TraefikIngressRoute::from(url),
+                TraefikIngressRoute::with_rule(
+                    TraefikRouterRule::from_str(
+                        "Host(`prevant.example.com`) && PathPrefix(`/master/whoami/`)",
+                    )
+                    .unwrap(),
+                )
+            );
+        }
+
+        #[test]
+        fn with_https() {
+            let url = Url::parse("https://prevant.example.com/").unwrap();
+
+            let mut route =
+                TraefikIngressRoute::with_rule(TraefikRouterRule::host_rule(vec![String::from(
+                    "prevant.example.com",
+                )]));
+            route.entry_points.push(String::from("websecure"));
+
+            assert_eq!(TraefikIngressRoute::from(url), route);
+        }
     }
 
     mod to_url {

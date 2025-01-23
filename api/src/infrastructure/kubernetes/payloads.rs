@@ -169,6 +169,13 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
 
     let (rule, middleware) = match &spec.ingress_class_name {
         Some(ingress_class_name) if ingress_class_name == "nginx" => {
+            let route = match path.path_type.as_str() {
+                "Prefix" => Some(TraefikIngressRoute::with_rule(
+                    TraefikRouterRule::path_prefix_rule([path_value.clone()]),
+                )),
+                _ => None,
+            };
+
             let middleware = ingress
                 .metadata
                 .annotations
@@ -185,10 +192,22 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
                 .and_then(|_rewrite_target| {
                     let hir = regex_syntax::parse(&path_value).ok()?;
                     let got = regex_syntax::hir::literal::Extractor::new().extract(&hir);
+
+                    let base_path = base_route
+                        .routes()
+                        .first()
+                        .and_then(|route| route.rule().first_path_prefix());
+
                     let prefixes = got
                         .literals()?
                         .iter()
                         .map(|l| String::from_utf8_lossy(l.as_bytes()).to_string())
+                        .map(|path| match base_path {
+                            Some(base_path) => {
+                                TraefikRouterRule::path_prefix_from_segments([base_path, &path])
+                            }
+                            None => path,
+                        })
                         .map(serde_json::Value::from)
                         .collect::<Vec<_>>();
 
@@ -205,7 +224,7 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
                     })
                 });
 
-            (None, middleware)
+            (route, middleware)
         }
         _ => {
             // TODO warn that ingress class is unknown
@@ -847,7 +866,6 @@ pub fn persistent_volume_claim_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::traefik::TraefikMiddleware;
     use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
     use crate::models::{AppName, Environment, EnvironmentVariable};
     use crate::sc;
@@ -1630,9 +1648,13 @@ mod tests {
         )
     }
 
-    #[test]
-    fn convert_k8s_ingress_to_traefik_ingress() {
-        let (route, middlewares) = super::convert_k8s_ingress_to_traefik_ingress(
+    mod convert_k8s_ingress_to_traefik_ingress {
+        use super::super::*;
+        use crate::infrastructure::TraefikMiddleware;
+
+        #[test]
+        fn nginx_rewrite_without_path_type() {
+            let (route, middlewares) = super::convert_k8s_ingress_to_traefik_ingress(
             Ingress {
                 metadata: ObjectMeta {
                     name: Some(String::from("my-ingress")),
@@ -1690,54 +1712,151 @@ mod tests {
             ),
         ).unwrap();
 
-        assert_eq!(
-            route,
-            IngressRoute {
-                metadata: ObjectMeta {
-                    name: Some(String::from("my-ingress")),
-                    ..Default::default()
-                },
-                spec: IngressRouteSpec {
-                    entry_points: Some(vec![]),
-                    routes: Some(vec![TraefikRuleSpec {
-                        kind: String::from("Rule"),
-                        r#match: String::from("Host(`my.machine`)"),
-                        services: vec![TraefikRuleService {
-                            kind: Some(String::from("Service")),
-                            name: String::from("backend-service"),
-                            port: Some(8080)
-                        }],
-                        middlewares: Some(vec![
-                            TraefikRuleMiddlewareRef {
-                                name: String::from("auth"),
-                                namespace: None
-                            },
-                            TraefikRuleMiddlewareRef {
-                                name: String::from("my-ingress-middleware"),
-                                namespace: None
-                            }
-                        ])
-                    }]),
-                    tls: None
-                }
-            }
-        );
-
-        assert_eq!(
-            middlewares,
-            vec![
-                Middleware {
+            assert_eq!(
+                route,
+                IngressRoute {
                     metadata: ObjectMeta {
-                        name: Some(String::from("auth")),
+                        name: Some(String::from("my-ingress")),
                         ..Default::default()
                     },
-                    spec: MiddlewareSpec(serde_json::json!({
-                        "forwardAuth": {
-                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                        }
-                    }))
+                    spec: IngressRouteSpec {
+                        entry_points: Some(vec![]),
+                        routes: Some(vec![TraefikRuleSpec {
+                            kind: String::from("Rule"),
+                            r#match: String::from("Host(`my.machine`)"),
+                            services: vec![TraefikRuleService {
+                                kind: Some(String::from("Service")),
+                                name: String::from("backend-service"),
+                                port: Some(8080)
+                            }],
+                            middlewares: Some(vec![
+                                TraefikRuleMiddlewareRef {
+                                    name: String::from("auth"),
+                                    namespace: None
+                                },
+                                TraefikRuleMiddlewareRef {
+                                    name: String::from("my-ingress-middleware"),
+                                    namespace: None
+                                }
+                            ])
+                        }]),
+                        tls: None
+                    }
+                }
+            );
+
+            assert_eq!(
+                middlewares,
+                vec![
+                    Middleware {
+                        metadata: ObjectMeta {
+                            name: Some(String::from("auth")),
+                            ..Default::default()
+                        },
+                        spec: MiddlewareSpec(serde_json::json!({
+                            "forwardAuth": {
+                                "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                            }
+                        }))
+                    },
+                    Middleware {
+                        metadata: ObjectMeta {
+                            name: Some(String::from("my-ingress-middleware")),
+                            ..Default::default()
+                        },
+                        spec: MiddlewareSpec(serde_json::json!({
+                            "stripPrefix": {
+                                "prefixes": [
+                                    "/my-service/"
+                                ]
+                            }
+                        }))
+                    }
+                ]
+            );
+        }
+
+        #[test]
+        fn nginx_rewrite_with_path_type() {
+            let (route, middlewares) = super::convert_k8s_ingress_to_traefik_ingress(
+            Ingress {
+                metadata: ObjectMeta {
+                    name: Some(String::from("my-ingress")),
+                    annotations: Some(BTreeMap::from([
+                        (
+                            String::from("nginx.ingress.kubernetes.io/use-regex"),
+                            String::from("true"),
+                        ),
+                        (
+                            String::from("nginx.ingress.kubernetes.io/rewrite-target"),
+                            String::from("/$2"),
+                        ),
+                    ])),
+                    ..Default::default()
                 },
-                Middleware {
+                spec: Some(k8s_openapi::api::networking::v1::IngressSpec {
+                    ingress_class_name: Some(String::from("nginx")),
+                    rules: Some(vec![k8s_openapi::api::networking::v1::IngressRule {
+                        http: Some(k8s_openapi::api::networking::v1::HTTPIngressRuleValue {
+                            paths: vec![k8s_openapi::api::networking::v1::HTTPIngressPath {
+                                path: Some(String::from("/my-service/")),
+                                path_type: String::from("Prefix"),
+                                backend: k8s_openapi::api::networking::v1::IngressBackend {
+                                    service: Some(
+                                        k8s_openapi::api::networking::v1::IngressServiceBackend {
+                                            name: String::from("backend-service"),
+                                            port: Some(k8s_openapi::api::networking::v1::ServiceBackendPort {
+                                                number: Some(8080),
+                                                ..Default::default()
+                                            })
+                                        },
+                                    ),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }],
+                        }),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            TraefikIngressRoute::with_rule(TraefikRouterRule::from_str("Host(`my.machine`)").unwrap()),
+        ).unwrap();
+
+            assert_eq!(
+                route,
+                IngressRoute {
+                    metadata: ObjectMeta {
+                        name: Some(String::from("my-ingress")),
+                        ..Default::default()
+                    },
+                    spec: IngressRouteSpec {
+                        entry_points: Some(vec![]),
+                        routes: Some(vec![TraefikRuleSpec {
+                            kind: String::from("Rule"),
+                            r#match: String::from(
+                                "Host(`my.machine`) && PathPrefix(`/my-service/`)"
+                            ),
+                            services: vec![TraefikRuleService {
+                                kind: Some(String::from("Service")),
+                                name: String::from("backend-service"),
+                                port: Some(8080)
+                            }],
+                            middlewares: Some(vec![TraefikRuleMiddlewareRef {
+                                name: String::from("my-ingress-middleware"),
+                                namespace: None
+                            }])
+                        }]),
+                        tls: None
+                    }
+                }
+            );
+
+            assert_eq!(
+                middlewares,
+                vec![Middleware {
                     metadata: ObjectMeta {
                         name: Some(String::from("my-ingress-middleware")),
                         ..Default::default()
@@ -1749,14 +1868,109 @@ mod tests {
                             ]
                         }
                     }))
-                }
-            ]
-        );
-    }
+                }]
+            );
+        }
 
-    #[test]
-    fn convert_k8s_ingress_to_traefik_ingress_with_existing_path_prefixes() {
-        let (route, middlewares) = super::convert_k8s_ingress_to_traefik_ingress(
+        #[test]
+        fn nginx_rewrite_with_path_prefix_and_with_base_path_prefix() {
+            let (route, middlewares) = super::convert_k8s_ingress_to_traefik_ingress(
+            Ingress {
+                metadata: ObjectMeta {
+                    name: Some(String::from("my-ingress")),
+                    annotations: Some(BTreeMap::from([
+                        (
+                            String::from("nginx.ingress.kubernetes.io/use-regex"),
+                            String::from("true"),
+                        ),
+                        (
+                            String::from("nginx.ingress.kubernetes.io/rewrite-target"),
+                            String::from("/$2"),
+                        ),
+                    ])),
+                    ..Default::default()
+                },
+                spec: Some(k8s_openapi::api::networking::v1::IngressSpec {
+                    ingress_class_name: Some(String::from("nginx")),
+                    rules: Some(vec![k8s_openapi::api::networking::v1::IngressRule {
+                        http: Some(k8s_openapi::api::networking::v1::HTTPIngressRuleValue {
+                            paths: vec![k8s_openapi::api::networking::v1::HTTPIngressPath {
+                                path: Some(String::from("/my-service/")),
+                                path_type: String::from("Prefix"),
+                                backend: k8s_openapi::api::networking::v1::IngressBackend {
+                                    service: Some(
+                                        k8s_openapi::api::networking::v1::IngressServiceBackend {
+                                            name: String::from("backend-service"),
+                                            port: Some(k8s_openapi::api::networking::v1::ServiceBackendPort {
+                                                number: Some(8080),
+                                                ..Default::default()
+                                            })
+                                        },
+                                    ),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }],
+                        }),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            TraefikIngressRoute::with_rule(TraefikRouterRule::from_str("Host(`my.machine`) && PathPrefix(`/PREvant/`)").unwrap()),
+        ).unwrap();
+
+            assert_eq!(
+                route,
+                IngressRoute {
+                    metadata: ObjectMeta {
+                        name: Some(String::from("my-ingress")),
+                        ..Default::default()
+                    },
+                    spec: IngressRouteSpec {
+                        entry_points: Some(vec![]),
+                        routes: Some(vec![TraefikRuleSpec {
+                            kind: String::from("Rule"),
+                            r#match: String::from(
+                                "Host(`my.machine`) && PathPrefix(`/PREvant/my-service/`)"
+                            ),
+                            services: vec![TraefikRuleService {
+                                kind: Some(String::from("Service")),
+                                name: String::from("backend-service"),
+                                port: Some(8080)
+                            }],
+                            middlewares: Some(vec![TraefikRuleMiddlewareRef {
+                                name: String::from("my-ingress-middleware"),
+                                namespace: None
+                            }])
+                        }]),
+                        tls: None
+                    }
+                }
+            );
+
+            assert_eq!(
+                middlewares,
+                vec![Middleware {
+                    metadata: ObjectMeta {
+                        name: Some(String::from("my-ingress-middleware")),
+                        ..Default::default()
+                    },
+                    spec: MiddlewareSpec(serde_json::json!({
+                        "stripPrefix": {
+                            "prefixes": [
+                                "/PREvant/my-service/"
+                            ]
+                        }
+                    }))
+                }]
+            );
+        }
+
+        #[test]
+        fn convert_k8s_ingress_to_traefik_ingress_with_existing_path_prefixes() {
+            let (route, middlewares) = super::convert_k8s_ingress_to_traefik_ingress(
             Ingress {
                 metadata: ObjectMeta {
                     name: Some(String::from("my-ingress")),
@@ -1821,67 +2035,68 @@ mod tests {
             ),
         ).unwrap();
 
-        assert_eq!(
-            route,
-            IngressRoute {
-                metadata: ObjectMeta {
-                    name: Some(String::from("my-ingress")),
-                    ..Default::default()
-                },
-                spec: IngressRouteSpec {
-                    entry_points: Some(vec![]),
-                    routes: Some(vec![TraefikRuleSpec {
-                        kind: String::from("Rule"),
-                        r#match: String::from("Host(`my.machine`)"),
-                        services: vec![TraefikRuleService {
-                            kind: Some(String::from("Service")),
-                            name: String::from("backend-service"),
-                            port: Some(8080)
-                        }],
-                        middlewares: Some(vec![
-                            TraefikRuleMiddlewareRef {
-                                name: String::from("auth"),
-                                namespace: None
-                            },
-                            TraefikRuleMiddlewareRef {
-                                name: String::from("my-ingress-middleware"),
-                                namespace: None
-                            }
-                        ])
-                    }]),
-                    tls: None
+            assert_eq!(
+                route,
+                IngressRoute {
+                    metadata: ObjectMeta {
+                        name: Some(String::from("my-ingress")),
+                        ..Default::default()
+                    },
+                    spec: IngressRouteSpec {
+                        entry_points: Some(vec![]),
+                        routes: Some(vec![TraefikRuleSpec {
+                            kind: String::from("Rule"),
+                            r#match: String::from("Host(`my.machine`)"),
+                            services: vec![TraefikRuleService {
+                                kind: Some(String::from("Service")),
+                                name: String::from("backend-service"),
+                                port: Some(8080)
+                            }],
+                            middlewares: Some(vec![
+                                TraefikRuleMiddlewareRef {
+                                    name: String::from("auth"),
+                                    namespace: None
+                                },
+                                TraefikRuleMiddlewareRef {
+                                    name: String::from("my-ingress-middleware"),
+                                    namespace: None
+                                }
+                            ])
+                        }]),
+                        tls: None
+                    }
                 }
-            }
-        );
+            );
 
-        assert_eq!(
-            middlewares,
-            vec![
-                Middleware {
-                    metadata: ObjectMeta {
-                        name: Some(String::from("auth")),
-                        ..Default::default()
+            assert_eq!(
+                middlewares,
+                vec![
+                    Middleware {
+                        metadata: ObjectMeta {
+                            name: Some(String::from("auth")),
+                            ..Default::default()
+                        },
+                        spec: MiddlewareSpec(serde_json::json!({
+                            "forwardAuth": {
+                                "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                            }
+                        }))
                     },
-                    spec: MiddlewareSpec(serde_json::json!({
-                        "forwardAuth": {
-                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                        }
-                    }))
-                },
-                Middleware {
-                    metadata: ObjectMeta {
-                        name: Some(String::from("my-ingress-middleware")),
-                        ..Default::default()
-                    },
-                    spec: MiddlewareSpec(serde_json::json!({
-                        "stripPrefix": {
-                            "prefixes": [
-                                "/my-service/"
-                            ]
-                        }
-                    }))
-                }
-            ]
-        );
+                    Middleware {
+                        metadata: ObjectMeta {
+                            name: Some(String::from("my-ingress-middleware")),
+                            ..Default::default()
+                        },
+                        spec: MiddlewareSpec(serde_json::json!({
+                            "stripPrefix": {
+                                "prefixes": [
+                                    "/my-service/"
+                                ]
+                            }
+                        }))
+                    }
+                ]
+            );
+        }
     }
 }

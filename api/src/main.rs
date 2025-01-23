@@ -27,8 +27,6 @@
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
-extern crate rocket;
-#[macro_use]
 extern crate serde_derive;
 
 use crate::apps::host_meta_crawling;
@@ -38,10 +36,12 @@ use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
 use clap::Parser;
 use rocket::fs::{FileServer, Options};
-use serde_yaml::{from_reader, to_string, Value};
-use std::fs::File;
+use rocket::routes;
+use serde_yaml::{to_string, Value};
 use std::path::Path;
 use std::sync::Arc;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt as _;
 
 mod apps;
 mod config;
@@ -53,18 +53,20 @@ mod registry;
 mod tickets;
 mod webhooks;
 
-#[get("/")]
-fn openapi(request_info: RequestInfo) -> Option<String> {
+#[rocket::get("/")]
+async fn openapi(request_info: RequestInfo) -> Option<String> {
     let openapi_path = Path::new("res").join("openapi.yml");
-    let mut f = match File::open(openapi_path) {
+    let mut f = match File::open(openapi_path).await {
         Ok(f) => f,
         Err(e) => {
-            error!("Cannot find API documentation: {}", e);
+            log::error!("Cannot find API documentation: {}", e);
             return None;
         }
     };
 
-    let mut v: Value = from_reader(&mut f).unwrap();
+    let mut contents = vec![];
+    f.read_to_end(&mut contents).await.ok()?;
+    let mut v: Value = serde_yaml::from_slice(&contents).ok()?;
 
     let mut url = request_info.get_base_url().clone();
     url.set_path("/api");
@@ -107,7 +109,7 @@ async fn main() -> Result<(), StartUpError> {
 
     let app_updates = apps.app_updates().await;
 
-    let (host_meta_cache, host_meta_crawler) = host_meta_crawling();
+    let (host_meta_cache, host_meta_crawler) = host_meta_crawling(config.clone());
     host_meta_crawler.spawn(apps.clone(), app_updates.clone());
 
     let _rocket = rocket::build()

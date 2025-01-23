@@ -147,10 +147,10 @@ impl Serialize for Service {
 pub struct ServiceWithHostMeta {
     /// An unique identifier of the service, e.g. the container id
     id: String,
-    service_url: Option<Url>,
-    web_host_meta: WebHostMeta,
-    state: State,
-    config: ServiceConfig,
+    pub service_url: Option<Url>,
+    pub web_host_meta: WebHostMeta,
+    pub state: State,
+    pub config: ServiceConfig,
 }
 
 impl ServiceWithHostMeta {

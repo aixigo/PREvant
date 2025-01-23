@@ -32,6 +32,7 @@ use crate::config::{Config, ConfigError};
 use crate::deployment::deployment_unit::DeploymentUnitBuilder;
 use crate::infrastructure::HttpForwarder;
 use crate::infrastructure::Infrastructure;
+use crate::infrastructure::TraefikIngressRoute;
 use crate::models::service::Services;
 use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::user_defined_parameters::UserDefinedParameters;
@@ -44,6 +45,9 @@ use futures::StreamExt;
 use handlebars::RenderError;
 pub use host_meta_cache::new as host_meta_crawling;
 pub use host_meta_cache::HostMetaCache;
+use log::debug;
+use log::error;
+use log::trace;
 pub use routes::{apps_routes, delete_app_sync};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
@@ -146,6 +150,22 @@ impl AppsService {
         self.infrastructure.http_forwarder().await
     }
 
+    pub async fn fetch_service_of_app(
+        &self,
+        app_name: &AppName,
+        service_name: &str,
+    ) -> Result<Option<Service>, AppsServiceError> {
+        Ok(self
+            .infrastructure
+            .fetch_services_of_app(app_name)
+            .await?
+            .and_then(|services| {
+                services
+                    .into_iter()
+                    .find(|service| service.service_name() == service_name)
+            }))
+    }
+
     pub async fn fetch_app_names(&self) -> Result<HashSet<AppName>, AppsServiceError> {
         Ok(self.infrastructure.fetch_app_names().await?)
     }
@@ -212,15 +232,19 @@ impl AppsService {
     async fn configs_to_replicate(
         &self,
         services_to_deploy: &[ServiceConfig],
-        app_name: &AppName,
+        running_services: &Option<Services>,
         replicate_from_app_name: &AppName,
     ) -> Result<Vec<ServiceConfig>, AppsServiceError> {
-        let running_services = self.infrastructure.get_configs_of_app(app_name).await?;
-        let running_service_names = running_services
-            .iter()
-            .filter(|c| c.container_type() == &ContainerType::Instance)
-            .map(|c| c.service_name())
-            .collect::<HashSet<&String>>();
+        let running_instances_names = running_services
+            .as_ref()
+            .map(|running_services| {
+                running_services
+                    .iter()
+                    .filter(|c| c.container_type() == &ContainerType::Instance)
+                    .map(|c| c.service_name())
+                    .collect::<HashSet<&String>>()
+            })
+            .unwrap_or_else(HashSet::new);
 
         let service_names = services_to_deploy
             .iter()
@@ -229,11 +253,18 @@ impl AppsService {
 
         Ok(self
             .infrastructure
-            .get_configs_of_app(replicate_from_app_name)
+            .fetch_services_of_app(replicate_from_app_name)
             .await?
             .into_iter()
+            .flat_map(|services| services.into_iter().map(|service| service.config))
+            .filter(|config| {
+                matches!(
+                    config.container_type(),
+                    ContainerType::Instance | ContainerType::Replica
+                )
+            })
             .filter(|config| !service_names.contains(config.service_name()))
-            .filter(|config| !running_service_names.contains(config.service_name()))
+            .filter(|config| !running_instances_names.contains(config.service_name()))
             .map(|config| {
                 let mut replicated_config = config;
                 replicated_config.set_container_type(ContainerType::Replica);
@@ -322,10 +353,10 @@ impl AppsService {
         user_defined_parameters: Option<UserDefinedParameters>,
     ) -> Result<Services, AppsServiceError> {
         if let Some(app_limit) = self.config.app_limit() {
-            let apps = self.fetch_apps().await?;
+            let apps = self.fetch_app_names().await?;
 
             if apps
-                .keys()
+                .iter()
                 // filtering the app_name that is send because otherwise clients wouldn't be able
                 // to update an existing application.
                 .filter(|existing_app_name| *existing_app_name != app_name)
@@ -339,26 +370,34 @@ impl AppsService {
 
         let mut configs = service_configs.to_vec();
 
+        let running_services = self.infrastructure.fetch_services_of_app(app_name).await?;
+
         let replicate_from_app_name = replicate_from.unwrap_or_else(AppName::master);
         if &replicate_from_app_name != app_name {
             configs.extend(
-                self.configs_to_replicate(service_configs, app_name, &replicate_from_app_name)
-                    .await?,
+                self.configs_to_replicate(
+                    service_configs,
+                    &running_services,
+                    &replicate_from_app_name,
+                )
+                .await?,
             );
         }
 
-        let configs_for_templating = self
-            .infrastructure
-            .get_configs_of_app(app_name)
-            .await?
-            .into_iter()
-            .filter(|config| config.container_type() == &ContainerType::Instance)
-            .filter(|config| {
-                !service_configs
-                    .iter()
-                    .any(|c| c.service_name() == config.service_name())
+        let configs_for_templating = running_services
+            .map(|running_services| {
+                running_services
+                    .into_iter()
+                    .filter(|service| service.container_type() == &ContainerType::Instance)
+                    .filter(|service| {
+                        !service_configs
+                            .iter()
+                            .any(|c| c.service_name() == service.service_name())
+                    })
+                    .map(|service| service.config)
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
+            .unwrap_or_else(Vec::new);
 
         let deployment_unit_builder = DeploymentUnitBuilder::init(app_name.clone(), configs)
             .extend_with_config(&self.config)
@@ -369,12 +408,15 @@ impl AppsService {
             .resolve_image_infos(&images)
             .await?;
 
-        let base_traefik_ingress_route = self
-            .infrastructure
-            .base_traefik_ingress_route()
-            .await
-            .ok()
-            .flatten();
+        let base_traefik_ingress_route = if let Some(base_url) = &self.config.base_url {
+            Some(TraefikIngressRoute::from(base_url))
+        } else {
+            self.infrastructure
+                .base_traefik_ingress_route()
+                .await
+                .ok()
+                .flatten()
+        };
 
         let deployment_unit_builder = deployment_unit_builder
             .extend_with_image_infos(image_infos)
@@ -738,11 +780,13 @@ mod tests {
 
         let configs = apps
             .infrastructure
-            .get_configs_of_app(&AppName::master())
-            .await?;
-        assert_eq!(configs.len(), 1);
+            .fetch_services_of_app(&AppName::master())
+            .await?
+            .unwrap();
+        assert_eq!(configs.iter().count(), 1);
 
-        let files = configs.get(0).unwrap().files().unwrap();
+        let config = configs.into_iter().next().map(|s| s.config).unwrap();
+        let files = config.files().unwrap();
         assert_eq!(
             files.get(&PathBuf::from("/run/secrets/user")).unwrap(),
             &SecUtf8::from("Hello")
@@ -778,12 +822,13 @@ mod tests {
 
         let configs = apps
             .infrastructure
-            .get_configs_of_app(&AppName::from_str("master-1x").unwrap())
-            .await?;
+            .fetch_services_of_app(&AppName::from_str("master-1x").unwrap())
+            .await?
+            .unwrap();
         assert_eq!(configs.len(), 1);
 
-        let files = configs.get(0).unwrap().files();
-        assert_eq!(files, None);
+        let config = configs.into_iter().next().map(|s| s.config).unwrap();
+        assert_eq!(config.files(), None);
 
         Ok(())
     }
@@ -954,10 +999,12 @@ Log msg 3 of service-a of app master
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
-            .get_configs_of_app(&app_name)
+            .fetch_services_of_app(&app_name)
             .await?
+            .unwrap()
             .into_iter()
-            .filter(|config| config.service_name() == "openid")
+            .filter(|service| service.service_name() == "openid")
+            .map(|service| service.config)
             .collect();
         assert_eq!(openid_configs.len(), 1);
         assert_eq!(openid_configs[0].image(), configs[0].image());
@@ -1004,10 +1051,12 @@ Log msg 3 of service-a of app master
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
-            .get_configs_of_app(&app_name)
+            .fetch_services_of_app(&app_name)
             .await?
+            .unwrap()
             .into_iter()
-            .filter(|config| config.service_name() == "openid")
+            .filter(|service| service.service_name() == "openid")
+            .map(|service| service.config)
             .collect();
         assert_eq!(openid_configs.len(), 1);
 
@@ -1200,18 +1249,22 @@ Log msg 3 of service-a of app master
 
         let db_config1: Vec<ServiceConfig> = apps
             .infrastructure
-            .get_configs_of_app(&app_name)
+            .fetch_services_of_app(&app_name)
             .await?
+            .unwrap()
             .into_iter()
-            .filter(|config| config.service_name() == "db1")
+            .filter(|service| service.service_name() == "db1")
+            .map(|service| service.config)
             .collect();
 
         let db_config2: Vec<ServiceConfig> = apps
             .infrastructure
-            .get_configs_of_app(&app_name)
+            .fetch_services_of_app(&app_name)
             .await?
+            .unwrap()
             .into_iter()
-            .filter(|config| config.service_name() == "db2")
+            .filter(|service| service.service_name() == "db2")
+            .map(|service| service.config)
             .collect();
 
         let services = deployed_apps.get(&app_name).unwrap();

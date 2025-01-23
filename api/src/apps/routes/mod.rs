@@ -33,13 +33,14 @@ use crate::models::{AppName, AppNameError};
 use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
 use create_app_payload::CreateAppPayload;
 use http_api_problem::{HttpApiProblem, StatusCode};
+use log::{debug, error};
 use regex::Regex;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
 use rocket::response::stream::{Event, EventStream};
 use rocket::response::{Responder, Response};
 use rocket::serde::json::Json;
-use rocket::{Shutdown, State};
+use rocket::{FromForm, Shutdown, State};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -52,6 +53,7 @@ use tokio_stream::StreamExt;
 
 mod create_app_payload;
 mod logs;
+mod static_openapi_spec;
 
 pub fn apps_routes() -> Vec<rocket::Route> {
     rocket::routes![
@@ -63,10 +65,11 @@ pub fn apps_routes() -> Vec<rocket::Route> {
         logs::stream_logs,
         change_status,
         status_change,
+        static_openapi_spec::static_open_api_spec,
     ]
 }
 
-#[get("/", format = "application/json", rank = 1)]
+#[rocket::get("/", format = "application/json", rank = 1)]
 async fn apps(
     apps: &State<Arc<Apps>>,
     request_info: RequestInfo,
@@ -74,11 +77,11 @@ async fn apps(
 ) -> HttpResult<Json<HashMap<AppName, ServicesWithHostMeta>>> {
     let services = apps.fetch_apps().await?;
     Ok(Json(
-        host_meta_cache.update_meta_data(services, &request_info),
+        host_meta_cache.convert_services_into_services_with_host_meta(services, &request_info),
     ))
 }
 
-#[get("/", format = "text/event-stream", rank = 2)]
+#[rocket::get("/", format = "text/event-stream", rank = 2)]
 async fn stream_apps(
     apps_updates: &State<Receiver<HashMap<AppName, Services>>>,
     mut end: Shutdown,
@@ -92,7 +95,7 @@ async fn stream_apps(
     let mut host_meta_cache_updates = host_meta_cache.cache_updates();
 
     EventStream! {
-        yield Event::json(&host_meta_cache.update_meta_data(services.clone(), &request_info));
+        yield Event::json(&host_meta_cache.convert_services_into_services_with_host_meta(services.clone(), &request_info));
 
         loop {
             select! {
@@ -106,12 +109,12 @@ async fn stream_apps(
                 _ = &mut end => break,
             };
 
-            yield Event::json(&host_meta_cache.update_meta_data(services.clone(), &request_info));
+            yield Event::json(&host_meta_cache.convert_services_into_services_with_host_meta(services.clone(), &request_info));
         }
     }
 }
 
-#[get("/<app_name>/status-changes/<status_id>", format = "application/json")]
+#[rocket::get("/<app_name>/status-changes/<status_id>", format = "application/json")]
 async fn status_change(
     app_name: Result<AppName, AppNameError>,
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
@@ -133,7 +136,7 @@ async fn status_change(
     }
 }
 
-#[delete("/<app_name>")]
+#[rocket::delete("/<app_name>")]
 pub async fn delete_app(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
@@ -165,7 +168,7 @@ pub async fn delete_app_sync(
     }
 }
 
-#[post(
+#[rocket::post(
     "/<app_name>?<create_app_form..>",
     format = "application/json",
     data = "<payload>"
@@ -203,7 +206,7 @@ pub async fn create_app(
     }
 }
 
-#[put(
+#[rocket::put(
     "/<app_name>/states/<service_name>",
     format = "application/json",
     data = "<status_data>"
@@ -486,6 +489,7 @@ mod tests {
 
     mod url_rendering {
         use crate::apps::{AppsService, HostMetaCache};
+        use crate::config::Config;
         use crate::infrastructure::Dummy;
         use crate::models::service::Services;
         use crate::models::{AppName, AppStatusChangeId};
@@ -495,6 +499,7 @@ mod tests {
         use rocket::http::Header;
         use rocket::http::Status;
         use rocket::local::asynchronous::Client;
+        use rocket::routes;
         use serde_json::json;
         use serde_json::Value;
         use std::collections::HashMap;
@@ -519,6 +524,7 @@ mod tests {
             let rocket = rocket::build()
                 .manage(host_meta_cache)
                 .manage(apps)
+                .manage(Config::default())
                 .manage(tokio::sync::watch::channel::<HashMap<AppName, Services>>(HashMap::new()).1)
                 .mount("/", routes![crate::apps::routes::apps])
                 .mount("/api/apps", crate::apps::apps_routes());
@@ -528,7 +534,8 @@ mod tests {
         #[tokio::test]
         async fn host_header_response_with_xforwardedhost_xforwardedproto_and_xforwardedport(
         ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let (host_meta_cache, mut host_meta_crawler) =
+                crate::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -561,7 +568,8 @@ mod tests {
         #[tokio::test]
         async fn host_header_response_with_xforwardedproto_and_other_default_values(
         ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let (host_meta_cache, mut host_meta_crawler) =
+                crate::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -592,7 +600,8 @@ mod tests {
         #[tokio::test]
         async fn host_header_response_with_xforwardedhost_and_other_default_values(
         ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let (host_meta_cache, mut host_meta_crawler) =
+                crate::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -622,7 +631,8 @@ mod tests {
         #[tokio::test]
         async fn host_header_response_with_xforwardedport_and_default_values(
         ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let (host_meta_cache, mut host_meta_crawler) =
+                crate::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -653,7 +663,8 @@ mod tests {
         #[tokio::test]
         async fn host_header_response_with_all_default_values(
         ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) = crate::host_meta_crawling();
+            let (host_meta_cache, mut host_meta_crawler) =
+                crate::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -681,7 +692,8 @@ mod tests {
 
         #[tokio::test]
         async fn bad_request_without_host_header() {
-            let (host_meta_cache, _host_meta_crawler) = crate::host_meta_crawling();
+            let (host_meta_cache, _host_meta_crawler) =
+                crate::host_meta_crawling(Config::default());
             let infrastructure = Box::new(Dummy::new());
             let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
 
@@ -698,7 +710,8 @@ mod tests {
 
         #[tokio::test]
         async fn with_invalid_headers() {
-            let (host_meta_cache, _host_meta_crawler) = crate::host_meta_crawling();
+            let (host_meta_cache, _host_meta_crawler) =
+                crate::host_meta_crawling(Config::default());
             let infrastructure = Box::new(Dummy::new());
             let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
 
@@ -717,7 +730,8 @@ mod tests {
 
         #[tokio::test]
         async fn with_invalid_proto() {
-            let (host_meta_cache, _host_meta_crawler) = crate::host_meta_crawling();
+            let (host_meta_cache, _host_meta_crawler) =
+                crate::host_meta_crawling(Config::default());
             let infrastructure = Box::new(Dummy::new());
             let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
 
@@ -743,7 +757,7 @@ mod tests {
             registry::RegistryError,
         };
         use assert_json_diff::assert_json_eq;
-        use rocket::{http::ContentType, local::asynchronous::Client};
+        use rocket::{http::ContentType, local::asynchronous::Client, routes};
 
         #[tokio::test]
         async fn invalid_service_payload() {
@@ -782,18 +796,19 @@ mod tests {
             );
         }
 
+        #[rocket::get("/")]
+        fn image_auth_failed() -> HttpResult<&'static str> {
+            Err(AppsError::UnableToResolveImage {
+                error: Arc::new(RegistryError::AuthenticationFailure {
+                    image: String::from("private-registry.example.com/_/postgres"),
+                    failure: String::from("403: invalid user name and password"),
+                }),
+            }
+            .into())
+        }
+
         #[tokio::test]
         async fn image_registry_authentication_error() {
-            #[get("/")]
-            fn image_auth_failed() -> HttpResult<&'static str> {
-                Err(AppsError::UnableToResolveImage {
-                    error: Arc::new(RegistryError::AuthenticationFailure {
-                        image: String::from("private-registry.example.com/_/postgres"),
-                        failure: String::from("403: invalid user name and password"),
-                    }),
-                }
-                .into())
-            }
             let rocket = rocket::build().mount("/", routes![image_auth_failed]);
 
             let client = Client::tracked(rocket).await.expect("valid rocket");
@@ -813,19 +828,20 @@ mod tests {
             );
         }
 
+        #[rocket::get("/")]
+        fn registry_unexpected() -> HttpResult<&'static str> {
+            Err(AppsError::UnableToResolveImage {
+                error: Arc::new(RegistryError::UnexpectedError {
+                    image: String::from("private-registry.example.com/_/postgres"),
+                    err: anyhow::Error::msg("unexpected"),
+                }),
+            }
+            .into())
+        }
+
         #[tokio::test]
         async fn image_registry_unexpected_error() {
-            #[get("/")]
-            fn image_not_found() -> HttpResult<&'static str> {
-                Err(AppsError::UnableToResolveImage {
-                    error: Arc::new(RegistryError::UnexpectedError {
-                        image: String::from("private-registry.example.com/_/postgres"),
-                        err: anyhow::Error::msg("unexpected"),
-                    }),
-                }
-                .into())
-            }
-            let rocket = rocket::build().mount("/", routes![image_not_found]);
+            let rocket = rocket::build().mount("/", routes![registry_unexpected]);
 
             let client = Client::tracked(rocket).await.expect("valid rocket");
             let response = client.get("/").dispatch().await;
@@ -844,17 +860,18 @@ mod tests {
             );
         }
 
+        #[rocket::get("/")]
+        fn image_not_found() -> HttpResult<&'static str> {
+            Err(AppsError::UnableToResolveImage {
+                error: Arc::new(RegistryError::ImageNotFound {
+                    image: String::from("private-registry.example.com/_/postgres"),
+                }),
+            }
+            .into())
+        }
+
         #[tokio::test]
         async fn image_registry_not_found_error() {
-            #[get("/")]
-            fn image_not_found() -> HttpResult<&'static str> {
-                Err(AppsError::UnableToResolveImage {
-                    error: Arc::new(RegistryError::ImageNotFound {
-                        image: String::from("private-registry.example.com/_/postgres"),
-                    }),
-                }
-                .into())
-            }
             let rocket = rocket::build().mount("/", routes![image_not_found]);
 
             let client = Client::tracked(rocket).await.expect("valid rocket");
@@ -879,7 +896,7 @@ mod tests {
         use super::super::*;
         use crate::{apps::AppsService, config_from_str, infrastructure::Dummy};
         use assert_json_diff::assert_json_include;
-        use rocket::{http::ContentType, local::asynchronous::Client};
+        use rocket::{http::ContentType, local::asynchronous::Client, routes};
 
         macro_rules! config_from_str {
             ( $config_str:expr ) => {

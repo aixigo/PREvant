@@ -64,7 +64,7 @@ use kube::{
     config::Config,
     error::{Error as KubeError, ErrorResponse},
 };
-use log::{debug, warn};
+use log::{debug, error, warn};
 use secstr::SecUtf8;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::{From, TryFrom};
@@ -170,7 +170,7 @@ impl KubernetesInfrastructure {
     async fn get_services_of_app(
         &self,
         app_name: &AppName,
-    ) -> Result<Services, KubernetesInfrastructureError> {
+    ) -> Result<Option<Services>, KubernetesInfrastructureError> {
         let client = self.client().await?;
 
         let namespace = app_name.to_rfc1123_namespace_id();
@@ -224,7 +224,11 @@ impl KubernetesInfrastructure {
             services.push(service);
         }
 
-        Ok(services.into())
+        if services.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Services::from(services)))
+        }
     }
 
     async fn create_namespace_if_necessary(
@@ -442,10 +446,19 @@ impl Infrastructure for KubernetesInfrastructure {
         let mut apps = HashMap::new();
         while let Some(res) = app_name_and_services.next().await {
             let (app_name, services) = res?;
-            apps.insert(app_name, services);
+            if let Some(services) = services {
+                apps.insert(app_name, services);
+            }
         }
 
         Ok(apps)
+    }
+
+    async fn fetch_services_of_app(&self, app_name: &AppName) -> Result<Option<Services>> {
+        Ok(self
+            .get_services_of_app(app_name)
+            .await?
+            .map(Services::from))
     }
 
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
@@ -508,17 +521,17 @@ impl Infrastructure for KubernetesInfrastructure {
             .map(|s| s.service_name())
             .collect::<HashSet<_>>();
 
-        let services = self.get_services_of_app(app_name).await?;
-
-        k8s_deployment_unit.filter_by_instances_and_replicas(
-            services
-                .iter()
-                // We must exclude the services that are provided by the deployment_unit
-                // because without that filter a second update of the service would create an
-                // additional Kubernetes deployment instead of updating/merging the existing one
-                // that had been created by the bootstrap containers.
-                .filter(|s| !deployment_unit_service_names.contains(s.service_name())),
-        );
+        if let Some(services) = self.get_services_of_app(app_name).await? {
+            k8s_deployment_unit.filter_by_instances_and_replicas(
+                services
+                    .iter()
+                    // We must exclude the services that are provided by the deployment_unit
+                    // because without that filter a second update of the service would create an
+                    // additional Kubernetes deployment instead of updating/merging the existing one
+                    // that had been created by the bootstrap containers.
+                    .filter(|s| !deployment_unit_service_names.contains(s.service_name())),
+            );
+        }
 
         for deployable_service in deployment_unit.services() {
             let (secret, service, deployment, ingress_route, middlewares) = self
@@ -546,10 +559,9 @@ impl Infrastructure for KubernetesInfrastructure {
     }
 
     async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Services> {
-        let services = self.get_services_of_app(app_name).await?;
-        if services.is_empty() {
-            return Ok(services);
-        }
+        let Some(services) = self.get_services_of_app(app_name).await? else {
+            return Ok(Services::from(Vec::new()));
+        };
 
         Api::<V1Namespace>::all(self.client().await?)
             .delete(
