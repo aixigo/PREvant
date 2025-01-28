@@ -220,7 +220,7 @@ pub struct TraefikRouterRule {
 }
 
 impl TraefikRouterRule {
-    fn path_prefix_from_segments<S>(segments: S) -> String
+    pub fn path_prefix_from_segments<S>(segments: S) -> String
     where
         S: IntoIterator,
         S::Item: AsRef<str>,
@@ -265,6 +265,13 @@ impl TraefikRouterRule {
                 paths: vec![Self::path_prefix_from_segments(segments)],
             }],
         }
+    }
+
+    pub fn first_path_prefix(&self) -> Option<&String> {
+        self.matches.iter().find_map(|m| match m {
+            Matcher::PathPrefix { paths } => paths.first(),
+            _ => None,
+        })
     }
 
     pub fn merge_with(&mut self, other: TraefikRouterRule) {
@@ -448,11 +455,11 @@ impl Display for TraefikRouterRule {
                 Matcher::PathPrefix { paths } => {
                     write!(f, "PathPrefix(")?;
 
-                    for (i, domain) in paths.iter().enumerate() {
+                    for (i, path) in paths.iter().enumerate() {
                         if i > 0 {
-                            write!(f, ", `{domain}`")?;
+                            write!(f, ", `{path}`")?;
                         } else {
-                            write!(f, "`{domain}`")?;
+                            write!(f, "`{path}`")?;
                         }
                     }
 
