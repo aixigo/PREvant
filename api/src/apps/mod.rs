@@ -32,6 +32,7 @@ use crate::config::{Config, ConfigError};
 use crate::deployment::deployment_unit::DeploymentUnitBuilder;
 use crate::infrastructure::HttpForwarder;
 use crate::infrastructure::Infrastructure;
+use crate::infrastructure::TraefikIngressRoute;
 use crate::models::service::Services;
 use crate::models::service::{ContainerType, Service, ServiceStatus};
 use crate::models::user_defined_parameters::UserDefinedParameters;
@@ -341,10 +342,10 @@ impl AppsService {
         user_defined_parameters: Option<UserDefinedParameters>,
     ) -> Result<Services, AppsServiceError> {
         if let Some(app_limit) = self.config.app_limit() {
-            let apps = self.fetch_apps().await?;
+            let apps = self.fetch_app_names().await?;
 
             if apps
-                .keys()
+                .iter()
                 // filtering the app_name that is send because otherwise clients wouldn't be able
                 // to update an existing application.
                 .filter(|existing_app_name| *existing_app_name != app_name)
@@ -388,12 +389,15 @@ impl AppsService {
             .resolve_image_infos(&images)
             .await?;
 
-        let base_traefik_ingress_route = self
-            .infrastructure
-            .base_traefik_ingress_route()
-            .await
-            .ok()
-            .flatten();
+        let base_traefik_ingress_route = if let Some(base_url) = &self.config.base_url {
+            Some(TraefikIngressRoute::from(base_url))
+        } else {
+            self.infrastructure
+                .base_traefik_ingress_route()
+                .await
+                .ok()
+                .flatten()
+        };
 
         let deployment_unit_builder = deployment_unit_builder
             .extend_with_image_infos(image_infos)

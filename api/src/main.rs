@@ -38,10 +38,10 @@ use clap::Parser;
 use rocket::fs::{FileServer, Options};
 use rocket::routes;
 use serde_yaml::{to_string, Value};
-use tokio::fs::File;
-use tokio::io::AsyncReadExt as _;
 use std::path::Path;
 use std::sync::Arc;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt as _;
 
 mod apps;
 mod config;

@@ -198,6 +198,39 @@ impl TraefikIngressRoute {
     }
 }
 
+impl From<Url> for TraefikIngressRoute {
+    fn from(url: Url) -> Self {
+        Self::from(&url)
+    }
+}
+
+impl From<&Url> for TraefikIngressRoute {
+    fn from(url: &Url) -> Self {
+        let mut matches = Vec::with_capacity(2);
+        matches.push(Matcher::Host {
+            domains: vec![url.host().map(|host| host.to_string()).unwrap_or_default()],
+        });
+
+        if url.path() != "/" {
+            matches.push(Matcher::PathPrefix {
+                paths: vec![url.path().to_string()],
+            });
+        }
+
+        Self {
+            entry_points: match url.scheme() {
+                "https" => vec![String::from("websecure")],
+                _ => Vec::new(),
+            },
+            routes: vec![TraefikRoute {
+                rule: TraefikRouterRule { matches },
+                middlewares: Vec::new(),
+            }],
+            tls: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraefikRoute {
     rule: TraefikRouterRule,
@@ -922,6 +955,38 @@ mod test {
                 })
             }
         );
+    }
+
+    mod from_url {
+        use super::*;
+
+        #[test]
+        fn with_host_and_path() {
+            let url = Url::parse("http://prevant.example.com/master/whoami/").unwrap();
+
+            assert_eq!(
+                TraefikIngressRoute::from(url),
+                TraefikIngressRoute::with_rule(
+                    TraefikRouterRule::from_str(
+                        "Host(`prevant.example.com`) && PathPrefix(`/master/whoami/`)",
+                    )
+                    .unwrap(),
+                )
+            );
+        }
+
+        #[test]
+        fn with_https() {
+            let url = Url::parse("https://prevant.example.com/").unwrap();
+
+            let mut route =
+                TraefikIngressRoute::with_rule(TraefikRouterRule::host_rule(vec![String::from(
+                    "prevant.example.com",
+                )]));
+            route.entry_points.push(String::from("websecure"));
+
+            assert_eq!(TraefikIngressRoute::from(url), route);
+        }
     }
 
     mod to_url {

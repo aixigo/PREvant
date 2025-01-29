@@ -250,7 +250,7 @@ impl HostMetaCrawler {
                 if static_host_meta.image_tag_as_version {
                     version = service.config.image().tag();
                 }
-                if static_host_meta.open_api_spec_url.is_some() {
+                if static_host_meta.open_api_spec.is_some() {
                     open_api_spec_url = Some(
                         Url::parse(&format!(
                             "http://localhost/api/apps/{app_name}/static-open-api-spec/{service_name}"
@@ -615,7 +615,7 @@ mod tests {
             [[staticHostMeta]]
             imageSelector = 'docker.io/confluentinc/cp-kafka-rest:.+'
             imageTagAsVersion = true
-            openApiSpecUrl = "https://raw.githubusercontent.com/confluentinc/kafka-rest/refs/tags/v{{image.tag}}/api/v3/openapi.yaml"
+            openApiSpec = "https://raw.githubusercontent.com/confluentinc/kafka-rest/refs/tags/v{{image.tag}}/api/v3/openapi.yaml"
             "#
         ));
         crawler.crawl(forwarder, &apps, Utc::now()).await;

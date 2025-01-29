@@ -36,12 +36,12 @@ pub(super) async fn static_open_api_spec(
         return Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into());
     };
 
-    let Some(url) = static_host_config.open_api_spec_url.as_ref() else {
+    let Some(open_api_spec) = static_host_config.open_api_spec.as_ref() else {
         return Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into());
     };
 
     let service = host_meta_cache.update_service(&app_name, service, &request_info);
-    let Some(public_service_url) = service.service_url else {
+    let Some(mut public_service_url) = service.service_url else {
         return Err(
             HttpApiProblem::with_title_and_type(StatusCode::PRECONDITION_REQUIRED)
                 .detail("The service has no public UR.")
@@ -49,7 +49,16 @@ pub(super) async fn static_open_api_spec(
         );
     };
 
-    let body = reqwest::get(url.to_string())
+    public_service_url = if let Some(path) = open_api_spec.sub_path {
+        public_service_url.join(path).map_err(|e| {
+            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                .detail(e.to_string())
+        })?
+    } else {
+        public_service_url
+    };
+
+    let body = reqwest::get(open_api_spec.source_url.to_string())
         .await
         .map_err(|e| {
             HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)

@@ -71,7 +71,9 @@ imageTagAsVersion = true
 # Optional: The OpenAPI specification that should be accessible in the
 # dashboard. The servers section will be updated so that it points to the running
 # service.
-openApiSpecUrl = "https://raw.githubusercontent.com/confluentinc/kafka-rest/refs/tags/v{{image.tag}}/api/v3/openapi.yaml"
+openApiSpec = { sourceUrl = "https://raw.githubusercontent.com/confluentinc/kafka-rest/refs/tags/v{{image.tag}}/api/v3/openapi.yaml", subPath = "v3" }
+# Could be also just a string if you don't have to set the path.
+# openApiSpec = "https://raw.githubusercontent.com/confluentinc/kafka-rest/refs/tags/v{{image.tag}}/api/v3/openapi.yaml"
 ```
 
 The `openApiSpecUrl` can be templated with following [handlebars] template variables:

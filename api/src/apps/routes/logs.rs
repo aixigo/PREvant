@@ -6,7 +6,10 @@ use crate::{
 use chrono::DateTime;
 use futures::stream::StreamExt;
 use http_api_problem::HttpApiProblem;
-use rocket::{http::hyper::header::{ACCEPT, CONTENT_DISPOSITION, LINK}, FromForm};
+use rocket::{
+    http::hyper::header::{ACCEPT, CONTENT_DISPOSITION, LINK},
+    FromForm,
+};
 use rocket::{
     http::{Accept, ContentType, RawStr, Status},
     request::FromRequest,
@@ -202,7 +205,8 @@ mod test {
     };
     use rocket::{
         http::{hyper::header::CONTENT_TYPE, Accept, Header},
-        local::asynchronous::Client, routes,
+        local::asynchronous::Client,
+        routes,
     };
 
     async fn set_up_rocket_with_dummy_infrastructure_and_a_running_app(
