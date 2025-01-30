@@ -118,22 +118,3 @@ pub trait HttpForwarder: Send + Sync + DynClone {
         request: http::Request<http_body_util::Empty<bytes::Bytes>>,
     ) -> Result<Option<WebHostMeta>>;
 }
-
-impl dyn Infrastructure {
-    /// Returns the configuration of all services running for the given application name.
-    ///
-    /// Please, note that this returns only instances and replicas
-    pub async fn get_configs_of_app(&self, app_name: &AppName) -> Result<Vec<ServiceConfig>> {
-        let mut services = self.fetch_services().await?;
-        Ok(services.remove(app_name).map_or_else(Vec::new, |services| {
-            services
-                .into_iter()
-                .filter(|service| {
-                    *service.container_type() == ContainerType::Instance
-                        || *service.container_type() == ContainerType::Replica
-                })
-                .map(|service| service.config)
-                .collect()
-        }))
-    }
-}
