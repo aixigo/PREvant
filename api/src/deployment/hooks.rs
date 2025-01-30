@@ -28,6 +28,7 @@ use crate::config::Config;
 use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, Image};
 use boa_engine::property::Attribute;
 use boa_engine::{Context, JsValue, Source};
+use log::error;
 use secstr::SecUtf8;
 use std::collections::BTreeMap;
 use std::iter::IntoIterator;

@@ -34,6 +34,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use futures::stream::{self, BoxStream};
+use log::info;
 use multimap::MultiMap;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -125,6 +126,33 @@ impl Infrastructure for DummyInfrastructure {
         }
 
         Ok(s)
+    }
+
+    async fn fetch_services_of_app(&self, app_name: &AppName) -> Result<Option<Services>> {
+        let lock = self.services.lock().unwrap();
+        let Some(configs) = lock.get_vec(app_name) else {
+            return Ok(None);
+        };
+
+        let mut services = Vec::<Service>::with_capacity(configs.len());
+        for config in configs {
+            let service = Service {
+                id: config.service_name().clone(),
+                config: ServiceConfig::clone(&config),
+                state: State {
+                    status: ServiceStatus::Running,
+                    started_at: Some(
+                        DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
+                            .unwrap()
+                            .with_timezone(&Utc),
+                    ),
+                },
+            };
+
+            services.push(service);
+        }
+
+        Ok(Some(Services::from(services)))
     }
 
     async fn deploy_services(

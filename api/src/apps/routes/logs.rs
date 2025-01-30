@@ -6,7 +6,10 @@ use crate::{
 use chrono::DateTime;
 use futures::stream::StreamExt;
 use http_api_problem::HttpApiProblem;
-use rocket::http::hyper::header::{ACCEPT, CONTENT_DISPOSITION, LINK};
+use rocket::{
+    http::hyper::header::{ACCEPT, CONTENT_DISPOSITION, LINK},
+    FromForm,
+};
 use rocket::{
     http::{Accept, ContentType, RawStr, Status},
     request::FromRequest,
@@ -16,7 +19,7 @@ use rocket::{
 };
 use std::{str::FromStr, sync::Arc};
 
-#[get("/<app_name>/logs/<service_name>?<log_query..>", rank = 1)]
+#[rocket::get("/<app_name>/logs/<service_name>?<log_query..>", rank = 1)]
 pub(super) async fn logs<'r>(
     _apt: AcceptingPlainText,
     app_name: Result<AppName, AppNameError>,
@@ -53,7 +56,7 @@ pub(super) async fn logs<'r>(
     })
 }
 
-#[get(
+#[rocket::get(
     "/<app_name>/logs/<service_name>?<log_query..>",
     format = "text/event-stream",
     rank = 2
@@ -197,10 +200,13 @@ impl<'r> FromRequest<'r> for AcceptingPlainText {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{apps::HostMetaCache, infrastructure::Dummy, models::AppStatusChangeId, sc};
+    use crate::{
+        apps::HostMetaCache, config::Config, infrastructure::Dummy, models::AppStatusChangeId, sc,
+    };
     use rocket::{
         http::{hyper::header::CONTENT_TYPE, Accept, Header},
         local::asynchronous::Client,
+        routes,
     };
 
     async fn set_up_rocket_with_dummy_infrastructure_and_a_running_app(
@@ -227,7 +233,8 @@ mod test {
 
     #[tokio::test]
     async fn log_weblink_with_no_limit() -> Result<(), crate::apps::AppsServiceError> {
-        let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
+        let (host_meta_cache, mut _host_meta_crawler) =
+            crate::host_meta_crawling(Config::default());
 
         let client =
             set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
@@ -249,7 +256,8 @@ mod test {
 
     #[tokio::test]
     async fn log_weblink_with_some_limit() -> Result<(), crate::apps::AppsServiceError> {
-        let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
+        let (host_meta_cache, mut _host_meta_crawler) =
+            crate::host_meta_crawling(Config::default());
 
         let client =
             set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
@@ -270,7 +278,8 @@ mod test {
     #[tokio::test]
     async fn log_content_disposition_for_downloading_as_attachment(
     ) -> Result<(), crate::apps::AppsServiceError> {
-        let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
+        let (host_meta_cache, mut _host_meta_crawler) =
+            crate::host_meta_crawling(Config::default());
 
         let client =
             set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
@@ -291,7 +300,8 @@ mod test {
     #[tokio::test]
     async fn log_content_disposition_for_displaying_as_inline(
     ) -> Result<(), crate::apps::AppsServiceError> {
-        let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
+        let (host_meta_cache, mut _host_meta_crawler) =
+            crate::host_meta_crawling(Config::default());
 
         let client =
             set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
@@ -310,7 +320,8 @@ mod test {
     #[tokio::test]
     async fn log_content_type_when_accepting_text_star() -> Result<(), crate::apps::AppsServiceError>
     {
-        let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
+        let (host_meta_cache, mut _host_meta_crawler) =
+            crate::host_meta_crawling(Config::default());
 
         let client =
             set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
@@ -333,7 +344,8 @@ mod test {
     #[tokio::test]
     async fn respond_with_plain_log_content_type_when_accepting_with_firefox_accept_default_value(
     ) -> Result<(), crate::apps::AppsServiceError> {
-        let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
+        let (host_meta_cache, mut _host_meta_crawler) =
+            crate::host_meta_crawling(Config::default());
 
         let client =
             set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
@@ -356,7 +368,8 @@ mod test {
     #[tokio::test]
     async fn log_content_type_when_accepting_text_stream(
     ) -> Result<(), crate::apps::AppsServiceError> {
-        let (host_meta_cache, mut _host_meta_crawler) = crate::host_meta_crawling();
+        let (host_meta_cache, mut _host_meta_crawler) =
+            crate::host_meta_crawling(Config::default());
 
         let client =
             set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;

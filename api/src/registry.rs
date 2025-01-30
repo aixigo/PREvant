@@ -28,6 +28,7 @@ use crate::config::Config;
 use crate::models::Image;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use log::{debug, warn};
 use oci_client::client::ClientConfig;
 use oci_client::errors::OciDistributionError;
 use oci_client::secrets::RegistryAuth;
