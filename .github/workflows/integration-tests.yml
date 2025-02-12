@@ -4,7 +4,7 @@ on:
          - master
    pull_request:
 
-name: PREvant integration tests
+name: Integration tests
 
 jobs:
    build-image:
@@ -83,9 +83,22 @@ jobs:
          - name: Import image into K3s
            run: k3d image import aixigo/prevant -c kube
 
+         - name: Wait for Traefik CRDs
+           run: until kubectl get crds | grep -m 1 "traefik"; do sleep 3s ; done
+
          - name: Deploy PREvant into K3s
            run: |
               kubectl apply -f examples/Kubernetes/RBAC-authorization.yml
               kubectl apply -f examples/Kubernetes/PREvant.yml
               sleep 20s
               kubectl describe deployment/prevant
+
+         - name: Install latest stable
+           uses: actions-rust-lang/setup-rust-toolchain@v1
+           with:
+              rustflags: ""
+
+         - name: Run cargo test
+           run:
+              cargo test --manifest-path api-tests/Cargo.toml --test k3s -- --test-threads=1
+

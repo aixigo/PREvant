@@ -1,5 +1,5 @@
 mod prevant;
 mod traefik;
 
-pub use prevant::{delete_app, deploy_app, logs, replicate_app, PREvant};
-pub use traefik::{make_request, Traefik};
+pub use prevant::{prevant_url, PREvant};
+pub use traefik::{traefik_url, Traefik};
