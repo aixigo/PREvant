@@ -4,7 +4,7 @@ on:
          - master
    pull_request:
 
-name: Build and test API
+name: Unit tests
 
 jobs:
   unitTest:
