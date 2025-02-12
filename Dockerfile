@@ -1,5 +1,5 @@
 # Build Frontend
-FROM node:18-alpine as frontend-builder
+FROM node:18-alpine AS frontend-builder
 WORKDIR /usr/src/frontend/
 COPY frontend/package.json frontend/index.html frontend/package-lock.json frontend/*.config.mjs /usr/src/frontend/
 COPY frontend/public /usr/src/frontend/public/
@@ -8,7 +8,7 @@ RUN npm ci && npm run build
 
 
 # Build Backend
-FROM rust:1-bookworm as backend-builder
+FROM rust:1-bookworm AS backend-builder
 COPY api/Cargo.toml api/Cargo.lock /usr/src/api/
 WORKDIR /usr/src/api
 
@@ -23,7 +23,7 @@ RUN cargo build --release
 
 
 # Compose application directory
-FROM scratch as directory-composer
+FROM scratch AS directory-composer
 COPY --from=backend-builder /usr/src/api/target/release/prevant /app/prevant
 COPY api/res/Rocket.toml api/res/config.toml /app/
 COPY api/res/openapi.yml /app/res/

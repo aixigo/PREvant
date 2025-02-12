@@ -532,6 +532,42 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn host_header_response_with_xforwardedhost_and_port_xforwardedproto_and_xforwardedport(
+        ) -> Result<(), crate::apps::AppsServiceError> {
+            let (host_meta_cache, mut host_meta_crawler) =
+                crate::host_meta_crawling(Config::default());
+            let client =
+                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
+            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
+
+            let get = client
+                .get("/")
+                .header(rocket::http::Header::new(
+                    "x-forwarded-host",
+                    "prevant.com:8433",
+                ))
+                .header(rocket::http::Header::new("x-forwarded-proto", "http"))
+                .header(rocket::http::Header::new("x-forwarded-port", "8433"))
+                .header(ContentType::JSON)
+                .dispatch();
+
+            let response = get.await;
+
+            let body_str = response.into_string().await.expect("valid response body");
+            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
+
+            assert_json_include!(
+                actual: value_in_json,
+                expected: json!({
+                    "master": [{
+                        "url":"http://prevant.com:8433/master/service-a/"
+                    }]
+                }
+            ));
+
+            Ok(())
+        }
+        #[tokio::test]
         async fn host_header_response_with_xforwardedhost_xforwardedproto_and_xforwardedport(
         ) -> Result<(), crate::apps::AppsServiceError> {
             let (host_meta_cache, mut host_meta_crawler) =

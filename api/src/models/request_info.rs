@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
+use regex::Regex;
 use rocket::http::Status;
 use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
@@ -47,7 +48,7 @@ impl RequestInfo {
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for RequestInfo {
-    type Error = ();
+    type Error = String;
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
         let forwarded_host = request.headers().get_one("x-forwarded-host");
@@ -56,7 +57,8 @@ impl<'r> FromRequest<'r> for RequestInfo {
             None => match request.headers().get_one("host") {
                 Some(host) => host.to_string(),
                 None => {
-                    return Outcome::Error((Status::BadRequest, ()));
+                    log::error!("Request without host header…");
+                    return Outcome::Error((Status::BadRequest, String::from("No host header")));
                 }
             },
         };
@@ -69,13 +71,32 @@ impl<'r> FromRequest<'r> for RequestInfo {
         let forwarded_port = request
             .headers()
             .get_one("x-forwarded-port")
-            .map(|port| format!(":{port}"))
-            .unwrap_or_default();
+            .map(|port| format!(":{port}"));
 
-        let host_url = format!("{}://{}{}", forwarded_proto, forwarded_host, forwarded_port);
+        lazy_static! {
+            static ref RE: Regex = Regex::new(r":\d+$").unwrap();
+        }
+        let forwarded_host = if forwarded_port.is_some() && RE.is_match(&forwarded_host) {
+            RE.replace(&forwarded_host, "").to_string()
+        } else {
+            forwarded_host
+        };
+
+        let host_url = format!(
+            "{}://{}{}",
+            forwarded_proto,
+            forwarded_host,
+            forwarded_port.unwrap_or_default()
+        );
         match Url::parse(&host_url) {
-            Ok(url) => Outcome::Success(RequestInfo { base_url: url }),
-            Err(_) => Outcome::Error((Status::BadRequest, ())),
+            Ok(base_url) => Outcome::Success(RequestInfo { base_url }),
+            Err(err) => {
+                log::error!("Cannot create URL from {host_url}: {err}");
+                Outcome::Error((
+                    Status::BadRequest,
+                    format!("Cannot create URL from {host_url}: {err}"),
+                ))
+            }
         }
     }
 }

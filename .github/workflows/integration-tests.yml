@@ -1,0 +1,105 @@
+on:
+   push:
+      branches:
+         - master
+   pull_request:
+
+name: Integration tests
+
+jobs:
+   build-image:
+      name: Build OCI image
+      runs-on: ubuntu-latest
+      steps:
+         - uses: actions/checkout@v4
+
+         - name: Set up Docker Buildx
+           uses: docker/setup-buildx-action@v3
+
+         - name: Build image
+           uses: docker/build-push-action@v6
+           with:
+              tags: aixigo/prevant:latest
+              outputs: "type=docker,dest=${{ runner.temp }}/image.tar"
+
+         - uses: actions/upload-artifact@v4
+           name: Upload image
+           with:
+              name: image
+              path: ${{ runner.temp }}/image.tar
+
+   docker:
+      name: Docker integration tests
+      needs: build-image
+      runs-on: ubuntu-latest
+      steps:
+         - name: Download image
+           uses: actions/download-artifact@v4
+           with:
+              name: image
+              path: ${{ runner.temp }}
+
+         - name: Load image
+           run: docker load --input ${{ runner.temp }}/image.tar
+
+         - uses: actions/checkout@v4
+
+         - name: Install latest stable
+           uses: actions-rust-lang/setup-rust-toolchain@v1
+           with:
+              rustflags: ""
+
+         - name: Run cargo test
+           run:
+              cargo test --manifest-path api-tests/Cargo.toml --test docker -- --test-threads=1
+
+   k3s:
+      name: K3s integration tests
+      needs: build-image
+      runs-on: ubuntu-latest
+      strategy:
+         # Prevent GitHub from canceling all in-progress jobs when a matrix job fails.
+         fail-fast: false
+         matrix:
+            k8s: [v1.28, latest]
+      steps:
+         - name: Download image
+           uses: actions/download-artifact@v4
+           with:
+              name: image
+              path: ${{ runner.temp }}
+
+         - name: Load image
+           run: docker load --input ${{ runner.temp }}/image.tar
+
+         - uses: actions/checkout@v4
+
+         - uses: nolar/setup-k3d-k3s@v1
+           with:
+               version: ${{matrix.k8s}}
+               k3d-name: kube
+               # TODD: currently PREvant supports only Traefik v2, thus the k3s version is pinned to
+               # a version that brings Traefik v2.
+               k3d-args: "-p 8080:80@loadbalancer --no-rollback --k3s-arg --disable=metrics-server@server:* --image rancher/k3s:v1.31.7-k3s1"
+
+         - name: Import image into K3s
+           run: k3d image import aixigo/prevant -c kube
+
+         - name: Wait for Traefik CRDs
+           run: until kubectl get crds | grep -m 1 "traefik"; do sleep 3s ; done
+
+         - name: Deploy PREvant into K3s
+           run: |
+              kubectl apply -f examples/Kubernetes/RBAC-authorization.yml
+              kubectl apply -f examples/Kubernetes/PREvant.yml
+              kubectl wait --for=condition=Ready $(kubectl get pods --selector "app=prevant" --output name)
+
+         - name: Install latest stable
+           uses: actions-rust-lang/setup-rust-toolchain@v1
+           with:
+              rustflags: ""
+
+         - name: Run cargo test
+           run:
+              cargo test --manifest-path api-tests/Cargo.toml --test k3s
+

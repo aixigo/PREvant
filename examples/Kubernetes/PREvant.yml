@@ -50,6 +50,10 @@ spec:
             - name: podinfo
               mountPath: /run/podinfo/
               readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/apps
+              port: web
       volumes:
         - name: podinfo
           downwardAPI:
@@ -64,7 +68,7 @@ metadata:
   name: prevant-ingress-route
 spec:
   entryPoints:
-    - http
+    - web
   routes:
     - kind: Rule
       match: PathPrefix(`/`)

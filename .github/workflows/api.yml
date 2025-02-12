@@ -4,7 +4,7 @@ on:
          - master
    pull_request:
 
-name: Build and test API
+name: Unit tests
 
 jobs:
   unitTest:
@@ -21,21 +21,3 @@ jobs:
       - name: Run cargo test
         run:
           cargo test --manifest-path api/Cargo.toml
-
-  integrationTests:
-    name: API Integration Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@master
-
-      - name: Build Docker Image
-        run: docker build --pull -t aixigo/prevant .
-
-      - name: Install latest stable
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          rustflags: ""
-
-      - name: Run cargo test
-        run:
-          cargo test --manifest-path api-tests/Cargo.toml -- --test-threads=1

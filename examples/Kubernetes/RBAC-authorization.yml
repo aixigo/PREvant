@@ -7,50 +7,22 @@ rules:
  - apiGroups:
     - ""
    resources:
-    - endpoints
-    - pods
-    - pods/log
+    - "*"
    verbs:
-    - get
-    - list
- - apiGroups:
-    - ""
-   resources:
-    - namespaces
-    - services
-    - secrets
-   verbs:
-    - get
-    - list
-    - create
-    - update
-    - patch
-    - delete
+    - "*"
  - apiGroups:
     - apps
+    - batch
+    - storage.k8s.io
+    - rbac.authorization.k8s.io
    resources:
-    - deployments
+    - "*"
    verbs:
-    - get
-    - list
-    - create
-    - update
-    - patch
-    - delete
+    - "*"
  - apiGroups:
     - traefik.containo.us
    resources:
     - middlewares
-   verbs:
-    - get
-    - list
-    - create
-    - update
-    - patch
-    - delete
- - apiGroups:
-    - traefik.containo.us
-   resources:
     - ingressroutes
    verbs:
     - get
