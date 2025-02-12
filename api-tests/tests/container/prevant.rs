@@ -1,11 +1,9 @@
-use crate::common::Service;
-use reqwest::{Client, Response, StatusCode};
-use std::{borrow::Cow, collections::HashMap};
+use reqwest::Url;
+use std::{borrow::Cow, collections::HashMap, str::FromStr};
 use testcontainers::{
     core::{Mount, WaitFor},
     ContainerAsync, Image,
 };
-use uuid::Uuid;
 
 pub struct PREvant {
     env_vars: HashMap<String, String>,
@@ -50,99 +48,11 @@ impl Image for PREvant {
     }
 }
 
-pub async fn deploy_app(
-    prevant: &ContainerAsync<PREvant>,
-    services: &Vec<Service>,
-) -> Result<Uuid, Response> {
+pub async fn prevant_url(prevant: &ContainerAsync<PREvant>) -> Url {
     let port = prevant
         .get_host_port_ipv4(80)
         .await
         .expect("PREvant container must provide a port");
 
-    let app_name = Uuid::new_v4();
-
-    let res = Client::new()
-        .post(&format!("http://localhost:{}/api/apps/{}", port, app_name))
-        .json(&services)
-        .send()
-        .await
-        .unwrap();
-
-    match res.status() {
-        StatusCode::OK => Ok(app_name),
-        _ => Err(res),
-    }
-}
-
-pub async fn replicate_app(
-    prevant: &ContainerAsync<PREvant>,
-    from_app_name: &Uuid,
-) -> Result<Uuid, Response> {
-    let port = prevant
-        .get_host_port_ipv4(80)
-        .await
-        .expect("PREvant container must provide a port");
-
-    let app_name = Uuid::new_v4();
-
-    let res = Client::new()
-        .post(&format!(
-            "http://localhost:{}/api/apps/{}?replicateFrom={}",
-            port, app_name, from_app_name
-        ))
-        .json(&Vec::<Service>::new())
-        .send()
-        .await
-        .unwrap();
-
-    match res.status() {
-        StatusCode::OK => Ok(app_name),
-        _ => Err(res),
-    }
-}
-
-pub async fn delete_app(
-    prevant: &ContainerAsync<PREvant>,
-    app_name: &Uuid,
-) -> Result<(), Response> {
-    let port = prevant
-        .get_host_port_ipv4(80)
-        .await
-        .expect("PREvant container must provide a port");
-
-    let res = Client::new()
-        .delete(&format!("http://localhost:{}/api/apps/{}", port, app_name))
-        .send()
-        .await
-        .unwrap();
-
-    match res.status() {
-        StatusCode::OK => Ok(()),
-        _ => Err(res),
-    }
-}
-
-pub async fn logs(
-    prevant: &ContainerAsync<PREvant>,
-    app_name: &Uuid,
-    service_name: &str,
-) -> Result<String, Response> {
-    let port = prevant
-        .get_host_port_ipv4(80)
-        .await
-        .expect("PREvant container must provide a port");
-
-    let res = Client::new()
-        .get(&format!(
-            "http://localhost:{}/api/apps/{}/logs/{}",
-            port, app_name, service_name
-        ))
-        .send()
-        .await
-        .unwrap();
-
-    match res.status() {
-        StatusCode::OK => Ok(res.text().await.expect("")),
-        _ => Err(res),
-    }
+    Url::from_str(&format!("http://localhost:{port}")).unwrap()
 }

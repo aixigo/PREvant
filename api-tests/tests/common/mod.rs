@@ -1,4 +1,7 @@
+pub use api_tests::{should_deploy_nginx, should_replicate_mariadb_with_replicated_env};
 use std::collections::HashMap;
+
+mod api_tests;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

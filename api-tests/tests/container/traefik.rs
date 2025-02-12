@@ -1,10 +1,10 @@
-use reqwest::{ClientBuilder, Response};
-use std::time::Duration;
+use std::str::FromStr;
+
+use reqwest::Url;
 use testcontainers::{
     core::{Mount, WaitFor},
     ContainerAsync, Image,
 };
-use uuid::Uuid;
 
 #[derive(Clone, Debug, Default)]
 pub struct TraefikArgs;
@@ -25,6 +25,10 @@ impl Default for Traefik {
 }
 
 impl Image for Traefik {
+    fn expose_ports(&self) -> &[testcontainers::core::ContainerPort] {
+        &[testcontainers::core::ContainerPort::Tcp(80)]
+    }
+
     fn cmd(&self) -> impl IntoIterator<Item = impl Into<std::borrow::Cow<'_, str>>> {
         Box::new(
             vec![
@@ -54,33 +58,11 @@ impl Image for Traefik {
     }
 }
 
-pub async fn make_request(
-    traefik: &ContainerAsync<Traefik>,
-    app_name: &Uuid,
-    service_name: &str,
-) -> Response {
+pub async fn traefik_url(traefik: &ContainerAsync<Traefik>) -> Url {
     let port = traefik
-        .get_host_port_ipv4(80)
+        .get_host_port_ipv6(80)
         .await
         .expect("Traefik must export port");
 
-    backoff::future::retry(
-        backoff::ExponentialBackoffBuilder::new()
-            .with_max_elapsed_time(Some(std::time::Duration::from_secs(60)))
-            .build(),
-        || async {
-            let client = ClientBuilder::new()
-                .connect_timeout(Duration::from_millis(2_000))
-                .build()?;
-
-            Ok(client
-                .get(&format!(
-                    "http://localhost:{port}/{app_name}/{service_name}/",
-                ))
-                .send()
-                .await?)
-        },
-    )
-    .await
-    .expect("a response")
+    Url::from_str(&format!("http://localhost:{port}")).unwrap()
 }

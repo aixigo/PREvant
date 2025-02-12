@@ -12,7 +12,7 @@ Without any CLI options, PREvant will use the Docker API. If you want to develop
 
 ## <a name="k8s-dev"></a>Kubernetes Backend
 
-For developing against a local Kubernetes cluster you can use [k3d](https://k3d.io).
+For developing against a local Kubernetes cluster you can use [k3d].
 
 1. Create a cluster:
 
@@ -67,3 +67,34 @@ PREvant will be available at `http://localhost:8000`.
    ```
 4. Open the URL `http://localhost:9001` in your browser
 
+# Integration Testing
+
+To test the image end-2-end, build the Docker image (`docker build --pull -t
+aixigo/prevant .`) and then choose testing via
+[testcontainers](https://testcontainers.com/) or [k3d].
+
+## Testcontainers for Docker Backend
+
+```sh
+export RUST_LOG="info,testcontainers=debug"
+cargo test --manifest-path api-tests/Cargo.toml --test docker -- --test-threads=1 --nocapture
+```
+
+## K3s for Kubernetes Backend
+
+1. Create cluster and import the PREvant image:
+   ```sh
+   k3d cluster create dash -p "8080:80@loadbalancer" --no-rollback --k3s-arg --disable=metrics-server@server:* --image rancher/k3s:v1.31.7-k3s1
+   k3d image import aixigo/prevant -c dash
+   ```
+2. Deploy PREvant:
+   ```sh
+   kubectl apply -f examples/Kubernetes/RBAC-authorization.yml
+   kubectl apply -f examples/Kubernetes/PREvant.yml
+   ```
+3. Run Tests:
+   ```sh
+   cargo test --manifest-path api-tests/Cargo.toml --test k3s
+   ```
+
+[k3d]: https://k3d.io
