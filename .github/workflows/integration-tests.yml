@@ -4,7 +4,7 @@ on:
          - master
    pull_request:
 
-name: Test PREvant on K3s
+name: PREvant integration tests
 
 jobs:
    build-image:
@@ -79,3 +79,13 @@ jobs:
                version: ${{matrix.k8s}}
                k3d-name: kube
                k3d-args: "--no-lb --no-rollback --k3s-arg --disable=servicelb,metrics-server@server:*"
+
+         - name: Import image into K3s
+           run: k3d image import aixigo/prevant -c kube
+
+         - name: Deploy PREvant into K3s
+           run: |
+              kubectl apply -f examples/Kubernetes/RBAC-authorization.yml
+              kubectl apply -f examples/Kubernetes/PREvant.yml
+              sleep 20s
+              kubectl describe deployment/prevant
