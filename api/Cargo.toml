@@ -35,6 +35,8 @@ hyper-util = "0.1"
 http-body-util = "0.1"
 jira_query = "1.5"
 jsonschema = "0.29"
+# If you adjust the feature to increase the supported K8s version, make sure to
+# also adjust the k3d integration job
 k8s-openapi = { version = "0.24", default-features = false, features = ["v1_28"] }
 kube = { version = "0.98", default-features = false, features = ["client", "derive", "rustls-tls", "ws"] }
 lazy_static = "1.5"
