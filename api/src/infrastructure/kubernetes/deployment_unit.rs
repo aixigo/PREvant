@@ -22,7 +22,7 @@ use k8s_openapi::{
             ConfigMap, Container, LocalObjectReference, PersistentVolumeClaim, Pod, PodSpec,
             Secret, Service, ServiceAccount,
         },
-        networking::v1::Ingress,
+        networking::v1::{Ingress, NetworkPolicy},
         rbac::v1::{Role, RoleBinding},
     },
     apimachinery::pkg::apis::meta::v1::LabelSelector,
@@ -54,6 +54,7 @@ pub(super) struct K8sDeploymentUnit {
     deployments: Vec<Deployment>,
     jobs: Vec<Job>,
     service_accounts: Vec<ServiceAccount>,
+    policies: Vec<NetworkPolicy>,
     traefik_ingresses: Vec<TraefikIngressRoute>,
     traefik_middlewares: Vec<TraefikMiddleware>,
 }
@@ -226,6 +227,7 @@ impl K8sDeploymentUnit {
         let mut jobs = Vec::new();
         let mut service_accounts = Vec::new();
         let mut ingresses = Vec::new();
+        let mut policies = Vec::new();
 
         for mut log_stream in log_streams.into_iter() {
             let mut stdout = String::new();
@@ -437,6 +439,19 @@ impl K8sDeploymentUnit {
                                     }
                                 }
                             }
+                            (NetworkPolicy::API_VERSION, NetworkPolicy::KIND) => {
+                                match dy.clone().try_parse::<NetworkPolicy>() {
+                                    Ok(policy) => {
+                                        policies.push(policy);
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Cannot parse {:?} as NetworkPolicy: {e}",
+                                            dy.metadata.name
+                                        );
+                                    }
+                                }
+                            }
                             _ => {
                                 warn!(
                                     "Cannot parse {name} ({api_version}, {kind}) for {app_name} because its kind is unknown",
@@ -480,6 +495,7 @@ impl K8sDeploymentUnit {
             deployments,
             jobs,
             service_accounts,
+            policies,
             traefik_ingresses,
             traefik_middlewares,
         })
@@ -755,6 +771,9 @@ impl K8sDeploymentUnit {
         }
         for service_account in self.service_accounts {
             create_or_patch(client.clone(), app_name, service_account).await?;
+        }
+        for policy in self.policies {
+            create_or_patch(client.clone(), app_name, policy).await?;
         }
         for deployment in self.deployments {
             let deployment = create_or_patch(client.clone(), app_name, deployment).await?;
