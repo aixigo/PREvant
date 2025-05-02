@@ -29,7 +29,10 @@ use super::super::{
 };
 use crate::config::{Config, ContainerConfig};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
-use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
+use crate::infrastructure::{
+    TraefikIngressRoute, TraefikRouterRule, USER_DEFINED_PARAMETERS_LABEL,
+};
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, ServiceConfig};
 use base64::{engine::general_purpose, Engine};
 use bytesize::ByteSize;
@@ -330,7 +333,11 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
 
 /// Creates a JSON payload suitable for [Kubernetes'
 /// Namespaces](https://kubernetes.io/docs/tasks/administer-cluster/namespaces/)
-pub fn namespace_payload(app_name: &AppName, config: &Config) -> V1Namespace {
+pub fn namespace_payload(
+    app_name: &AppName,
+    config: &Config,
+    user_defined_parameters: &Option<UserDefinedParameters>,
+) -> V1Namespace {
     let annotations = match config.runtime_config() {
         crate::config::Runtime::Docker => None,
         crate::config::Runtime::Kubernetes(runtime) => {
@@ -342,6 +349,17 @@ pub fn namespace_payload(app_name: &AppName, config: &Config) -> V1Namespace {
                 Some(annotations.clone())
             }
         }
+    };
+
+    let annotations = if let Some(user_defined_parameters) = user_defined_parameters {
+        let mut annotations = annotations.unwrap_or_default();
+        annotations.insert(
+            USER_DEFINED_PARAMETERS_LABEL.to_string(),
+            serde_json::to_string(user_defined_parameters).unwrap(),
+        );
+        Some(annotations)
+    } else {
+        annotations
     };
 
     V1Namespace {
@@ -1552,8 +1570,11 @@ mod tests {
 
     #[test]
     fn create_namespace_with_screaming_snake_case() {
-        let namespace =
-            namespace_payload(&AppName::from_str("MY-APP").unwrap(), &Default::default());
+        let namespace = namespace_payload(
+            &AppName::from_str("MY-APP").unwrap(),
+            &Default::default(),
+            &None,
+        );
 
         assert_eq!(
             namespace,
@@ -1583,7 +1604,7 @@ mod tests {
         )
         .unwrap();
 
-        let namespace = namespace_payload(&AppName::from_str("myapp").unwrap(), &config);
+        let namespace = namespace_payload(&AppName::from_str("myapp").unwrap(), &config, &None);
 
         assert_eq!(
             namespace,

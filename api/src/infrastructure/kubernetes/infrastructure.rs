@@ -36,10 +36,13 @@ use super::payloads::{
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
 use crate::infrastructure::traefik::{TraefikIngressRoute, TraefikMiddleware};
-use crate::infrastructure::{HttpForwarder, Infrastructure, TraefikRouterRule};
+use crate::infrastructure::{
+    HttpForwarder, Infrastructure, TraefikRouterRule, USER_DEFINED_PARAMETERS_LABEL,
+};
 use crate::models::service::{
     ContainerType, Service, ServiceError, ServiceStatus, Services, State,
 };
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, Environment, Image, ServiceConfig, WebHostMeta};
 use anyhow::Result;
 use async_stream::stream;
@@ -57,6 +60,7 @@ use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
     core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
 };
+use kube::api::ObjectMeta;
 use kube::Resource;
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
@@ -234,11 +238,13 @@ impl KubernetesInfrastructure {
     async fn create_namespace_if_necessary(
         &self,
         app_name: &AppName,
+        user_defined_params: &Option<UserDefinedParameters>,
     ) -> Result<(), KubernetesInfrastructureError> {
-        match Api::all(self.client().await?)
+        let api = Api::all(self.client().await?);
+        match api
             .create(
                 &PostParams::default(),
-                &namespace_payload(app_name, &self.config),
+                &namespace_payload(app_name, &self.config, user_defined_params),
             )
             .await
         {
@@ -254,6 +260,30 @@ impl KubernetesInfrastructure {
             }
             Err(KubeError::Api(ErrorResponse { code: 409, .. })) => {
                 debug!("Namespace {} already exists.", app_name);
+
+                if let Some(user_defined_parameters) = user_defined_params {
+                    debug!(
+                        "Patching namespace {} with user defined parameters.",
+                        app_name
+                    );
+                    api.patch(
+                        &app_name.to_rfc1123_namespace_id(),
+                        &PatchParams::apply("PREvant"),
+                        &Patch::Merge(&V1Namespace {
+                            metadata: ObjectMeta {
+                                annotations: Some(BTreeMap::from([(
+                                    USER_DEFINED_PARAMETERS_LABEL.to_string(),
+                                    serde_json::to_string(user_defined_parameters)
+                                        .unwrap_or_default(),
+                                )])),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }),
+                    )
+                    .await?;
+                }
+
                 Ok(())
             }
             Err(e) => {
@@ -426,6 +456,37 @@ impl KubernetesInfrastructure {
             Err(err) => Err(err.into()),
         }
     }
+
+    fn parse_user_defined_parameters_from(
+        &self,
+        namespace: V1Namespace,
+    ) -> Option<UserDefinedParameters> {
+        let validator = self.config.user_defined_schema_validator()?;
+
+        let udp = namespace
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.get(USER_DEFINED_PARAMETERS_LABEL))?;
+
+        let data = serde_json::from_str(udp)
+            .inspect_err(|e| {
+                warn!(
+                    "Cannot parse user defined parameters {}: {e}",
+                    namespace.metadata.name.as_deref().unwrap_or_default()
+                )
+            })
+            .ok()?;
+
+        UserDefinedParameters::new(data, &validator)
+            .inspect_err(|e| {
+                warn!(
+                    "Cannot validate user defined parameters {}: {e}",
+                    namespace.metadata.name.as_deref().unwrap_or_default()
+                )
+            })
+            .ok()
+    }
 }
 
 #[async_trait]
@@ -454,11 +515,21 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(apps)
     }
 
-    async fn fetch_services_of_app(&self, app_name: &AppName) -> Result<Option<Services>> {
-        Ok(self
-            .get_services_of_app(app_name)
-            .await?
-            .map(Services::from))
+    async fn fetch_services_and_user_defined_payload_of_app(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
+        let Some(services) = self.get_services_of_app(app_name).await? else {
+            return Ok(None);
+        };
+
+        let api = Api::<V1Namespace>::all(self.client().await?);
+        let namespace = api.get(&app_name.to_rfc1123_namespace_id()).await?;
+
+        Ok(Some((
+            services,
+            self.parse_user_defined_parameters_from(namespace),
+        )))
     }
 
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
@@ -490,7 +561,8 @@ impl Infrastructure for KubernetesInfrastructure {
         container_config: &ContainerConfig,
     ) -> Result<Services> {
         let app_name = deployment_unit.app_name();
-        self.create_namespace_if_necessary(app_name).await?;
+        self.create_namespace_if_necessary(app_name, deployment_unit.user_defined_parameters())
+            .await?;
 
         let client = self.client().await?;
 

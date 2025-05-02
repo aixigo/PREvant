@@ -29,6 +29,7 @@ use crate::deployment::deployment_unit::DeployableService;
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::Infrastructure;
 use crate::models::service::{Service, ServiceStatus, Services, State};
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, ServiceConfig};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -48,6 +49,7 @@ use super::TraefikIngressRoute;
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
     services: Arc<Mutex<MultiMap<AppName, DeployableService>>>,
+    user_defined_parameters: Arc<Mutex<HashMap<AppName, UserDefinedParameters>>>,
     base_ingress_route: Option<TraefikIngressRoute>,
 }
 
@@ -57,6 +59,7 @@ impl DummyInfrastructure {
         Self {
             delay: None,
             services: Arc::new(Mutex::new(MultiMap::new())),
+            user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
             base_ingress_route: None,
         }
     }
@@ -65,6 +68,7 @@ impl DummyInfrastructure {
         Self {
             delay: Some(delay),
             services: Arc::new(Mutex::new(MultiMap::new())),
+            user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
             base_ingress_route: None,
         }
     }
@@ -73,6 +77,7 @@ impl DummyInfrastructure {
         Self {
             delay: None,
             services: Arc::new(Mutex::new(MultiMap::new())),
+            user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
             base_ingress_route: Some(base_ingress_route),
         }
     }
@@ -128,7 +133,10 @@ impl Infrastructure for DummyInfrastructure {
         Ok(s)
     }
 
-    async fn fetch_services_of_app(&self, app_name: &AppName) -> Result<Option<Services>> {
+    async fn fetch_services_and_user_defined_payload_of_app(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
         let lock = self.services.lock().unwrap();
         let Some(configs) = lock.get_vec(app_name) else {
             return Ok(None);
@@ -152,7 +160,12 @@ impl Infrastructure for DummyInfrastructure {
             services.push(service);
         }
 
-        Ok(Some(Services::from(services)))
+        let user_defined_parameters = self.user_defined_parameters.lock().unwrap();
+
+        Ok(Some((
+            Services::from(services),
+            user_defined_parameters.get(app_name).cloned(),
+        )))
     }
 
     async fn deploy_services(
@@ -163,8 +176,15 @@ impl Infrastructure for DummyInfrastructure {
     ) -> Result<Services> {
         self.delay_if_configured().await;
 
-        let mut services = self.services.lock().unwrap();
         let app_name = deployment_unit.app_name();
+
+        let mut services = self.services.lock().unwrap();
+        let mut user_defined_parameters = self.user_defined_parameters.lock().unwrap();
+
+        if let Some(p) = deployment_unit.user_defined_parameters() {
+            user_defined_parameters.insert(app_name.clone(), p.clone());
+        }
+
         let deployable_services = deployment_unit.services();
         if let Some(running_services) = services.get_vec_mut(&app_name) {
             let service_names = deployable_services

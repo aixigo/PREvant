@@ -4,10 +4,7 @@ use super::{DeployPayload, Service};
 use reqwest::{Client, ClientBuilder, Response, StatusCode, Url};
 use uuid::Uuid;
 
-async fn deploy_app(
-    prevant_base_url: &Url,
-    deploy_payload: DeployPayload,
-) -> Result<Uuid, Response> {
+async fn deploy_app(prevant_base_url: &Url, deploy_payload: DeployPayload) -> Result<Uuid, ()> {
     let app_name = Uuid::new_v4();
 
     log::debug!(
@@ -30,7 +27,11 @@ async fn deploy_app(
 
     match res.status() {
         StatusCode::OK => Ok(app_name),
-        _ => Err(res),
+        _ => {
+            let response_text = res.text().await.unwrap();
+            log::error!("Cannot deploy app {app_name}: {response_text}");
+            Err(())
+        }
     }
 }
 
@@ -56,7 +57,7 @@ async fn replicate_app(prevant_base_url: &Url, from_app_name: &Uuid) -> Result<U
     }
 }
 
-async fn delete_app(prevant_base_url: &Url, app_name: &Uuid) -> Result<(), Response> {
+async fn delete_app(prevant_base_url: &Url, app_name: Uuid) -> Result<(), Response> {
     let res = Client::new()
         .delete(
             prevant_base_url
@@ -159,7 +160,7 @@ pub async fn should_deploy_nginx(traefik_base_url: &Url, prevant_base_url: &Url)
         }
     }
 
-    delete_app(&prevant_base_url, &app_name)
+    delete_app(&prevant_base_url, app_name)
         .await
         .expect("Should be able to delete app");
 
@@ -167,7 +168,7 @@ pub async fn should_deploy_nginx(traefik_base_url: &Url, prevant_base_url: &Url)
 }
 
 pub async fn should_replicate_mariadb_with_replicated_env(prevant_base_url: &Url) {
-    let db_service = Service::new(String::from("db"), String::from("mariadb:10.3.17"))
+    let db_service = Service::new(String::from("db"), String::from("mariadb:lts"))
         .with_replicated_env(
             String::from("MYSQL_RANDOM_ROOT_PASSWORD"),
             String::from("yes"),
@@ -189,17 +190,8 @@ pub async fn should_replicate_mariadb_with_replicated_env(prevant_base_url: &Url
             Ok(logs) => logs,
             Err(error_response) => {
                 let err = error_response.text().await.unwrap();
-                match duration {
-                    Some(duration) => {
-                        log::debug!("Could not connect get logs (retry later): {err}");
-                        tokio::time::sleep(duration).await;
-                        continue;
-                    }
-                    None => {
-                        log::error!("{}", err);
-                        break;
-                    }
-                }
+                log::debug!("Could not connect get logs: {err}");
+                String::new()
             }
         };
 
@@ -207,12 +199,17 @@ pub async fn should_replicate_mariadb_with_replicated_env(prevant_base_url: &Url
             success = true;
             break;
         }
+
+        if let Some(duration) = duration {
+            tokio::time::sleep(duration).await;
+            continue;
+        }
     }
 
-    delete_app(&prevant_base_url, &app_name)
+    delete_app(&prevant_base_url, app_name)
         .await
         .expect("Should be able to delete app");
-    delete_app(&prevant_base_url, &replicated_app_name)
+    delete_app(&prevant_base_url, replicated_app_name)
         .await
         .expect("Should be able to delete app");
 
@@ -264,7 +261,62 @@ pub async fn should_deploy_nginx_with_bootstrapped_httpd(
         }
     }
 
-    delete_app(&prevant_base_url, &app_name)
+    delete_app(&prevant_base_url, app_name)
+        .await
+        .expect("Should be able to delete app");
+
+    assert!(success, "Cannot make request to Apache httpd");
+}
+
+pub async fn should_deploy_nginx_with_cloned_bootstrapped_httpd(
+    traefik_base_url: &Url,
+    prevant_base_url: &Url,
+) {
+    let app_name = deploy_app(
+        prevant_base_url,
+        DeployPayload::UserDefinedAndServices {
+            services: vec![Service::new(
+                String::from("nginx"),
+                String::from("nginx:alpine"),
+            )],
+            user_defined: serde_json::json!({
+                "deployHttpd": "true",
+                "abc": 123
+            }),
+        },
+    )
+    .await
+    .expect("Should be able to deploy app");
+    let replicated_app_name = replicate_app(&prevant_base_url, &app_name)
+        .await
+        .expect("Should be able to replicate app");
+    delete_app(&prevant_base_url, app_name)
+        .await
+        .expect("Should be able to delete app");
+
+    let mut success = false;
+    for duration in
+        exponential_backoff::Backoff::new(10, Duration::from_secs(1), Duration::from_secs(10))
+    {
+        let response = make_request(&traefik_base_url, &replicated_app_name, None).await;
+        if response
+            .text()
+            .await
+            .unwrap()
+            .contains("<html><body><h1>It works!</h1></body></html>")
+        {
+            success = true;
+            break;
+        }
+
+        if let Some(duration) = duration {
+            log::debug!("Did not find Apache httpd welcome message yet");
+            tokio::time::sleep(duration).await;
+            continue;
+        }
+    }
+
+    delete_app(&prevant_base_url, replicated_app_name)
         .await
         .expect("Should be able to delete app");
 

@@ -1,5 +1,6 @@
 pub use api_tests::{
     should_deploy_nginx, should_deploy_nginx_with_bootstrapped_httpd,
+    should_deploy_nginx_with_cloned_bootstrapped_httpd,
     should_replicate_mariadb_with_replicated_env,
 };
 use std::collections::HashMap;
