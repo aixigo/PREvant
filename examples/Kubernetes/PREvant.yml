@@ -17,6 +17,23 @@ spec:
   selector:
     app: prevant
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+   name: prevant
+data:
+   config.toml: |
+      [companions.templating.userDefinedSchema]
+      type = "object"
+      properties = { deployHttpd = { type = "string" } }
+
+      [[companions.bootstrapping.containers]]
+      image = "aixigo/httpd-bootstrap-example"
+      imagePullPolicy = "Never"
+      args = [
+         "-a", "{{userDefined.deployHttpd}}"
+      ]
+---
 kind: Deployment
 apiVersion: apps/v1
 metadata:
@@ -38,17 +55,24 @@ spec:
       containers:
         - name: prevant
           image: aixigo/prevant
+          # TODO: used for testing purposes only, used Always in production
+          imagePullPolicy: Never
           command:
             - /app/prevant
           args:
             - --runtime-type
             - Kubernetes
+            - --config
+            - /run/config/config.toml
           ports:
             - name: web
               containerPort: 80
           volumeMounts:
             - name: podinfo
               mountPath: /run/podinfo/
+              readOnly: true
+            - name: config
+              mountPath: /run/config/
               readOnly: true
           readinessProbe:
             httpGet:
@@ -61,6 +85,12 @@ spec:
                - path: "labels"
                  fieldRef:
                     fieldPath: metadata.labels
+        - name: config
+          configMap:
+             name: prevant
+             items:
+                - key: config.toml
+                  path: config.toml
 ---
 apiVersion: traefik.containo.us/v1alpha1
 kind: IngressRoute

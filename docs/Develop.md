@@ -82,10 +82,17 @@ cargo test --manifest-path api-tests/Cargo.toml --test docker -- --test-threads=
 
 ## K3s for Kubernetes Backend
 
+0. Build the bootstrap image:
+   ```sh
+   cd examples/Kubernetes
+   docker build --pull -t aixigo/httpd-bootstrap-example -f Dockerfile.bootstrap  .
+   cd -
+   ```
 1. Create cluster and import the PREvant image:
    ```sh
    k3d cluster create dash -p "8080:80@loadbalancer" --no-rollback --k3s-arg --disable=metrics-server@server:* --image rancher/k3s:v1.31.7-k3s1
    k3d image import aixigo/prevant -c dash
+   k3d image import aixigo/httpd-bootstrap-example -c dash
    ```
 2. Deploy PREvant:
    ```sh

@@ -1,11 +1,19 @@
 use std::time::Duration;
 
-use super::Service;
+use super::{DeployPayload, Service};
 use reqwest::{Client, ClientBuilder, Response, StatusCode, Url};
 use uuid::Uuid;
 
-async fn deploy_app(prevant_base_url: &Url, services: &[Service]) -> Result<Uuid, Response> {
+async fn deploy_app(
+    prevant_base_url: &Url,
+    deploy_payload: DeployPayload,
+) -> Result<Uuid, Response> {
     let app_name = Uuid::new_v4();
+
+    log::debug!(
+        "Deploying {app_name} with payload: {}",
+        serde_json::to_string(&deploy_payload).unwrap()
+    );
 
     let res = Client::new()
         .post(
@@ -13,10 +21,12 @@ async fn deploy_app(prevant_base_url: &Url, services: &[Service]) -> Result<Uuid
                 .join(&format!("/api/apps/{app_name}"))
                 .unwrap(),
         )
-        .json(&services)
+        .json(&deploy_payload)
         .send()
         .await
         .unwrap();
+
+    log::debug!("PREvant responded with {}", res.status());
 
     match res.status() {
         StatusCode::OK => Ok(app_name),
@@ -83,32 +93,33 @@ async fn logs(
         _ => Err(res),
     }
 }
-async fn make_request(traefik_base_url: &Url, app_name: &Uuid, service_name: &str) -> Response {
-    let attempts = 10;
-    let min = Duration::from_secs(1);
-    let max = Duration::from_secs(10);
+
+async fn make_request(
+    traefik_base_url: &Url,
+    app_name: &Uuid,
+    service_name: Option<&str>,
+) -> Response {
+    let url = match service_name {
+        None => traefik_base_url.join(&format!("/{app_name}/")).unwrap(),
+        Some(service_name) => traefik_base_url
+            .join(&format!("/{app_name}/{service_name}/"))
+            .unwrap(),
+    };
 
     let client = ClientBuilder::new()
         .build()
         .expect("Client should be buildable");
-    for duration in exponential_backoff::Backoff::new(attempts, min, max) {
-        match client
-            .get(
-                traefik_base_url
-                    .join(&format!("/{app_name}/{service_name}/"))
-                    .unwrap(),
-            )
-            .send()
-            .await
-        {
+
+    for duration in
+        exponential_backoff::Backoff::new(10, Duration::from_secs(1), Duration::from_secs(10))
+    {
+        match client.get(url.clone()).send().await {
             Ok(response) => {
                 return response;
             }
             Err(err) => match duration {
                 Some(duration) => {
-                    log::debug!(
-                        "Could not connect to {app_name}/{service_name} (retry later): {err}"
-                    );
+                    log::debug!("Could not connect to {url} (retry later): {err}");
                     tokio::time::sleep(duration).await;
                 }
                 None => panic!("{}", err),
@@ -122,30 +133,37 @@ async fn make_request(traefik_base_url: &Url, app_name: &Uuid, service_name: &st
 pub async fn should_deploy_nginx(traefik_base_url: &Url, prevant_base_url: &Url) {
     let app_name = deploy_app(
         prevant_base_url,
-        &vec![Service::new(
+        DeployPayload::Services(vec![Service::new(
             String::from("nginx"),
             String::from("nginx:alpine"),
-        )],
+        )]),
     )
     .await
     .expect("Should be able to deploy app");
 
-    let mut i = 0;
-    loop {
-        let response = make_request(&traefik_base_url, &app_name, "nginx").await;
+    let mut success = false;
 
+    for duration in
+        exponential_backoff::Backoff::new(10, Duration::from_secs(1), Duration::from_secs(10))
+    {
+        let response = make_request(&traefik_base_url, &app_name, Some("nginx")).await;
         if response.text().await.unwrap().contains("Welcome to nginx!") {
+            success = true;
             break;
         }
-        std::thread::sleep(Duration::from_secs(5));
 
-        i += 1;
-        assert!(i < 5, "Cannot make request to nginx after {} attempts", i);
+        if let Some(duration) = duration {
+            log::debug!("Did not find nginx welcome message yet");
+            tokio::time::sleep(duration).await;
+            continue;
+        }
     }
 
     delete_app(&prevant_base_url, &app_name)
         .await
         .expect("Should be able to delete app");
+
+    assert!(success, "Cannot make request to nginx");
 }
 
 pub async fn should_replicate_mariadb_with_replicated_env(prevant_base_url: &Url) {
@@ -155,7 +173,7 @@ pub async fn should_replicate_mariadb_with_replicated_env(prevant_base_url: &Url
             String::from("yes"),
         );
 
-    let app_name = deploy_app(&prevant_base_url, &vec![db_service])
+    let app_name = deploy_app(&prevant_base_url, DeployPayload::Services(vec![db_service]))
         .await
         .expect("Should be able to deploy app");
 
@@ -163,22 +181,32 @@ pub async fn should_replicate_mariadb_with_replicated_env(prevant_base_url: &Url
         .await
         .expect("Should be able to replicate app");
 
-    let mut i = 0;
-    loop {
-        if let Ok(logs) = logs(&prevant_base_url, &replicated_app_name, "db").await {
-            if logs.contains("GENERATED ROOT PASSWORD") {
-                break;
+    let mut success = false;
+    for duration in
+        exponential_backoff::Backoff::new(10, Duration::from_secs(1), Duration::from_secs(10))
+    {
+        let logs = match logs(&prevant_base_url, &replicated_app_name, "db").await {
+            Ok(logs) => logs,
+            Err(error_response) => {
+                let err = error_response.text().await.unwrap();
+                match duration {
+                    Some(duration) => {
+                        log::debug!("Could not connect get logs (retry later): {err}");
+                        tokio::time::sleep(duration).await;
+                        continue;
+                    }
+                    None => {
+                        log::error!("{}", err);
+                        break;
+                    }
+                }
             }
         };
 
-        std::thread::sleep(Duration::from_secs(15));
-
-        i += 1;
-        assert!(
-            i < 5,
-            "Cannot find “GENERATED ROOT PASSWORD” in the container logs after {} attempts",
-            i
-        );
+        if logs.contains("GENERATED ROOT PASSWORD") {
+            success = true;
+            break;
+        }
     }
 
     delete_app(&prevant_base_url, &app_name)
@@ -187,4 +215,58 @@ pub async fn should_replicate_mariadb_with_replicated_env(prevant_base_url: &Url
     delete_app(&prevant_base_url, &replicated_app_name)
         .await
         .expect("Should be able to delete app");
+
+    assert!(
+        success,
+        "Cannot find “GENERATED ROOT PASSWORD” in the container logs after 10 attempts",
+    );
+}
+
+pub async fn should_deploy_nginx_with_bootstrapped_httpd(
+    traefik_base_url: &Url,
+    prevant_base_url: &Url,
+) {
+    let app_name = deploy_app(
+        prevant_base_url,
+        DeployPayload::UserDefinedAndServices {
+            services: vec![Service::new(
+                String::from("nginx"),
+                String::from("nginx:alpine"),
+            )],
+            user_defined: serde_json::json!({
+                "deployHttpd": "true",
+                "abc": 123
+            }),
+        },
+    )
+    .await
+    .expect("Should be able to deploy app");
+
+    let mut success = false;
+    for duration in
+        exponential_backoff::Backoff::new(10, Duration::from_secs(1), Duration::from_secs(10))
+    {
+        let response = make_request(&traefik_base_url, &app_name, None).await;
+        if response
+            .text()
+            .await
+            .unwrap()
+            .contains("<html><body><h1>It works!</h1></body></html>")
+        {
+            success = true;
+            break;
+        }
+
+        if let Some(duration) = duration {
+            log::debug!("Did not find Apache httpd welcome message yet");
+            tokio::time::sleep(duration).await;
+            continue;
+        }
+    }
+
+    delete_app(&prevant_base_url, &app_name)
+        .await
+        .expect("Should be able to delete app");
+
+    assert!(success, "Cannot make request to Apache httpd");
 }

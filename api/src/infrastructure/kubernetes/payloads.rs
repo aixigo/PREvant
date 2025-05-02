@@ -144,27 +144,30 @@ macro_rules! secret_name_from_name {
 pub fn convert_k8s_ingress_to_traefik_ingress(
     ingress: Ingress,
     base_route: TraefikIngressRoute,
-) -> Result<(IngressRoute, Vec<Middleware>), &'static str> {
+) -> Result<(IngressRoute, Vec<Middleware>), (Ingress, &'static str)> {
     let Some(name) = ingress.metadata.name.as_ref() else {
-        return Err("Ingress object does not provide a name");
+        return Err((ingress, "Ingress object does not provide a name"));
     };
-    let Some(spec) = ingress.spec else {
-        return Err("Ingress does not provide spec");
+    let Some(spec) = ingress.spec.as_ref() else {
+        return Err((ingress, "Ingress does not provide spec"));
     };
-    let Some(rules) = spec.rules else {
-        return Err("Ingress' spec does not provide rules");
+    let Some(rules) = spec.rules.as_ref() else {
+        return Err((ingress, "Ingress' spec does not provide rules"));
     };
 
     let Some(path) = rules
-        .into_iter()
-        .filter_map(|rule| rule.http)
-        .find_map(|http| http.paths.into_iter().next())
+        .iter()
+        .filter_map(|rule| rule.http.as_ref())
+        .find_map(|http| http.paths.first())
     else {
-        return Err("Ingress' rule does not a provide http paths object");
+        return Err((
+            ingress,
+            "Ingress' rule does not a provide http paths object",
+        ));
     };
 
-    let Some(path_value) = path.path else {
-        return Err("Ingress' path does not provide a HTTP path value");
+    let Some(path_value) = path.path.as_ref() else {
+        return Err((ingress, "Ingress' path does not provide a HTTP path value"));
     };
 
     let (rule, middleware) = match &spec.ingress_class_name {
@@ -190,7 +193,7 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
                         .cloned()
                 })
                 .and_then(|_rewrite_target| {
-                    let hir = regex_syntax::parse(&path_value).ok()?;
+                    let hir = regex_syntax::parse(path_value).ok()?;
                     let got = regex_syntax::hir::literal::Extractor::new().extract(&hir);
 
                     let base_path = base_route
@@ -262,23 +265,21 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
         namespace: None,
     }));
 
+    let Some(service) = path.backend.service.as_ref() else {
+        return Err((ingress, "Expecting a service name for the path"));
+    };
+
     let routes = vec![TraefikRuleSpec {
         kind: String::from("Rule"),
         r#match: route.routes()[0].rule().to_string(),
         middlewares: Some(middlewares_refs),
         services: vec![TraefikRuleService {
             kind: Some(String::from("Service")),
-            name: path
-                .backend
-                .service
-                .clone()
-                .expect("Expecting a service name for the path")
-                .name,
+            name: service.name.clone(),
             port: Some(
-                path.backend
-                    .service
+                service
+                    .port
                     .as_ref()
-                    .and_then(|service| service.port.as_ref())
                     .and_then(|port| port.number)
                     .map(|p| p as u16)
                     // TODO: for now it is okay to assume that if the port is missing, port 80 is a
