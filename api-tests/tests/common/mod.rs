@@ -1,7 +1,21 @@
-pub use api_tests::{should_deploy_nginx, should_replicate_mariadb_with_replicated_env};
+pub use api_tests::{
+    should_deploy_nginx, should_deploy_nginx_with_bootstrapped_httpd,
+    should_replicate_mariadb_with_replicated_env,
+};
 use std::collections::HashMap;
 
 mod api_tests;
+
+#[derive(serde::Serialize)]
+#[serde(untagged, rename_all = "camelCase")]
+pub enum DeployPayload {
+    Services(Vec<Service>),
+    UserDefinedAndServices {
+        #[serde(rename = "userDefined")]
+        user_defined: serde_json::Value,
+        services: Vec<Service>,
+    },
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

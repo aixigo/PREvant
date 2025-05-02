@@ -1,0 +1,78 @@
+FROM busybox:1.37
+
+COPY --chmod=0755 <<EOF /usr/bin/render
+#!/bin/sh
+set +e
+
+use_apache=""
+while getopts "a:" OPTION
+do
+   case "\$OPTION" in
+      a)
+         use_apache=\${OPTARG}
+         ;;
+   esac
+done
+
+if [ "\$use_apache" != "true" ]
+then
+   exit 0
+fi
+
+cat <<'EOI'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+   name: httpd
+spec:
+   selector:
+      matchLabels:
+         app: httpd
+   replicas: 1
+   template:
+      metadata:
+         labels:
+            app: httpd
+      spec:
+         containers:
+          - name: httpd
+            image: httpd
+         ports:
+          - containerPort: 80
+---
+kind: Service
+apiVersion: v1
+metadata:
+   name: httpd
+spec:
+   selector:
+      app: httpd
+   ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+      name: web
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+   name: httpd
+   annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /\$2
+      nginx.ingress.kubernetes.io/use-regex: true
+spec:
+   ingressClassName: nginx
+   rules:
+    - http:
+         paths:
+          - path: "/"
+            pathType: Prefix
+            backend:
+               service:
+                  name: httpd
+                  port:
+                    number: 80
+EOI
+EOF
+
+ENTRYPOINT ["render"]

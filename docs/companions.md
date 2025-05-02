@@ -200,7 +200,9 @@ underlying infrastructure.
 
   Make sure to output YAML that is compatible with 1.1 and 1.2
   (For example, bitnami helm charts have been adjusted in part in that regard,
-  see [here][zookeeper-yaml-1.2-pr] and [here][kafka-yaml-1.2-pr])
+  see [here][zookeeper-yaml-1.2-pr] and [here][kafka-yaml-1.2-pr]).
+  :information_source: set `RUST_LOG=info,prevant::infrastructure=trace` to
+  debug parsing issues.
 - Docker: not yet implemented but the aim is to support [Docker
   compose][docker-compose] files.
 

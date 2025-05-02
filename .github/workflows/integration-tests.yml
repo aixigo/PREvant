@@ -7,8 +7,8 @@ on:
 name: Integration tests
 
 jobs:
-   build-image:
-      name: Build OCI image
+   build-prevant-image:
+      name: Build PREvant OCI image
       runs-on: ubuntu-latest
       steps:
          - uses: actions/checkout@v4
@@ -20,27 +20,49 @@ jobs:
            uses: docker/build-push-action@v6
            with:
               tags: aixigo/prevant:latest
-              outputs: "type=docker,dest=${{ runner.temp }}/image.tar"
+              outputs: "type=docker,dest=${{ runner.temp }}/prevant-image.tar"
 
          - uses: actions/upload-artifact@v4
            name: Upload image
            with:
-              name: image
-              path: ${{ runner.temp }}/image.tar
+              name: prevant-image
+              path: ${{ runner.temp }}/prevant-image.tar
+
+   build-bootstrap-image:
+      name: Build Bootstrap OCI image
+      runs-on: ubuntu-latest
+      steps:
+         - uses: actions/checkout@v4
+
+         - name: Set up Docker Buildx
+           uses: docker/setup-buildx-action@v3
+
+         - name: Build bootstrap image
+           uses: docker/build-push-action@v6
+           with:
+              file: examples/Kubernetes/Dockerfile.bootstrap
+              tags: aixigo/httpd-bootstrap-example:latest
+              outputs: "type=docker,dest=${{ runner.temp }}/bootstrap-image.tar"
+
+         - uses: actions/upload-artifact@v4
+           name: Upload image
+           with:
+              name: bootstrap-image
+              path: ${{ runner.temp }}/bootstrap-image.tar
 
    docker:
       name: Docker integration tests
-      needs: build-image
+      needs: build-prevant-image
       runs-on: ubuntu-latest
       steps:
-         - name: Download image
+         - name: Download PREvant image
            uses: actions/download-artifact@v4
            with:
-              name: image
+              name: prevant-image
               path: ${{ runner.temp }}
 
          - name: Load image
-           run: docker load --input ${{ runner.temp }}/image.tar
+           run: docker load --input ${{ runner.temp }}/prevant-image.tar
 
          - uses: actions/checkout@v4
 
@@ -55,7 +77,7 @@ jobs:
 
    k3s:
       name: K3s integration tests
-      needs: build-image
+      needs: [build-prevant-image, build-bootstrap-image]
       runs-on: ubuntu-latest
       strategy:
          # Prevent GitHub from canceling all in-progress jobs when a matrix job fails.
@@ -63,14 +85,21 @@ jobs:
          matrix:
             k8s: [v1.28, latest]
       steps:
-         - name: Download image
+         - name: Download PREvant image
            uses: actions/download-artifact@v4
            with:
-              name: image
+              name: prevant-image
+              path: ${{ runner.temp }}
+         - name: Download bootstrap image
+           uses: actions/download-artifact@v4
+           with:
+              name: bootstrap-image
               path: ${{ runner.temp }}
 
-         - name: Load image
-           run: docker load --input ${{ runner.temp }}/image.tar
+         - name: Load PREvant image into k3s cluster
+           run: docker load --input ${{ runner.temp }}/prevant-image.tar
+         - name: Load bootstrap image into k3s cluster
+           run: docker load --input ${{ runner.temp }}/bootstrap-image.tar
 
          - uses: actions/checkout@v4
 
@@ -82,8 +111,10 @@ jobs:
                # a version that brings Traefik v2.
                k3d-args: "-p 8080:80@loadbalancer --no-rollback --k3s-arg --disable=metrics-server@server:* --image rancher/k3s:v1.31.7-k3s1"
 
-         - name: Import image into K3s
+         - name: Import PREvant image into K3s
            run: k3d image import aixigo/prevant -c kube
+         - name: Import bootstrap image into K3s
+           run: k3d image import aixigo/httpd-bootstrap-example -c kube
 
          - name: Wait for Traefik CRDs
            run: until kubectl get crds | grep -m 1 "traefik"; do sleep 3s ; done

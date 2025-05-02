@@ -83,9 +83,9 @@ impl K8sDeploymentUnit {
             .map(|(i, bc)| {
                 Ok(Container {
                     name: format!("bootstrap-{i}"),
-                    image: Some(bc.image().to_string()),
-                    image_pull_policy: Some(String::from("Always")),
-                    args: Some(bc.args().to_vec()),
+                    image: Some(bc.image.to_string()),
+                    image_pull_policy: Some(bc.image_pull_policy.to_string()),
+                    args: Some(bc.args.clone()),
                     ..Default::default()
                 })
             })
@@ -124,7 +124,11 @@ impl K8sDeploymentUnit {
             .timeout(10);
         let mut stream = api.watch(&wp, "0").await?.boxed();
         while let Some(status) = stream.try_next().await? {
-            trace!("Saw watch event for bootstrapping pod {pod_name} in {app_name}: {status:?}");
+            if log::log_enabled!(log::Level::Trace) {
+                trace!(
+                    "Saw watch event for bootstrapping pod {pod_name} in {app_name}: {status:?}"
+                );
+            }
 
             if let WatchEvent::Bookmark(_bookmark) = status {
                 debug!("Boot strapping pod {pod_name} for {app_name} ready.");
@@ -148,7 +152,9 @@ impl K8sDeploymentUnit {
                         .into());
                     }
                     phase => {
-                        trace!("Boot strapping pod {pod_name} for {app_name} still not in running phase. Currently in {phase}.");
+                        if log::log_enabled!(log::Level::Trace) {
+                            trace!("Boot strapping pod {pod_name} for {app_name} still not in running phase. Currently in {phase}.");
+                        }
                     }
                 }
             }
@@ -233,10 +239,12 @@ impl K8sDeploymentUnit {
             let mut stdout = String::new();
             log_stream.read_to_string(&mut stdout).await?;
 
-            trace!(
-                "Received YAML from bootstrapping container in {app_name}: {}…",
-                stdout.lines().next().unwrap_or(&stdout)
-            );
+            if log::log_enabled!(log::Level::Trace) {
+                trace!(
+                    "Received YAML from bootstrapping container in {app_name}: {}…",
+                    stdout.lines().next().unwrap_or(&stdout)
+                );
+            }
 
             for doc in serde_yaml::Deserializer::from_str(&stdout) {
                 match DynamicObject::deserialize(doc) {
@@ -256,13 +264,15 @@ impl K8sDeploymentUnit {
                             .map(|t| t.kind.as_str())
                             .unwrap_or_default();
 
-                        trace!(
-                            "Parsed {} ({api_version}, {kind}) for {app_name} as a bootstrap application element.",
-                            dy.metadata
-                                .name
-                                .as_deref()
-                                .unwrap_or_default()
-                        );
+                        if log::log_enabled!(log::Level::Trace) {
+                            trace!(
+                                "Parsed {} ({api_version}, {kind}) for {app_name} as a bootstrap application element.",
+                                dy.metadata
+                                    .name
+                                    .as_deref()
+                                    .unwrap_or_default(),
+                            );
+                        }
 
                         match (api_version, kind) {
                             (Role::API_VERSION, Role::KIND) => match dy.clone().try_parse::<Role>()
@@ -472,11 +482,15 @@ impl K8sDeploymentUnit {
         let mut traefik_middlewares = Vec::new();
 
         for ingress in ingresses {
-            let Ok((route, middlewares)) = convert_k8s_ingress_to_traefik_ingress(
+            let (route, middlewares) = match convert_k8s_ingress_to_traefik_ingress(
                 ingress,
                 deployment_unit.app_base_route().clone(),
-            ) else {
-                continue;
+            ) {
+                Ok((route, middlewares)) => (route, middlewares),
+                Err((ingress, err)) => {
+                    warn!("Cannot convert K8s ingress to Traefik ingress and middlewares for {app_name}: {err} ({})", serde_json::to_string(&ingress).unwrap());
+                    continue;
+                }
             };
 
             traefik_ingresses.push(route);
@@ -805,13 +819,20 @@ where
     T: kube::core::Resource<Scope = kube::core::NamespaceResourceScope>,
     <T as kube::Resource>::DynamicType: std::default::Default,
 {
+    if log::log_enabled!(log::Level::Trace) {
+        trace!(
+            "Create or patch {} for  {app_name}",
+            payload.meta().name.as_deref().unwrap_or_default()
+        );
+    }
+
     let api = Api::namespaced(client.clone(), &app_name.to_rfc1123_namespace_id());
     match api.create(&PostParams::default(), &payload).await {
         Ok(result) => Ok(result),
         Err(kube::error::Error::Api(kube::error::ErrorResponse { code: 409, .. })) => {
-            let name = payload.meta().name.clone().unwrap_or_default();
+            let name = payload.meta().name.as_deref().unwrap_or_default();
             match api
-                .patch(&name, &PatchParams::default(), &Patch::Merge(&payload))
+                .patch(name, &PatchParams::default(), &Patch::Merge(&payload))
                 .await
             {
                 Ok(result) => Ok(result),

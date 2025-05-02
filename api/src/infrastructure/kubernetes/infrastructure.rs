@@ -505,7 +505,7 @@ impl Infrastructure for KubernetesInfrastructure {
 
         let bootstrap_image_pull_secret = self.image_pull_secret(
             app_name,
-            bootstrapping_containers.iter().map(|bc| bc.image()),
+            bootstrapping_containers.iter().map(|bc| &bc.image),
         );
         let mut k8s_deployment_unit = K8sDeploymentUnit::bootstrap(
             deployment_unit,

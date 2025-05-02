@@ -32,6 +32,7 @@ use jsonschema::Validator;
 use secstr::SecUtf8;
 use serde_value::Value;
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::path::PathBuf;
 use url::Url;
 
@@ -105,16 +106,38 @@ struct Bootstrapping {
     containers: Vec<RawBootstrappingContainer>,
 }
 
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+pub enum ImagePullPolicy {
+    #[default]
+    Always,
+    Never,
+    IfNotPresent,
+}
+
+impl Display for ImagePullPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImagePullPolicy::Always => f.write_str("Always"),
+            ImagePullPolicy::Never => f.write_str("Never"),
+            ImagePullPolicy::IfNotPresent => f.write_str("IfNotPresent"),
+        }
+    }
+}
+
 #[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawBootstrappingContainer {
     image: String,
+    #[serde(default)]
+    image_pull_policy: ImagePullPolicy,
     #[serde(default)]
     args: Vec<String>,
 }
 
 pub struct BootstrappingContainer {
-    image: Image,
-    args: Vec<String>,
+    pub image: Image,
+    pub image_pull_policy: ImagePullPolicy,
+    pub args: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -236,6 +259,7 @@ impl Companions {
                 image: img
                     .parse::<Image>()
                     .map_err(|e| RenderErrorReason::Other(e.to_string()))?,
+                image_pull_policy: c.image_pull_policy.clone(),
                 args,
             });
         }
@@ -313,16 +337,6 @@ impl Default for StorageStrategy {
     }
 }
 
-impl BootstrappingContainer {
-    pub fn image(&self) -> &Image {
-        &self.image
-    }
-
-    pub fn args(&self) -> &[String] {
-        &self.args
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use jsonschema::Validator;
@@ -370,12 +384,14 @@ mod tests {
             r#"
             [[bootstrapping.containers]]
             image = "busybox"
+            imagePullPolicy = "Never"
             "#
         );
 
         let container = &companions.bootstrapping.containers[0];
 
         assert_eq!(container.image, String::from("busybox"));
+        assert_eq!(container.image_pull_policy, ImagePullPolicy::Never);
         assert_eq!(container.args, Vec::<String>::new());
     }
 
@@ -394,6 +410,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(containers[0].image, Image::from_str("busybox").unwrap());
+        assert_eq!(containers[0].image_pull_policy, ImagePullPolicy::Always);
         assert_eq!(
             containers[0].args,
             vec![String::from("echo"), String::from("Hello master")]
