@@ -34,6 +34,7 @@ use crate::infrastructure::{
 use crate::models::service::{
     ContainerType, Service, ServiceError, ServiceStatus, Services, State,
 };
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, Environment, Image, ServiceConfig, WebHostMeta};
 use anyhow::{anyhow, Result};
 use async_stream::stream;
@@ -849,19 +850,25 @@ impl Infrastructure for DockerInfrastructure {
         Ok(apps)
     }
 
-    async fn fetch_services_of_app(&self, app_name: &AppName) -> Result<Option<Services>> {
+    async fn fetch_services_and_user_defined_payload_of_app(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
         let container_details = self.get_container_details(Some(app_name), None).await?;
 
         if container_details.is_empty() {
             return Ok(None);
         }
 
-        Ok(Some(Services::from(
-            container_details
-                .into_iter()
-                .flat_map(|(_, details)| details.into_iter())
-                .filter_map(|details| Service::try_from(details).ok())
-                .collect::<Vec<_>>(),
+        Ok(Some((
+            Services::from(
+                container_details
+                    .into_iter()
+                    .flat_map(|(_, details)| details.into_iter())
+                    .filter_map(|details| Service::try_from(details).ok())
+                    .collect::<Vec<_>>(),
+            ),
+            None,
         )))
     }
 

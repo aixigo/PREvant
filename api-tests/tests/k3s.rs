@@ -26,3 +26,11 @@ async fn should_deploy_nginx_with_bootstrapped_httpd() {
 
     common::should_deploy_nginx_with_bootstrapped_httpd(&base_url, &base_url).await
 }
+
+#[tokio::test]
+async fn should_deploy_nginx_with_cloned_bootstrapped_httpd() {
+    let _ = env_logger::builder().is_test(true).try_init();
+    let base_url = Url::from_str("http://localhost:8080").unwrap();
+
+    common::should_deploy_nginx_with_cloned_bootstrapped_httpd(&base_url, &base_url).await
+}
