@@ -69,6 +69,11 @@ Afterwards, start the backend (see [Backend Development](#backend-development)).
 To run the frontend in development mode:
 
 1. Start the backend as described in [Backend Development](#backend-development).
+
+  Make also sure t pass `--base-url http://localhost:9001` when starting the
+  backend because some of the features work only if the “guessed” backend URL
+  matches to the frontend development server URL. For example, authentication
+  works only if the redirect URI matches relative to the dev server URL.
 2. Navigate to the `/frontend` directory:
 
    ```bash

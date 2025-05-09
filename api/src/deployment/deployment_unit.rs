@@ -30,7 +30,7 @@ use crate::config::{Config, StorageStrategy};
 use crate::deployment::hooks::Hooks;
 use crate::infrastructure::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule};
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, ContainerType, Image, ServiceConfig};
+use crate::models::{AppName, ContainerType, Image, Owner, ServiceConfig};
 use crate::registry::ImageInfo;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -88,15 +88,35 @@ pub struct WithResolvedImages {
     image_infos: HashMap<Image, ImageInfo>,
 }
 
+pub struct WithUserInformation {
+    app_name: AppName,
+    configs: Vec<ServiceConfig>,
+    service_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
+    app_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
+    templating_only_service_configs: Vec<ServiceConfig>,
+    image_infos: HashMap<Image, ImageInfo>,
+    owners: HashSet<Owner>,
+}
+
 pub struct WithAppliedTemplating {
     app_name: AppName,
     services: Vec<DeployableService>,
     user_defined_parameters: Option<UserDefinedParameters>,
+    owners: HashSet<Owner>,
 }
 
 pub struct WithAppliedHooks {
     app_name: AppName,
     services: Vec<DeployableService>,
+    owners: HashSet<Owner>,
     user_defined_parameters: Option<UserDefinedParameters>,
 }
 
@@ -104,6 +124,7 @@ pub struct WithAppliedIngressRoute {
     app_name: AppName,
     services: Vec<DeployableService>,
     route: TraefikIngressRoute,
+    owners: HashSet<Owner>,
     user_defined_parameters: Option<UserDefinedParameters>,
 }
 
@@ -116,6 +137,7 @@ pub struct DeploymentUnit {
     services: Vec<DeployableService>,
     route: TraefikIngressRoute,
     user_defined_parameters: Option<UserDefinedParameters>,
+    owners: HashSet<Owner>,
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +213,10 @@ impl DeploymentUnit {
 
     pub fn user_defined_parameters(&self) -> &Option<UserDefinedParameters> {
         &self.user_defined_parameters
+    }
+
+    pub fn owners(&self) -> &HashSet<Owner> {
+        &self.owners
     }
 }
 
@@ -325,6 +351,37 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
 }
 
 impl DeploymentUnitBuilder<WithResolvedImages> {
+    #[cfg(test)]
+    pub fn without_owners(self) -> DeploymentUnitBuilder<WithUserInformation> {
+        DeploymentUnitBuilder {
+            stage: WithUserInformation {
+                app_name: self.stage.app_name,
+                configs: self.stage.configs,
+                service_companions: self.stage.service_companions,
+                app_companions: self.stage.app_companions,
+                templating_only_service_configs: self.stage.templating_only_service_configs,
+                image_infos: self.stage.image_infos,
+                owners: HashSet::new(),
+            },
+        }
+    }
+
+    pub fn with_owners(self, owners: HashSet<Owner>) -> DeploymentUnitBuilder<WithUserInformation> {
+        DeploymentUnitBuilder {
+            stage: WithUserInformation {
+                app_name: self.stage.app_name,
+                configs: self.stage.configs,
+                service_companions: self.stage.service_companions,
+                app_companions: self.stage.app_companions,
+                templating_only_service_configs: self.stage.templating_only_service_configs,
+                image_infos: self.stage.image_infos,
+                owners,
+            },
+        }
+    }
+}
+
+impl DeploymentUnitBuilder<WithUserInformation> {
     pub fn apply_templating(
         self,
         base_url: &Option<Url>,
@@ -476,6 +533,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 app_name: self.stage.app_name,
                 services: strategies,
                 user_defined_parameters,
+                owners: self.stage.owners,
             },
         })
     }
@@ -601,6 +659,7 @@ impl DeploymentUnitBuilder<WithAppliedTemplating> {
             stage: WithAppliedHooks {
                 app_name: self.stage.app_name,
                 services,
+                owners: self.stage.owners,
                 user_defined_parameters: self.stage.user_defined_parameters,
             },
         })
@@ -627,6 +686,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
                 app_name: self.stage.app_name,
                 services: self.stage.services,
                 route,
+                owners: self.stage.owners,
                 user_defined_parameters: self.stage.user_defined_parameters,
             },
         }
@@ -637,6 +697,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
         DeploymentUnit {
             app_name: self.stage.app_name,
             services: self.stage.services,
+            owners: self.stage.owners,
             route,
             user_defined_parameters: self.stage.user_defined_parameters,
         }
@@ -650,6 +711,7 @@ impl DeploymentUnitBuilder<WithAppliedIngressRoute> {
             services: self.stage.services,
             route: self.stage.route,
             user_defined_parameters: self.stage.user_defined_parameters,
+            owners: self.stage.owners,
         }
     }
 }
@@ -704,6 +766,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -742,6 +805,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -797,6 +861,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -844,6 +909,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -888,6 +954,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -923,6 +990,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -962,6 +1030,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1016,6 +1085,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(vec![sc!("postgres", "postgres:alpine")])
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1070,6 +1140,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1122,6 +1193,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1173,6 +1245,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1218,6 +1291,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1248,6 +1322,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1269,15 +1344,13 @@ mod tests {
             rule,
             &TraefikRouterRule::path_prefix_rule(["my-path-prefix", "master", "wordpress"])
         );
-        assert!(matches!(
-            service
-                .ingress_route
-                .routes()
-                .iter()
-                .flat_map(|r| r.middlewares().iter())
-                .next(),
-            Some(_)
-        ));
+        assert!(service
+            .ingress_route
+            .routes()
+            .iter()
+            .flat_map(|r| r.middlewares().iter())
+            .next()
+            .is_some());
 
         Ok(())
     }
@@ -1307,6 +1380,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1371,6 +1445,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?

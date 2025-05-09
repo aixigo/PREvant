@@ -11,6 +11,10 @@ for declaring and combining configuration sources and extracting typed values
 from the combined sources), to read configuration options from file, environment
 variable, and from some CLI options.
 
+## Authentication
+
+See [authentication.md] how to configure authentication (highly recommended).
+
 ## Runtime Configuration
 
 ### Kubernetes
@@ -113,7 +117,7 @@ data = "LS0tLS1CRUdJTiBFTkNSWVBURUQgUF…JVkFURSBLRVktLS0tLQo="
 
 ## Companions
 
-See [here](../docs/companions.md) how to configure companions.
+See [here](companions.md) how to configure companions.
 
 ## Registries
 

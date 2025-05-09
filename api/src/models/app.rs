@@ -24,63 +24,90 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{web_host_meta::WebHostMeta, AppName, ServiceConfig};
 use chrono::{DateTime, Utc};
-use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::str::FromStr;
 use url::Url;
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+pub struct Owner {
+    pub sub: openidconnect::SubjectIdentifier,
+    pub iss: openidconnect::IssuerUrl,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Data structure for holding information about the application. For example, which services are
+/// deployed and who created them.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Services(Vec<Service>);
-
-impl Services {
-    pub fn empty() -> Self {
-        Self(Vec::new())
-    }
-
-    pub fn into_iter(self) -> impl Iterator<Item = Service> {
-        self.0.into_iter()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Service> {
-        self.0.iter()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
+pub struct App {
+    services: Vec<Service>,
+    owners: HashSet<Owner>,
+    user_defined_parameters: Option<UserDefinedParameters>,
 }
 
-impl Serialize for Services {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut seq = serializer.serialize_seq(Some(self.len()))?;
-
-        for service in self.iter() {
-            seq.serialize_element(service)?;
-        }
-
-        serde::ser::SerializeSeq::end(seq)
-    }
-}
-
-impl From<Vec<Service>> for Services {
-    fn from(services: Vec<Service>) -> Self {
+impl App {
+    pub fn new(
+        services: Vec<Service>,
+        owners: HashSet<Owner>,
+        user_defined_payload: Option<UserDefinedParameters>,
+    ) -> Self {
         if services.is_empty() {
             return Self::empty();
         }
 
         let mut services = services;
-        services.sort_by_key(|service| service.config.service_name().clone());
-        Self(services)
+        services.sort_by(|service1, service2| {
+            service1
+                .config
+                .service_name()
+                .cmp(service2.config.service_name())
+        });
+
+        Self {
+            services,
+            owners,
+            user_defined_parameters: user_defined_payload,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            services: Vec::new(),
+            owners: HashSet::new(),
+            user_defined_parameters: None,
+        }
+    }
+
+    pub fn into_services(self) -> Vec<Service> {
+        self.services
+    }
+
+    pub fn user_defined_parameters(&self) -> &Option<UserDefinedParameters> {
+        &self.user_defined_parameters
+    }
+
+    pub fn into_services_and_user_defined_parameters(
+        self,
+    ) -> (Vec<Service>, Option<UserDefinedParameters>) {
+        (self.services, self.user_defined_parameters)
+    }
+
+    pub fn into_services_and_owners(self) -> (Vec<Service>, HashSet<Owner>) {
+        (self.services, self.owners)
+    }
+
+    pub fn services(&self) -> &[Service] {
+        &self.services
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.services.is_empty()
     }
 }
 
@@ -241,28 +268,29 @@ impl Serialize for ServiceWithHostMeta {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ServicesWithHostMeta(Vec<ServiceWithHostMeta>);
-
-impl Serialize for ServicesWithHostMeta {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-
-        for service in self.0.iter() {
-            seq.serialize_element(service)?;
-        }
-
-        serde::ser::SerializeSeq::end(seq)
-    }
+pub struct AppWithHostMeta {
+    services: Vec<ServiceWithHostMeta>,
+    owners: HashSet<Owner>,
 }
 
-impl From<Vec<ServiceWithHostMeta>> for ServicesWithHostMeta {
-    fn from(services: Vec<ServiceWithHostMeta>) -> Self {
+impl AppWithHostMeta {
+    pub fn new(services: Vec<ServiceWithHostMeta>, owners: HashSet<Owner>) -> Self {
         let mut services = services;
-        services.sort_by_key(|service| service.config.service_name().clone());
-        Self(services)
+        services.sort_by(|service1, service2| {
+            service1
+                .config
+                .service_name()
+                .cmp(service2.config.service_name())
+        });
+        Self { services, owners }
+    }
+
+    pub fn services(&self) -> &[ServiceWithHostMeta] {
+        &self.services
+    }
+
+    pub fn owners(&self) -> &HashSet<Owner> {
+        &self.owners
     }
 }
 
@@ -316,9 +344,9 @@ pub enum ServiceError {
 
 #[cfg(test)]
 mod tests {
-    use assert_json_diff::assert_json_eq;
-
     use super::*;
+    use crate::sc;
+    use assert_json_diff::assert_json_eq;
 
     #[test]
     fn serialize_service() {
@@ -332,7 +360,7 @@ mod tests {
             }),
             serde_json::to_value(Service {
                 id: String::from("some id"),
-                state: State {
+                state: crate::models::State {
                     status: ServiceStatus::Running,
                     started_at: Some(Utc::now()),
                 },
@@ -343,95 +371,122 @@ mod tests {
     }
 
     #[test]
-    fn serialize_services() {
-        assert_json_eq!(
-            serde_json::json!([{
-                "name": "mariadb",
-                "type": "instance",
-                "state": {
-                    "status": "running"
-                }
-            }, {
-                "name": "postgres",
-                "type": "instance",
-                "state": {
-                    "status": "running"
-                }
-            }]),
-            serde_json::to_value(Services::from(vec![
+    fn app_eq_with_different_service_order_construction() {
+        let app1 = App::new(
+            vec![
                 Service {
-                    id: String::from("some id"),
+                    id: String::from("b1"),
                     state: State {
                         status: ServiceStatus::Running,
-                        started_at: Some(Utc::now()),
+                        started_at: None,
                     },
-                    config: crate::sc!("postgres", "postgres:latest")
+                    config: sc!("b"),
                 },
                 Service {
-                    id: String::from("some id"),
+                    id: String::from("a1"),
                     state: State {
                         status: ServiceStatus::Running,
-                        started_at: Some(Utc::now()),
+                        started_at: None,
                     },
-                    config: crate::sc!("mariadb", "mariadb:latest")
-                }
-            ]))
-            .unwrap()
+                    config: sc!("a"),
+                },
+            ],
+            HashSet::new(),
+            None,
         );
+        let app2 = App::new(
+            vec![
+                Service {
+                    id: String::from("a1"),
+                    state: State {
+                        status: ServiceStatus::Running,
+                        started_at: None,
+                    },
+                    config: sc!("a"),
+                },
+                Service {
+                    id: String::from("b1"),
+                    state: State {
+                        status: ServiceStatus::Running,
+                        started_at: None,
+                    },
+                    config: sc!("b"),
+                },
+            ],
+            HashSet::new(),
+            None,
+        );
+
+        assert_eq!(app1, app2);
     }
 
     #[test]
-    fn serialize_services_with_web_host_meta() {
-        let base_url = Url::from_str("http://prevant.example.com").unwrap();
+    fn app_with_host_meta_eq_with_different_service_order_construction() {
+        let url = Url::parse("http://prevant.examle.com").unwrap();
         let app_name = AppName::master();
-
-        assert_json_eq!(
-            serde_json::json!([{
-                "name": "mariadb",
-                "type": "instance",
-                "state": {
-                    "status": "running"
-                },
-                "url": "http://prevant.example.com/master/mariadb/",
-                "version": {
-                    "softwareVersion": "1.2.3"
-                }
-            }, {
-                "name": "postgres",
-                "type": "instance",
-                "state": {
-                    "status": "running"
-                }
-            }]),
-            serde_json::to_value(ServicesWithHostMeta::from(vec![
+        let app1 = AppWithHostMeta::new(
+            vec![
                 ServiceWithHostMeta::from_service_and_web_host_meta(
                     Service {
-                        id: String::from("some id"),
+                        id: String::from("b1"),
                         state: State {
                             status: ServiceStatus::Running,
-                            started_at: Some(Utc::now()),
+                            started_at: None,
                         },
-                        config: crate::sc!("postgres", "postgres:latest")
+                        config: sc!("b"),
                     },
-                    WebHostMeta::invalid(),
-                    base_url.clone(),
-                    &app_name
+                    WebHostMeta::empty(),
+                    url.clone(),
+                    &app_name,
                 ),
                 ServiceWithHostMeta::from_service_and_web_host_meta(
                     Service {
-                        id: String::from("some id"),
+                        id: String::from("a1"),
                         state: State {
                             status: ServiceStatus::Running,
-                            started_at: Some(Utc::now()),
+                            started_at: None,
                         },
-                        config: crate::sc!("mariadb", "mariadb:latest")
+                        config: sc!("a"),
                     },
-                    WebHostMeta::with_version(String::from("1.2.3")),
-                    base_url,
-                    &app_name
-                )
-            ]))
-            .unwrap()
+                    WebHostMeta::empty(),
+                    url.clone(),
+                    &app_name,
+                ),
+            ],
+            HashSet::new(),
         );
+        let app2 = AppWithHostMeta::new(
+            vec![
+                ServiceWithHostMeta::from_service_and_web_host_meta(
+                    Service {
+                        id: String::from("a1"),
+                        state: State {
+                            status: ServiceStatus::Running,
+                            started_at: None,
+                        },
+                        config: sc!("a"),
+                    },
+                    WebHostMeta::empty(),
+                    url.clone(),
+                    &app_name,
+                ),
+                ServiceWithHostMeta::from_service_and_web_host_meta(
+                    Service {
+                        id: String::from("b1"),
+                        state: State {
+                            status: ServiceStatus::Running,
+                            started_at: None,
+                        },
+                        config: sc!("b"),
+                    },
+                    WebHostMeta::empty(),
+                    url,
+                    &app_name,
+                ),
+            ],
+            HashSet::new(),
+        );
+
+        assert_eq!(app1, app2);
     }
 }

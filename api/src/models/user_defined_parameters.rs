@@ -2,7 +2,7 @@ use jsonschema::Validator;
 use serde::Serializer;
 use serde_json::Value;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct UserDefinedParameters {
     data: Value,
 }

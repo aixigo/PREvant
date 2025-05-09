@@ -24,41 +24,40 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::HostMetaCache;
 use crate::apps::{Apps, AppsError};
+use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::{HttpApiError, HttpResult};
-use crate::models::request_info::RequestInfo;
-use crate::models::service::{Service, ServiceStatus, Services, ServicesWithHostMeta};
-use crate::models::{AppName, AppNameError};
-use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
+use crate::models::{
+    App, AppName, AppNameError, AppStatusChangeId, AppStatusChangeIdError, Service, ServiceStatus,
+};
 use create_app_payload::CreateAppPayload;
 use http_api_problem::{HttpApiProblem, StatusCode};
-use log::{debug, error};
+use log::error;
 use regex::Regex;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
-use rocket::response::stream::{Event, EventStream};
 use rocket::response::{Responder, Response};
 use rocket::serde::json::Json;
-use rocket::{FromForm, Shutdown, State};
-use std::collections::HashMap;
+use rocket::{FromForm, State};
+use serde::ser::{Serialize, SerializeSeq};
+use serde::Serializer;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
-use tokio::select;
-use tokio::sync::watch::Receiver;
 use tokio::time::timeout;
-use tokio_stream::StreamExt;
 
 mod create_app_payload;
+mod get_apps;
 mod logs;
 mod static_openapi_spec;
 
 pub fn apps_routes() -> Vec<rocket::Route> {
     rocket::routes![
-        apps,
-        stream_apps,
+        get_apps::apps_v1,
+        get_apps::apps_v2,
+        get_apps::stream_apps_v1,
+        get_apps::stream_apps_v2,
         delete_app,
         create_app,
         logs::logs,
@@ -69,48 +68,20 @@ pub fn apps_routes() -> Vec<rocket::Route> {
     ]
 }
 
-#[rocket::get("/", format = "application/json", rank = 1)]
-async fn apps(
-    apps: &State<Arc<Apps>>,
-    request_info: RequestInfo,
-    host_meta_cache: &State<HostMetaCache>,
-) -> HttpResult<Json<HashMap<AppName, ServicesWithHostMeta>>> {
-    let services = apps.fetch_apps().await?;
-    Ok(Json(
-        host_meta_cache.convert_services_into_services_with_host_meta(services, &request_info),
-    ))
-}
+pub struct AppV1(App);
 
-#[rocket::get("/", format = "text/event-stream", rank = 2)]
-async fn stream_apps(
-    apps_updates: &State<Receiver<HashMap<AppName, Services>>>,
-    mut end: Shutdown,
-    request_info: RequestInfo,
-    host_meta_cache: HostMetaCache,
-) -> EventStream![] {
-    let mut services = apps_updates.inner().borrow().clone();
+impl Serialize for AppV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.services().len()))?;
 
-    let mut app_changes =
-        tokio_stream::wrappers::WatchStream::from_changes(apps_updates.inner().clone());
-    let mut host_meta_cache_updates = host_meta_cache.cache_updates();
-
-    EventStream! {
-        yield Event::json(&host_meta_cache.convert_services_into_services_with_host_meta(services.clone(), &request_info));
-
-        loop {
-            select! {
-                Some(new_services) = app_changes.next() => {
-                    debug!("New app list update: sending app service update");
-                    services = new_services;
-                }
-                Some(_t) = host_meta_cache_updates.next() => {
-                    debug!("New host meta cache update: sending app service update");
-                }
-                _ = &mut end => break,
-            };
-
-            yield Event::json(&host_meta_cache.convert_services_into_services_with_host_meta(services.clone(), &request_info));
+        for service in self.0.services() {
+            seq.serialize_element(service)?;
         }
+
+        serde::ser::SerializeSeq::end(seq)
     }
 }
 
@@ -120,7 +91,7 @@ async fn status_change(
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
     apps: &State<Arc<Apps>>,
     options: RunOptions,
-) -> HttpResult<AsyncCompletion<Json<Services>>> {
+) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
     let app_name = app_name?;
     let status_id = status_id?;
 
@@ -141,7 +112,11 @@ pub async fn delete_app(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
     options: RunOptions,
-) -> HttpResult<AsyncCompletion<Json<Services>>> {
+    user: Result<UserValidatedByAccessMode, HttpApiProblem>,
+) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
+    // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
+    let _user = user.map_err(HttpApiError::from)?;
+
     let app_name = app_name?;
     let app_name_cloned = app_name.clone();
     let status_id = AppStatusChangeId::new();
@@ -151,7 +126,7 @@ pub async fn delete_app(
 
     match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
-        Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
+        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(AppV1(app)))),
         Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
@@ -159,8 +134,9 @@ pub async fn delete_app(
 pub async fn delete_app_sync(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
-) -> HttpResult<Json<Services>> {
-    match delete_app(app_name, apps, RunOptions::Sync).await? {
+    user: Result<UserValidatedByAccessMode, HttpApiProblem>,
+) -> HttpResult<Json<AppV1>> {
+    match delete_app(app_name, apps, RunOptions::Sync, user).await? {
         AsyncCompletion::Pending(_, _) => {
             Err(HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR).into())
         }
@@ -179,8 +155,11 @@ pub async fn create_app(
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
     options: RunOptions,
-) -> HttpResult<AsyncCompletion<Json<Services>>> {
+    user: Result<UserValidatedByAccessMode, HttpApiProblem>,
+) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
     let payload = payload.map_err(HttpApiError::from)?;
+    // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
+    let user = user.map_err(HttpApiError::from)?;
 
     let status_id = AppStatusChangeId::new();
     let app_name = app_name?;
@@ -194,6 +173,7 @@ pub async fn create_app(
             &status_id,
             replicate_from,
             &payload.services,
+            user.user,
             payload.user_defined_parameters,
         )
         .await
@@ -201,7 +181,7 @@ pub async fn create_app(
 
     match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
-        Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
+        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(AppV1(app)))),
         Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
@@ -261,7 +241,7 @@ where
 
 fn map_join_error(err: tokio::task::JoinError) -> HttpApiError {
     HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-        .detail(format!("{}", err))
+        .detail(format!("{err}"))
         .into()
 }
 
@@ -298,7 +278,7 @@ where
     fn respond_to(self, request: &'r Request) -> Result<Response<'static>, Status> {
         match self {
             AsyncCompletion::Pending(app_name, status_id) => {
-                let url = format!("/api/apps/{}/status-changes/{}", app_name, status_id);
+                let url = format!("/api/apps/{app_name}/status-changes/{status_id}");
                 Response::build()
                     .status(Status::Accepted)
                     .raw_header("Location", url)
@@ -341,7 +321,7 @@ impl From<AppsError> for HttpApiError {
         };
 
         HttpApiProblem::with_title_and_type(status)
-            .detail(format!("{}", error))
+            .detail(format!("{error}"))
             .into()
     }
 }
@@ -390,6 +370,14 @@ impl<'r> FromRequest<'r> for RunOptions {
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        apps::routes::AppV1,
+        models::{App, Service, ServiceStatus},
+    };
+    use assert_json_diff::assert_json_eq;
+    use chrono::Utc;
+    use std::collections::HashSet;
+
     mod parse_run_options_from_request {
         use crate::apps::routes::*;
         use rocket::http::Header;
@@ -484,304 +472,6 @@ mod tests {
             let run_options = RunOptions::from_request(request).await.succeeded();
 
             assert_eq!(run_options, Some(RunOptions::Sync));
-        }
-    }
-
-    mod url_rendering {
-        use crate::apps::{AppsService, HostMetaCache};
-        use crate::config::Config;
-        use crate::infrastructure::Dummy;
-        use crate::models::service::Services;
-        use crate::models::{AppName, AppStatusChangeId};
-        use crate::sc;
-        use assert_json_diff::assert_json_include;
-        use rocket::http::ContentType;
-        use rocket::http::Header;
-        use rocket::http::Status;
-        use rocket::local::asynchronous::Client;
-        use rocket::routes;
-        use serde_json::json;
-        use serde_json::Value;
-        use std::collections::HashMap;
-        use std::convert::From;
-        use std::sync::Arc;
-
-        async fn set_up_rocket_with_dummy_infrastructure_and_a_running_app(
-            host_meta_cache: HostMetaCache,
-        ) -> Result<Client, crate::apps::AppsServiceError> {
-            let infrastructure = Box::new(Dummy::new());
-            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
-            let _result = apps
-                .create_or_update(
-                    &AppName::master(),
-                    &AppStatusChangeId::new(),
-                    None,
-                    &vec![sc!("service-a")],
-                    None,
-                )
-                .await?;
-
-            let rocket = rocket::build()
-                .manage(host_meta_cache)
-                .manage(apps)
-                .manage(Config::default())
-                .manage(tokio::sync::watch::channel::<HashMap<AppName, Services>>(HashMap::new()).1)
-                .mount("/", routes![crate::apps::routes::apps])
-                .mount("/api/apps", crate::apps::apps_routes());
-            Ok(Client::tracked(rocket).await.expect("valid rocket"))
-        }
-
-        #[tokio::test]
-        async fn host_header_response_with_xforwardedhost_and_port_xforwardedproto_and_xforwardedport(
-        ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
-
-            let get = client
-                .get("/")
-                .header(rocket::http::Header::new(
-                    "x-forwarded-host",
-                    "prevant.com:8433",
-                ))
-                .header(rocket::http::Header::new("x-forwarded-proto", "http"))
-                .header(rocket::http::Header::new("x-forwarded-port", "8433"))
-                .header(ContentType::JSON)
-                .dispatch();
-
-            let response = get.await;
-
-            let body_str = response.into_string().await.expect("valid response body");
-            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-
-            assert_json_include!(
-                actual: value_in_json,
-                expected: json!({
-                    "master": [{
-                        "url":"http://prevant.com:8433/master/service-a/"
-                    }]
-                }
-            ));
-
-            Ok(())
-        }
-        #[tokio::test]
-        async fn host_header_response_with_xforwardedhost_xforwardedproto_and_xforwardedport(
-        ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
-
-            let get = client
-                .get("/")
-                .header(rocket::http::Header::new("x-forwarded-host", "prevant.com"))
-                .header(rocket::http::Header::new("x-forwarded-proto", "http"))
-                .header(rocket::http::Header::new("x-forwarded-port", "8433"))
-                .header(ContentType::JSON)
-                .dispatch();
-
-            let response = get.await;
-
-            let body_str = response.into_string().await.expect("valid response body");
-            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-
-            assert_json_include!(
-                actual: value_in_json,
-                expected: json!({
-                    "master": [{
-                        "url":"http://prevant.com:8433/master/service-a/"
-                    }]
-                }
-            ));
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn host_header_response_with_xforwardedproto_and_other_default_values(
-        ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
-
-            let get = client
-                .get("/")
-                .header(rocket::http::Header::new("x-forwarded-proto", "https"))
-                .header(rocket::http::Header::new("host", "localhost"))
-                .header(ContentType::JSON)
-                .dispatch();
-
-            let response = get.await;
-
-            let body_str = response.into_string().await.expect("valid response body");
-            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-            assert_json_include!(
-                actual: value_in_json,
-                expected: json!({
-                    "master": [{
-                        "url":"https://localhost/master/service-a/"
-                    }]
-                }
-            ));
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn host_header_response_with_xforwardedhost_and_other_default_values(
-        ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
-
-            let get = client
-                .get("/")
-                .header(rocket::http::Header::new("x-forwarded-host", "prevant.com"))
-                .header(ContentType::JSON)
-                .dispatch();
-
-            let response = get.await;
-
-            let body_str = response.into_string().await.expect("valid response body");
-            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-            assert_json_include!(
-                actual: value_in_json,
-                expected: json!({
-                    "master": [{
-                        "url":"http://prevant.com/master/service-a/"
-                    }]
-                }
-            ));
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn host_header_response_with_xforwardedport_and_default_values(
-        ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
-
-            let get = client
-                .get("/")
-                .header(rocket::http::Header::new("host", "localhost"))
-                .header(rocket::http::Header::new("x-forwarded-port", "8433"))
-                .header(ContentType::JSON)
-                .dispatch();
-
-            let response = get.await;
-
-            let body_str = response.into_string().await.expect("valid response body");
-            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-            assert_json_include!(
-                actual: value_in_json,
-                expected: json!({
-                    "master": [{
-                        "url":"http://localhost:8433/master/service-a/"
-                    }]
-                }
-            ));
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn host_header_response_with_all_default_values(
-        ) -> Result<(), crate::apps::AppsServiceError> {
-            let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
-            let client =
-                set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
-            host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
-            let get = client
-                .get("/")
-                .header(rocket::http::Header::new("host", "localhost"))
-                .header(ContentType::JSON)
-                .dispatch();
-
-            let response = get.await;
-
-            let body_str = response.into_string().await.expect("valid response body");
-            let value_in_json: Value = serde_json::from_str(&body_str).unwrap();
-            assert_json_include!(
-                actual: value_in_json,
-                expected: json!({
-                    "master": [{
-                        "url":"http://localhost/master/service-a/"
-                    }]
-                }
-            ));
-
-            Ok(())
-        }
-
-        #[tokio::test]
-        async fn bad_request_without_host_header() {
-            let (host_meta_cache, _host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
-            let infrastructure = Box::new(Dummy::new());
-            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
-
-            let rocket = rocket::build()
-                .manage(host_meta_cache)
-                .manage(apps)
-                .mount("/", routes![crate::apps::routes::apps]);
-            let client = Client::tracked(rocket).await.expect("valid rocket");
-            let mut get = client.get(rocket::uri!(crate::apps::routes::apps));
-            get.add_header(ContentType::JSON);
-            let response = get.dispatch().await;
-            assert_eq!(response.status(), Status::BadRequest);
-        }
-
-        #[tokio::test]
-        async fn with_invalid_headers() {
-            let (host_meta_cache, _host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
-            let infrastructure = Box::new(Dummy::new());
-            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
-
-            let rocket = rocket::build()
-                .manage(host_meta_cache)
-                .manage(apps)
-                .mount("/", routes![crate::apps::routes::apps]);
-            let client = Client::tracked(rocket).await.expect("valid rocket");
-            let get = client
-                .get(rocket::uri!(crate::apps::routes::apps))
-                .header(Header::new("x-forwarded-host", ""));
-
-            let response = get.dispatch().await;
-            assert_eq!(response.status(), Status::BadRequest);
-        }
-
-        #[tokio::test]
-        async fn with_invalid_proto() {
-            let (host_meta_cache, _host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
-            let infrastructure = Box::new(Dummy::new());
-            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
-
-            let rocket = rocket::build()
-                .manage(host_meta_cache)
-                .manage(apps)
-                .mount("/", routes![crate::apps::routes::apps]);
-            let client = Client::tracked(rocket).await.expect("valid rocket");
-            let get = client
-                .get(rocket::uri!(crate::apps::routes::apps))
-                .header(Header::new("x-forwarded-proto", "."));
-
-            let response = get.dispatch().await;
-            assert_eq!(response.status(), Status::BadRequest);
         }
     }
 
@@ -1087,5 +777,47 @@ mod tests {
                 }])
             );
         }
+    }
+
+    #[test]
+    fn serialize_services() {
+        assert_json_eq!(
+            serde_json::json!([{
+                "name": "mariadb",
+                "type": "instance",
+                "state": {
+                    "status": "running"
+                }
+            }, {
+                "name": "postgres",
+                "type": "instance",
+                "state": {
+                    "status": "running"
+                }
+            }]),
+            serde_json::to_value(AppV1(App::new(
+                vec![
+                    Service {
+                        id: String::from("some id"),
+                        state: crate::models::State {
+                            status: ServiceStatus::Running,
+                            started_at: Some(Utc::now()),
+                        },
+                        config: crate::sc!("postgres", "postgres:latest")
+                    },
+                    Service {
+                        id: String::from("some id"),
+                        state: crate::models::State {
+                            status: ServiceStatus::Running,
+                            started_at: Some(Utc::now()),
+                        },
+                        config: crate::sc!("mariadb", "mariadb:latest")
+                    }
+                ],
+                HashSet::new(),
+                None
+            )))
+            .unwrap()
+        );
     }
 }

@@ -618,7 +618,7 @@ impl K8sDeploymentUnit {
     pub(super) fn filter_by_instances_and_replicas<S>(&mut self, services: S)
     where
         S: Iterator,
-        <S as Iterator>::Item: Borrow<crate::models::service::Service>,
+        <S as Iterator>::Item: Borrow<crate::models::Service>,
     {
         let service_not_to_be_retained = services
             .filter(|s| {
@@ -850,7 +850,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{deployment::deployment_unit::DeploymentUnitBuilder, models::service::State};
+    use crate::{deployment::deployment_unit::DeploymentUnitBuilder, models::State};
     use chrono::Utc;
     use k8s_openapi::api::{
         apps::v1::DeploymentSpec,
@@ -865,6 +865,7 @@ mod tests {
             .extend_with_config(&Default::default())
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)
             .unwrap()
             .apply_hooks(&Default::default())
@@ -1185,11 +1186,11 @@ mod tests {
         )
         .await;
 
-        unit.filter_by_instances_and_replicas(std::iter::once(crate::models::service::Service {
+        unit.filter_by_instances_and_replicas(std::iter::once(crate::models::Service {
             id: String::from("test"),
             config: crate::sc!("nginx", "nginx:1.15"),
             state: State {
-                status: crate::models::service::ServiceStatus::Running,
+                status: crate::models::ServiceStatus::Running,
                 started_at: Some(Utc::now()),
             },
         }));
@@ -1225,11 +1226,11 @@ mod tests {
         )
         .await;
 
-        unit.filter_by_instances_and_replicas(std::iter::once(crate::models::service::Service {
+        unit.filter_by_instances_and_replicas(std::iter::once(crate::models::Service {
             id: String::from("test"),
             config: crate::sc!("postgres", "postgres"),
             state: State {
-                status: crate::models::service::ServiceStatus::Running,
+                status: crate::models::ServiceStatus::Running,
                 started_at: Some(Utc::now()),
             },
         }));

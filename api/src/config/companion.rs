@@ -24,9 +24,8 @@
  * =========================LICENSE_END==================================
  */
 use crate::config::AppSelector;
-use crate::models::service::ContainerType;
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, Environment, Image, ServiceConfig};
+use crate::models::{AppName, ContainerType, Environment, Image, ServiceConfig};
 use handlebars::{Handlebars, RenderError, RenderErrorReason};
 use jsonschema::Validator;
 use secstr::SecUtf8;

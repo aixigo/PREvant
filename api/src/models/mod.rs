@@ -24,22 +24,25 @@
  * =========================LICENSE_END==================================
  */
 
+pub use app::{
+    App, AppWithHostMeta, ContainerType, Owner, Service, ServiceError, ServiceStatus,
+    ServiceWithHostMeta, State,
+};
 pub use app_name::{AppName, AppNameError};
 pub use app_status_change_id::{AppStatusChangeId, AppStatusChangeIdError};
 pub use image::Image;
 pub use logs_chunks::LogChunk;
 pub use request_info::RequestInfo;
-pub use service::ContainerType;
 pub use service_config::{Environment, EnvironmentVariable, ServiceConfig};
 pub use web_host_meta::WebHostMeta;
 
+#[cfg_attr(test, macro_use)]
+mod app;
 mod app_name;
 mod app_status_change_id;
 mod image;
 mod logs_chunks;
 pub mod request_info;
-#[cfg_attr(test, macro_use)]
-pub mod service;
 mod service_config;
 pub mod ticket_info;
 pub mod user_defined_parameters;
