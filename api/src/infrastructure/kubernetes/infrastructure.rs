@@ -27,7 +27,7 @@ use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
     STORAGE_TYPE_LABEL,
 };
-use super::deployment_unit::K8sDeploymentUnit;
+use super::deployment_unit::{self, K8sDeploymentUnit};
 use super::payloads::{
     deployment_payload, image_pull_secret_payload, ingress_route_payload, middleware_payload,
     namespace_payload, persistent_volume_claim_payload, secrets_payload, service_payload,
@@ -35,6 +35,7 @@ use super::payloads::{
 };
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
+use crate::infrastructure::kubernetes::payloads::namespace_annotations;
 use crate::infrastructure::traefik::{TraefikIngressRoute, TraefikMiddleware};
 use crate::infrastructure::{
     HttpForwarder, Infrastructure, TraefikRouterRule, USER_DEFINED_PARAMETERS_LABEL,
@@ -237,14 +238,22 @@ impl KubernetesInfrastructure {
 
     async fn create_namespace_if_necessary(
         &self,
-        app_name: &AppName,
-        user_defined_params: &Option<UserDefinedParameters>,
+        deployment_unit: &DeploymentUnit,
     ) -> Result<(), KubernetesInfrastructureError> {
+        let app_name = deployment_unit.app_name();
+        // TODO: collect existing users…
+        let users = &[deployment_unit.user()];
+
         let api = Api::all(self.client().await?);
         match api
             .create(
                 &PostParams::default(),
-                &namespace_payload(app_name, &self.config, user_defined_params),
+                &namespace_payload(
+                    app_name,
+                    &self.config,
+                    deployment_unit.user_defined_parameters(),
+                    users,
+                ),
             )
             .await
         {
@@ -261,7 +270,12 @@ impl KubernetesInfrastructure {
             Err(KubeError::Api(ErrorResponse { code: 409, .. })) => {
                 debug!("Namespace {} already exists.", app_name);
 
-                if let Some(user_defined_parameters) = user_defined_params {
+                let annotations = namespace_annotations(
+                    &self.config,
+                    deployment_unit.user_defined_parameters(),
+                    users,
+                );
+                if annotations.is_some() {
                     debug!(
                         "Patching namespace {} with user defined parameters.",
                         app_name
@@ -271,11 +285,7 @@ impl KubernetesInfrastructure {
                         &PatchParams::apply("PREvant"),
                         &Patch::Merge(&V1Namespace {
                             metadata: ObjectMeta {
-                                annotations: Some(BTreeMap::from([(
-                                    USER_DEFINED_PARAMETERS_LABEL.to_string(),
-                                    serde_json::to_string(user_defined_parameters)
-                                        .unwrap_or_default(),
-                                )])),
+                                annotations,
                                 ..Default::default()
                             },
                             ..Default::default()
@@ -560,12 +570,11 @@ impl Infrastructure for KubernetesInfrastructure {
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<Services> {
-        let app_name = deployment_unit.app_name();
-        self.create_namespace_if_necessary(app_name, deployment_unit.user_defined_parameters())
-            .await?;
+        self.create_namespace_if_necessary(&deployment_unit).await?;
 
         let client = self.client().await?;
 
+        let app_name = deployment_unit.app_name();
         let bootstrapping_containers = self.config.companion_bootstrapping_containers(
             app_name,
             &deployment_unit.app_base_route().to_url(),

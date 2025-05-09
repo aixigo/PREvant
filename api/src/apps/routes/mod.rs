@@ -26,6 +26,7 @@
 
 use crate::apps::HostMetaCache;
 use crate::apps::{Apps, AppsError};
+use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::request_info::RequestInfo;
 use crate::models::service::{Service, ServiceStatus, Services, ServicesWithHostMeta};
@@ -141,7 +142,10 @@ pub async fn delete_app(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
     options: RunOptions,
+    user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<Services>>> {
+    let user = user.map_err(HttpApiError::from)?;
+
     let app_name = app_name?;
     let app_name_cloned = app_name.clone();
     let status_id = AppStatusChangeId::new();
@@ -159,8 +163,9 @@ pub async fn delete_app(
 pub async fn delete_app_sync(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
+    user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<Json<Services>> {
-    match delete_app(app_name, apps, RunOptions::Sync).await? {
+    match delete_app(app_name, apps, RunOptions::Sync, user).await? {
         AsyncCompletion::Pending(_, _) => {
             Err(HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR).into())
         }
@@ -179,8 +184,10 @@ pub async fn create_app(
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
     options: RunOptions,
+    user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<Services>>> {
     let payload = payload.map_err(HttpApiError::from)?;
+    let user = user.map_err(HttpApiError::from)?;
 
     let status_id = AppStatusChangeId::new();
     let app_name = app_name?;
@@ -194,6 +201,7 @@ pub async fn create_app(
             &status_id,
             replicate_from,
             &payload.services,
+            user.user,
             payload.user_defined_parameters,
         )
         .await
@@ -517,6 +525,7 @@ mod tests {
                     &AppStatusChangeId::new(),
                     None,
                     &vec![sc!("service-a")],
+                    crate::auth::User::Anonymous,
                     None,
                 )
                 .await?;
