@@ -34,6 +34,7 @@ use crate::apps::Apps;
 use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
+use auth::Auth;
 use clap::Parser;
 use rocket::fs::{FileServer, Options};
 use rocket::routes;
@@ -44,6 +45,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt as _;
 
 mod apps;
+mod auth;
 mod config;
 mod deployment;
 mod http_result;
@@ -125,6 +127,8 @@ async fn main() -> Result<(), StartUpError> {
         .mount("/api/apps", crate::apps::apps_routes())
         .mount("/api", routes![tickets::tickets])
         .mount("/api", routes![webhooks::webhooks])
+        .mount("/auth", crate::auth::auth_routes())
+        .attach(Auth::fairing())
         .launch()
         .await?;
 

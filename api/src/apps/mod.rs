@@ -28,6 +28,7 @@ mod routes;
 
 pub use crate::apps::AppsService as Apps;
 pub use crate::apps::AppsServiceError as AppsError;
+use crate::auth::User;
 use crate::config::{Config, ConfigError};
 use crate::deployment::deployment_unit::DeploymentUnitBuilder;
 use crate::infrastructure::HttpForwarder;
@@ -305,6 +306,7 @@ impl AppsService {
         status_id: &AppStatusChangeId,
         replicate_from: Option<AppName>,
         service_configs: &[ServiceConfig],
+        user: User,
         user_defined_parameters: Option<serde_json::Value>,
     ) -> Result<Services, AppsServiceError> {
         let user_defined_parameters = match (
@@ -339,10 +341,23 @@ impl AppsService {
                 status_id,
                 replicate_from,
                 service_configs,
+                user,
                 user_defined_parameters,
             )
             .await,
         )
+    }
+
+    pub async fn base_url(&self) -> Option<TraefikIngressRoute> {
+        if let Some(base_url) = &self.config.base_url {
+            Some(TraefikIngressRoute::from(base_url))
+        } else {
+            self.infrastructure
+                .base_traefik_ingress_route()
+                .await
+                .ok()
+                .flatten()
+        }
     }
 
     async fn create_or_update_impl(
@@ -351,6 +366,7 @@ impl AppsService {
         status_id: &AppStatusChangeId,
         replicate_from: Option<AppName>,
         service_configs: &[ServiceConfig],
+        user: User,
         user_defined_parameters: Option<UserDefinedParameters>,
     ) -> Result<Services, AppsServiceError> {
         if let Some(app_limit) = self.config.app_limit() {
@@ -435,18 +451,11 @@ impl AppsService {
             .resolve_image_infos(&images)
             .await?;
 
-        let base_traefik_ingress_route = if let Some(base_url) = &self.config.base_url {
-            Some(TraefikIngressRoute::from(base_url))
-        } else {
-            self.infrastructure
-                .base_traefik_ingress_route()
-                .await
-                .ok()
-                .flatten()
-        };
+        let base_traefik_ingress_route = self.base_url().await;
 
         let deployment_unit_builder = deployment_unit_builder
             .extend_with_image_infos(image_infos)
+            .with_user_information(user)
             .apply_templating(
                 &base_traefik_ingress_route.as_ref().and_then(|r| r.to_url()),
                 user_defined_parameters,
@@ -687,6 +696,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -711,6 +721,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -720,6 +731,7 @@ mod tests {
             &AppStatusChangeId::new(),
             Some(AppName::master()),
             &vec![sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -747,6 +759,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -756,6 +769,7 @@ mod tests {
             &AppStatusChangeId::new(),
             Some(AppName::master()),
             &vec![sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -765,6 +779,7 @@ mod tests {
             &AppStatusChangeId::new(),
             Some(AppName::master()),
             &vec![sc!("service-a")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -801,6 +816,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("mariadb")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -843,6 +859,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("mariadb")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -875,6 +892,7 @@ mod tests {
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -914,8 +932,15 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::from_str("master").unwrap();
         let services = vec![sc!("service-a"), sc!("service-b")];
-        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &services, None)
-            .await?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &services,
+            User::Anonymous,
+            None,
+        )
+        .await?;
         for service in services {
             let mut log_stream = apps
                 .stream_logs(&app_name, service.service_name(), &None, &None)
@@ -982,6 +1007,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1017,8 +1043,15 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("openid"), sc!("db")];
-        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs, None)
-            .await?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &configs,
+            User::Anonymous,
+            None,
+        )
+        .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
         let services = deployed_apps.get(&app_name).unwrap();
@@ -1070,8 +1103,15 @@ Log msg 3 of service-a of app master
             files = ()
         )];
 
-        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs, None)
-            .await?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &configs,
+            User::Anonymous,
+            None,
+        )
+        .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
 
@@ -1132,6 +1172,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![crate::sc!("service-a")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1140,6 +1181,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![crate::sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1148,6 +1190,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![crate::sc!("service-c")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1182,6 +1225,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1222,6 +1266,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1274,8 +1319,15 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("db1"), sc!("db2")];
-        apps.create_or_update(&app_name, &AppStatusChangeId::new(), None, &configs, None)
-            .await?;
+        apps.create_or_update(
+            &app_name,
+            &AppStatusChangeId::new(),
+            None,
+            &configs,
+            User::Anonymous,
+            None,
+        )
+        .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
         let db_config1: Vec<ServiceConfig> = apps
@@ -1345,6 +1397,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1373,6 +1426,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1416,6 +1470,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1467,6 +1522,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1477,6 +1533,7 @@ Log msg 3 of service-a of app master
                 &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-a"), sc!("service-b")],
+                User::Anonymous,
                 None,
             )
             .await;
@@ -1506,6 +1563,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
+            User::Anonymous,
             None,
         )
         .await?;
@@ -1516,6 +1574,7 @@ Log msg 3 of service-a of app master
                 &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-c")],
+                User::Anonymous,
                 None,
             )
             .await;
@@ -1551,6 +1610,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("web-service")],
+            User::Anonymous,
             Some(serde_json::json!({
                 "name": "my-name"
             })),
@@ -1596,6 +1656,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("web-service")],
+            User::Anonymous,
             Some(serde_json::json!({
                 "name": "my-name"
             })),
@@ -1608,6 +1669,7 @@ Log msg 3 of service-a of app master
             &AppStatusChangeId::new(),
             None,
             &vec![],
+            User::Anonymous,
             None,
         )
         .await?;
