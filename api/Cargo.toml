@@ -43,12 +43,13 @@ lazy_static = "1.5"
 log = "0.4"
 multimap = "0.10"
 oci-client = "0.14"
+openidconnect = "4.0"
 pest = "2.7"
 pest_derive = "2.7"
 regex = "1.11"
 regex-syntax = "0.8"
 reqwest = "0.12"
-rocket = { version = "0.5", features = ["json"] }
+rocket = { version = "0.5", features = ["json", "secrets"] }
 schemars = "0.8"
 secstr = { version = "0.5", features = ["serde"] }
 serde = "1.0"

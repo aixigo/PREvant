@@ -28,9 +28,8 @@ use crate::config::ContainerConfig;
 use crate::deployment::deployment_unit::DeployableService;
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::Infrastructure;
-use crate::models::service::{Service, ServiceStatus, Services, State};
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, ServiceConfig};
+use crate::models::{App, AppName, Owner, Service, ServiceConfig, ServiceStatus, State};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
@@ -42,15 +41,13 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::TraefikIngressRoute;
-
 #[cfg(test)]
 #[derive(Clone)]
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
     services: Arc<Mutex<MultiMap<AppName, DeployableService>>>,
     user_defined_parameters: Arc<Mutex<HashMap<AppName, UserDefinedParameters>>>,
-    base_ingress_route: Option<TraefikIngressRoute>,
+    owners: Arc<Mutex<MultiMap<AppName, Owner>>>,
 }
 
 #[cfg(test)]
@@ -60,7 +57,7 @@ impl DummyInfrastructure {
             delay: None,
             services: Arc::new(Mutex::new(MultiMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
-            base_ingress_route: None,
+            owners: Arc::new(Mutex::new(MultiMap::new())),
         }
     }
 
@@ -69,16 +66,7 @@ impl DummyInfrastructure {
             delay: Some(delay),
             services: Arc::new(Mutex::new(MultiMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
-            base_ingress_route: None,
-        }
-    }
-
-    pub fn with_base_route(base_ingress_route: TraefikIngressRoute) -> Self {
-        Self {
-            delay: None,
-            services: Arc::new(Mutex::new(MultiMap::new())),
-            user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
-            base_ingress_route: Some(base_ingress_route),
+            owners: Arc::new(Mutex::new(MultiMap::new())),
         }
     }
 
@@ -104,8 +92,8 @@ impl DummyInfrastructure {
 #[cfg(test)]
 #[async_trait]
 impl Infrastructure for DummyInfrastructure {
-    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>> {
-        let mut s = HashMap::new();
+    async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
+        let mut apps = HashMap::new();
 
         let services = self.services.lock().unwrap();
         for (app, configs) in services.iter_all() {
@@ -127,45 +115,24 @@ impl Infrastructure for DummyInfrastructure {
                 services.push(service);
             }
 
-            s.insert(AppName::from_str(app).unwrap(), Services::from(services));
+            let app_name = AppName::from_str(app).unwrap();
+            let user_defined_parameters = self.user_defined_parameters.lock().unwrap();
+            let udp = user_defined_parameters.get(&app_name).cloned();
+
+            let owners = self.owners.lock().unwrap();
+            let owners = owners
+                .get_vec(&app_name)
+                .map(|owners| owners.iter().cloned().collect::<HashSet<Owner>>())
+                .unwrap_or_default();
+
+            apps.insert(app_name, App::new(services, owners, udp));
         }
 
-        Ok(s)
+        Ok(apps)
     }
 
-    async fn fetch_services_and_user_defined_payload_of_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
-        let lock = self.services.lock().unwrap();
-        let Some(configs) = lock.get_vec(app_name) else {
-            return Ok(None);
-        };
-
-        let mut services = Vec::<Service>::with_capacity(configs.len());
-        for config in configs {
-            let service = Service {
-                id: config.service_name().clone(),
-                config: ServiceConfig::clone(&config),
-                state: State {
-                    status: ServiceStatus::Running,
-                    started_at: Some(
-                        DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
-                            .unwrap()
-                            .with_timezone(&Utc),
-                    ),
-                },
-            };
-
-            services.push(service);
-        }
-
-        let user_defined_parameters = self.user_defined_parameters.lock().unwrap();
-
-        Ok(Some((
-            Services::from(services),
-            user_defined_parameters.get(app_name).cloned(),
-        )))
+    async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>> {
+        Ok(self.fetch_apps().await?.remove(app_name))
     }
 
     async fn deploy_services(
@@ -173,77 +140,74 @@ impl Infrastructure for DummyInfrastructure {
         _status_id: &str,
         deployment_unit: &DeploymentUnit,
         _container_config: &ContainerConfig,
-    ) -> Result<Services> {
+    ) -> Result<App> {
         self.delay_if_configured().await;
 
         let app_name = deployment_unit.app_name();
 
-        let mut services = self.services.lock().unwrap();
-        let mut user_defined_parameters = self.user_defined_parameters.lock().unwrap();
+        {
+            let mut services = self.services.lock().unwrap();
+            let mut user_defined_parameters = self.user_defined_parameters.lock().unwrap();
+            let mut owners = self.owners.lock().unwrap();
 
-        if let Some(p) = deployment_unit.user_defined_parameters() {
-            user_defined_parameters.insert(app_name.clone(), p.clone());
+            if let Some(p) = deployment_unit.user_defined_parameters() {
+                user_defined_parameters.insert(app_name.clone(), p.clone());
+            }
+
+            let deployable_services = deployment_unit.services();
+            if let Some(running_services) = services.get_vec_mut(app_name) {
+                let service_names = deployable_services
+                    .iter()
+                    .map(|c| c.service_name())
+                    .collect::<HashSet<&String>>();
+
+                running_services.retain(|config| !service_names.contains(config.service_name()));
+            }
+
+            owners.insert_many(app_name.clone(), deployment_unit.owners().iter().cloned());
+
+            for config in deployable_services {
+                info!("started {} for {}.", config.service_name(), app_name);
+                services.insert(app_name.clone(), config.clone());
+            }
         }
 
-        let deployable_services = deployment_unit.services();
-        if let Some(running_services) = services.get_vec_mut(&app_name) {
-            let service_names = deployable_services
-                .iter()
-                .map(|c| c.service_name())
-                .collect::<HashSet<&String>>();
-
-            running_services.retain(|config| !service_names.contains(config.service_name()));
-        }
-
-        for config in deployable_services {
-            info!("started {} for {}.", config.service_name(), app_name);
-            services.insert(app_name.clone(), config.clone());
-        }
-        Ok(services
-            .get_vec(app_name)
-            .unwrap()
-            .iter()
-            .map(|sc| Service {
-                id: sc.service_name().clone(),
-                config: ServiceConfig::clone(&sc),
-                state: State {
-                    status: ServiceStatus::Running,
-                    started_at: Some(
-                        DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
-                            .unwrap()
-                            .with_timezone(&Utc),
-                    ),
-                },
-            })
-            .collect::<Vec<_>>()
-            .into())
+        Ok(self.fetch_apps().await?.remove(app_name).unwrap())
     }
 
-    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Services> {
+    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<App> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
+        let services = match services.remove(app_name) {
+            Some(services) => services
+                .into_iter()
+                .map(|sc| Service {
+                    id: sc.service_name().clone(),
+                    config: ServiceConfig::clone(&sc),
+                    state: State {
+                        status: ServiceStatus::Running,
+                        started_at: Some(
+                            DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
+                                .unwrap()
+                                .with_timezone(&Utc),
+                        ),
+                    },
+                })
+                .collect::<Vec<_>>(),
+            None => return Ok(App::empty()),
+        };
 
-        match services.remove(&app_name) {
-            Some(services) => Ok(Services::from(
-                services
-                    .into_iter()
-                    .map(|sc| Service {
-                        id: sc.service_name().clone(),
-                        config: ServiceConfig::clone(&sc),
-                        state: State {
-                            status: ServiceStatus::Running,
-                            started_at: Some(
-                                DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
-                                    .unwrap()
-                                    .with_timezone(&Utc),
-                            ),
-                        },
-                    })
-                    .collect::<Vec<_>>(),
-            )),
-            None => Ok(Services::empty()),
-        }
+        let mut owners = self.owners.lock().unwrap();
+        let owners = owners
+            .remove(app_name)
+            .map(|owners| owners.into_iter().collect::<HashSet<_>>())
+            .unwrap_or_default();
+
+        let mut user_defined_parameters = self.user_defined_parameters.lock().unwrap();
+        let user_defined_parameters = user_defined_parameters.remove(app_name);
+
+        Ok(App::new(services, owners, user_defined_parameters))
     }
 
     async fn get_logs<'a>(
@@ -258,19 +222,19 @@ impl Infrastructure for DummyInfrastructure {
             vec![
                 (
                     DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(),
-                    format!("Log msg 1 of {} of app {}\n", service_name, app_name),
+                    format!("Log msg 1 of {service_name} of app {app_name}\n"),
                 ),
                 (
                     DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
-                    format!("Log msg 2 of {} of app {}\n", service_name, app_name),
+                    format!("Log msg 2 of {service_name} of app {app_name}\n"),
                 ),
                 (
                     DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(),
-                    format!("Log msg 3 of {} of app {}\n", service_name, app_name),
+                    format!("Log msg 3 of {service_name} of app {app_name}\n"),
                 ),
             ]
             .into_iter()
-            .map(|s| Ok(s)),
+            .map(Ok),
         ))
     }
 
@@ -281,10 +245,6 @@ impl Infrastructure for DummyInfrastructure {
         _status: ServiceStatus,
     ) -> Result<Option<Service>> {
         Ok(None)
-    }
-
-    async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>> {
-        Ok(self.base_ingress_route.clone())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

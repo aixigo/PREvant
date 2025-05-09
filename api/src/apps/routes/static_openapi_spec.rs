@@ -40,11 +40,8 @@ pub(super) async fn static_open_api_spec(
         return Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into());
     };
 
-    let service = host_meta_cache.convert_service_into_service_with_host_meta(
-        &app_name,
-        service,
-        &request_info,
-    );
+    let service =
+        host_meta_cache.assign_host_meta_data_to_service(&app_name, service, &request_info);
     let Some(mut public_service_url) = service.service_url else {
         return Err(
             HttpApiProblem::with_title_and_type(StatusCode::PRECONDITION_REQUIRED)

@@ -277,6 +277,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -284,9 +285,8 @@ mod tests {
 
         let deployed_files = unit
             .services()
-            .into_iter()
-            .map(|service| service.files().cloned())
-            .flatten()
+            .iter()
+            .filter_map(|service| service.files().cloned())
             .flatten()
             .map(|(path, content)| (path.to_str().unwrap().to_string(), content.clone()))
             .collect::<Vec<(String, SecUtf8)>>();
@@ -329,6 +329,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -336,9 +337,8 @@ mod tests {
 
         let deployed_files = unit
             .services()
-            .into_iter()
-            .map(|service| service.files().cloned())
-            .flatten()
+            .iter()
+            .filter_map(|service| service.files().cloned())
             .flatten()
             .map(|(path, content)| (path.to_str().unwrap().to_string(), content.clone()))
             .collect::<Vec<(String, SecUtf8)>>();
@@ -367,6 +367,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -374,11 +375,9 @@ mod tests {
 
         let deployed_variables = unit
             .services()
-            .into_iter()
-            .map(|service| service.env().cloned())
-            .flatten()
-            .map(|env| env.into_iter())
-            .flatten()
+            .iter()
+            .filter_map(|service| service.env().cloned())
+            .flat_map(|env| env.into_iter())
             .map(|env| (env.key().clone(), env.value().unsecure().to_string()))
             .collect::<Vec<(String, String)>>();
 
@@ -414,6 +413,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -421,11 +421,9 @@ mod tests {
 
         let deployed_variables = unit
             .services()
-            .into_iter()
-            .map(|service| service.env().cloned())
-            .flatten()
-            .map(|env| env.into_iter())
-            .flatten()
+            .iter()
+            .filter_map(|service| service.env().cloned())
+            .flat_map(|env| env.into_iter())
             .map(|env| (env.key().clone(), env.value().unsecure().to_string()))
             .collect::<Vec<(String, String)>>();
 
@@ -464,6 +462,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -471,11 +470,9 @@ mod tests {
 
         let deployed_variables = unit
             .services()
-            .into_iter()
-            .map(|service| service.env().cloned())
-            .flatten()
-            .map(|env| env.into_iter())
-            .flatten()
+            .iter()
+            .filter_map(|service| service.env().cloned())
+            .flat_map(|env| env.into_iter())
             .map(|env| (env.key().clone(), env.value().unsecure().to_string()))
             .collect::<Vec<(String, String)>>();
 
@@ -504,6 +501,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -511,7 +509,7 @@ mod tests {
 
         let deployed_services = unit
             .services()
-            .into_iter()
+            .iter()
             .map(|services| services.service_name().clone())
             .collect::<Vec<_>>();
 
@@ -540,6 +538,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -567,6 +566,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await

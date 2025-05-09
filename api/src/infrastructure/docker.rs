@@ -31,11 +31,10 @@ use crate::infrastructure::{
     HttpForwarder, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
 };
-use crate::models::service::{
-    ContainerType, Service, ServiceError, ServiceStatus, Services, State,
+use crate::models::{
+    App, AppName, ContainerType, Environment, Image, Owner, Service, ServiceConfig, ServiceError,
+    ServiceStatus, State, WebHostMeta,
 };
-use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, Environment, Image, ServiceConfig, WebHostMeta};
 use anyhow::{anyhow, Result};
 use async_stream::stream;
 use async_trait::async_trait;
@@ -66,10 +65,12 @@ use hyper_util::rt::TokioIo;
 use log::{debug, error, info, trace, warn};
 use multimap::MultiMap;
 use rocket::form::validate::Contains;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::{From, TryFrom};
 use std::str::FromStr;
 use tokio::net::TcpStream;
+
+use super::OWNERS_LABEL;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
@@ -289,7 +290,7 @@ impl DockerInfrastructure {
         &self,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Services, DockerInfrastructureError> {
+    ) -> Result<App, DockerInfrastructureError> {
         let app_name = deployment_unit.app_name();
         let services = deployment_unit.services();
         let network_id = self.create_or_get_network_id(app_name).await?;
@@ -305,30 +306,30 @@ impl DockerInfrastructure {
                     service,
                     container_config,
                     &existing_volumes,
+                    deployment_unit.owners(),
                 )
             })
             .map(Box::pin)
             .collect::<FuturesUnordered<_>>();
 
-        let mut services: Vec<Service> = Vec::new();
-        while let Some(service) = futures.next().await {
-            services.push(service?);
+        let mut responses = Vec::with_capacity(futures.len());
+        while let Some(response) = futures.next().await {
+            responses.push(response?);
         }
 
-        Ok(Services::from(services))
+        Ok(Self::to_app(responses))
     }
 
     async fn stop_services_impl(
         &self,
         app_name: &AppName,
-    ) -> Result<Services, DockerInfrastructureError> {
-        let container_details = match self
+    ) -> Result<App, DockerInfrastructureError> {
+        let Some(container_details) = self
             .get_container_details(Some(app_name), None)
             .await?
-            .get_vec(app_name)
-        {
-            None => return Ok(Services::empty()),
-            Some(services) => services.clone(),
+            .remove(app_name)
+        else {
+            return Ok(App::empty());
         };
 
         let docker = Docker::connect_with_socket_defaults()?;
@@ -377,16 +378,16 @@ impl DockerInfrastructure {
             .map(Box::pin)
             .collect::<FuturesUnordered<_>>();
 
-        let mut services = Vec::with_capacity(futures.len());
+        let mut responses = Vec::with_capacity(futures.len());
         while let Some(result) = futures.next().await {
             let container = result?;
-            services.push(Service::try_from(container)?);
+            responses.push(container);
         }
 
         self.delete_network(app_name).await?;
         self.delete_volume_mount(app_name).await?;
 
-        Ok(Services::from(services))
+        Ok(Self::to_app(responses))
     }
 
     async fn start_container(
@@ -396,7 +397,8 @@ impl DockerInfrastructure {
         service: &DeployableService,
         container_config: &ContainerConfig,
         existing_volumes: &VolumeListResponse,
-    ) -> Result<Service, DockerInfrastructureError> {
+        owners: &HashSet<Owner>,
+    ) -> Result<ContainerInspectResponse, DockerInfrastructureError> {
         let docker = Docker::connect_with_socket_defaults()?;
         let service_name = service.service_name();
         let service_image = service.image();
@@ -421,13 +423,13 @@ impl DockerInfrastructure {
                     if container_details.image.as_ref() == Some(image_id) =>
                 {
                     debug!("Container {container_info:?} of review app {app_name:?} is still running with the desired image id {image_id}");
-                    return Service::try_from(container_details);
+                    return Ok(container_details);
                 }
                 DeploymentStrategy::RedeployNever => {
                     debug!(
                         "Container {container_info:?} of review app {app_name:?} already deployed."
                     );
-                    return Service::try_from(container_details);
+                    return Ok(container_details);
                 }
                 DeploymentStrategy::RedeployAlways
                 | DeploymentStrategy::RedeployOnImageUpdate(_) => {}
@@ -470,8 +472,13 @@ impl DockerInfrastructure {
         let host_config_binds =
             Self::create_host_config_binds(app_name, existing_volumes, service).await?;
 
-        let options =
-            Self::create_container_options(app_name, service, container_config, &host_config_binds);
+        let options = Self::create_container_options(
+            app_name,
+            service,
+            container_config,
+            &host_config_binds,
+            owners,
+        );
 
         let container_info = docker
             .create_container::<&str, String>(None, options)
@@ -514,7 +521,7 @@ impl DockerInfrastructure {
                 Err(err) => debug!("Could not clean up image: {err:?}"),
             };
         }
-        Service::try_from(container_details)
+        Ok(container_details)
     }
 
     fn create_container_options<'a>(
@@ -522,6 +529,7 @@ impl DockerInfrastructure {
         service_config: &'a ServiceConfig,
         container_config: &'a ContainerConfig,
         host_config_binds: &'a [String],
+        owners: &HashSet<Owner>,
     ) -> bollard::container::Config<String> {
         let env = service_config.env().map(|env| {
             env.iter()
@@ -553,6 +561,13 @@ impl DockerInfrastructure {
         labels.insert(CONTAINER_TYPE_LABEL.to_string(), container_type);
         let image_name = service_config.image().to_string();
         labels.insert(IMAGE_LABEL.to_string(), image_name);
+
+        if !owners.is_empty() {
+            labels.insert(
+                OWNERS_LABEL.to_string(),
+                serde_json::to_string(owners).unwrap(),
+            );
+        }
 
         let replicated_env = service_config
             .env()
@@ -607,7 +622,7 @@ impl DockerInfrastructure {
         for (path, data) in files.into_iter() {
             let mut header = tar::Header::new_gnu();
             let file_contents = data.into_unsecure();
-            header.set_size(file_contents.as_bytes().len() as u64);
+            header.set_size(file_contents.len() as u64);
             header.set_mode(0o644);
             tar_builder.append_data(
                 &mut header,
@@ -821,54 +836,64 @@ impl DockerInfrastructure {
 
         Ok(container_details)
     }
+
+    fn to_app<I>(inspect_responses: I) -> App
+    where
+        I: IntoIterator<Item = ContainerInspectResponse>,
+    {
+        let mut services = Vec::new();
+        let mut owners = HashSet::<Owner>::new();
+
+        for mut details in inspect_responses {
+            {
+                if let Some(parsed_owners) = details
+                    .config
+                    .as_mut()
+                    .and_then(|config| config.labels.as_mut())
+                    .and_then(|labels| labels.remove(OWNERS_LABEL))
+                    .and_then(|owners| serde_json::from_str::<HashSet<Owner>>(&owners).ok())
+                {
+                    owners.extend(parsed_owners.into_iter());
+                }
+            }
+
+            let service = match Service::try_from(details) {
+                Ok(service) => service,
+                Err(e) => {
+                    debug!("Container does not provide required data: {e:?}");
+                    continue;
+                }
+            };
+
+            services.push(service);
+        }
+
+        App::new(services, owners, None)
+    }
 }
 
 #[async_trait]
 impl Infrastructure for DockerInfrastructure {
-    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>> {
+    async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let mut apps = HashMap::new();
         let container_details = self.get_container_details(None, None).await?;
 
         for (app_name, details_vec) in container_details.into_iter() {
-            let mut services = Vec::with_capacity(details_vec.len());
-
-            for details in details_vec {
-                let service = match Service::try_from(details) {
-                    Ok(service) => service,
-                    Err(e) => {
-                        debug!("Container does not provide required data: {e:?}");
-                        continue;
-                    }
-                };
-
-                services.push(service);
-            }
-
-            apps.insert(app_name, Services::from(services));
+            apps.insert(app_name, Self::to_app(details_vec));
         }
 
         Ok(apps)
     }
 
-    async fn fetch_services_and_user_defined_payload_of_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
-        let container_details = self.get_container_details(Some(app_name), None).await?;
+    async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>> {
+        let mut container_details = self.get_container_details(Some(app_name), None).await?;
 
         if container_details.is_empty() {
             return Ok(None);
         }
 
-        Ok(Some((
-            Services::from(
-                container_details
-                    .into_iter()
-                    .flat_map(|(_, details)| details.into_iter())
-                    .filter_map(|details| Service::try_from(details).ok())
-                    .collect::<Vec<_>>(),
-            ),
-            None,
+        Ok(Some(Self::to_app(
+            container_details.remove(app_name).unwrap(),
         )))
     }
 
@@ -877,7 +902,7 @@ impl Infrastructure for DockerInfrastructure {
         status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Services> {
+    ) -> Result<App> {
         let deployment_container = self
             .create_status_change_container(status_id, deployment_unit.app_name())
             .await?;
@@ -891,7 +916,7 @@ impl Infrastructure for DockerInfrastructure {
         Ok(result?)
     }
 
-    async fn get_status_change(&self, status_id: &str) -> Result<Option<Services>> {
+    async fn get_status_change(&self, status_id: &str) -> Result<Option<App>> {
         Ok(
             match self
                 .find_status_change_container(status_id)
@@ -905,18 +930,15 @@ impl Infrastructure for DockerInfrastructure {
                 .and_then(|app_name| AppName::from_str(app_name).ok())
             {
                 Some(app_name) => {
-                    let mut services = Vec::new();
                     if let Some(container_details) = self
                         .get_container_details(Some(&app_name), None)
                         .await?
                         .remove(&app_name)
                     {
-                        for container in container_details {
-                            services.push(Service::try_from(container)?);
-                        }
+                        Some(Self::to_app(container_details))
+                    } else {
+                        None
                     }
-
-                    Some(services.into())
                 }
                 None => None,
             },
@@ -924,7 +946,7 @@ impl Infrastructure for DockerInfrastructure {
     }
 
     /// Deletes all services for the given `app_name`.
-    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<Services> {
+    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<App> {
         let deployment_container = self
             .create_status_change_container(status_id, app_name)
             .await?;
@@ -1353,19 +1375,16 @@ impl TryFrom<ContainerInspectResponse> for Service {
 
 impl From<BollardError> for DockerInfrastructureError {
     fn from(err: BollardError) -> Self {
-        match &err {
-            BollardError::DockerResponseServerError {
-                status_code,
-                message,
-            } => match status_code {
-                404u16 => {
-                    return DockerInfrastructureError::ImageNotFound {
-                        internal_message: message.clone(),
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
+        if let BollardError::DockerResponseServerError {
+            status_code,
+            message,
+        } = &err
+        {
+            if status_code == &404u16 {
+                return DockerInfrastructureError::ImageNotFound {
+                    internal_message: message.clone(),
+                };
+            }
         }
         DockerInfrastructureError::UnexpectedError {
             err: anyhow::Error::new(err),
@@ -1508,6 +1527,7 @@ mod tests {
             &config,
             &ContainerConfig::default(),
             &Vec::new(),
+            &HashSet::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1545,6 +1565,7 @@ mod tests {
             &config,
             &ContainerConfig::default(),
             &Vec::new(),
+            &HashSet::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1587,6 +1608,7 @@ mod tests {
             &config,
             &ContainerConfig::default(),
             &Vec::new(),
+            &HashSet::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1658,7 +1680,7 @@ mod tests {
                 img,
                 ..
             }
-            if img == String::from("\n")// TODO && err == String::from("Invalid image: \n")
+            if img == "\n"// TODO && err == String::from("Invalid image: \n")
         ));
     }
 
@@ -1713,6 +1735,7 @@ mod tests {
             &config,
             &ContainerConfig::default(),
             &[String::from("test-volume:/var/lib/mysql")],
+            &HashSet::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();

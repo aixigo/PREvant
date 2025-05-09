@@ -55,12 +55,7 @@ impl Environment {
     }
 
     pub fn variable<'a, 'b: 'a>(&'b self, env_name: &str) -> Option<&'a EnvironmentVariable> {
-        for env in &self.values {
-            if &env.key == env_name {
-                return Some(env);
-            }
-        }
-        None
+        self.values.iter().find(|&env| env.key == env_name)
     }
 
     pub(super) fn push(&mut self, variable: EnvironmentVariable) {
@@ -238,10 +233,10 @@ impl TryFrom<(String, Value)> for EnvironmentVariable {
                     SecUtf8::from(value),
                     values
                         .get("templated")
-                        .map_or(false, |templated| templated.as_bool().unwrap_or(false)),
+                        .is_some_and(|templated| templated.as_bool().unwrap_or(false)),
                     values
                         .get("replicate")
-                        .map_or(false, |replicate| replicate.as_bool().unwrap_or(false)),
+                        .is_some_and(|replicate| replicate.as_bool().unwrap_or(false)),
                 )
             }
             _ => {
@@ -310,8 +305,8 @@ mod tests {
 
         assert_eq!(e.key, "MYSQL_USER".to_string());
         assert_eq!(e.value.unsecure(), "admin".to_string());
-        assert_eq!(e.templated, false);
-        assert_eq!(e.replicate, false);
+        assert!(!e.templated);
+        assert!(!e.replicate);
     }
 
     #[test]
@@ -327,8 +322,8 @@ mod tests {
 
         assert_eq!(e.key, "MYSQL_USER".to_string());
         assert_eq!(e.value.unsecure(), "admin-{{application.name}}".to_string());
-        assert_eq!(e.templated, true);
-        assert_eq!(e.replicate, true);
+        assert!(e.templated);
+        assert!(e.replicate);
     }
 
     #[test]
