@@ -135,7 +135,7 @@
       },
       methods: {
          close() {
-            this.$router.push('/');
+            this.$router.back();
          }
       }
    }
