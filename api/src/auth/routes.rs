@@ -1,9 +1,10 @@
 use super::SessionCookie;
-use crate::http_result::HttpApiError;
+use crate::{http_result::HttpApiError, infrastructure::TraefikIngressRoute};
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
 use openidconnect::{
     core::CoreResponseType, AuthenticationFlow, AuthorizationCode, CsrfToken, Nonce,
+    OAuth2TokenResponse,
 };
 use rocket::{
     get,
@@ -20,11 +21,22 @@ pub fn auth_routes() -> Vec<rocket::Route> {
 fn openid_login(
     openid_providers: &State<super::OidcInners>,
     cookie_jar: &CookieJar<'_>,
+    prevant_base_route: &State<Option<TraefikIngressRoute>>,
 ) -> Redirect {
+    let base_path = prevant_base_route
+        .as_ref()
+        .and_then(|route| route.to_url())
+        .map(|url| url.path().to_string())
+        .unwrap_or_else(|| String::from("/"));
+
+    assert!(
+        base_path.ends_with("/"),
+        "The base path needs to end with a slash"
+    );
+
     // TODO: how to select the OpenID provider?
     let Some(oidc_provider) = openid_providers.first() else {
-        // TODO: the PREvant base_path should be used.
-        return Redirect::to("/");
+        return Redirect::to(base_path);
     };
 
     // TODO crsf state??
@@ -39,8 +51,7 @@ fn openid_login(
 
     cookie_jar.add(
         Cookie::build(("oidc_nonce", nonce.secret().to_string()))
-            // TODO: the PREvant base_path should be used.
-            .path("/auth/")
+            .path(base_path + "auth/")
             .secure(true)
             .same_site(SameSite::Lax)
             .http_only(true)
@@ -55,19 +66,29 @@ async fn openid_response(
     openid_providers: &State<super::OidcInners>,
     code: &str,
     cookie_jar: &CookieJar<'_>,
+    prevant_base_route: &State<Option<TraefikIngressRoute>>,
 ) -> Result<Redirect, HttpApiError> {
+    let base_path = prevant_base_route
+        .as_ref()
+        .and_then(|route| route.to_url())
+        .map(|url| url.path().to_string())
+        .unwrap_or_else(|| String::from("/"));
+
+    assert!(
+        base_path.ends_with("/"),
+        "The base path needs to end with a slash"
+    );
+
     let Some(nonce) = cookie_jar
         .get("oidc_nonce")
         .map(|nonce| Nonce::new(nonce.value().to_string()))
     else {
-        // TODO: the PREvant base_path should be used.
-        return Ok(Redirect::to("/auth/login"));
+        return Ok(Redirect::to(base_path + "auth/login"));
     };
 
     // TODO: how to select the OpenID provider?
     let Some(oidc_provider) = openid_providers.first() else {
-        // TODO: the PREvant base_path should be used.
-        return Ok(Redirect::to("/"));
+        return Ok(Redirect::to(base_path));
     };
 
     let http_client = reqwest::ClientBuilder::new()
@@ -75,6 +96,7 @@ async fn openid_response(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("Client should build");
+
 
     let token_response = oidc_provider
         .client
@@ -107,6 +129,7 @@ async fn openid_response(
 
     let session_cookie = SessionCookie {
         id_token: id_token.clone(),
+        refresh_token: token_response.refresh_token().cloned(),
     };
 
     cookie_jar.add(
@@ -114,14 +137,12 @@ async fn openid_response(
             "oidc_user_session",
             serde_json::to_string(&session_cookie).unwrap(),
         ))
-        // TODO: the PREvant base_path should be used.
-        .path("/")
+        .path(base_path.clone())
         .secure(true)
         .same_site(SameSite::Lax)
         .http_only(true)
         .build(),
     );
 
-    // TODO: the PREvant base_path should be used.
-    Ok(Redirect::to("/"))
+    Ok(Redirect::to(base_path))
 }

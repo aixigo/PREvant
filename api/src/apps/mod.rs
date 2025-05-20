@@ -60,6 +60,7 @@ pub struct AppsService {
     config: Config,
     infrastructure: Box<dyn Infrastructure>,
     app_guards: Mutex<HashMap<AppName, Arc<AppGuard>>>,
+    prevant_base_route: Option<TraefikIngressRoute>,
 }
 
 type GuardedResult = Result<Services, AppsServiceError>;
@@ -144,7 +145,13 @@ impl AppsService {
             config,
             infrastructure,
             app_guards: Mutex::new(HashMap::new()),
+            prevant_base_route: None,
         })
+    }
+
+    pub fn with_base_route(mut self, prevant_base_route: Option<TraefikIngressRoute>) -> Self {
+        self.prevant_base_route = prevant_base_route;
+        self
     }
 
     async fn http_forwarder(&self) -> anyhow::Result<Box<dyn HttpForwarder>> {
@@ -348,18 +355,6 @@ impl AppsService {
         )
     }
 
-    pub async fn base_url(&self) -> Option<TraefikIngressRoute> {
-        if let Some(base_url) = &self.config.base_url {
-            Some(TraefikIngressRoute::from(base_url))
-        } else {
-            self.infrastructure
-                .base_traefik_ingress_route()
-                .await
-                .ok()
-                .flatten()
-        }
-    }
-
     async fn create_or_update_impl(
         &self,
         app_name: &AppName,
@@ -451,31 +446,30 @@ impl AppsService {
             .resolve_image_infos(&images)
             .await?;
 
-        let base_traefik_ingress_route = self.base_url().await;
-
         let deployment_unit_builder = deployment_unit_builder
             .extend_with_image_infos(image_infos)
             .with_user_information(user)
             .apply_templating(
-                &base_traefik_ingress_route.as_ref().and_then(|r| r.to_url()),
+                &self.prevant_base_route.as_ref().and_then(|r| r.to_url()),
                 user_defined_parameters,
             )?
             .apply_hooks(&self.config)
             .await?;
 
-        let deployment_unit = if let Some(base_traefik_ingress_route) = base_traefik_ingress_route {
-            trace!(
-                "The base URL for {app_name} is: {:?}",
-                base_traefik_ingress_route
-                    .to_url()
-                    .map(|url| url.to_string())
-            );
-            deployment_unit_builder
-                .apply_base_traefik_ingress_route(base_traefik_ingress_route)
-                .build()
-        } else {
-            deployment_unit_builder.build()
-        };
+        let deployment_unit =
+            if let Some(base_traefik_ingress_route) = self.prevant_base_route.as_ref() {
+                trace!(
+                    "The base URL for {app_name} is: {:?}",
+                    base_traefik_ingress_route
+                        .to_url()
+                        .map(|url| url.to_string())
+                );
+                deployment_unit_builder
+                    .apply_base_traefik_ingress_route(base_traefik_ingress_route.clone())
+                    .build()
+            } else {
+                deployment_unit_builder.build()
+            };
 
         let services = self
             .infrastructure
@@ -1415,10 +1409,12 @@ Log msg 3 of service-a of app master
 
     #[tokio::test]
     async fn should_create_app_with_base_ingress_route() -> Result<(), AppsServiceError> {
-        let infrastructure = Box::new(Dummy::with_base_route(TraefikIngressRoute::with_rule(
-            TraefikRouterRule::host_rule(vec![String::from("example.com")]),
-        )));
-        let apps = AppsService::new(Config::default(), infrastructure)?;
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(Config::default(), infrastructure)?.with_base_route(Some(
+            TraefikIngressRoute::with_rule(TraefikRouterRule::host_rule(vec![String::from(
+                "example.com",
+            )])),
+        ));
 
         let app_name = &AppName::master();
         apps.create_or_update(
