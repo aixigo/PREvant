@@ -27,7 +27,7 @@ use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
     STORAGE_TYPE_LABEL,
 };
-use super::deployment_unit::{self, K8sDeploymentUnit};
+use super::deployment_unit::K8sDeploymentUnit;
 use super::payloads::{
     deployment_payload, image_pull_secret_payload, ingress_route_payload, middleware_payload,
     namespace_payload, persistent_volume_claim_payload, secrets_payload, service_payload,
@@ -570,7 +570,7 @@ impl Infrastructure for KubernetesInfrastructure {
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<Services> {
-        self.create_namespace_if_necessary(&deployment_unit).await?;
+        self.create_namespace_if_necessary(deployment_unit).await?;
 
         let client = self.client().await?;
 

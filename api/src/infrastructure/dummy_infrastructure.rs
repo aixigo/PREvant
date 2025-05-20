@@ -42,15 +42,12 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::TraefikIngressRoute;
-
 #[cfg(test)]
 #[derive(Clone)]
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
     services: Arc<Mutex<MultiMap<AppName, DeployableService>>>,
     user_defined_parameters: Arc<Mutex<HashMap<AppName, UserDefinedParameters>>>,
-    base_ingress_route: Option<TraefikIngressRoute>,
 }
 
 #[cfg(test)]
@@ -60,7 +57,6 @@ impl DummyInfrastructure {
             delay: None,
             services: Arc::new(Mutex::new(MultiMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
-            base_ingress_route: None,
         }
     }
 
@@ -69,16 +65,6 @@ impl DummyInfrastructure {
             delay: Some(delay),
             services: Arc::new(Mutex::new(MultiMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
-            base_ingress_route: None,
-        }
-    }
-
-    pub fn with_base_route(base_ingress_route: TraefikIngressRoute) -> Self {
-        Self {
-            delay: None,
-            services: Arc::new(Mutex::new(MultiMap::new())),
-            user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
-            base_ingress_route: Some(base_ingress_route),
         }
     }
 
@@ -281,10 +267,6 @@ impl Infrastructure for DummyInfrastructure {
         _status: ServiceStatus,
     ) -> Result<Option<Service>> {
         Ok(None)
-    }
-
-    async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>> {
-        Ok(self.base_ingress_route.clone())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
