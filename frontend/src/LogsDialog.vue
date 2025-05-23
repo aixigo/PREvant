@@ -171,7 +171,7 @@
             if (this.eventSource) {
                this.eventSource.close();
             }
-            this.$router.push('/');
+            this.$router.back();
          },
 
          scrollBottom() {
