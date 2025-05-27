@@ -1,0 +1,25 @@
+on:
+   workflow_run:
+      workflows:
+         - Unit tests
+         - API Unit Tests
+         # - Integration tests
+      branches:
+         # TODO: replace with default branch
+         - release-image
+      types:
+         - completed
+
+name: Release OCI Image
+
+jobs:
+   publishImage:
+      name: Publish Image to Docker Hub
+      runs-on: ubuntu-latest
+      steps:
+         - name: Download PREvant image
+           uses: actions/download-artifact@v4
+           with:
+              name: prevant-image
+              path: ${{ runner.temp }}
+
