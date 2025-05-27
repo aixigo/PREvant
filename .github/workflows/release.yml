@@ -13,7 +13,7 @@ jobs:
       runs-on: ubuntu-latest
       if: ${{ github.event.workflow_run.conclusion == 'success' }}
       steps:
-       - name: 'Download artifact'
+       - name: Download artifact
          uses: actions/github-script@v7
          with:
             script: |
@@ -34,11 +34,12 @@ jobs:
                   archive_format: 'zip',
                });
                const fs = require('fs');
-               const path = require('path');
-               const temp = '${{ runner.temp }}';
-               fs.writeFileSync(path.join(temp, 'prevant-image.zip'), Buffer.from(download.data));
+               fs.writeFileSync('${{ runner.temp }}/prevant-image.zip', Buffer.from(download.data));
 
-       - name: 'Unzip PREvant image'
+       - name: Unzip PREvant image
          run: |
-            unzip prevant-image.zip -d "${{ runner.temp }}"
+            unzip "${{ runner.temp }}/prevant-image.zip" -d "${{ runner.temp }}"
             ls "${{ runner.temp }}"
+
+       - name: Load image
+         run: docker load --input ${{ runner.temp }}/prevant-image.tar
