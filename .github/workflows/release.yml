@@ -17,7 +17,6 @@ jobs:
          uses: actions/github-script@v7
          with:
             script: |
-               console.log("--> context: ", context);
                let allArtifacts = await github.rest.actions.listWorkflowRunArtifacts({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -26,7 +25,6 @@ jobs:
                let matchArtifact = allArtifacts.data.artifacts.filter((artifact) => {
                   return artifact.name == "prevant-image"
                })[0];
-               console.log("--> match artifact: ", matchArtifact);
                let download = await github.rest.actions.downloadArtifact({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -49,4 +47,6 @@ jobs:
             password: ${{ secrets.DOCKER_HUB_PUSH }}
 
        - name: Push PREvant image
-         run: docker push aixigo/prevant:release-test
+         run: |
+            docker tag aixigo/prevant:latest aixigo/prevant:release-test
+            docker push aixigo/prevant:release-test
