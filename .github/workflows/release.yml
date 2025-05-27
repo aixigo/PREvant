@@ -1,0 +1,17 @@
+name: Release
+
+on:
+   workflow_run:
+      workflows: ["Integration tests"]
+      branches: [master]
+      types:
+       - completed
+
+jobs:
+   on-success:
+      runs-on: ubuntu-latest
+      if: ${{ github.event.workflow_run.conclusion == 'success' }}
+      steps:
+       - run: |
+            echo 'The Run Tests workflow passed'
+            echo 'workflow_run payload ${{ github.event.workflow_run }}'
