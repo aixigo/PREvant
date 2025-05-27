@@ -2,16 +2,21 @@ name: Release
 
 on:
    workflow_run:
-      workflows: ["Integration tests"]
+      workflows:
+       # TODO: remove this item. It is just here to iterate quickly
+       - Unit tests
+       - Integration tests
       branches: [master]
       types:
        - completed
 
 jobs:
-   on-success:
+   release-image-to-docker-hub:
       runs-on: ubuntu-latest
       if: ${{ github.event.workflow_run.conclusion == 'success' }}
       steps:
-       - run: |
-            echo 'The Run Tests workflow passed'
-            echo 'workflow_run payload ${{ github.event.workflow_run }}'
+       - name: 'Download artifact'
+         uses: actions/github-script@v7
+         with:
+            script: |
+               console.log("--> context: ", context);
