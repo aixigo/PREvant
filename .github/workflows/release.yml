@@ -47,6 +47,4 @@ jobs:
             password: ${{ secrets.DOCKER_HUB_PUSH }}
 
        - name: Push PREvant image
-         run: |
-            docker tag aixigo/prevant:latest aixigo/prevant:release-test
-            docker push aixigo/prevant:release-test
+         run: docker push aixigo/prevant:latest
