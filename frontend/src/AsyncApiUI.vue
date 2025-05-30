@@ -44,7 +44,11 @@ export default {
    },
    methods: {
       close() {
-         this.$router.back();
+        if (window.history.length > 1) {
+          this.$router.back()
+        } else {
+          this.$router.push('/')
+        }
       }
    }
 }
