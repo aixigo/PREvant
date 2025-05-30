@@ -171,7 +171,11 @@
             if (this.eventSource) {
                this.eventSource.close();
             }
-            this.$router.back();
+            if (window.history.length > 1) {
+              this.$router.back()
+            } else {
+              this.$router.push('/')
+            }
          },
 
          scrollBottom() {
