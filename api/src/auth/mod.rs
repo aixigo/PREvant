@@ -11,10 +11,9 @@ use openidconnect::{
         CoreAuthDisplay, CoreAuthPrompt, CoreGenderClaim, CoreJsonWebKey,
         CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm, CoreProviderMetadata,
     },
-    AccessToken, Client, ClientId, ClientSecret, EmptyAdditionalClaims, EmptyExtraTokenFields,
-    EndpointMaybeSet, EndpointNotSet, EndpointSet, IdTokenFields, IntrospectionUrl, IssuerUrl,
-    Nonce, RedirectUrl, RefreshToken, RevocationErrorResponseType, StandardErrorResponse,
-    StandardTokenResponse,
+    Client, ClientId, ClientSecret, EmptyAdditionalClaims, EmptyExtraTokenFields, EndpointMaybeSet,
+    EndpointNotSet, EndpointSet, IdTokenFields, IntrospectionUrl, IssuerUrl, Nonce, RedirectUrl,
+    RefreshToken, RevocationErrorResponseType, StandardErrorResponse, StandardTokenResponse,
 };
 use rocket::{
     fairing::{self, Fairing, Info, Kind},
@@ -47,7 +46,7 @@ impl Fairing for Auth {
 
         if matches!(config.api_access.mode, ApiAccessMode::Any) {
             log::warn!("There is no API protection configured which let any API client deploy any OCI image on your infrastructure.");
-            return fairing::Result::Ok(rocket);
+            return fairing::Result::Ok(rocket.manage(Vec::<OidcClient>::new()));
         }
 
         let base_url = rocket
