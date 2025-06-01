@@ -111,14 +111,14 @@ impl HostMetaCache {
                 let web_host_meta = match reader.get_one(&key) {
                     Some(value) => value
                         .web_host_meta
-                        .with_base_url(request_info.get_base_url()),
+                        .with_base_url(request_info.base_url()),
                     None => WebHostMeta::empty(),
                 };
 
                 services_with_host_meta.push(ServiceWithHostMeta::from_service_and_web_host_meta(
                     service,
                     web_host_meta,
-                    request_info.get_base_url().clone(),
+                    request_info.base_url().clone(),
                     &app_name,
                 ));
             }
@@ -146,14 +146,14 @@ impl HostMetaCache {
         let web_host_meta = match self.reader_factory.handle().get_one(&key) {
             Some(value) => value
                 .web_host_meta
-                .with_base_url(request_info.get_base_url()),
+                .with_base_url(request_info.base_url()),
             None => WebHostMeta::empty(),
         };
 
         ServiceWithHostMeta::from_service_and_web_host_meta(
             service,
             web_host_meta,
-            request_info.get_base_url().clone(),
+            request_info.base_url().clone(),
             app_name,
         )
     }

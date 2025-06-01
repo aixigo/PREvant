@@ -71,7 +71,7 @@ async fn openapi(request_info: RequestInfo) -> Option<String> {
     f.read_to_end(&mut contents).await.ok()?;
     let mut v: Value = serde_yaml::from_slice(&contents).ok()?;
 
-    let mut url = request_info.get_base_url().clone();
+    let mut url = request_info.base_url().clone();
     url.set_path("/api");
     v["servers"][0]["url"] = Value::String(url.to_string());
 
