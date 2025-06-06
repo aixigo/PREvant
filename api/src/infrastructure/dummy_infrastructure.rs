@@ -28,7 +28,7 @@ use crate::config::ContainerConfig;
 use crate::deployment::deployment_unit::DeployableService;
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::Infrastructure;
-use crate::models::service::{Service, ServiceStatus, Services, State};
+use crate::models::service::{Service, ServiceStatus, App, State};
 use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, ServiceConfig};
 use anyhow::Result;
@@ -90,8 +90,8 @@ impl DummyInfrastructure {
 #[cfg(test)]
 #[async_trait]
 impl Infrastructure for DummyInfrastructure {
-    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>> {
-        let mut s = HashMap::new();
+    async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
+        let mut apps = HashMap::new();
 
         let services = self.services.lock().unwrap();
         for (app, configs) in services.iter_all() {
@@ -113,16 +113,16 @@ impl Infrastructure for DummyInfrastructure {
                 services.push(service);
             }
 
-            s.insert(AppName::from_str(app).unwrap(), Services::from(services));
+            apps.insert(AppName::from_str(app).unwrap(), App::from(services));
         }
 
-        Ok(s)
+        Ok(apps)
     }
 
     async fn fetch_services_and_user_defined_payload_of_app(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
+    ) -> Result<Option<(App, Option<UserDefinedParameters>)>> {
         let lock = self.services.lock().unwrap();
         let Some(configs) = lock.get_vec(app_name) else {
             return Ok(None);
@@ -149,7 +149,7 @@ impl Infrastructure for DummyInfrastructure {
         let user_defined_parameters = self.user_defined_parameters.lock().unwrap();
 
         Ok(Some((
-            Services::from(services),
+            App::from(services),
             user_defined_parameters.get(app_name).cloned(),
         )))
     }
@@ -159,7 +159,7 @@ impl Infrastructure for DummyInfrastructure {
         _status_id: &str,
         deployment_unit: &DeploymentUnit,
         _container_config: &ContainerConfig,
-    ) -> Result<Services> {
+    ) -> Result<App> {
         self.delay_if_configured().await;
 
         let app_name = deployment_unit.app_name();
@@ -205,13 +205,13 @@ impl Infrastructure for DummyInfrastructure {
             .into())
     }
 
-    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Services> {
+    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<App> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
 
         match services.remove(&app_name) {
-            Some(services) => Ok(Services::from(
+            Some(services) => Ok(App::from(
                 services
                     .into_iter()
                     .map(|sc| Service {
@@ -228,7 +228,7 @@ impl Infrastructure for DummyInfrastructure {
                     })
                     .collect::<Vec<_>>(),
             )),
-            None => Ok(Services::empty()),
+            None => Ok(App::empty()),
         }
     }
 

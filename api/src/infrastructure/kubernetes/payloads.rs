@@ -31,8 +31,9 @@ use crate::auth::User;
 use crate::config::{Config, ContainerConfig};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::infrastructure::{
-    TraefikIngressRoute, TraefikRouterRule, USERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
+    TraefikIngressRoute, TraefikRouterRule, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
 };
+use crate::models::service::Owner;
 use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, ServiceConfig};
 use base64::{engine::general_purpose, Engine};
@@ -414,19 +415,22 @@ pub fn namespace_annotations(
         annotations
     };
 
-    let users = users
+    let owners = users
         .iter()
-        .filter(|user| match user {
-            User::Anonymous => false,
-            User::Oidc { .. } => true,
+        .filter_map(|user| match user {
+            User::Anonymous => None,
+            User::Oidc { sub, iss } => Some(Owner {
+                sub: sub.clone(),
+                iss: iss.clone(),
+            }),
         })
         .collect::<Vec<_>>();
 
-    if !users.is_empty() {
+    if !owners.is_empty() {
         let mut annotations = annotations.unwrap_or_default();
         annotations.insert(
-            USERS_LABEL.to_string(),
-            serde_json::to_string(&users).unwrap(),
+            OWNERS_LABEL.to_string(),
+            serde_json::to_string(&owners).unwrap(),
         );
         Some(annotations)
     } else {

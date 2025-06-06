@@ -31,9 +31,7 @@ use crate::infrastructure::{
     HttpForwarder, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
 };
-use crate::models::service::{
-    ContainerType, Service, ServiceError, ServiceStatus, Services, State,
-};
+use crate::models::service::{App, ContainerType, Service, ServiceError, ServiceStatus, State};
 use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, Environment, Image, ServiceConfig, WebHostMeta};
 use anyhow::{anyhow, Result};
@@ -289,7 +287,7 @@ impl DockerInfrastructure {
         &self,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Services, DockerInfrastructureError> {
+    ) -> Result<App, DockerInfrastructureError> {
         let app_name = deployment_unit.app_name();
         let services = deployment_unit.services();
         let network_id = self.create_or_get_network_id(app_name).await?;
@@ -315,20 +313,19 @@ impl DockerInfrastructure {
             services.push(service?);
         }
 
-        Ok(Services::from(services))
+        Ok(App::from(services))
     }
 
     async fn stop_services_impl(
         &self,
         app_name: &AppName,
-    ) -> Result<Services, DockerInfrastructureError> {
-        let container_details = match self
+    ) -> Result<App, DockerInfrastructureError> {
+        let Some(container_details) = self
             .get_container_details(Some(app_name), None)
             .await?
-            .get_vec(app_name)
-        {
-            None => return Ok(Services::empty()),
-            Some(services) => services.clone(),
+            .remove(app_name)
+        else {
+            return Ok(App::empty());
         };
 
         let docker = Docker::connect_with_socket_defaults()?;
@@ -386,7 +383,7 @@ impl DockerInfrastructure {
         self.delete_network(app_name).await?;
         self.delete_volume_mount(app_name).await?;
 
-        Ok(Services::from(services))
+        Ok(App::from(services))
     }
 
     async fn start_container(
@@ -825,7 +822,7 @@ impl DockerInfrastructure {
 
 #[async_trait]
 impl Infrastructure for DockerInfrastructure {
-    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>> {
+    async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let mut apps = HashMap::new();
         let container_details = self.get_container_details(None, None).await?;
 
@@ -844,7 +841,7 @@ impl Infrastructure for DockerInfrastructure {
                 services.push(service);
             }
 
-            apps.insert(app_name, Services::from(services));
+            apps.insert(app_name, App::from(services));
         }
 
         Ok(apps)
@@ -853,7 +850,7 @@ impl Infrastructure for DockerInfrastructure {
     async fn fetch_services_and_user_defined_payload_of_app(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
+    ) -> Result<Option<(App, Option<UserDefinedParameters>)>> {
         let container_details = self.get_container_details(Some(app_name), None).await?;
 
         if container_details.is_empty() {
@@ -861,7 +858,7 @@ impl Infrastructure for DockerInfrastructure {
         }
 
         Ok(Some((
-            Services::from(
+            App::from(
                 container_details
                     .into_iter()
                     .flat_map(|(_, details)| details.into_iter())
@@ -877,7 +874,7 @@ impl Infrastructure for DockerInfrastructure {
         status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Services> {
+    ) -> Result<App> {
         let deployment_container = self
             .create_status_change_container(status_id, deployment_unit.app_name())
             .await?;
@@ -891,7 +888,7 @@ impl Infrastructure for DockerInfrastructure {
         Ok(result?)
     }
 
-    async fn get_status_change(&self, status_id: &str) -> Result<Option<Services>> {
+    async fn get_status_change(&self, status_id: &str) -> Result<Option<App>> {
         Ok(
             match self
                 .find_status_change_container(status_id)
@@ -924,7 +921,7 @@ impl Infrastructure for DockerInfrastructure {
     }
 
     /// Deletes all services for the given `app_name`.
-    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<Services> {
+    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<App> {
         let deployment_container = self
             .create_status_change_container(status_id, app_name)
             .await?;
