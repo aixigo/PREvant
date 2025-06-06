@@ -28,59 +28,83 @@ use crate::models::{web_host_meta::WebHostMeta, AppName, ServiceConfig};
 use chrono::{DateTime, Utc};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::str::FromStr;
 use url::Url;
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+pub struct Owner {
+    pub sub: openidconnect::SubjectIdentifier,
+    pub iss: openidconnect::IssuerUrl,
+}
+
+/// Data struct for holding information about the application
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Services(Vec<Service>);
-
-impl Services {
-    pub fn empty() -> Self {
-        Self(Vec::new())
-    }
-
-    pub fn into_iter(self) -> impl Iterator<Item = Service> {
-        self.0.into_iter()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Service> {
-        self.0.iter()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
+pub struct App {
+    services: Vec<Service>,
+    owners: HashSet<Owner>,
+    // TODO: include user defined payload here
 }
 
-impl Serialize for Services {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut seq = serializer.serialize_seq(Some(self.len()))?;
-
-        for service in self.iter() {
-            seq.serialize_element(service)?;
-        }
-
-        serde::ser::SerializeSeq::end(seq)
-    }
-}
-
-impl From<Vec<Service>> for Services {
+impl From<Vec<Service>> for App {
     fn from(services: Vec<Service>) -> Self {
+        Self::new(services, HashSet::new())
+    }
+}
+
+impl App {
+    pub fn new(services: Vec<Service>, owners: HashSet<Owner>) -> Self {
         if services.is_empty() {
             return Self::empty();
         }
 
         let mut services = services;
-        services.sort_by_key(|service| service.config.service_name().clone());
-        Self(services)
+        services.sort_by_key(|service| {
+            // TODO: can we get rid of the clone?
+            service.config.service_name().clone()
+        });
+
+        Self { services, owners }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            services: Vec::new(),
+            owners: HashSet::new(),
+        }
+    }
+
+    pub fn into_services(self) -> Vec<Service> {
+        self.services
+    }
+
+    pub fn into_services_and_owners(self) -> (Vec<Service>, HashSet<Owner>) {
+        (self.services, self.owners)
+    }
+
+    pub fn services(&self) -> &[Service] {
+        &self.services
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.services.is_empty()
+    }
+}
+
+// TODO: Can we remove this?
+impl Serialize for App {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.services.len()))?;
+
+        for service in self.services.iter() {
+            seq.serialize_element(service)?;
+        }
+
+        serde::ser::SerializeSeq::end(seq)
     }
 }
 
@@ -240,29 +264,28 @@ impl Serialize for ServiceWithHostMeta {
     }
 }
 
+// TODO: rename to AppWithHostMeta
 #[derive(Clone, Debug, PartialEq)]
-pub struct ServicesWithHostMeta(Vec<ServiceWithHostMeta>);
-
-impl Serialize for ServicesWithHostMeta {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-
-        for service in self.0.iter() {
-            seq.serialize_element(service)?;
-        }
-
-        serde::ser::SerializeSeq::end(seq)
-    }
+pub struct ServicesWithHostMeta {
+    services: Vec<ServiceWithHostMeta>,
+    owners: HashSet<Owner>,
 }
 
-impl From<Vec<ServiceWithHostMeta>> for ServicesWithHostMeta {
-    fn from(services: Vec<ServiceWithHostMeta>) -> Self {
+impl ServicesWithHostMeta {
+    pub fn new(services: Vec<ServiceWithHostMeta>, owners: HashSet<Owner>) -> Self {
         let mut services = services;
-        services.sort_by_key(|service| service.config.service_name().clone());
-        Self(services)
+        services.sort_by_key(|service| {
+            // TODO: can we get rid of the clone?
+            service.config.service_name().clone()
+        });
+        Self { services, owners }
+    }
+
+    pub fn services(&self) -> &[ServiceWithHostMeta] {
+        &self.services
+    }
+    pub fn owners(&self) -> &HashSet<Owner> {
+        &self.owners
     }
 }
 
@@ -316,9 +339,8 @@ pub enum ServiceError {
 
 #[cfg(test)]
 mod tests {
-    use assert_json_diff::assert_json_eq;
-
     use super::*;
+    use assert_json_diff::assert_json_eq;
 
     #[test]
     fn serialize_service() {
@@ -332,7 +354,7 @@ mod tests {
             }),
             serde_json::to_value(Service {
                 id: String::from("some id"),
-                state: State {
+                state: crate::models::service::State {
                     status: ServiceStatus::Running,
                     started_at: Some(Utc::now()),
                 },
@@ -358,80 +380,28 @@ mod tests {
                     "status": "running"
                 }
             }]),
-            serde_json::to_value(Services::from(vec![
-                Service {
-                    id: String::from("some id"),
-                    state: State {
-                        status: ServiceStatus::Running,
-                        started_at: Some(Utc::now()),
-                    },
-                    config: crate::sc!("postgres", "postgres:latest")
-                },
-                Service {
-                    id: String::from("some id"),
-                    state: State {
-                        status: ServiceStatus::Running,
-                        started_at: Some(Utc::now()),
-                    },
-                    config: crate::sc!("mariadb", "mariadb:latest")
-                }
-            ]))
-            .unwrap()
-        );
-    }
-
-    #[test]
-    fn serialize_services_with_web_host_meta() {
-        let base_url = Url::from_str("http://prevant.example.com").unwrap();
-        let app_name = AppName::master();
-
-        assert_json_eq!(
-            serde_json::json!([{
-                "name": "mariadb",
-                "type": "instance",
-                "state": {
-                    "status": "running"
-                },
-                "url": "http://prevant.example.com/master/mariadb/",
-                "version": {
-                    "softwareVersion": "1.2.3"
-                }
-            }, {
-                "name": "postgres",
-                "type": "instance",
-                "state": {
-                    "status": "running"
-                }
-            }]),
-            serde_json::to_value(ServicesWithHostMeta::from(vec![
-                ServiceWithHostMeta::from_service_and_web_host_meta(
+            serde_json::to_value(App::new(
+                vec![
                     Service {
                         id: String::from("some id"),
-                        state: State {
+                        state: crate::models::service::State {
                             status: ServiceStatus::Running,
                             started_at: Some(Utc::now()),
                         },
                         config: crate::sc!("postgres", "postgres:latest")
                     },
-                    WebHostMeta::invalid(),
-                    base_url.clone(),
-                    &app_name
-                ),
-                ServiceWithHostMeta::from_service_and_web_host_meta(
                     Service {
                         id: String::from("some id"),
-                        state: State {
+                        state: crate::models::service::State {
                             status: ServiceStatus::Running,
                             started_at: Some(Utc::now()),
                         },
                         config: crate::sc!("mariadb", "mariadb:latest")
-                    },
-                    WebHostMeta::with_version(String::from("1.2.3")),
-                    base_url,
-                    &app_name
-                )
-            ]))
-            .unwrap()
+                    }
+                ],
+                HashSet::new()
+            ))
+                .unwrap()
         );
     }
 }

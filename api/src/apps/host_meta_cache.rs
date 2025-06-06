@@ -28,7 +28,7 @@ use crate::apps::Apps;
 use crate::config::Config;
 use crate::infrastructure::HttpForwarder;
 use crate::models::service::{
-    Service, ServiceStatus, ServiceWithHostMeta, Services, ServicesWithHostMeta,
+    Service, ServiceStatus, ServiceWithHostMeta, App, ServicesWithHostMeta,
 };
 use crate::models::{AppName, RequestInfo, WebHostMeta};
 use chrono::{DateTime, Utc};
@@ -89,18 +89,19 @@ pub fn new(config: Config) -> (HostMetaCache, HostMetaCrawler) {
 }
 
 impl HostMetaCache {
-    pub fn convert_services_into_services_with_host_meta(
+    pub fn assign_host_meta_data(
         &self,
-        services: HashMap<AppName, Services>,
+        apps: HashMap<AppName, App>,
         request_info: &RequestInfo,
     ) -> HashMap<AppName, ServicesWithHostMeta> {
         let mut assigned_apps = HashMap::new();
 
         let reader = self.reader_factory.handle();
 
-        for (app_name, services) in services.into_iter() {
-            let mut services_with_host_meta = Vec::with_capacity(services.len());
+        for (app_name, app) in apps.into_iter() {
+            let mut services_with_host_meta = Vec::with_capacity(app.services().len());
 
+            let (services, owners) = app.into_services_and_owners();
             for service in services.into_iter() {
                 let service_id = service.id.clone();
                 let key = Key {
@@ -109,30 +110,28 @@ impl HostMetaCache {
                 };
 
                 let web_host_meta = match reader.get_one(&key) {
-                    Some(value) => value
-                        .web_host_meta
-                        .with_base_url(request_info.get_base_url()),
+                    Some(value) => value.web_host_meta.with_base_url(request_info.base_url()),
                     None => WebHostMeta::empty(),
                 };
 
                 services_with_host_meta.push(ServiceWithHostMeta::from_service_and_web_host_meta(
                     service,
                     web_host_meta,
-                    request_info.get_base_url().clone(),
+                    request_info.base_url().clone(),
                     &app_name,
                 ));
             }
 
             assigned_apps.insert(
                 app_name,
-                ServicesWithHostMeta::from(services_with_host_meta),
+                ServicesWithHostMeta::new(services_with_host_meta, owners),
             );
         }
 
         assigned_apps
     }
 
-    pub fn convert_service_into_service_with_host_meta(
+    pub fn assign_host_meta_data_to_service(
         &self,
         app_name: &AppName,
         service: Service,
@@ -144,16 +143,14 @@ impl HostMetaCache {
         };
 
         let web_host_meta = match self.reader_factory.handle().get_one(&key) {
-            Some(value) => value
-                .web_host_meta
-                .with_base_url(request_info.get_base_url()),
+            Some(value) => value.web_host_meta.with_base_url(request_info.base_url()),
             None => WebHostMeta::empty(),
         };
 
         ServiceWithHostMeta::from_service_and_web_host_meta(
             service,
             web_host_meta,
-            request_info.get_base_url().clone(),
+            request_info.base_url().clone(),
             app_name,
         )
     }
@@ -179,7 +176,7 @@ impl<'r> FromRequest<'r> for HostMetaCache {
 }
 
 impl HostMetaCrawler {
-    pub fn spawn(mut self, apps: Arc<Apps>, apps_updates: Receiver<HashMap<AppName, Services>>) {
+    pub fn spawn(mut self, apps: Arc<Apps>, apps_updates: Receiver<HashMap<AppName, App>>) {
         let timestamp_prevant_startup = Utc::now();
 
         tokio::spawn(async move {
@@ -222,11 +219,11 @@ impl HostMetaCrawler {
 
     fn static_web_host_config(
         &self,
-        apps: &HashMap<AppName, Services>,
+        apps: &HashMap<AppName, App>,
     ) -> HashMap<Key, WebHostMeta> {
         apps.iter()
-            .flat_map(|(app_name, services)| {
-                services.iter().map(move |service| (app_name, service))
+            .flat_map(|(app_name, app)| {
+                app.services().iter().map(move |service| (app_name, service))
             })
             .filter_map(|(app_name, service)| {
                 let service_name = service.service_name();
@@ -273,7 +270,7 @@ impl HostMetaCrawler {
     async fn crawl(
         &mut self,
         http_forwarder: Box<dyn HttpForwarder>,
-        apps: &HashMap<AppName, Services>,
+        apps: &HashMap<AppName, App>,
         since_timestamp: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
         self.clear_stale_web_host_meta(apps);
@@ -291,8 +288,9 @@ impl HostMetaCrawler {
 
         let running_services_without_host_meta = apps
             .iter()
-            .flat_map(|(app_name, services)| {
-                services
+            .flat_map(|(app_name, app)| {
+                app
+                    .services()
                     .iter()
                     // avoid cloning when https://github.com/havarnov/multimap/issues/24 has been implemented
                     .map(move |service| {
@@ -362,7 +360,7 @@ impl HostMetaCrawler {
         }
     }
 
-    fn clear_stale_web_host_meta(&mut self, apps: &HashMap<AppName, Services>) {
+    fn clear_stale_web_host_meta(&mut self, apps: &HashMap<AppName, App>) {
         let copy: HashMap<Key, Vec<_>> = self
             .writer
             .map_into(|k, vs| (k.clone(), vs.iter().cloned().collect()));
@@ -372,7 +370,7 @@ impl HostMetaCrawler {
             .flat_map(|(key, values)| values.into_iter().map(move |v| (key.clone(), v)))
             .filter(|(key, value)| {
                 let service = match apps.get(&key.app_name) {
-                    Some(services) => services.iter().find(|s| s.id() == &key.service_id),
+                    Some(app) => app.services().iter().find(|s| s.id() == &key.service_id),
                     None => {
                         return true;
                     }
@@ -570,13 +568,13 @@ mod tests {
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
             AppName::master(),
-            Services::from(vec![nginx_service.clone()]),
+            App::from(vec![nginx_service.clone()]),
         )]);
 
         let (cache, mut crawler) = super::new(Config::default());
         crawler.crawl(forwarder, &apps, Utc::now()).await;
 
-        let apps = cache.convert_services_into_services_with_host_meta(
+        let apps = cache.assign_host_meta_data(
             apps,
             &RequestInfo::new(base_url.clone()),
         );
@@ -584,14 +582,15 @@ mod tests {
             apps,
             HashMap::from([(
                 AppName::master(),
-                ServicesWithHostMeta::from(vec![
-                    ServiceWithHostMeta::from_service_and_web_host_meta(
+                ServicesWithHostMeta::new(
+                    vec![ServiceWithHostMeta::from_service_and_web_host_meta(
                         nginx_service,
                         WebHostMeta::with_version(String::from("1.2.3")),
                         base_url,
                         &AppName::master()
-                    )
-                ]),
+                    )],
+                    HashSet::new()
+                ),
             )])
         )
     }
@@ -610,7 +609,7 @@ mod tests {
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
             AppName::master(),
-            Services::from(vec![kafka_rest_service.clone()]),
+            App::from(vec![kafka_rest_service.clone()]),
         )]);
 
         let (cache, mut crawler) = super::new(config_from_str!(
@@ -623,7 +622,7 @@ mod tests {
         ));
         crawler.crawl(forwarder, &apps, Utc::now()).await;
 
-        let apps = cache.convert_services_into_services_with_host_meta(
+        let apps = cache.assign_host_meta_data(
             apps,
             &RequestInfo::new(base_url.clone()),
         );
@@ -631,7 +630,7 @@ mod tests {
             apps,
             HashMap::from([(
                 AppName::master(),
-                ServicesWithHostMeta::from(vec![
+                ServicesWithHostMeta::new(vec![
                     ServiceWithHostMeta::from_service_and_web_host_meta(
                         kafka_rest_service,
                         WebHostMeta::with_version_and_open_api_spec_link(
@@ -644,7 +643,7 @@ mod tests {
                         base_url,
                         &AppName::master()
                     )
-                ]),
+                ], HashSet::new()),
             )])
         )
     }
@@ -664,13 +663,13 @@ mod tests {
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
             AppName::master(),
-            Services::from(vec![nginx_service.clone()]),
+            App::from(vec![nginx_service.clone()]),
         )]);
 
         let (cache, mut crawler) = super::new(Config::default());
         crawler.crawl(forwarder, &apps, Utc::now()).await;
 
-        let apps = cache.convert_services_into_services_with_host_meta(
+        let apps = cache.assign_host_meta_data(
             apps,
             &RequestInfo::new(base_url.clone()),
         );
@@ -678,14 +677,15 @@ mod tests {
             apps,
             HashMap::from([(
                 AppName::master(),
-                ServicesWithHostMeta::from(vec![
-                    ServiceWithHostMeta::from_service_and_web_host_meta(
+                ServicesWithHostMeta::new(
+                    vec![ServiceWithHostMeta::from_service_and_web_host_meta(
                         nginx_service,
                         WebHostMeta::empty(),
                         base_url,
                         &AppName::master()
-                    )
-                ]),
+                    )],
+                    HashSet::new()
+                ),
             )])
         )
     }
@@ -705,7 +705,7 @@ mod tests {
         };
 
         let forwarder = Box::new(DummyHttpForwarder {});
-        let apps = HashMap::from([(AppName::master(), Services::from(vec![nginx_service]))]);
+        let apps = HashMap::from([(AppName::master(), App::from(vec![nginx_service]))]);
 
         let (cache, mut crawler) = super::new(Config::default());
         crawler.crawl(forwarder, &apps, Utc::now()).await;
@@ -723,12 +723,12 @@ mod tests {
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
             AppName::master(),
-            Services::from(vec![nginx_service.clone()]),
+            App::from(vec![nginx_service.clone()]),
         )]);
 
         crawler.crawl(forwarder, &apps, Utc::now()).await;
 
-        let apps = cache.convert_services_into_services_with_host_meta(
+        let apps = cache.assign_host_meta_data(
             apps,
             &RequestInfo::new(base_url.clone()),
         );
@@ -736,14 +736,15 @@ mod tests {
             apps,
             HashMap::from([(
                 AppName::master(),
-                ServicesWithHostMeta::from(vec![
-                    ServiceWithHostMeta::from_service_and_web_host_meta(
+                ServicesWithHostMeta::new(
+                    vec![ServiceWithHostMeta::from_service_and_web_host_meta(
                         nginx_service,
                         WebHostMeta::empty(),
                         base_url,
                         &AppName::master()
-                    )
-                ]),
+                    )],
+                    HashSet::new()
+                ),
             )])
         )
     }

@@ -24,6 +24,8 @@
  * =========================LICENSE_END==================================
  */
 
+use http::StatusCode;
+use http_api_problem::HttpApiProblem;
 use regex::Regex;
 use rocket::http::Status;
 use rocket::outcome::Outcome;
@@ -41,14 +43,14 @@ impl RequestInfo {
         Self { base_url }
     }
 
-    pub fn get_base_url(&self) -> &Url {
+    pub fn base_url(&self) -> &Url {
         &self.base_url
     }
 }
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for RequestInfo {
-    type Error = String;
+    type Error = HttpApiProblem;
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
         let forwarded_host = request.headers().get_one("x-forwarded-host");
@@ -58,7 +60,11 @@ impl<'r> FromRequest<'r> for RequestInfo {
                 Some(host) => host.to_string(),
                 None => {
                     log::error!("Request without host header…");
-                    return Outcome::Error((Status::BadRequest, String::from("No host header")));
+                    return Outcome::Error((
+                        Status::BadRequest,
+                        HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST)
+                            .detail(String::from("No host header")),
+                    ));
                 }
             },
         };
@@ -94,9 +100,101 @@ impl<'r> FromRequest<'r> for RequestInfo {
                 log::error!("Cannot create URL from {host_url}: {err}");
                 Outcome::Error((
                     Status::BadRequest,
-                    format!("Cannot create URL from {host_url}: {err}"),
+                    HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST)
+                        .detail(format!("Cannot create URL from {host_url}: {err}")),
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http_result::HttpApiError;
+    use assert_json_diff::assert_json_include;
+    use rocket::{http::Header, local::asynchronous::Client, routes};
+
+    #[rocket::get("/")]
+    pub(super) async fn test_route(
+        request_info: Result<RequestInfo, HttpApiProblem>,
+    ) -> Result<String, HttpApiError> {
+        let request_info = request_info.map_err(HttpApiError::from)?;
+        Ok(request_info.base_url.to_string())
+    }
+
+    #[tokio::test]
+    async fn valid_request() {
+        let rocket = rocket::build().mount("/", routes![test_route]);
+        let client = Client::tracked(rocket).await.expect("valid rocket");
+        let get = client
+            .get(rocket::uri!(test_route))
+            .header(Header::new("host", "example.com:443"))
+            .header(Header::new("x-forwarded-proto", "https"));
+
+        let response = get.dispatch().await;
+
+        assert_eq!(response.status(), Status::Ok);
+        let body = response.into_string().await.expect("valid response body");
+        assert_eq!("https://example.com/", body);
+    }
+
+    #[tokio::test]
+    async fn bad_request_without_host_header() {
+        let rocket = rocket::build().mount("/", routes![test_route]);
+        let client = Client::tracked(rocket).await.expect("valid rocket");
+        let get = client.get(rocket::uri!(test_route));
+
+        let response = get.dispatch().await;
+
+        assert_eq!(response.status(), Status::BadRequest);
+        let body = response.into_string().await.expect("valid response body");
+        assert_json_include!(
+            actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            expected: serde_json::json!({
+                "detail": "No host header"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn with_invalid_headers() {
+        let rocket = rocket::build().mount("/", routes![test_route]);
+        let client = Client::tracked(rocket).await.expect("valid rocket");
+        let get = client
+            .get(rocket::uri!(test_route))
+            .header(Header::new("x-forwarded-host", ""));
+
+        let response = get.dispatch().await;
+
+        assert_eq!(response.status(), Status::BadRequest);
+        let body = response.into_string().await.expect("valid response body");
+        assert_json_include!(
+            actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            expected: serde_json::json!({
+                "detail": "Cannot create URL from http://: empty host"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn with_invalid_proto() {
+        let rocket = rocket::build().mount("/", routes![test_route]);
+        let client = Client::tracked(rocket).await.expect("valid rocket");
+        let get = client
+            .get(rocket::uri!(test_route))
+            .header(Header::new("host", "example.com"))
+            .header(Header::new("x-forwarded-proto", "."));
+
+        let response = get.dispatch().await;
+
+        assert_eq!(response.status(), Status::BadRequest);
+        let body = response.into_string().await.expect("valid response body");
+        assert_json_include!(
+            actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            expected: serde_json::json!({
+                "detail": "Cannot create URL from .://example.com: relative URL without a base"
+            })
+        );
     }
 }

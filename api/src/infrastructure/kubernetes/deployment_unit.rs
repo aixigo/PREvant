@@ -864,6 +864,7 @@ mod tests {
             .extend_with_config(&Default::default())
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(crate::auth::User::Anonymous)
             .apply_templating(&None, None)
             .unwrap()
             .apply_hooks(&Default::default())

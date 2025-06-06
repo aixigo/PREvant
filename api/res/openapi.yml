@@ -8,7 +8,7 @@ info:
   title: PREvant RESTful API
   contact:
     name: Marc Schreiber
-    email: marc.schreiber@aixigo.de
+    email: marc.schreiber@aixigo.com
   license:
     name: MIT License
     url: https://opensource.org/licenses/MIT
@@ -25,6 +25,7 @@ paths:
                 type: object
                 properties:
                   "^[a-zA-Z0-9_-]":
+                    # TODO: This is an array and the documentation seems to be wrong all the time…
                     $ref: '#/components/schemas/Service'
         '500':
           description: Server error
