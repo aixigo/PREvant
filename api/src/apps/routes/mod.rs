@@ -27,7 +27,7 @@
 use crate::apps::{Apps, AppsError};
 use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::{HttpApiError, HttpResult};
-use crate::models::service::{Service, ServiceStatus, Services};
+use crate::models::service::{Service, ServiceStatus, App};
 use crate::models::{AppName, AppNameError};
 use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
 use create_app_payload::CreateAppPayload;
@@ -54,7 +54,8 @@ pub fn apps_routes() -> Vec<rocket::Route> {
     rocket::routes![
         get_apps::apps_v1,
         get_apps::apps_v2,
-        get_apps::stream_apps,
+        get_apps::stream_apps_v1,
+        get_apps::stream_apps_v2,
         delete_app,
         create_app,
         logs::logs,
@@ -71,7 +72,7 @@ async fn status_change(
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
     apps: &State<Arc<Apps>>,
     options: RunOptions,
-) -> HttpResult<AsyncCompletion<Json<Services>>> {
+) -> HttpResult<AsyncCompletion<Json<App>>> {
     let app_name = app_name?;
     let status_id = status_id?;
 
@@ -93,7 +94,8 @@ pub async fn delete_app(
     apps: &State<Arc<Apps>>,
     options: RunOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
-) -> HttpResult<AsyncCompletion<Json<Services>>> {
+) -> HttpResult<AsyncCompletion<Json<App>>> {
+    // TODO: authorization hook?
     let user = user.map_err(HttpApiError::from)?;
 
     let app_name = app_name?;
@@ -105,7 +107,7 @@ pub async fn delete_app(
 
     match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
-        Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
+        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(app))),
         Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
@@ -114,7 +116,7 @@ pub async fn delete_app_sync(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
-) -> HttpResult<Json<Services>> {
+) -> HttpResult<Json<App>> {
     match delete_app(app_name, apps, RunOptions::Sync, user).await? {
         AsyncCompletion::Pending(_, _) => {
             Err(HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR).into())
@@ -135,7 +137,7 @@ pub async fn create_app(
     payload: Result<CreateAppPayload, HttpApiProblem>,
     options: RunOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
-) -> HttpResult<AsyncCompletion<Json<Services>>> {
+) -> HttpResult<AsyncCompletion<Json<App>>> {
     let payload = payload.map_err(HttpApiError::from)?;
     let user = user.map_err(HttpApiError::from)?;
 
@@ -159,7 +161,7 @@ pub async fn create_app(
 
     match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
-        Poll::Ready(Ok(services)) => Ok(AsyncCompletion::Ready(Json(services))),
+        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(app))),
         Poll::Ready(Err(err)) => Err(err.into()),
     }
 }

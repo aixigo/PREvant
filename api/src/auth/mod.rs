@@ -182,6 +182,7 @@ pub enum User {
     Anonymous,
     Oidc {
         sub: openidconnect::SubjectIdentifier,
+        iss: openidconnect::IssuerUrl,
     },
 }
 
@@ -213,7 +214,7 @@ impl<'r> FromRequest<'r> for User {
 
                     let id_token_claims = match oidc_session
                         .id_token
-                        .claims(&id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
+                        .into_claims(&id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
                     {
                         Ok(id_token_claims) => id_token_claims,
                         Err(openidconnect::ClaimsVerificationError::Expired(err)) => {
@@ -263,17 +264,16 @@ impl<'r> FromRequest<'r> for User {
                                 .build(),
                             );
 
+                            let id_token_claims = token_response
+                                .extra_fields()
+                                .id_token()
+                                .unwrap()
+                                .claims(&id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
+                                .unwrap();
+
                             return Outcome::Success(User::Oidc {
-                                sub: token_response
-                                    .extra_fields()
-                                    .id_token()
-                                    .unwrap()
-                                    .claims(&id_token_verifier, |_: Option<&Nonce>| {
-                                        Ok::<_, String>(())
-                                    })
-                                    .unwrap()
-                                    .subject()
-                                    .clone(),
+                                sub: id_token_claims.subject().clone(),
+                                iss: id_token_claims.issuer().clone(),
                             });
                         }
                         Err(err) => {
@@ -288,6 +288,7 @@ impl<'r> FromRequest<'r> for User {
 
                     return Outcome::Success(User::Oidc {
                         sub: id_token_claims.subject().clone(),
+                        iss: id_token_claims.issuer().clone(),
                     });
                 }
             }

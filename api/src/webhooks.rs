@@ -28,7 +28,7 @@ use crate::apps::delete_app_sync;
 use crate::apps::Apps;
 use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::HttpResult;
-use crate::models::service::Services;
+use crate::models::service::App;
 use crate::models::web_hook_info::WebHookInfo;
 use crate::models::AppName;
 use http_api_problem::HttpApiProblem;
@@ -43,7 +43,7 @@ pub async fn webhooks(
     apps: &State<Arc<Apps>>,
     web_hook_info: WebHookInfo,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
-) -> HttpResult<Json<Services>> {
+) -> HttpResult<Json<App>> {
     info!(
         "Deleting app {:?} through web hook {:?} with event {:?}",
         web_hook_info.get_app_name(),

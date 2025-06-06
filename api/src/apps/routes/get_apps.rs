@@ -2,7 +2,7 @@ use crate::{
     apps::{Apps, HostMetaCache},
     http_result::HttpResult,
     models::{
-        service::{ServiceWithHostMeta, Services, ServicesWithHostMeta},
+        service::{App, Owner, ServiceWithHostMeta, ServicesWithHostMeta},
         AppName, RequestInfo,
     },
 };
@@ -12,7 +12,10 @@ use rocket::{
     Shutdown, State,
 };
 use serde::{ser::SerializeMap as _, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::{select, sync::watch::Receiver};
 use tokio_stream::StreamExt;
 
@@ -26,7 +29,37 @@ impl Serialize for AppsV1 {
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
 
         for (app_name, services_with_host_meta) in self.0.iter() {
-            map.serialize_entry(app_name, &services_with_host_meta.services)?;
+            map.serialize_entry(app_name, services_with_host_meta.services())?;
+        }
+
+        map.end()
+    }
+}
+
+pub(super) struct AppsV2(HashMap<AppName, ServicesWithHostMeta>);
+
+impl Serialize for AppsV2 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+
+        #[derive(Serialize)]
+        struct App<'a> {
+            services: &'a [ServiceWithHostMeta],
+            #[serde(skip_serializing_if = "HashSet::is_empty")]
+            owners: &'a HashSet<Owner>,
+        }
+
+        for (app_name, services_with_host_meta) in self.0.iter() {
+            map.serialize_entry(
+                app_name,
+                &App {
+                    services: services_with_host_meta.services(),
+                    owners: services_with_host_meta.owners(),
+                },
+            )?;
         }
 
         map.end()
@@ -39,50 +72,27 @@ pub(super) async fn apps_v1(
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
 ) -> HttpResult<Json<AppsV1>> {
-    let services = apps.fetch_apps().await?;
+    let apps = apps.fetch_apps().await?;
     Ok(Json(AppsV1(
-        host_meta_cache.convert_services_into_services_with_host_meta(services, &request_info),
+        host_meta_cache.assign_host_meta_data(apps, &request_info),
     )))
 }
 
-pub(super) struct AppsV2(HashMap<AppName, ServicesWithHostMeta>);
-
-impl Serialize for AppsV2 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer {
-        let mut map = serializer.serialize_map(Some(self.0.len()))?;
-
-        #[derive(Serialize)]
-        struct App<'a> {
-            services: &'a [ServiceWithHostMeta]
-        }
-
-        for (app_name, services_with_host_meta) in self.0.iter() {
-            map.serialize_entry(app_name, &App{
-                services: &services_with_host_meta.services,
-            })?;
-        }
-
-        map.end()
-    }
-}
-
-#[rocket::get("/", format = "application/vnd.prevant.v2+json", rank = 3)]
+#[rocket::get("/", format = "application/vnd.prevant.v2+json", rank = 2)]
 pub(super) async fn apps_v2(
     apps: &State<Arc<Apps>>,
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
 ) -> HttpResult<Json<AppsV2>> {
-    let services = apps.fetch_apps().await?;
+    let apps = apps.fetch_apps().await?;
     Ok(Json(AppsV2(
-        host_meta_cache.convert_services_into_services_with_host_meta(services, &request_info),
+        host_meta_cache.assign_host_meta_data(apps, &request_info),
     )))
 }
 
-#[rocket::get("/", format = "text/event-stream", rank = 2)]
-pub(super) async fn stream_apps(
-    apps_updates: &State<Receiver<HashMap<AppName, Services>>>,
+#[rocket::get("/", format = "text/event-stream", rank = 3)]
+pub(super) async fn stream_apps_v1(
+    apps_updates: &State<Receiver<HashMap<AppName, App>>>,
     mut end: Shutdown,
     request_info: RequestInfo,
     host_meta_cache: HostMetaCache,
@@ -94,7 +104,7 @@ pub(super) async fn stream_apps(
     let mut host_meta_cache_updates = host_meta_cache.cache_updates();
 
     EventStream! {
-        yield Event::json(&AppsV1(host_meta_cache.convert_services_into_services_with_host_meta(services.clone(), &request_info)));
+        yield Event::json(&AppsV1(host_meta_cache.assign_host_meta_data(services.clone(), &request_info)));
 
         loop {
             select! {
@@ -108,15 +118,46 @@ pub(super) async fn stream_apps(
                 _ = &mut end => break,
             };
 
-            yield Event::json(&AppsV1(host_meta_cache.convert_services_into_services_with_host_meta(services.clone(), &request_info)));
+            yield Event::json(&AppsV1(host_meta_cache.assign_host_meta_data(services.clone(), &request_info)));
+        }
+    }
+}
+
+#[rocket::get("/", format = "text/vnd.prevant.v2+event-stream", rank = 4)]
+pub(super) async fn stream_apps_v2(
+    apps_updates: &State<Receiver<HashMap<AppName, App>>>,
+    mut end: Shutdown,
+    request_info: RequestInfo,
+    host_meta_cache: HostMetaCache,
+) -> EventStream![] {
+    let mut services = apps_updates.inner().borrow().clone();
+
+    let mut app_changes =
+        tokio_stream::wrappers::WatchStream::from_changes(apps_updates.inner().clone());
+    let mut host_meta_cache_updates = host_meta_cache.cache_updates();
+
+    EventStream! {
+        yield Event::json(&AppsV2(host_meta_cache.assign_host_meta_data(services.clone(), &request_info)));
+
+        loop {
+            select! {
+                Some(new_services) = app_changes.next() => {
+                    log::debug!("New app list update: sending app service update");
+                    services = new_services;
+                }
+                Some(_t) = host_meta_cache_updates.next() => {
+                    log::debug!("New host meta cache update: sending app service update");
+                }
+                _ = &mut end => break,
+            };
+
+            yield Event::json(&AppsV2(host_meta_cache.assign_host_meta_data(services.clone(), &request_info)));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
     use crate::models::{
         service::{Service, ServiceStatus, ServiceWithHostMeta},
@@ -124,10 +165,11 @@ mod tests {
     };
     use assert_json_diff::assert_json_eq;
     use chrono::Utc;
+    use std::str::FromStr;
     use url::Url;
 
     #[test]
-    fn serialize_v1_services_with_web_host_meta() {
+    fn serialize_v1_apps_with_web_host_meta() {
         let base_url = Url::from_str("http://prevant.example.com").unwrap();
         let app_name = AppName::master();
 
@@ -153,40 +195,44 @@ mod tests {
             }),
             serde_json::to_value(AppsV1(HashMap::from([(
                 app_name.clone(),
-                ServicesWithHostMeta::from(vec![
-                    ServiceWithHostMeta::from_service_and_web_host_meta(
-                        Service {
-                            id: String::from("some id"),
-                            state: crate::models::service::State {
-                                status: ServiceStatus::Running,
-                                started_at: Some(Utc::now()),
+                ServicesWithHostMeta::new(
+                    vec![
+                        ServiceWithHostMeta::from_service_and_web_host_meta(
+                            Service {
+                                id: String::from("some id"),
+                                state: crate::models::service::State {
+                                    status: ServiceStatus::Running,
+                                    started_at: Some(Utc::now()),
+                                },
+                                config: crate::sc!("postgres", "postgres:latest")
                             },
-                            config: crate::sc!("postgres", "postgres:latest")
-                        },
-                        WebHostMeta::invalid(),
-                        base_url.clone(),
-                        &app_name
-                    ),
-                    ServiceWithHostMeta::from_service_and_web_host_meta(
-                        Service {
-                            id: String::from("some id"),
-                            state: crate::models::service::State {
-                                status: ServiceStatus::Running,
-                                started_at: Some(Utc::now()),
+                            WebHostMeta::invalid(),
+                            base_url.clone(),
+                            &app_name
+                        ),
+                        ServiceWithHostMeta::from_service_and_web_host_meta(
+                            Service {
+                                id: String::from("some id"),
+                                state: crate::models::service::State {
+                                    status: ServiceStatus::Running,
+                                    started_at: Some(Utc::now()),
+                                },
+                                config: crate::sc!("mariadb", "mariadb:latest")
                             },
-                            config: crate::sc!("mariadb", "mariadb:latest")
-                        },
-                        WebHostMeta::with_version(String::from("1.2.3")),
-                        base_url,
-                        &app_name
-                    )
-                ])
+                            WebHostMeta::with_version(String::from("1.2.3")),
+                            base_url,
+                            &app_name
+                        )
+                    ],
+                    HashSet::new()
+                )
             )])))
             .unwrap()
         );
     }
+
     #[test]
-    fn serialize_v2_services_with_web_host_meta() {
+    fn serialize_v2_apps_with_web_host_meta() {
         let base_url = Url::from_str("http://prevant.example.com").unwrap();
         let app_name = AppName::master();
 
@@ -214,34 +260,112 @@ mod tests {
             }),
             serde_json::to_value(AppsV2(HashMap::from([(
                 app_name.clone(),
-                ServicesWithHostMeta::from(vec![
-                    ServiceWithHostMeta::from_service_and_web_host_meta(
-                        Service {
-                            id: String::from("some id"),
-                            state: crate::models::service::State {
-                                status: ServiceStatus::Running,
-                                started_at: Some(Utc::now()),
+                ServicesWithHostMeta::new(
+                    vec![
+                        ServiceWithHostMeta::from_service_and_web_host_meta(
+                            Service {
+                                id: String::from("some id"),
+                                state: crate::models::service::State {
+                                    status: ServiceStatus::Running,
+                                    started_at: Some(Utc::now()),
+                                },
+                                config: crate::sc!("postgres", "postgres:latest")
                             },
-                            config: crate::sc!("postgres", "postgres:latest")
-                        },
-                        WebHostMeta::invalid(),
-                        base_url.clone(),
-                        &app_name
-                    ),
-                    ServiceWithHostMeta::from_service_and_web_host_meta(
-                        Service {
-                            id: String::from("some id"),
-                            state: crate::models::service::State {
-                                status: ServiceStatus::Running,
-                                started_at: Some(Utc::now()),
+                            WebHostMeta::invalid(),
+                            base_url.clone(),
+                            &app_name
+                        ),
+                        ServiceWithHostMeta::from_service_and_web_host_meta(
+                            Service {
+                                id: String::from("some id"),
+                                state: crate::models::service::State {
+                                    status: ServiceStatus::Running,
+                                    started_at: Some(Utc::now()),
+                                },
+                                config: crate::sc!("mariadb", "mariadb:latest")
                             },
-                            config: crate::sc!("mariadb", "mariadb:latest")
+                            WebHostMeta::with_version(String::from("1.2.3")),
+                            base_url,
+                            &app_name
+                        )
+                    ],
+                    HashSet::new()
+                )
+            )])))
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn serialize_v2_apps_with_web_host_meta_and_owners() {
+        let base_url = Url::from_str("http://prevant.example.com").unwrap();
+        let app_name = AppName::master();
+
+        assert_json_eq!(
+            serde_json::json!({
+                "master": {
+                    "owners": [{
+                        "sub": "some-sub",
+                        "iss": "https://openid.example.com"
+                    }],
+                    "services": [{
+                        "name": "mariadb",
+                        "type": "instance",
+                        "state": {
+                            "status": "running"
                         },
-                        WebHostMeta::with_version(String::from("1.2.3")),
-                        base_url,
-                        &app_name
-                    )
-                ])
+                        "url": "http://prevant.example.com/master/mariadb/",
+                        "version": {
+                            "softwareVersion": "1.2.3"
+                        }
+                    }, {
+                        "name": "postgres",
+                        "type": "instance",
+                        "state": {
+                            "status": "running"
+                        }
+                    }]
+                }
+            }),
+            serde_json::to_value(AppsV2(HashMap::from([(
+                app_name.clone(),
+                ServicesWithHostMeta::new(
+                    vec![
+                        ServiceWithHostMeta::from_service_and_web_host_meta(
+                            Service {
+                                id: String::from("some id"),
+                                state: crate::models::service::State {
+                                    status: ServiceStatus::Running,
+                                    started_at: Some(Utc::now()),
+                                },
+                                config: crate::sc!("postgres", "postgres:latest")
+                            },
+                            WebHostMeta::invalid(),
+                            base_url.clone(),
+                            &app_name
+                        ),
+                        ServiceWithHostMeta::from_service_and_web_host_meta(
+                            Service {
+                                id: String::from("some id"),
+                                state: crate::models::service::State {
+                                    status: ServiceStatus::Running,
+                                    started_at: Some(Utc::now()),
+                                },
+                                config: crate::sc!("mariadb", "mariadb:latest")
+                            },
+                            WebHostMeta::with_version(String::from("1.2.3")),
+                            base_url,
+                            &app_name
+                        )
+                    ],
+                    HashSet::from([Owner {
+                        sub: openidconnect::SubjectIdentifier::new(String::from("some-sub")),
+                        iss: openidconnect::IssuerUrl::new(String::from(
+                            "https://openid.example.com"
+                        ))
+                        .unwrap(),
+                    }])
+                )
             )])))
             .unwrap()
         );
@@ -252,7 +376,7 @@ mod tests {
         use crate::apps::{AppsService, HostMetaCache};
         use crate::config::Config;
         use crate::infrastructure::Dummy;
-        use crate::models::service::Services;
+        use crate::models::service::App;
         use crate::models::{AppName, AppStatusChangeId};
         use crate::sc;
         use assert_json_diff::assert_json_include;
@@ -284,7 +408,7 @@ mod tests {
                 .manage(host_meta_cache)
                 .manage(apps)
                 .manage(Config::default())
-                .manage(tokio::sync::watch::channel::<HashMap<AppName, Services>>(HashMap::new()).1)
+                .manage(tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new()).1)
                 .mount("/", rocket::routes![apps_v1])
                 .mount("/api/apps", crate::apps::apps_routes());
             Ok(Client::tracked(rocket).await.expect("valid rocket"))

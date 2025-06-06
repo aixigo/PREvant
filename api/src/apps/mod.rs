@@ -34,8 +34,7 @@ use crate::deployment::deployment_unit::DeploymentUnitBuilder;
 use crate::infrastructure::HttpForwarder;
 use crate::infrastructure::Infrastructure;
 use crate::infrastructure::TraefikIngressRoute;
-use crate::models::service::Services;
-use crate::models::service::{ContainerType, Service, ServiceStatus};
+use crate::models::service::{App, ContainerType, Service, ServiceStatus};
 use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
 use crate::registry::Registry;
@@ -63,7 +62,7 @@ pub struct AppsService {
     prevant_base_route: Option<TraefikIngressRoute>,
 }
 
-type GuardedResult = Result<Services, AppsServiceError>;
+type GuardedResult = Result<App, AppsServiceError>;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 enum AppGuardKind {
@@ -167,7 +166,8 @@ impl AppsService {
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(app_name)
             .await?
-            .and_then(|(services, _)| {
+            .and_then(|(services_and_owners, _)| {
+                let services = services_and_owners.into_services();
                 services
                     .into_iter()
                     .find(|service| service.service_name() == service_name)
@@ -180,25 +180,25 @@ impl AppsService {
 
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
-    pub async fn fetch_apps(&self) -> Result<HashMap<AppName, Services>, AppsServiceError> {
-        Ok(self.infrastructure.fetch_services().await?)
+    pub async fn fetch_apps(&self) -> Result<HashMap<AppName, App>, AppsServiceError> {
+        Ok(self.infrastructure.fetch_apps().await?)
     }
 
     /// Provides a [`Receiver`](tokio::sync::watch::Receiver) that notifies about changes of the
     /// list of running [`apps`](AppsService::fetch_apps).
-    pub async fn app_updates(&self) -> Receiver<HashMap<AppName, Services>> {
+    pub async fn app_updates(&self) -> Receiver<HashMap<AppName, App>> {
         let infrastructure = dyn_clone::clone_box(&*self.infrastructure);
-        let (tx, rx) = tokio::sync::watch::channel::<HashMap<AppName, Services>>(HashMap::new());
+        let (tx, rx) = tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new());
 
         tokio::spawn(async move {
             loop {
                 debug!("Fetching list of apps to send updates.");
-                match infrastructure.fetch_services().await {
-                    Ok(services) => {
+                match infrastructure.fetch_apps().await {
+                    Ok(apps) => {
                         tx.send_if_modified(move |state| {
-                            if &services != state {
+                            if &apps != state {
                                 debug!("List of apps changed, sending updates.");
-                                *state = services;
+                                *state = apps;
                                 true
                             } else {
                                 false
@@ -240,10 +240,11 @@ impl AppsService {
     async fn configs_and_user_defined_parameters_to_replicate(
         &self,
         services_to_deploy: &[ServiceConfig],
-        running_services: &Services,
+        running_app: &App,
         replicate_from_app_name: &AppName,
     ) -> Result<(Vec<ServiceConfig>, Option<UserDefinedParameters>), AppsServiceError> {
-        let running_instances_names = running_services
+        let running_instances_names = running_app
+            .services()
             .iter()
             .filter(|c| c.container_type() == &ContainerType::Instance)
             .map(|c| c.service_name())
@@ -254,14 +255,15 @@ impl AppsService {
             .map(|c| c.service_name())
             .collect::<HashSet<&String>>();
 
-        let (services, user_defined_parameters) = self
+        let (app, user_defined_parameters) = self
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(replicate_from_app_name)
             .await?
-            .unwrap_or_else(|| (Services::empty(), None));
+            .unwrap_or_else(|| (App::empty(), None));
 
         Ok((
-            services
+            app
+                .into_services()
                 .into_iter()
                 .map(|service| service.config)
                 .filter(|config| {
@@ -285,17 +287,17 @@ impl AppsService {
     pub async fn wait_for_status_change(
         &self,
         status_id: &AppStatusChangeId,
-    ) -> Result<Services, AppsServiceError> {
-        let mut services = Services::empty();
+    ) -> Result<App, AppsServiceError> {
+        let mut apps = App::empty();
         while let Some(s) = self
             .infrastructure
             .get_status_change(&status_id.to_string())
             .await?
         {
-            services = s;
+            apps = s;
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        Ok(services)
+        Ok(apps)
     }
 
     /// Creates or updates an app to review with the given service configurations.
@@ -315,7 +317,7 @@ impl AppsService {
         service_configs: &[ServiceConfig],
         user: User,
         user_defined_parameters: Option<serde_json::Value>,
-    ) -> Result<Services, AppsServiceError> {
+    ) -> Result<App, AppsServiceError> {
         let user_defined_parameters = match (
             self.config.user_defined_schema_validator(),
             user_defined_parameters,
@@ -363,7 +365,7 @@ impl AppsService {
         service_configs: &[ServiceConfig],
         user: User,
         user_defined_parameters: Option<UserDefinedParameters>,
-    ) -> Result<Services, AppsServiceError> {
+    ) -> Result<App, AppsServiceError> {
         if let Some(app_limit) = self.config.app_limit() {
             let apps = self.fetch_app_names().await?;
 
@@ -382,11 +384,11 @@ impl AppsService {
 
         let mut configs = service_configs.to_vec();
 
-        let (running_services, active_user_defined_parameters) = self
+        let (running_app, active_user_defined_parameters) = self
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(app_name)
             .await?
-            .unwrap_or_else(|| (Services::empty(), None));
+            .unwrap_or_else(|| (App::empty(), None));
 
         let mut user_defined_parameters =
             match (active_user_defined_parameters, user_defined_parameters) {
@@ -405,7 +407,7 @@ impl AppsService {
             let (config_to_replicate, replication_user_defined_parameters) = self
                 .configs_and_user_defined_parameters_to_replicate(
                     service_configs,
-                    &running_services,
+                    &running_app,
                     &replicate_from_app_name,
                 )
                 .await?;
@@ -426,7 +428,8 @@ impl AppsService {
             };
         }
 
-        let configs_for_templating = running_services
+        let configs_for_templating = running_app
+            .into_services()
             .into_iter()
             .filter(|service| service.container_type() == &ContainerType::Instance)
             .filter(|service| {
@@ -471,7 +474,7 @@ impl AppsService {
                 deployment_unit_builder.build()
             };
 
-        let services = self
+        let apps = self
             .infrastructure
             .deploy_services(
                 &status_id.to_string(),
@@ -480,7 +483,7 @@ impl AppsService {
             )
             .await?;
 
-        Ok(services)
+        Ok(apps)
     }
 
     /// Deletes all services for the given `app_name`.
@@ -488,7 +491,7 @@ impl AppsService {
         &self,
         app_name: &AppName,
         status_id: &AppStatusChangeId,
-    ) -> Result<Services, AppsServiceError> {
+    ) -> Result<App, AppsServiceError> {
         let guard = self.create_or_get_app_guard(app_name.clone(), AppGuardKind::Deletion)?;
 
         if !guard.is_first() {
@@ -502,17 +505,17 @@ impl AppsService {
         &self,
         app_name: &AppName,
         status_id: &AppStatusChangeId,
-    ) -> Result<Services, AppsServiceError> {
-        let services = self
+    ) -> Result<App, AppsServiceError> {
+        let app = self
             .infrastructure
             .stop_services(&status_id.to_string(), app_name)
             .await?;
-        if services.is_empty() {
+        if app.is_empty() {
             Err(AppsServiceError::AppNotFound {
                 app_name: app_name.clone(),
             })
         } else {
-            Ok(services)
+            Ok(app)
         }
     }
 
@@ -697,9 +700,9 @@ mod tests {
 
         let deployed_apps = apps.fetch_apps().await?;
         assert_eq!(deployed_apps.len(), 1);
-        let services = deployed_apps.get(&AppName::master()).unwrap();
-        assert_eq!(services.len(), 1);
-        assert_contains_service!(services, "service-a", ContainerType::Instance);
+        let app = deployed_apps.get(&AppName::master()).unwrap();
+        assert_eq!(app.services().len(), 1);
+        assert_contains_service!(app.services(), "service-a", ContainerType::Instance);
 
         Ok(())
     }
@@ -732,12 +735,12 @@ mod tests {
 
         let deployed_apps = apps.fetch_apps().await?;
 
-        let services = deployed_apps
+        let app = deployed_apps
             .get(&AppName::from_str("branch").unwrap())
             .unwrap();
-        assert_eq!(services.len(), 2);
-        assert_contains_service!(services, "service-b", ContainerType::Instance);
-        assert_contains_service!(services, "service-a", ContainerType::Replica);
+        assert_eq!(app.services().len(), 2);
+        assert_contains_service!(app.services(), "service-b", ContainerType::Instance);
+        assert_contains_service!(app.services(), "service-a", ContainerType::Replica);
 
         Ok(())
     }
@@ -780,12 +783,12 @@ mod tests {
 
         let deployed_apps = apps.fetch_apps().await?;
 
-        let services = deployed_apps
+        let app = deployed_apps
             .get(&AppName::from_str("branch").unwrap())
             .unwrap();
-        assert_eq!(services.len(), 2);
-        assert_contains_service!(services, "service-a", ContainerType::Instance);
-        assert_contains_service!(services, "service-b", ContainerType::Instance);
+        assert_eq!(app.services().len(), 2);
+        assert_contains_service!(app.services(), "service-a", ContainerType::Instance);
+        assert_contains_service!(app.services(), "service-b", ContainerType::Instance);
 
         Ok(())
     }
@@ -815,14 +818,19 @@ mod tests {
         )
         .await?;
 
-        let (configs, _) = apps
+        let (app, _) = apps
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(&AppName::master())
             .await?
             .unwrap();
-        assert_eq!(configs.iter().count(), 1);
+        assert_eq!(app.services().iter().count(), 1);
 
-        let config = configs.into_iter().next().map(|s| s.config).unwrap();
+        let config = app
+            .into_services()
+            .into_iter()
+            .next()
+            .map(|s| s.config)
+            .unwrap();
         let files = config.files().unwrap();
         assert_eq!(
             files.get(&PathBuf::from("/run/secrets/user")).unwrap(),
@@ -858,16 +866,21 @@ mod tests {
         )
         .await?;
 
-        let (configs, _) = apps
+        let (app, _) = apps
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(
                 &AppName::from_str("master-1x").unwrap(),
             )
             .await?
             .unwrap();
-        assert_eq!(configs.len(), 1);
+        assert_eq!(app.services().len(), 1);
 
-        let config = configs.into_iter().next().map(|s| s.config).unwrap();
+        let config = app
+            .into_services()
+            .into_iter()
+            .next()
+            .map(|s| s.config)
+            .unwrap();
         assert_eq!(config.files(), None);
 
         Ok(())
@@ -1007,11 +1020,11 @@ Log msg 3 of service-a of app master
         .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
-        let services = deployed_apps.get(&app_name).unwrap();
-        assert_eq!(services.len(), 3);
-        assert_contains_service!(services, "openid", ContainerType::ApplicationCompanion);
-        assert_contains_service!(services, "db", ContainerType::ServiceCompanion);
-        assert_contains_service!(services, "service-a", ContainerType::Instance);
+        let app = deployed_apps.get(&app_name).unwrap();
+        assert_eq!(app.services().len(), 3);
+        assert_contains_service!(app.services(), "openid", ContainerType::ApplicationCompanion);
+        assert_contains_service!(app.services(), "db", ContainerType::ServiceCompanion);
+        assert_contains_service!(app.services(), "service-a", ContainerType::Instance);
 
         Ok(())
     }
@@ -1048,16 +1061,16 @@ Log msg 3 of service-a of app master
         .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
-        let services = deployed_apps.get(&app_name).unwrap();
-        assert_eq!(services.len(), 2);
-        assert_contains_service!(services, "openid", ContainerType::Instance);
-        assert_contains_service!(services, "db", ContainerType::Instance);
+        let deployed_app = deployed_apps.get(&app_name).unwrap();
+        assert_eq!(deployed_app.services().len(), 2);
+        assert_contains_service!(deployed_app.services(), "openid", ContainerType::Instance);
+        assert_contains_service!(deployed_app.services(), "db", ContainerType::Instance);
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(&app_name)
             .await?
-            .map(|(services, _)| services)
+            .map(|(services, _)| services.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "openid")
@@ -1109,15 +1122,15 @@ Log msg 3 of service-a of app master
 
         let deployed_apps = apps.fetch_apps().await?;
 
-        let services = deployed_apps.get(&app_name).unwrap();
-        assert_eq!(services.len(), 1);
-        assert_contains_service!(services, "openid", ContainerType::Instance);
+        let deployed_app = deployed_apps.get(&app_name).unwrap();
+        assert_eq!(deployed_app.services().len(), 1);
+        assert_contains_service!(deployed_app.services(), "openid", ContainerType::Instance);
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(&app_name)
             .await?
-            .map(|(services, _)| services)
+            .map(|(services, _)| services.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "openid")
@@ -1189,10 +1202,11 @@ Log msg 3 of service-a of app master
         )
         .await?;
 
-        let mut services = apps.infrastructure.fetch_services().await?;
-        let openid_config = services
+        let mut apps = apps.infrastructure.fetch_apps().await?;
+        let openid_config = apps
             .remove(&AppName::master())
             .unwrap()
+            .into_services()
             .into_iter()
             .find(|service| service.service_name() == "openid")
             .map(|service| service.config)
@@ -1328,7 +1342,7 @@ Log msg 3 of service-a of app master
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(&app_name)
             .await?
-            .map(|(services, _)| services)
+            .map(|(services, _)| services.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db1")
@@ -1339,16 +1353,16 @@ Log msg 3 of service-a of app master
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(&app_name)
             .await?
-            .map(|(services, _)| services)
+            .map(|(services, _)| services.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db2")
             .map(|service| service.config)
             .collect();
 
-        let services = deployed_apps.get(&app_name).unwrap();
+        let app = deployed_apps.get(&app_name).unwrap();
 
-        assert_eq!(services.len(), 2);
+        assert_eq!(app.services().len(), 2);
         assert_eq!(
             db_config1[0]
                 .files()
@@ -1399,7 +1413,7 @@ Log msg 3 of service-a of app master
         let deployed_services = apps.fetch_apps().await?;
         let service_names = deployed_services
             .iter()
-            .flat_map(|(_, services)| services.iter().map(|s| s.service_name().as_str()))
+            .flat_map(|(_, app)| app.services().iter().map(|s| s.service_name().as_str()))
             .collect::<Vec<&str>>();
 
         assert_eq!(service_names, vec!["service-a"]);
@@ -1577,7 +1591,7 @@ Log msg 3 of service-a of app master
 
         assert!(matches!(
             result,
-            Ok(services) if services.len() == 3
+            Ok(app) if app.services().len() == 3
         ));
 
         Ok(())
@@ -1617,7 +1631,7 @@ Log msg 3 of service-a of app master
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(&app_name)
             .await?
-            .map(|(services, _)| services)
+            .map(|(services, _)| services.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db1-my-name")
@@ -1674,7 +1688,7 @@ Log msg 3 of service-a of app master
             .infrastructure
             .fetch_services_and_user_defined_payload_of_app(&replicated_app_name)
             .await?
-            .map(|(services, _)| services)
+            .map(|(services, _)| services.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db1-my-name")

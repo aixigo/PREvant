@@ -38,10 +38,10 @@ use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
 use crate::infrastructure::kubernetes::payloads::namespace_annotations;
 use crate::infrastructure::traefik::{TraefikIngressRoute, TraefikMiddleware};
 use crate::infrastructure::{
-    HttpForwarder, Infrastructure, TraefikRouterRule, USER_DEFINED_PARAMETERS_LABEL,
+    HttpForwarder, Infrastructure, TraefikRouterRule, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
 };
 use crate::models::service::{
-    ContainerType, Service, ServiceError, ServiceStatus, Services, State,
+    App, ContainerType, Owner, Service, ServiceError, ServiceStatus, State,
 };
 use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, Environment, Image, ServiceConfig, WebHostMeta};
@@ -62,13 +62,13 @@ use k8s_openapi::api::{
     core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
 };
 use kube::api::ObjectMeta;
-use kube::Resource;
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     client::Client,
     config::Config,
     error::{Error as KubeError, ErrorResponse},
 };
+use kube::{Resource, ResourceExt};
 use log::{debug, error, warn};
 use secstr::SecUtf8;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -172,26 +172,32 @@ impl KubernetesInfrastructure {
         }))
     }
 
-    async fn get_services_of_app(
+    async fn fetch_app(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<Services>, KubernetesInfrastructureError> {
-        let client = self.client().await?;
-
+    ) -> Result<Option<App>, KubernetesInfrastructureError> {
         let namespace = app_name.to_rfc1123_namespace_id();
         let list_param = Default::default();
-        let client_clone = client.clone();
+
+        let pods_client = self.client().await?;
+        let deployments_client = pods_client.clone();
+        let namespace_client = pods_client.clone();
         let deployments = async {
-            Api::<V1Deployment>::namespaced(client_clone, &namespace)
+            Api::<V1Deployment>::namespaced(deployments_client, &namespace)
                 .list(&list_param)
                 .await
         };
         let pods = async {
-            Api::<V1Pod>::namespaced(client, &namespace)
+            Api::<V1Pod>::namespaced(pods_client, &namespace)
                 .list(&list_param)
                 .await
         };
-        let (deployments, mut pods) = futures::try_join!(deployments, pods)?;
+        let namespace = async {
+            Api::<V1Namespace>::all(namespace_client)
+                .get_opt(&namespace)
+                .await
+        };
+        let (deployments, mut pods, namespace) = futures::try_join!(deployments, pods, namespace)?;
 
         let mut services = Vec::with_capacity(deployments.items.len());
         for deployment in deployments.into_iter() {
@@ -230,10 +236,17 @@ impl KubernetesInfrastructure {
         }
 
         if services.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(Services::from(services)))
+            return Ok(None);
         }
+
+        let owners = namespace
+            .and_then(|mut namespace| namespace.annotations_mut().remove(OWNERS_LABEL))
+            .and_then(|owners_payload| serde_json::from_str::<HashSet<Owner>>(&owners_payload).ok())
+            .unwrap_or_else(|| HashSet::new());
+
+        // TODO: user defined payload.
+
+        Ok(Some(App::new(services, owners)))
     }
 
     async fn create_namespace_if_necessary(
@@ -501,13 +514,13 @@ impl KubernetesInfrastructure {
 
 #[async_trait]
 impl Infrastructure for KubernetesInfrastructure {
-    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>> {
+    async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let mut app_name_and_services = self
             .fetch_app_names()
             .await?
             .into_iter()
             .map(|app_name| async {
-                self.get_services_of_app(&app_name)
+                self.fetch_app(&app_name)
                     .await
                     .map(|services| (app_name, services))
             })
@@ -528,8 +541,8 @@ impl Infrastructure for KubernetesInfrastructure {
     async fn fetch_services_and_user_defined_payload_of_app(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
-        let Some(services) = self.get_services_of_app(app_name).await? else {
+    ) -> Result<Option<(App, Option<UserDefinedParameters>)>> {
+        let Some(services) = self.fetch_app(app_name).await? else {
             return Ok(None);
         };
 
@@ -569,7 +582,7 @@ impl Infrastructure for KubernetesInfrastructure {
         _status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Services> {
+    ) -> Result<App> {
         self.create_namespace_if_necessary(deployment_unit).await?;
 
         let client = self.client().await?;
@@ -602,9 +615,9 @@ impl Infrastructure for KubernetesInfrastructure {
             .map(|s| s.service_name())
             .collect::<HashSet<_>>();
 
-        if let Some(services) = self.get_services_of_app(app_name).await? {
+        if let Some(app) = self.fetch_app(app_name).await? {
             k8s_deployment_unit.filter_by_instances_and_replicas(
-                services
+                app.services()
                     .iter()
                     // We must exclude the services that are provided by the deployment_unit
                     // because without that filter a second update of the service would create an
@@ -639,9 +652,9 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(services.into())
     }
 
-    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Services> {
-        let Some(services) = self.get_services_of_app(app_name).await? else {
-            return Ok(Services::from(Vec::new()));
+    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<App> {
+        let Some(services) = self.fetch_app(app_name).await? else {
+            return Ok(App::empty());
         };
 
         Api::<V1Namespace>::all(self.client().await?)
