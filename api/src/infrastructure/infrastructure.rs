@@ -27,9 +27,8 @@
 use super::traefik::TraefikIngressRoute;
 use crate::config::ContainerConfig;
 use crate::deployment::DeploymentUnit;
-use crate::models::service::{Service, ServiceStatus, App};
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, WebHostMeta};
+use crate::models::{App, AppName, Service, ServiceStatus, WebHostMeta};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
@@ -49,11 +48,7 @@ pub trait Infrastructure: Send + Sync + DynClone {
     ) -> Result<Option<(App, Option<UserDefinedParameters>)>>;
 
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
-        Ok(self
-            .fetch_apps()
-            .await?
-            .into_keys()
-            .collect::<HashSet<_>>())
+        Ok(self.fetch_apps().await?.into_keys().collect::<HashSet<_>>())
     }
 
     /// Deploys the services of the given set of `ServiceConfig`.

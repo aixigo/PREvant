@@ -40,11 +40,11 @@ use crate::infrastructure::traefik::{TraefikIngressRoute, TraefikMiddleware};
 use crate::infrastructure::{
     HttpForwarder, Infrastructure, TraefikRouterRule, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
 };
-use crate::models::service::{
-    App, ContainerType, Owner, Service, ServiceError, ServiceStatus, State,
-};
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, Environment, Image, ServiceConfig, WebHostMeta};
+use crate::models::{
+    App, AppName, ContainerType, Environment, Image, Owner, Service, ServiceConfig, ServiceError,
+    ServiceStatus, State, WebHostMeta,
+};
 use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;

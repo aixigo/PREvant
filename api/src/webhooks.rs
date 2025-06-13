@@ -24,11 +24,10 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::delete_app_sync;
+use crate::apps::{delete_app_sync, AppV1};
 use crate::apps::Apps;
 use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::HttpResult;
-use crate::models::service::App;
 use crate::models::web_hook_info::WebHookInfo;
 use crate::models::AppName;
 use http_api_problem::HttpApiProblem;
@@ -43,7 +42,7 @@ pub async fn webhooks(
     apps: &State<Arc<Apps>>,
     web_hook_info: WebHookInfo,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
-) -> HttpResult<Json<App>> {
+) -> HttpResult<Json<AppV1>> {
     info!(
         "Deleting app {:?} through web hook {:?} with event {:?}",
         web_hook_info.get_app_name(),

@@ -97,7 +97,6 @@ async fn openid_response(
         .build()
         .expect("Client should build");
 
-
     let token_response = oidc_provider
         .client
         .exchange_code(AuthorizationCode::new(code.to_string()))

@@ -26,7 +26,7 @@
 
 use crate::models::{web_host_meta::WebHostMeta, AppName, ServiceConfig};
 use chrono::{DateTime, Utc};
-use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -89,22 +89,6 @@ impl App {
 
     pub fn is_empty(&self) -> bool {
         self.services.is_empty()
-    }
-}
-
-// TODO: Can we remove this?
-impl Serialize for App {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut seq = serializer.serialize_seq(Some(self.services.len()))?;
-
-        for service in self.services.iter() {
-            seq.serialize_element(service)?;
-        }
-
-        serde::ser::SerializeSeq::end(seq)
     }
 }
 
@@ -264,14 +248,13 @@ impl Serialize for ServiceWithHostMeta {
     }
 }
 
-// TODO: rename to AppWithHostMeta
 #[derive(Clone, Debug, PartialEq)]
-pub struct ServicesWithHostMeta {
+pub struct AppWithHostMeta {
     services: Vec<ServiceWithHostMeta>,
     owners: HashSet<Owner>,
 }
 
-impl ServicesWithHostMeta {
+impl AppWithHostMeta {
     pub fn new(services: Vec<ServiceWithHostMeta>, owners: HashSet<Owner>) -> Self {
         let mut services = services;
         services.sort_by_key(|service| {
@@ -284,6 +267,7 @@ impl ServicesWithHostMeta {
     pub fn services(&self) -> &[ServiceWithHostMeta] {
         &self.services
     }
+
     pub fn owners(&self) -> &HashSet<Owner> {
         &self.owners
     }
@@ -354,54 +338,13 @@ mod tests {
             }),
             serde_json::to_value(Service {
                 id: String::from("some id"),
-                state: crate::models::service::State {
+                state: crate::models::State {
                     status: ServiceStatus::Running,
                     started_at: Some(Utc::now()),
                 },
                 config: crate::sc!("mariadb", "mariadb:latest")
             })
             .unwrap()
-        );
-    }
-
-    #[test]
-    fn serialize_services() {
-        assert_json_eq!(
-            serde_json::json!([{
-                "name": "mariadb",
-                "type": "instance",
-                "state": {
-                    "status": "running"
-                }
-            }, {
-                "name": "postgres",
-                "type": "instance",
-                "state": {
-                    "status": "running"
-                }
-            }]),
-            serde_json::to_value(App::new(
-                vec![
-                    Service {
-                        id: String::from("some id"),
-                        state: crate::models::service::State {
-                            status: ServiceStatus::Running,
-                            started_at: Some(Utc::now()),
-                        },
-                        config: crate::sc!("postgres", "postgres:latest")
-                    },
-                    Service {
-                        id: String::from("some id"),
-                        state: crate::models::service::State {
-                            status: ServiceStatus::Running,
-                            started_at: Some(Utc::now()),
-                        },
-                        config: crate::sc!("mariadb", "mariadb:latest")
-                    }
-                ],
-                HashSet::new()
-            ))
-                .unwrap()
         );
     }
 }

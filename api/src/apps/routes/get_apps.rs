@@ -1,10 +1,7 @@
 use crate::{
     apps::{Apps, HostMetaCache},
     http_result::HttpResult,
-    models::{
-        service::{App, Owner, ServiceWithHostMeta, ServicesWithHostMeta},
-        AppName, RequestInfo,
-    },
+    models::{App, AppName, AppWithHostMeta, Owner, RequestInfo, ServiceWithHostMeta},
 };
 use rocket::{
     response::stream::{Event, EventStream},
@@ -19,7 +16,7 @@ use std::{
 use tokio::{select, sync::watch::Receiver};
 use tokio_stream::StreamExt;
 
-pub(super) struct AppsV1(HashMap<AppName, ServicesWithHostMeta>);
+pub(super) struct AppsV1(HashMap<AppName, AppWithHostMeta>);
 
 impl Serialize for AppsV1 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -36,7 +33,7 @@ impl Serialize for AppsV1 {
     }
 }
 
-pub(super) struct AppsV2(HashMap<AppName, ServicesWithHostMeta>);
+pub(super) struct AppsV2(HashMap<AppName, AppWithHostMeta>);
 
 impl Serialize for AppsV2 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -159,10 +156,7 @@ pub(super) async fn stream_apps_v2(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        service::{Service, ServiceStatus, ServiceWithHostMeta},
-        WebHostMeta,
-    };
+    use crate::models::{Service, ServiceStatus, ServiceWithHostMeta, WebHostMeta};
     use assert_json_diff::assert_json_eq;
     use chrono::Utc;
     use std::str::FromStr;
@@ -195,12 +189,12 @@ mod tests {
             }),
             serde_json::to_value(AppsV1(HashMap::from([(
                 app_name.clone(),
-                ServicesWithHostMeta::new(
+                AppWithHostMeta::new(
                     vec![
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::service::State {
+                                state: crate::models::State {
                                     status: ServiceStatus::Running,
                                     started_at: Some(Utc::now()),
                                 },
@@ -213,7 +207,7 @@ mod tests {
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::service::State {
+                                state: crate::models::State {
                                     status: ServiceStatus::Running,
                                     started_at: Some(Utc::now()),
                                 },
@@ -260,12 +254,12 @@ mod tests {
             }),
             serde_json::to_value(AppsV2(HashMap::from([(
                 app_name.clone(),
-                ServicesWithHostMeta::new(
+                AppWithHostMeta::new(
                     vec![
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::service::State {
+                                state: crate::models::State {
                                     status: ServiceStatus::Running,
                                     started_at: Some(Utc::now()),
                                 },
@@ -278,7 +272,7 @@ mod tests {
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::service::State {
+                                state: crate::models::State {
                                     status: ServiceStatus::Running,
                                     started_at: Some(Utc::now()),
                                 },
@@ -329,12 +323,12 @@ mod tests {
             }),
             serde_json::to_value(AppsV2(HashMap::from([(
                 app_name.clone(),
-                ServicesWithHostMeta::new(
+                AppWithHostMeta::new(
                     vec![
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::service::State {
+                                state: crate::models::State {
                                     status: ServiceStatus::Running,
                                     started_at: Some(Utc::now()),
                                 },
@@ -347,7 +341,7 @@ mod tests {
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::service::State {
+                                state: crate::models::State {
                                     status: ServiceStatus::Running,
                                     started_at: Some(Utc::now()),
                                 },
@@ -376,8 +370,7 @@ mod tests {
         use crate::apps::{AppsService, HostMetaCache};
         use crate::config::Config;
         use crate::infrastructure::Dummy;
-        use crate::models::service::App;
-        use crate::models::{AppName, AppStatusChangeId};
+        use crate::models::{App, AppName, AppStatusChangeId};
         use crate::sc;
         use assert_json_diff::assert_json_include;
         use rocket::http::ContentType;

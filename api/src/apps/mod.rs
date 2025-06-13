@@ -34,9 +34,10 @@ use crate::deployment::deployment_unit::DeploymentUnitBuilder;
 use crate::infrastructure::HttpForwarder;
 use crate::infrastructure::Infrastructure;
 use crate::infrastructure::TraefikIngressRoute;
-use crate::models::service::{App, ContainerType, Service, ServiceStatus};
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, AppStatusChangeId, LogChunk, ServiceConfig};
+use crate::models::{
+    App, AppName, AppStatusChangeId, ContainerType, LogChunk, Service, ServiceConfig, ServiceStatus,
+};
 use crate::registry::Registry;
 use crate::registry::RegistryError;
 use chrono::{DateTime, FixedOffset};
@@ -48,7 +49,7 @@ pub use host_meta_cache::HostMetaCache;
 use log::debug;
 use log::error;
 use log::trace;
-pub use routes::{apps_routes, delete_app_sync};
+pub use routes::{apps_routes, delete_app_sync, AppV1};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::sync::{Arc, Condvar, Mutex};
@@ -262,8 +263,7 @@ impl AppsService {
             .unwrap_or_else(|| (App::empty(), None));
 
         Ok((
-            app
-                .into_services()
+            app.into_services()
                 .into_iter()
                 .map(|service| service.config)
                 .filter(|config| {
@@ -632,8 +632,7 @@ mod tests {
 
     use super::*;
     use crate::infrastructure::{Dummy, TraefikIngressRoute, TraefikRouterRule};
-    use crate::models::service::State;
-    use crate::models::EnvironmentVariable;
+    use crate::models::{EnvironmentVariable, State};
     use crate::sc;
     use chrono::Utc;
     use futures::StreamExt;
@@ -1022,7 +1021,11 @@ Log msg 3 of service-a of app master
 
         let app = deployed_apps.get(&app_name).unwrap();
         assert_eq!(app.services().len(), 3);
-        assert_contains_service!(app.services(), "openid", ContainerType::ApplicationCompanion);
+        assert_contains_service!(
+            app.services(),
+            "openid",
+            ContainerType::ApplicationCompanion
+        );
         assert_contains_service!(app.services(), "db", ContainerType::ServiceCompanion);
         assert_contains_service!(app.services(), "service-a", ContainerType::Instance);
 

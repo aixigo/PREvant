@@ -27,9 +27,9 @@
 use crate::apps::{Apps, AppsError};
 use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::{HttpApiError, HttpResult};
-use crate::models::service::{Service, ServiceStatus, App};
-use crate::models::{AppName, AppNameError};
-use crate::models::{AppStatusChangeId, AppStatusChangeIdError};
+use crate::models::{
+    App, AppName, AppNameError, AppStatusChangeId, AppStatusChangeIdError, Service, ServiceStatus,
+};
 use create_app_payload::CreateAppPayload;
 use http_api_problem::{HttpApiProblem, StatusCode};
 use log::error;
@@ -39,6 +39,8 @@ use rocket::request::{FromRequest, Outcome, Request};
 use rocket::response::{Responder, Response};
 use rocket::serde::json::Json;
 use rocket::{FromForm, State};
+use serde::ser::{Serialize, SerializeSeq};
+use serde::Serializer;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::Poll;
@@ -66,13 +68,30 @@ pub fn apps_routes() -> Vec<rocket::Route> {
     ]
 }
 
+pub struct AppV1(App);
+
+impl Serialize for AppV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.services().len()))?;
+
+        for service in self.0.services() {
+            seq.serialize_element(service)?;
+        }
+
+        serde::ser::SerializeSeq::end(seq)
+    }
+}
+
 #[rocket::get("/<app_name>/status-changes/<status_id>", format = "application/json")]
 async fn status_change(
     app_name: Result<AppName, AppNameError>,
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
     apps: &State<Arc<Apps>>,
     options: RunOptions,
-) -> HttpResult<AsyncCompletion<Json<App>>> {
+) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
     let app_name = app_name?;
     let status_id = status_id?;
 
@@ -94,7 +113,7 @@ pub async fn delete_app(
     apps: &State<Arc<Apps>>,
     options: RunOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
-) -> HttpResult<AsyncCompletion<Json<App>>> {
+) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
     // TODO: authorization hook?
     let user = user.map_err(HttpApiError::from)?;
 
@@ -107,7 +126,7 @@ pub async fn delete_app(
 
     match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
-        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(app))),
+        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(AppV1(app)))),
         Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
@@ -116,7 +135,7 @@ pub async fn delete_app_sync(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Arc<Apps>>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
-) -> HttpResult<Json<App>> {
+) -> HttpResult<Json<AppV1>> {
     match delete_app(app_name, apps, RunOptions::Sync, user).await? {
         AsyncCompletion::Pending(_, _) => {
             Err(HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR).into())
@@ -137,7 +156,7 @@ pub async fn create_app(
     payload: Result<CreateAppPayload, HttpApiProblem>,
     options: RunOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
-) -> HttpResult<AsyncCompletion<Json<App>>> {
+) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
     let payload = payload.map_err(HttpApiError::from)?;
     let user = user.map_err(HttpApiError::from)?;
 
@@ -161,7 +180,7 @@ pub async fn create_app(
 
     match spawn_with_options(options, future).await? {
         Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
-        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(app))),
+        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(AppV1(app)))),
         Poll::Ready(Err(err)) => Err(err.into()),
     }
 }
@@ -350,6 +369,14 @@ impl<'r> FromRequest<'r> for RunOptions {
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        apps::routes::AppV1,
+        models::{App, Service, ServiceStatus},
+    };
+    use assert_json_diff::assert_json_eq;
+    use chrono::Utc;
+    use std::collections::HashSet;
+
     mod parse_run_options_from_request {
         use crate::apps::routes::*;
         use rocket::http::Header;
@@ -749,5 +776,46 @@ mod tests {
                 }])
             );
         }
+    }
+
+    #[test]
+    fn serialize_services() {
+        assert_json_eq!(
+            serde_json::json!([{
+                "name": "mariadb",
+                "type": "instance",
+                "state": {
+                    "status": "running"
+                }
+            }, {
+                "name": "postgres",
+                "type": "instance",
+                "state": {
+                    "status": "running"
+                }
+            }]),
+            serde_json::to_value(AppV1(App::new(
+                vec![
+                    Service {
+                        id: String::from("some id"),
+                        state: crate::models::State {
+                            status: ServiceStatus::Running,
+                            started_at: Some(Utc::now()),
+                        },
+                        config: crate::sc!("postgres", "postgres:latest")
+                    },
+                    Service {
+                        id: String::from("some id"),
+                        state: crate::models::State {
+                            status: ServiceStatus::Running,
+                            started_at: Some(Utc::now()),
+                        },
+                        config: crate::sc!("mariadb", "mariadb:latest")
+                    }
+                ],
+                HashSet::new()
+            )))
+            .unwrap()
+        );
     }
 }
