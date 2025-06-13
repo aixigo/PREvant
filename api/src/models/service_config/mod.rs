@@ -24,8 +24,7 @@
  * =========================LICENSE_END==================================
  */
 use crate::config::Routing;
-use crate::models::service::ContainerType;
-use crate::models::Image;
+use crate::models::{ContainerType, Image};
 pub use environment::{Environment, EnvironmentVariable};
 use secstr::SecUtf8;
 use serde::Deserialize;

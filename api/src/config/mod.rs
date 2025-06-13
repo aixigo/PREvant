@@ -501,7 +501,7 @@ macro_rules! config_from_str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{service::ContainerType, Image};
+    use crate::models::{ContainerType, Image};
     use std::str::FromStr;
 
     macro_rules! service_config {

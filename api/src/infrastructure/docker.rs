@@ -31,9 +31,11 @@ use crate::infrastructure::{
     HttpForwarder, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
 };
-use crate::models::service::{App, ContainerType, Service, ServiceError, ServiceStatus, State};
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, Environment, Image, ServiceConfig, WebHostMeta};
+use crate::models::{
+    App, AppName, ContainerType, Environment, Image, Service, ServiceConfig, ServiceError,
+    ServiceStatus, State, WebHostMeta,
+};
 use anyhow::{anyhow, Result};
 use async_stream::stream;
 use async_trait::async_trait;

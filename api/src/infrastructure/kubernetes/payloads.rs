@@ -33,9 +33,8 @@ use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::infrastructure::{
     TraefikIngressRoute, TraefikRouterRule, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
 };
-use crate::models::service::Owner;
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, ServiceConfig};
+use crate::models::{AppName, Owner, ServiceConfig};
 use base64::{engine::general_purpose, Engine};
 use bytesize::ByteSize;
 use chrono::Utc;
