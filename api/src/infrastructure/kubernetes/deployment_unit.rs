@@ -485,6 +485,7 @@ impl K8sDeploymentUnit {
             let (route, middlewares) = match convert_k8s_ingress_to_traefik_ingress(
                 ingress,
                 deployment_unit.app_base_route().clone(),
+                &services,
             ) {
                 Ok((route, middlewares)) => (route, middlewares),
                 Err((ingress, err)) => {
