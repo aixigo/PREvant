@@ -34,7 +34,9 @@ use crate::apps::Apps;
 use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
+use auth::Auth;
 use clap::Parser;
+use infrastructure::TraefikIngressRoute;
 use rocket::fs::{FileServer, Options};
 use rocket::routes;
 use serde_yaml::{to_string, Value};
@@ -44,6 +46,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt as _;
 
 mod apps;
+mod auth;
 mod config;
 mod deployment;
 mod http_result;
@@ -68,7 +71,7 @@ async fn openapi(request_info: RequestInfo) -> Option<String> {
     f.read_to_end(&mut contents).await.ok()?;
     let mut v: Value = serde_yaml::from_slice(&contents).ok()?;
 
-    let mut url = request_info.get_base_url().clone();
+    let mut url = request_info.base_url().clone();
     url.set_path("/api");
     v["servers"][0]["url"] = Value::String(url.to_string());
 
@@ -99,10 +102,23 @@ async fn main() -> Result<(), StartUpError> {
     })?;
 
     let infrastructure = create_infrastructure(&config);
-    let apps = Apps::new(config.clone(), infrastructure)
-        .map_err(|e| StartUpError::CannotCreateApps { err: e.to_string() })?;
 
-    // TODO: Every interactaion with apps is blocked by the Arc. For example, the background job in
+    let prevant_base_route = if let Some(base_url) = &config.base_url {
+        Some(TraefikIngressRoute::from(base_url))
+    } else {
+        infrastructure
+            .base_traefik_ingress_route()
+            .await
+            .inspect_err(|err| log::info!("Cannot read base route from the infrastructure: {err}"))
+            .ok()
+            .flatten()
+    };
+
+    let apps = Apps::new(config.clone(), infrastructure)
+        .map_err(|e| StartUpError::CannotCreateApps { err: e.to_string() })?
+        .with_base_route(prevant_base_route.clone());
+
+    // TODO: Every interaction with apps is blocked by the Arc. For example, the background job in
     // host_meta_crawler blocks every get request for the waiting time.
     // Arc<Apps> needs to be replace with Apps
     let apps = Arc::new(apps);
@@ -114,6 +130,7 @@ async fn main() -> Result<(), StartUpError> {
 
     let _rocket = rocket::build()
         .manage(config)
+        .manage(prevant_base_route)
         .manage(apps)
         .manage(host_meta_cache)
         .manage(app_updates)
@@ -125,6 +142,8 @@ async fn main() -> Result<(), StartUpError> {
         .mount("/api/apps", crate::apps::apps_routes())
         .mount("/api", routes![tickets::tickets])
         .mount("/api", routes![webhooks::webhooks])
+        .mount("/auth", crate::auth::auth_routes())
+        .attach(Auth::fairing())
         .launch()
         .await?;
 

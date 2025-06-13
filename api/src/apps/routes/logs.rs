@@ -220,6 +220,7 @@ mod test {
                 &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-a")],
+                crate::auth::User::Anonymous,
                 None,
             )
             .await?;

@@ -25,9 +25,8 @@
  */
 
 use crate::config::Routing;
-use crate::models::service::ContainerType;
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, Environment, EnvironmentVariable, ServiceConfig};
+use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, ServiceConfig};
 use handlebars::{
     Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderError,
     RenderErrorReason, Renderable,

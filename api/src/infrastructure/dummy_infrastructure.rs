@@ -28,9 +28,8 @@ use crate::config::ContainerConfig;
 use crate::deployment::deployment_unit::DeployableService;
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::Infrastructure;
-use crate::models::service::{Service, ServiceStatus, Services, State};
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, ServiceConfig};
+use crate::models::{App, AppName, Service, ServiceConfig, ServiceStatus, State};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
@@ -42,15 +41,12 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::TraefikIngressRoute;
-
 #[cfg(test)]
 #[derive(Clone)]
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
     services: Arc<Mutex<MultiMap<AppName, DeployableService>>>,
     user_defined_parameters: Arc<Mutex<HashMap<AppName, UserDefinedParameters>>>,
-    base_ingress_route: Option<TraefikIngressRoute>,
 }
 
 #[cfg(test)]
@@ -60,7 +56,6 @@ impl DummyInfrastructure {
             delay: None,
             services: Arc::new(Mutex::new(MultiMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
-            base_ingress_route: None,
         }
     }
 
@@ -69,16 +64,6 @@ impl DummyInfrastructure {
             delay: Some(delay),
             services: Arc::new(Mutex::new(MultiMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
-            base_ingress_route: None,
-        }
-    }
-
-    pub fn with_base_route(base_ingress_route: TraefikIngressRoute) -> Self {
-        Self {
-            delay: None,
-            services: Arc::new(Mutex::new(MultiMap::new())),
-            user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
-            base_ingress_route: Some(base_ingress_route),
         }
     }
 
@@ -104,8 +89,8 @@ impl DummyInfrastructure {
 #[cfg(test)]
 #[async_trait]
 impl Infrastructure for DummyInfrastructure {
-    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>> {
-        let mut s = HashMap::new();
+    async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
+        let mut apps = HashMap::new();
 
         let services = self.services.lock().unwrap();
         for (app, configs) in services.iter_all() {
@@ -127,16 +112,16 @@ impl Infrastructure for DummyInfrastructure {
                 services.push(service);
             }
 
-            s.insert(AppName::from_str(app).unwrap(), Services::from(services));
+            apps.insert(AppName::from_str(app).unwrap(), App::from(services));
         }
 
-        Ok(s)
+        Ok(apps)
     }
 
     async fn fetch_services_and_user_defined_payload_of_app(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
+    ) -> Result<Option<(App, Option<UserDefinedParameters>)>> {
         let lock = self.services.lock().unwrap();
         let Some(configs) = lock.get_vec(app_name) else {
             return Ok(None);
@@ -163,7 +148,7 @@ impl Infrastructure for DummyInfrastructure {
         let user_defined_parameters = self.user_defined_parameters.lock().unwrap();
 
         Ok(Some((
-            Services::from(services),
+            App::from(services),
             user_defined_parameters.get(app_name).cloned(),
         )))
     }
@@ -173,7 +158,7 @@ impl Infrastructure for DummyInfrastructure {
         _status_id: &str,
         deployment_unit: &DeploymentUnit,
         _container_config: &ContainerConfig,
-    ) -> Result<Services> {
+    ) -> Result<App> {
         self.delay_if_configured().await;
 
         let app_name = deployment_unit.app_name();
@@ -219,13 +204,13 @@ impl Infrastructure for DummyInfrastructure {
             .into())
     }
 
-    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<Services> {
+    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<App> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
 
         match services.remove(&app_name) {
-            Some(services) => Ok(Services::from(
+            Some(services) => Ok(App::from(
                 services
                     .into_iter()
                     .map(|sc| Service {
@@ -242,7 +227,7 @@ impl Infrastructure for DummyInfrastructure {
                     })
                     .collect::<Vec<_>>(),
             )),
-            None => Ok(Services::empty()),
+            None => Ok(App::empty()),
         }
     }
 
@@ -281,10 +266,6 @@ impl Infrastructure for DummyInfrastructure {
         _status: ServiceStatus,
     ) -> Result<Option<Service>> {
         Ok(None)
-    }
-
-    async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>> {
-        Ok(self.base_ingress_route.clone())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
