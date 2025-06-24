@@ -39,29 +39,35 @@ test.describe("app modal dialogs", () => {
     test.beforeEach(async ({ page }) => {
       await page.goto("/");
 
-      // Wait for preview and service
       await expect(
-        page.getByRole("heading", { name: PREVIEW_NAME })
+        page.getByRole("heading", { name: PREVIEW_NAME }),
+        `preview "${PREVIEW_NAME}" should be visible after initial loading`
       ).toBeVisible();
-      await expect(page.getByText(SERVICE_NAME)).toBeVisible();
+      await expect(
+        page.getByText(SERVICE_NAME),
+        `service "${SERVICE_NAME}" should be visible after initial loading`
+      ).toBeVisible();
 
       // Apply filter
       const filterInput = page.getByPlaceholder("Search Apps");
       await filterInput.fill(FILTER_STRING);
 
-      // Ensure preview and service are still visible after filter
       await expect(
-        page.getByRole("heading", { name: PREVIEW_NAME })
+        page.getByRole("heading", { name: PREVIEW_NAME }),
+        `preview "${PREVIEW_NAME}" should remain visible after filtering`
       ).toBeVisible();
-      await expect(page.getByText(SERVICE_NAME)).toBeVisible();
+
+      await expect(
+        page.getByText(SERVICE_NAME),
+        `service "${SERVICE_NAME}" should remain visible after filtering`
+      ).toBeVisible();
     });
 
     test.afterEach(async ({ page }) => {
       // Close modal
       await page.getByLabel("Close").click();
 
-      // Ensure query param is preserved
-      await expect(page).toHaveURL(
+      await expect(page, "query parameter should be preserved").toHaveURL(
         new RegExp(`.*\\?appNameFilter=${FILTER_STRING}.*`)
       );
     });
@@ -74,11 +80,11 @@ test.describe("app modal dialogs", () => {
         `div.card:has(.card-header:has-text("${PREVIEW_NAME}")):has(.card-body a:text("${SERVICE_NAME}")) a:text("Logs")`
       );
 
-      // make sure dialog is visible
       await expect(
         page.getByRole("heading", {
           name: `Logs of ${SERVICE_NAME} in ${PREVIEW_NAME}`,
-        })
+        }),
+        "logs dialog should be visible"
       ).toBeVisible();
     });
 
@@ -90,11 +96,11 @@ test.describe("app modal dialogs", () => {
         `div.card:has(.card-header:has-text("${PREVIEW_NAME}")):has(.card-body a:text("${SERVICE_NAME}")) a:text("Open API Documentation")`
       );
 
-      // make sure dialog is visible
       await expect(
         page.getByRole("heading", {
           name: `API Documentation`,
-        })
+        }),
+        "OpenApi dialog should be visible"
       ).toBeVisible();
     });
 
@@ -106,11 +112,11 @@ test.describe("app modal dialogs", () => {
         `div.card:has(.card-header:has-text("${PREVIEW_NAME}")):has(.card-body a:text("${SERVICE_NAME}")) a:text("Async API Documentation")`
       );
 
-      // make sure dialog is visible
       await expect(
         page.getByRole("heading", {
           name: "AsyncAPI Documentation",
-        })
+        }),
+        "AsyncAPI dialog should be visible"
       ).toBeVisible();
     });
   });
@@ -122,18 +128,20 @@ test.describe("app modal dialogs", () => {
       // Go directly to logs dialog URL
       await page.goto(`/#/logs/${PREVIEW_NAME}/${SERVICE_NAME}`);
 
-      // Make sure logs dialog is visible
       await expect(
         page.getByRole("heading", {
           name: `Logs of ${SERVICE_NAME} in ${PREVIEW_NAME}`,
-        })
+        }),
+        "logs dialog should be visible"
       ).toBeVisible();
 
       // Close the dialog
       await page.getByLabel("Close").click();
 
-      // Ensure we're on the home page (no previous page fallback, no tab close)
-      await expect(page).toHaveURL(/\/#\/$/);
+      await expect(
+        page,
+        "should naviate to home page and not any other previous page or close the tab"
+      ).toHaveURL(/\/#\/$/);
     });
   });
 });
