@@ -112,45 +112,18 @@ impl Infrastructure for DummyInfrastructure {
                 services.push(service);
             }
 
-            apps.insert(AppName::from_str(app).unwrap(), App::from(services));
+            let app_name = AppName::from_str(app).unwrap();
+            let user_defined_parameters = self.user_defined_parameters.lock().unwrap();
+            let udp = user_defined_parameters.get(&app_name).cloned();
+
+            apps.insert(app_name, App::new(services, HashSet::new(), udp));
         }
 
         Ok(apps)
     }
 
-    async fn fetch_services_and_user_defined_payload_of_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Option<(App, Option<UserDefinedParameters>)>> {
-        let lock = self.services.lock().unwrap();
-        let Some(configs) = lock.get_vec(app_name) else {
-            return Ok(None);
-        };
-
-        let mut services = Vec::<Service>::with_capacity(configs.len());
-        for config in configs {
-            let service = Service {
-                id: config.service_name().clone(),
-                config: ServiceConfig::clone(&config),
-                state: State {
-                    status: ServiceStatus::Running,
-                    started_at: Some(
-                        DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z")
-                            .unwrap()
-                            .with_timezone(&Utc),
-                    ),
-                },
-            };
-
-            services.push(service);
-        }
-
-        let user_defined_parameters = self.user_defined_parameters.lock().unwrap();
-
-        Ok(Some((
-            App::from(services),
-            user_defined_parameters.get(app_name).cloned(),
-        )))
+    async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>> {
+        Ok(self.fetch_apps().await?.remove(app_name))
     }
 
     async fn deploy_services(

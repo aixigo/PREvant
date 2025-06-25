@@ -165,10 +165,10 @@ impl AppsService {
     ) -> Result<Option<Service>, AppsServiceError> {
         Ok(self
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(app_name)
+            .fetch_app(app_name)
             .await?
-            .and_then(|(services_and_owners, _)| {
-                let services = services_and_owners.into_services();
+            .and_then(|app| {
+                let services = app.into_services();
                 services
                     .into_iter()
                     .find(|service| service.service_name() == service_name)
@@ -256,14 +256,16 @@ impl AppsService {
             .map(|c| c.service_name())
             .collect::<HashSet<&String>>();
 
-        let (app, user_defined_parameters) = self
+        let app = self
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(replicate_from_app_name)
+            .fetch_app(replicate_from_app_name)
             .await?
-            .unwrap_or_else(|| (App::empty(), None));
+            .unwrap_or_else(|| App::empty());
+
+        let (services, user_defined_parameters) = app.into_services_and_user_defined_parameters();
 
         Ok((
-            app.into_services()
+            services
                 .into_iter()
                 .map(|service| service.config)
                 .filter(|config| {
@@ -384,23 +386,23 @@ impl AppsService {
 
         let mut configs = service_configs.to_vec();
 
-        let (running_app, active_user_defined_parameters) = self
+        let running_app = self
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(app_name)
+            .fetch_app(app_name)
             .await?
-            .unwrap_or_else(|| (App::empty(), None));
+            .unwrap_or_else(|| App::empty());
 
-        let mut user_defined_parameters =
-            match (active_user_defined_parameters, user_defined_parameters) {
-                (None, None) => None,
-                (None, Some(user_defined_parameters)) => Some(user_defined_parameters),
-                (Some(active_user_defined_parameters), None) => {
-                    Some(active_user_defined_parameters)
-                }
-                (Some(active_user_defined_parameters), Some(user_defined_parameters)) => {
-                    Some(active_user_defined_parameters.merge(user_defined_parameters))
-                }
-            };
+        let mut user_defined_parameters = match (
+            running_app.user_defined_parameters().clone(),
+            user_defined_parameters,
+        ) {
+            (None, None) => None,
+            (None, Some(user_defined_parameters)) => Some(user_defined_parameters),
+            (Some(active_user_defined_parameters), None) => Some(active_user_defined_parameters),
+            (Some(active_user_defined_parameters), Some(user_defined_parameters)) => {
+                Some(active_user_defined_parameters.merge(user_defined_parameters))
+            }
+        };
 
         let replicate_from_app_name = replicate_from.unwrap_or_else(AppName::master);
         if &replicate_from_app_name != app_name {
@@ -817,9 +819,9 @@ mod tests {
         )
         .await?;
 
-        let (app, _) = apps
+        let app = apps
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(&AppName::master())
+            .fetch_app(&AppName::master())
             .await?
             .unwrap();
         assert_eq!(app.services().iter().count(), 1);
@@ -865,11 +867,9 @@ mod tests {
         )
         .await?;
 
-        let (app, _) = apps
+        let app = apps
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(
-                &AppName::from_str("master-1x").unwrap(),
-            )
+            .fetch_app(&AppName::from_str("master-1x").unwrap())
             .await?
             .unwrap();
         assert_eq!(app.services().len(), 1);
@@ -1071,9 +1071,9 @@ Log msg 3 of service-a of app master
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(&app_name)
+            .fetch_app(&app_name)
             .await?
-            .map(|(services, _)| services.into_services())
+            .map(|app| app.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "openid")
@@ -1131,9 +1131,9 @@ Log msg 3 of service-a of app master
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(&app_name)
+            .fetch_app(&app_name)
             .await?
-            .map(|(services, _)| services.into_services())
+            .map(|app| app.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "openid")
@@ -1343,9 +1343,9 @@ Log msg 3 of service-a of app master
 
         let db_config1: Vec<ServiceConfig> = apps
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(&app_name)
+            .fetch_app(&app_name)
             .await?
-            .map(|(services, _)| services.into_services())
+            .map(|app| app.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db1")
@@ -1354,9 +1354,9 @@ Log msg 3 of service-a of app master
 
         let db_config2: Vec<ServiceConfig> = apps
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(&app_name)
+            .fetch_app(&app_name)
             .await?
-            .map(|(services, _)| services.into_services())
+            .map(|app| app.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db2")
@@ -1632,9 +1632,9 @@ Log msg 3 of service-a of app master
 
         let companion_config: Vec<ServiceConfig> = apps
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(&app_name)
+            .fetch_app(&app_name)
             .await?
-            .map(|(services, _)| services.into_services())
+            .map(|app| app.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db1-my-name")
@@ -1689,9 +1689,9 @@ Log msg 3 of service-a of app master
 
         let companion_config: Vec<ServiceConfig> = apps
             .infrastructure
-            .fetch_services_and_user_defined_payload_of_app(&replicated_app_name)
+            .fetch_app(&replicated_app_name)
             .await?
-            .map(|(services, _)| services.into_services())
+            .map(|app| app.into_services())
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db1-my-name")

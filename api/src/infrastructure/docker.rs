@@ -843,31 +843,27 @@ impl Infrastructure for DockerInfrastructure {
                 services.push(service);
             }
 
+            // TODO: copy at least owner
             apps.insert(app_name, App::from(services));
         }
 
         Ok(apps)
     }
 
-    async fn fetch_services_and_user_defined_payload_of_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Option<(App, Option<UserDefinedParameters>)>> {
+    async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>> {
         let container_details = self.get_container_details(Some(app_name), None).await?;
 
         if container_details.is_empty() {
             return Ok(None);
         }
 
-        Ok(Some((
-            App::from(
-                container_details
-                    .into_iter()
-                    .flat_map(|(_, details)| details.into_iter())
-                    .filter_map(|details| Service::try_from(details).ok())
-                    .collect::<Vec<_>>(),
-            ),
-            None,
+        // TODO: copy at least owner
+        Ok(Some(App::from(
+            container_details
+                .into_iter()
+                .flat_map(|(_, details)| details.into_iter())
+                .filter_map(|details| Service::try_from(details).ok())
+                .collect::<Vec<_>>(),
         )))
     }
 

@@ -27,7 +27,6 @@
 use super::traefik::TraefikIngressRoute;
 use crate::config::ContainerConfig;
 use crate::deployment::DeploymentUnit;
-use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{App, AppName, Service, ServiceStatus, WebHostMeta};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -41,11 +40,7 @@ pub trait Infrastructure: Send + Sync + DynClone {
     /// Returns a `map` of `app-name` and the details of the deployed applications.
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>>;
 
-    // TODO: remove because we fetch container and namespaces anyway????
-    async fn fetch_services_and_user_defined_payload_of_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Option<(App, Option<UserDefinedParameters>)>>;
+    async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>>;
 
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
         Ok(self.fetch_apps().await?.into_keys().collect::<HashSet<_>>())

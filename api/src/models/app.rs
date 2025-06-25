@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{web_host_meta::WebHostMeta, AppName, ServiceConfig};
 use chrono::{DateTime, Utc};
 use serde::ser::{Serialize, SerializeMap, Serializer};
@@ -44,17 +45,21 @@ pub struct Owner {
 pub struct App {
     services: Vec<Service>,
     owners: HashSet<Owner>,
-    // TODO: include user defined payload here
+    user_defined_parameters: Option<UserDefinedParameters>,
 }
 
 impl From<Vec<Service>> for App {
     fn from(services: Vec<Service>) -> Self {
-        Self::new(services, HashSet::new())
+        Self::new(services, HashSet::new(), None)
     }
 }
 
 impl App {
-    pub fn new(services: Vec<Service>, owners: HashSet<Owner>) -> Self {
+    pub fn new(
+        services: Vec<Service>,
+        owners: HashSet<Owner>,
+        user_defined_payload: Option<UserDefinedParameters>,
+    ) -> Self {
         if services.is_empty() {
             return Self::empty();
         }
@@ -65,18 +70,33 @@ impl App {
             service.config.service_name().clone()
         });
 
-        Self { services, owners }
+        Self {
+            services,
+            owners,
+            user_defined_parameters: user_defined_payload,
+        }
     }
 
     pub fn empty() -> Self {
         Self {
             services: Vec::new(),
             owners: HashSet::new(),
+            user_defined_parameters: None,
         }
     }
 
     pub fn into_services(self) -> Vec<Service> {
         self.services
+    }
+
+    pub fn user_defined_parameters(&self) -> &Option<UserDefinedParameters> {
+        &self.user_defined_parameters
+    }
+
+    pub fn into_services_and_user_defined_parameters(
+        self,
+    ) -> (Vec<Service>, Option<UserDefinedParameters>) {
+        (self.services, self.user_defined_parameters)
     }
 
     pub fn into_services_and_owners(self) -> (Vec<Service>, HashSet<Owner>) {

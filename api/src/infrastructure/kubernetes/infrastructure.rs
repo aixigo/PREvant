@@ -172,83 +172,6 @@ impl KubernetesInfrastructure {
         }))
     }
 
-    async fn fetch_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Option<App>, KubernetesInfrastructureError> {
-        let namespace = app_name.to_rfc1123_namespace_id();
-        let list_param = Default::default();
-
-        let pods_client = self.client().await?;
-        let deployments_client = pods_client.clone();
-        let namespace_client = pods_client.clone();
-        let deployments = async {
-            Api::<V1Deployment>::namespaced(deployments_client, &namespace)
-                .list(&list_param)
-                .await
-        };
-        let pods = async {
-            Api::<V1Pod>::namespaced(pods_client, &namespace)
-                .list(&list_param)
-                .await
-        };
-        let namespace = async {
-            Api::<V1Namespace>::all(namespace_client)
-                .get_opt(&namespace)
-                .await
-        };
-        let (deployments, mut pods, namespace) = futures::try_join!(deployments, pods, namespace)?;
-
-        let mut services = Vec::with_capacity(deployments.items.len());
-        for deployment in deployments.into_iter() {
-            let pod = {
-                let Some(spec) = deployment.spec.as_ref() else {
-                    continue;
-                };
-                let Some(matches_labels) = spec.selector.match_labels.as_ref() else {
-                    continue;
-                };
-
-                match pods.items.iter().position(|pod| {
-                    pod.metadata
-                        .labels
-                        .as_ref()
-                        .map(|labels| matches_labels.iter().all(|(k, v)| labels.get(k) == Some(v)))
-                        .unwrap_or(false)
-                }) {
-                    Some(pod_position) => {
-                        let pod = pods.items.swap_remove(pod_position);
-                        Some(pod)
-                    }
-                    None => None,
-                }
-            };
-
-            let service = match Service::try_from((deployment, pod)) {
-                Ok(service) => service,
-                Err(e) => {
-                    debug!("Deployment does not provide required data: {:?}", e);
-                    continue;
-                }
-            };
-
-            services.push(service);
-        }
-
-        if services.is_empty() {
-            return Ok(None);
-        }
-
-        let owners = namespace
-            .and_then(|mut namespace| namespace.annotations_mut().remove(OWNERS_LABEL))
-            .and_then(|owners_payload| serde_json::from_str::<HashSet<Owner>>(&owners_payload).ok())
-            .unwrap_or_else(|| HashSet::new());
-
-        // TODO: user defined payload.
-
-        Ok(Some(App::new(services, owners)))
-    }
-
     async fn create_namespace_if_necessary(
         &self,
         deployment_unit: &DeploymentUnit,
@@ -482,7 +405,7 @@ impl KubernetesInfrastructure {
 
     fn parse_user_defined_parameters_from(
         &self,
-        namespace: V1Namespace,
+        namespace: &V1Namespace,
     ) -> Option<UserDefinedParameters> {
         let validator = self.config.user_defined_schema_validator()?;
 
@@ -538,21 +461,80 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(apps)
     }
 
-    async fn fetch_services_and_user_defined_payload_of_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Option<(App, Option<UserDefinedParameters>)>> {
-        let Some(services) = self.fetch_app(app_name).await? else {
-            return Ok(None);
+    async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>> {
+        let namespace = app_name.to_rfc1123_namespace_id();
+        let list_param = Default::default();
+
+        let pods_client = self.client().await?;
+        let deployments_client = pods_client.clone();
+        let namespace_client = pods_client.clone();
+        let deployments = async {
+            Api::<V1Deployment>::namespaced(deployments_client, &namespace)
+                .list(&list_param)
+                .await
         };
+        let pods = async {
+            Api::<V1Pod>::namespaced(pods_client, &namespace)
+                .list(&list_param)
+                .await
+        };
+        let namespace = async {
+            Api::<V1Namespace>::all(namespace_client)
+                .get_opt(&namespace)
+                .await
+        };
+        let (deployments, mut pods, namespace) = futures::try_join!(deployments, pods, namespace)?;
 
-        let api = Api::<V1Namespace>::all(self.client().await?);
-        let namespace = api.get(&app_name.to_rfc1123_namespace_id()).await?;
+        let mut services = Vec::with_capacity(deployments.items.len());
+        for deployment in deployments.into_iter() {
+            let pod = {
+                let Some(spec) = deployment.spec.as_ref() else {
+                    continue;
+                };
+                let Some(matches_labels) = spec.selector.match_labels.as_ref() else {
+                    continue;
+                };
 
-        Ok(Some((
-            services,
-            self.parse_user_defined_parameters_from(namespace),
-        )))
+                match pods.items.iter().position(|pod| {
+                    pod.metadata
+                        .labels
+                        .as_ref()
+                        .map(|labels| matches_labels.iter().all(|(k, v)| labels.get(k) == Some(v)))
+                        .unwrap_or(false)
+                }) {
+                    Some(pod_position) => {
+                        let pod = pods.items.swap_remove(pod_position);
+                        Some(pod)
+                    }
+                    None => None,
+                }
+            };
+
+            let service = match Service::try_from((deployment, pod)) {
+                Ok(service) => service,
+                Err(e) => {
+                    debug!("Deployment does not provide required data: {:?}", e);
+                    continue;
+                }
+            };
+
+            services.push(service);
+        }
+
+        if services.is_empty() {
+            return Ok(None);
+        }
+
+        let udp = namespace
+            .as_ref()
+            .and_then(|namespace| self.parse_user_defined_parameters_from(namespace));
+
+        let owners = namespace
+            .and_then(|mut namespace| namespace.annotations_mut().remove(OWNERS_LABEL))
+            .and_then(|owners_payload| serde_json::from_str::<HashSet<Owner>>(&owners_payload).ok())
+            .unwrap_or_else(|| HashSet::new());
+
+        Ok(Some(App::new(services, owners, udp)))
     }
 
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {

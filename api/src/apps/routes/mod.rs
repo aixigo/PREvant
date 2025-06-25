@@ -813,7 +813,8 @@ mod tests {
                         config: crate::sc!("mariadb", "mariadb:latest")
                     }
                 ],
-                HashSet::new()
+                HashSet::new(),
+                None
             )))
             .unwrap()
         );
