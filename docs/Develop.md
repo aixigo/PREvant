@@ -40,11 +40,11 @@ For developing against a local Kubernetes cluster you can use [k3d].
    kubectl -n kube-system port-forward $(kubectl -n kube-system get pods --selector "app.kubernetes.io/name=traefik" --output name) 9000:9000
    ```
 
-# Frontend Development
+# <a name="fe-dev"></a>Frontend Development
 
 PREvant’s frontend is located in the `/frontend` directory and uses [`npm`](https://www.npmjs.com/) for development and builds. You can either [build the static HTML files](#frontend-static-html-build) or [run the development server](#frontend-development-server). There is also a section on how to [run the frontend tests](#frontend-tests).
 
-## Frontend Static HTML Build
+## <a name="fe-static-html"></a>Frontend Static HTML Build
 
 To build the static HTML files that can be served by PREvant's backend:
 
@@ -65,7 +65,7 @@ Afterwards, start the backend (see [Backend Development](#backend-development)).
 **http://localhost:8000**
 
 
-## Frontend Development Server
+## <a name="fe-dev-server"></a>Frontend Development Server
 
 To run the frontend in development mode:
 
