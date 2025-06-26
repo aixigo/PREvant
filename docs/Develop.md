@@ -64,7 +64,6 @@ To build the static HTML files that can be served by PREvant's backend:
 Afterwards, start the backend (see [Backend Development](#backend-development)). PREvant will then be accessible at:  
 **http://localhost:8000**
 
-
 ## <a name="fe-dev-server"></a>Frontend Development Server
 
 To run the frontend in development mode:
@@ -82,15 +81,13 @@ To run the frontend in development mode:
    npm ci
    npm run serve
    ```
-   
+
 4. Open the following URL in your browser:  
    **http://localhost:9001**
 
 ## Frontend Tests
 
 We use [Playwright](https://playwright.dev/) for end-to-end testing.
-
-### Setup
 
 Before running the tests for the first time, you must install the required browsers:
 
@@ -99,8 +96,6 @@ npx playwright install
 ```
 
 This only needs to be done once (or whenever Playwright updates its browser requirements).
-
-### Run Tests
 
 To run the Playwright tests:
 
