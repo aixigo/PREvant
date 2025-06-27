@@ -1330,15 +1330,12 @@ mod tests {
             rule,
             &TraefikRouterRule::path_prefix_rule(["my-path-prefix", "master", "wordpress"])
         );
-        assert!(matches!(
-            service
+        assert!(service
                 .ingress_route
                 .routes()
                 .iter()
                 .flat_map(|r| r.middlewares().iter())
-                .next(),
-            Some(_)
-        ));
+                .next().is_some());
 
         Ok(())
     }

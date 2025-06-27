@@ -920,7 +920,7 @@ pub fn persistent_volume_claim_payload(
                     STORAGE_TYPE_LABEL.to_owned(),
                     declared_volume
                         .split('/')
-                        .last()
+                        .next_back()
                         .unwrap_or("default")
                         .to_owned(),
                 ),

@@ -240,7 +240,7 @@ where
 
 fn map_join_error(err: tokio::task::JoinError) -> HttpApiError {
     HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-        .detail(format!("{}", err))
+        .detail(format!("{err}"))
         .into()
 }
 
@@ -277,7 +277,7 @@ where
     fn respond_to(self, request: &'r Request) -> Result<Response<'static>, Status> {
         match self {
             AsyncCompletion::Pending(app_name, status_id) => {
-                let url = format!("/api/apps/{}/status-changes/{}", app_name, status_id);
+                let url = format!("/api/apps/{app_name}/status-changes/{status_id}");
                 Response::build()
                     .status(Status::Accepted)
                     .raw_header("Location", url)
@@ -320,7 +320,7 @@ impl From<AppsError> for HttpApiError {
         };
 
         HttpApiProblem::with_title_and_type(status)
-            .detail(format!("{}", error))
+            .detail(format!("{error}"))
             .into()
     }
 }

@@ -260,7 +260,7 @@ impl AppsService {
             .infrastructure
             .fetch_app(replicate_from_app_name)
             .await?
-            .unwrap_or_else(|| App::empty());
+            .unwrap_or_else(App::empty);
 
         let (services, user_defined_parameters) = app.into_services_and_user_defined_parameters();
 
@@ -390,7 +390,7 @@ impl AppsService {
             .infrastructure
             .fetch_app(app_name)
             .await?
-            .unwrap_or_else(|| App::empty());
+            .unwrap_or_else(App::empty);
 
         let mut user_defined_parameters = match (
             running_app.user_defined_parameters().clone(),
@@ -1404,7 +1404,7 @@ Log msg 3 of service-a of app master
         let apps = AppsService::new(config, infrastructure)?;
 
         apps.create_or_update(
-            &app_name,
+            app_name,
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
@@ -1435,7 +1435,7 @@ Log msg 3 of service-a of app master
 
         let app_name = &AppName::master();
         apps.create_or_update(
-            &app_name,
+            app_name,
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
@@ -1479,7 +1479,7 @@ Log msg 3 of service-a of app master
 
         let app_name = &AppName::master();
         apps.create_or_update(
-            &app_name,
+            app_name,
             &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
@@ -1681,7 +1681,7 @@ Log msg 3 of service-a of app master
             &replicated_app_name,
             &AppStatusChangeId::new(),
             None,
-            &vec![],
+            &[],
             User::Anonymous,
             None,
         )

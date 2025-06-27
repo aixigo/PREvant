@@ -334,7 +334,7 @@ impl KubernetesInfrastructure {
                     SERVICE_NAME_LABEL,
                     service.service_name(),
                     STORAGE_TYPE_LABEL,
-                    declared_volume.split('/').last().unwrap_or("default")
+                    declared_volume.split('/').next_back().unwrap_or("default")
                 )),
                 ..Default::default()
             };
@@ -532,7 +532,7 @@ impl Infrastructure for KubernetesInfrastructure {
         let owners = namespace
             .and_then(|mut namespace| namespace.annotations_mut().remove(OWNERS_LABEL))
             .and_then(|owners_payload| serde_json::from_str::<HashSet<Owner>>(&owners_payload).ok())
-            .unwrap_or_else(|| HashSet::new());
+            .unwrap_or_else(HashSet::new);
 
         Ok(Some(App::new(services, owners, udp)))
     }
@@ -1176,7 +1176,7 @@ mod tests {
         assert!(
             matches!(err, KubernetesInfrastructureError::UnknownServiceType {
                     unknown_label
-                } if unknown_label == "abc".to_string()
+                } if unknown_label == "abc"
             )
         );
     }
@@ -1195,7 +1195,7 @@ mod tests {
         assert!(matches!(err,
             KubernetesInfrastructureError::MissingImageLabel {
                 deployment_name
-            } if deployment_name == "master-nginx".to_string()
+            } if deployment_name == "master-nginx"
         ));
     }
 }

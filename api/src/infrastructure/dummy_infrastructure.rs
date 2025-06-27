@@ -144,7 +144,7 @@ impl Infrastructure for DummyInfrastructure {
         }
 
         let deployable_services = deployment_unit.services();
-        if let Some(running_services) = services.get_vec_mut(&app_name) {
+        if let Some(running_services) = services.get_vec_mut(app_name) {
             let service_names = deployable_services
                 .iter()
                 .map(|c| c.service_name())
@@ -163,7 +163,7 @@ impl Infrastructure for DummyInfrastructure {
             .iter()
             .map(|sc| Service {
                 id: sc.service_name().clone(),
-                config: ServiceConfig::clone(&sc),
+                config: ServiceConfig::clone(sc),
                 state: State {
                     status: ServiceStatus::Running,
                     started_at: Some(
@@ -182,7 +182,7 @@ impl Infrastructure for DummyInfrastructure {
 
         let mut services = self.services.lock().unwrap();
 
-        match services.remove(&app_name) {
+        match services.remove(app_name) {
             Some(services) => Ok(App::from(
                 services
                     .into_iter()
@@ -216,19 +216,19 @@ impl Infrastructure for DummyInfrastructure {
             vec![
                 (
                     DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(),
-                    format!("Log msg 1 of {} of app {}\n", service_name, app_name),
+                    format!("Log msg 1 of {service_name} of app {app_name}\n"),
                 ),
                 (
                     DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
-                    format!("Log msg 2 of {} of app {}\n", service_name, app_name),
+                    format!("Log msg 2 of {service_name} of app {app_name}\n"),
                 ),
                 (
                     DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(),
-                    format!("Log msg 3 of {} of app {}\n", service_name, app_name),
+                    format!("Log msg 3 of {service_name} of app {app_name}\n"),
                 ),
             ]
             .into_iter()
-            .map(|s| Ok(s)),
+            .map(Ok),
         ))
     }
 

@@ -605,7 +605,7 @@ impl DockerInfrastructure {
         for (path, data) in files.into_iter() {
             let mut header = tar::Header::new_gnu();
             let file_contents = data.into_unsecure();
-            header.set_size(file_contents.as_bytes().len() as u64);
+            header.set_size(file_contents.len() as u64);
             header.set_mode(0o644);
             tar_builder.append_data(
                 &mut header,
@@ -1347,20 +1347,14 @@ impl TryFrom<ContainerInspectResponse> for Service {
 
 impl From<BollardError> for DockerInfrastructureError {
     fn from(err: BollardError) -> Self {
-        match &err {
-            BollardError::DockerResponseServerError {
+        if let BollardError::DockerResponseServerError {
                 status_code,
                 message,
-            } => match status_code {
-                404u16 => {
-                    return DockerInfrastructureError::ImageNotFound {
-                        internal_message: message.clone(),
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
-        }
+            } = &err { if status_code == &404u16 {
+            return DockerInfrastructureError::ImageNotFound {
+                internal_message: message.clone(),
+            }
+        } }
         DockerInfrastructureError::UnexpectedError {
             err: anyhow::Error::new(err),
         }
@@ -1652,7 +1646,7 @@ mod tests {
                 img,
                 ..
             }
-            if img == String::from("\n")// TODO && err == String::from("Invalid image: \n")
+            if img == "\n"// TODO && err == String::from("Invalid image: \n")
         ));
     }
 

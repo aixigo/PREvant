@@ -493,7 +493,7 @@ macro_rules! config_from_str {
         use figment::providers::Format;
         let provider = figment::providers::Toml::string($config_str);
         figment::Figment::from(provider)
-            .extract::<crate::config::Config>()
+            .extract::<$crate::config::Config>()
             .unwrap()
     }};
 }
