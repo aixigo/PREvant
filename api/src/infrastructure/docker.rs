@@ -1348,13 +1348,16 @@ impl TryFrom<ContainerInspectResponse> for Service {
 impl From<BollardError> for DockerInfrastructureError {
     fn from(err: BollardError) -> Self {
         if let BollardError::DockerResponseServerError {
-                status_code,
-                message,
-            } = &err { if status_code == &404u16 {
-            return DockerInfrastructureError::ImageNotFound {
-                internal_message: message.clone(),
+            status_code,
+            message,
+        } = &err
+        {
+            if status_code == &404u16 {
+                return DockerInfrastructureError::ImageNotFound {
+                    internal_message: message.clone(),
+                };
             }
-        } }
+        }
         DockerInfrastructureError::UnexpectedError {
             err: anyhow::Error::new(err),
         }

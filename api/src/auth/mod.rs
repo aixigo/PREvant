@@ -12,7 +12,7 @@ use openidconnect::{
 };
 use rocket::{
     fairing::{self, Fairing, Info, Kind},
-    http::{Cookie, SameSite, Status},
+    http::{Cookie, CookieJar, SameSite, Status},
     request::{FromRequest, Outcome},
     Build, Request, Rocket,
 };
@@ -159,6 +159,83 @@ struct SessionCookie {
     refresh_token: Option<RefreshToken>,
 }
 
+async fn refresh_token_due_to_id_token_expiry<'r>(
+    oidc: &OidcClient,
+    cookies: &CookieJar<'r>,
+    oidc_session: &SessionCookie,
+    id_token_verifier: &openidconnect::core::CoreIdTokenVerifier<'_>,
+    expiry_err: String,
+) -> Outcome<User, HttpApiProblem> {
+    let Some(refresh_token) = &oidc_session.refresh_token else {
+        cookies.remove("oidc_user_session");
+        return Outcome::Error((
+            Status::UnprocessableEntity,
+            HttpApiProblem::with_title_and_type(StatusCode::UNAUTHORIZED).detail(expiry_err),
+        ));
+    };
+
+    let http_client = reqwest::ClientBuilder::new()
+        // Following redirects opens the client up to SSRF vulnerabilities.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("Client should build");
+
+    let token_response = match oidc
+        .client
+        .exchange_refresh_token(&refresh_token)
+        .expect("Request object should be buildable")
+        .request_async(&http_client)
+        .await
+    {
+        Ok(token_response) => token_response,
+        Err(err) => {
+            cookies.remove("oidc_user_session");
+            return Outcome::Error((
+                Status::UnprocessableEntity,
+                HttpApiProblem::with_title_and_type(StatusCode::UNAUTHORIZED)
+                    .detail(err.to_string()),
+            ));
+        }
+    };
+
+    let session_cookie = SessionCookie {
+        id_token: token_response.extra_fields().id_token().unwrap().clone(),
+        refresh_token: Some(refresh_token.clone()),
+    };
+
+    cookies.add(
+        Cookie::build((
+            "oidc_user_session",
+            serde_json::to_string(&session_cookie).unwrap(),
+        ))
+        // TODO .path(base_path.clone())
+        .secure(true)
+        .same_site(SameSite::Lax)
+        .http_only(true)
+        .build(),
+    );
+
+    match token_response
+        .extra_fields()
+        .id_token()
+        .unwrap()
+        .claims(&id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
+    {
+        Ok(id_token_claims) => Outcome::Success(User::Oidc {
+            sub: id_token_claims.subject().clone(),
+            iss: id_token_claims.issuer().clone(),
+        }),
+        Err(err) => {
+            cookies.remove("oidc_user_session");
+            Outcome::Error((
+                Status::UnprocessableEntity,
+                HttpApiProblem::with_title_and_type(StatusCode::UNAUTHORIZED)
+                    .detail(err.to_string()),
+            ))
+        }
+    }
+}
+
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for User {
     type Error = HttpApiProblem;
@@ -170,98 +247,49 @@ impl<'r> FromRequest<'r> for User {
 
         let cookies = request.cookies();
 
-        if let Some(oidc) = &auth.first() {
-            // TODO: do we want to have private cookies?
-            if let Some(serialized_session) = cookies.get("oidc_user_session") {
-                if let Ok(oidc_session) =
-                    serde_json::from_str::<SessionCookie>(serialized_session.value())
-                {
-                    let id_token_verifier: openidconnect::core::CoreIdTokenVerifier =
-                        oidc.client.id_token_verifier();
+        // TODO: do we want to have private cookies?
+        let (Some(oidc), Some(serialized_session)) =
+            (&auth.first(), cookies.get("oidc_user_session"))
+        else {
+            return Outcome::Success(User::Anonymous);
+        };
 
-                    let id_token_claims = match oidc_session
-                        .id_token
-                        .into_claims(&id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
-                    {
-                        Ok(id_token_claims) => id_token_claims,
-                        Err(openidconnect::ClaimsVerificationError::Expired(err)) => {
-                            let Some(refresh_token) = oidc_session.refresh_token else {
-                                cookies.remove("oidc_user_session");
-                                return Outcome::Error((
-                                    Status::UnprocessableEntity,
-                                    HttpApiProblem::with_title_and_type(StatusCode::UNAUTHORIZED)
-                                        .detail(err.to_string()),
-                                ));
-                            };
+        let Ok(oidc_session) = serde_json::from_str::<SessionCookie>(serialized_session.value())
+        else {
+            log::debug!("Cannot deserialize session cookie");
+            return Outcome::Success(User::Anonymous);
+        };
 
-                            let http_client = reqwest::ClientBuilder::new()
-                                // Following redirects opens the client up to SSRF vulnerabilities.
-                                .redirect(reqwest::redirect::Policy::none())
-                                .build()
-                                .expect("Client should build");
+        let id_token_verifier: openidconnect::core::CoreIdTokenVerifier =
+            oidc.client.id_token_verifier();
 
-                            let token_response = match oidc
-                                .client
-                                .exchange_refresh_token(&refresh_token)
-                                // TODO: Error handling
-                                .unwrap()
-                                .request_async(&http_client)
-                                .await
-                            {
-                                Ok(token_response) => token_response,
-                                Err(err) => {
-                                    todo!("{err}")
-                                }
-                            };
-
-                            let session_cookie = SessionCookie {
-                                id_token: token_response.extra_fields().id_token().unwrap().clone(),
-                                refresh_token: Some(refresh_token.clone()),
-                            };
-
-                            cookies.add(
-                                Cookie::build((
-                                    "oidc_user_session",
-                                    serde_json::to_string(&session_cookie).unwrap(),
-                                ))
-                                // TODO .path(base_path.clone())
-                                .secure(true)
-                                .same_site(SameSite::Lax)
-                                .http_only(true)
-                                .build(),
-                            );
-
-                            let id_token_claims = token_response
-                                .extra_fields()
-                                .id_token()
-                                .unwrap()
-                                .claims(&id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
-                                .unwrap();
-
-                            return Outcome::Success(User::Oidc {
-                                sub: id_token_claims.subject().clone(),
-                                iss: id_token_claims.issuer().clone(),
-                            });
-                        }
-                        Err(err) => {
-                            cookies.remove("oidc_user_session");
-                            return Outcome::Error((
-                                Status::UnprocessableEntity,
-                                HttpApiProblem::with_title_and_type(StatusCode::UNAUTHORIZED)
-                                    .detail(err.to_string()),
-                            ));
-                        }
-                    };
-
-                    return Outcome::Success(User::Oidc {
-                        sub: id_token_claims.subject().clone(),
-                        iss: id_token_claims.issuer().clone(),
-                    });
-                }
+        match oidc_session
+            .id_token
+            .claims(&id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
+        {
+            Ok(id_token_claims) => Outcome::Success(User::Oidc {
+                sub: id_token_claims.subject().clone(),
+                iss: id_token_claims.issuer().clone(),
+            }),
+            Err(openidconnect::ClaimsVerificationError::Expired(err)) => {
+                refresh_token_due_to_id_token_expiry(
+                    oidc,
+                    &cookies,
+                    &oidc_session,
+                    &id_token_verifier,
+                    err,
+                )
+                .await
+            }
+            Err(err) => {
+                cookies.remove("oidc_user_session");
+                Outcome::Error((
+                    Status::UnprocessableEntity,
+                    HttpApiProblem::with_title_and_type(StatusCode::UNAUTHORIZED)
+                        .detail(err.to_string()),
+                ))
             }
         }
-
-        Outcome::Success(User::Anonymous)
     }
 }
 
