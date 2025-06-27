@@ -24,8 +24,8 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::{delete_app_sync, AppV1};
 use crate::apps::Apps;
+use crate::apps::{delete_app_sync, AppV1};
 use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::HttpResult;
 use crate::models::web_hook_info::WebHookInfo;

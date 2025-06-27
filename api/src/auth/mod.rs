@@ -7,13 +7,8 @@ use futures::{stream::FuturesUnordered, StreamExt as _};
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
 use openidconnect::{
-    core::{
-        CoreAuthDisplay, CoreAuthPrompt, CoreGenderClaim, CoreJsonWebKey,
-        CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm, CoreProviderMetadata,
-    },
-    Client, ClientId, ClientSecret, EmptyAdditionalClaims, EmptyExtraTokenFields, EndpointMaybeSet,
-    EndpointNotSet, EndpointSet, IdTokenFields, IntrospectionUrl, IssuerUrl, Nonce, RedirectUrl,
-    RefreshToken, RevocationErrorResponseType, StandardErrorResponse, StandardTokenResponse,
+    core::CoreProviderMetadata, Client, ClientId, ClientSecret, EndpointMaybeSet, EndpointNotSet,
+    EndpointSet, IssuerUrl, Nonce, RedirectUrl, RefreshToken,
 };
 use rocket::{
     fairing::{self, Fairing, Info, Kind},
@@ -98,11 +93,6 @@ impl Fairing for Auth {
                     .enable_openid_scope()
                     .set_redirect_uri(redirect_url);
 
-                    // TODO: discover and then mabyeset????
-                    let client = client.set_introspection_url(
-                        IntrospectionUrl::new(String::from("https://gitlab.com/oauth/introspect"))
-                            .unwrap(),
-                    );
                     Ok::<_, anyhow::Error>(client)
                 }
             })
@@ -143,33 +133,10 @@ impl Auth {
 type OidcInners = Vec<OidcClient>;
 
 struct OidcClient {
-    client: Client<
-        EmptyAdditionalClaims,
-        CoreAuthDisplay,
-        CoreGenderClaim,
-        CoreJweContentEncryptionAlgorithm,
-        CoreJsonWebKey,
-        CoreAuthPrompt,
-        StandardErrorResponse<openidconnect::core::CoreErrorResponseType>,
-        StandardTokenResponse<
-            IdTokenFields<
-                EmptyAdditionalClaims,
-                EmptyExtraTokenFields,
-                CoreGenderClaim,
-                CoreJweContentEncryptionAlgorithm,
-                CoreJwsSigningAlgorithm,
-            >,
-            openidconnect::core::CoreTokenType,
-        >,
-        openidconnect::StandardTokenIntrospectionResponse<
-            EmptyExtraTokenFields,
-            openidconnect::core::CoreTokenType,
-        >,
-        openidconnect::core::CoreRevocableToken,
-        StandardErrorResponse<RevocationErrorResponseType>,
+    client: openidconnect::core::CoreClient<
         EndpointSet,
         EndpointNotSet,
-        EndpointSet,
+        EndpointNotSet,
         EndpointNotSet,
         EndpointMaybeSet,
         EndpointMaybeSet,
