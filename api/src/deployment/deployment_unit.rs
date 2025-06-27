@@ -26,6 +26,7 @@ use url::Url;
  * =========================LICENSE_END==================================
  */
 use crate::apps::AppsServiceError;
+use crate::auth::User;
 use crate::config::{Config, StorageStrategy};
 use crate::deployment::hooks::Hooks;
 use crate::infrastructure::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule};
@@ -88,15 +89,35 @@ pub struct WithResolvedImages {
     image_infos: HashMap<Image, ImageInfo>,
 }
 
+pub struct WithUserInformation {
+    app_name: AppName,
+    configs: Vec<ServiceConfig>,
+    service_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
+    app_companions: Vec<(
+        ServiceConfig,
+        crate::config::DeploymentStrategy,
+        crate::config::StorageStrategy,
+    )>,
+    templating_only_service_configs: Vec<ServiceConfig>,
+    image_infos: HashMap<Image, ImageInfo>,
+    user: User,
+}
+
 pub struct WithAppliedTemplating {
     app_name: AppName,
     services: Vec<DeployableService>,
     user_defined_parameters: Option<UserDefinedParameters>,
+    user: User,
 }
 
 pub struct WithAppliedHooks {
     app_name: AppName,
     services: Vec<DeployableService>,
+    user: User,
     user_defined_parameters: Option<UserDefinedParameters>,
 }
 
@@ -104,6 +125,7 @@ pub struct WithAppliedIngressRoute {
     app_name: AppName,
     services: Vec<DeployableService>,
     route: TraefikIngressRoute,
+    user: User,
     user_defined_parameters: Option<UserDefinedParameters>,
 }
 
@@ -116,6 +138,7 @@ pub struct DeploymentUnit {
     services: Vec<DeployableService>,
     route: TraefikIngressRoute,
     user_defined_parameters: Option<UserDefinedParameters>,
+    user: User,
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +214,10 @@ impl DeploymentUnit {
 
     pub fn user_defined_parameters(&self) -> &Option<UserDefinedParameters> {
         &self.user_defined_parameters
+    }
+
+    pub fn user(&self) -> &User {
+        &self.user
     }
 }
 
@@ -325,6 +352,22 @@ impl DeploymentUnitBuilder<WithTemplatedConfigs> {
 }
 
 impl DeploymentUnitBuilder<WithResolvedImages> {
+    pub fn with_user_information(self, user: User) -> DeploymentUnitBuilder<WithUserInformation> {
+        DeploymentUnitBuilder {
+            stage: WithUserInformation {
+                app_name: self.stage.app_name,
+                configs: self.stage.configs,
+                service_companions: self.stage.service_companions,
+                app_companions: self.stage.app_companions,
+                templating_only_service_configs: self.stage.templating_only_service_configs,
+                image_infos: self.stage.image_infos,
+                user,
+            },
+        }
+    }
+}
+
+impl DeploymentUnitBuilder<WithUserInformation> {
     pub fn apply_templating(
         self,
         base_url: &Option<Url>,
@@ -476,6 +519,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 app_name: self.stage.app_name,
                 services: strategies,
                 user_defined_parameters,
+                user: self.stage.user,
             },
         })
     }
@@ -601,6 +645,7 @@ impl DeploymentUnitBuilder<WithAppliedTemplating> {
             stage: WithAppliedHooks {
                 app_name: self.stage.app_name,
                 services,
+                user: self.stage.user,
                 user_defined_parameters: self.stage.user_defined_parameters,
             },
         })
@@ -627,6 +672,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
                 app_name: self.stage.app_name,
                 services: self.stage.services,
                 route,
+                user: self.stage.user,
                 user_defined_parameters: self.stage.user_defined_parameters,
             },
         }
@@ -637,6 +683,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
         DeploymentUnit {
             app_name: self.stage.app_name,
             services: self.stage.services,
+            user: self.stage.user,
             route,
             user_defined_parameters: self.stage.user_defined_parameters,
         }
@@ -650,6 +697,7 @@ impl DeploymentUnitBuilder<WithAppliedIngressRoute> {
             services: self.stage.services,
             route: self.stage.route,
             user_defined_parameters: self.stage.user_defined_parameters,
+            user: self.stage.user,
         }
     }
 }
@@ -704,6 +752,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -742,6 +791,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -797,6 +847,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -844,6 +895,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -888,6 +940,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -923,6 +976,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -962,6 +1016,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1016,6 +1071,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(vec![sc!("postgres", "postgres:alpine")])
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1070,6 +1126,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1122,6 +1179,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1173,6 +1231,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1218,6 +1277,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1248,6 +1308,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1269,15 +1330,13 @@ mod tests {
             rule,
             &TraefikRouterRule::path_prefix_rule(["my-path-prefix", "master", "wordpress"])
         );
-        assert!(matches!(
-            service
-                .ingress_route
-                .routes()
-                .iter()
-                .flat_map(|r| r.middlewares().iter())
-                .next(),
-            Some(_)
-        ));
+        assert!(service
+            .ingress_route
+            .routes()
+            .iter()
+            .flat_map(|r| r.middlewares().iter())
+            .next()
+            .is_some());
 
         Ok(())
     }
@@ -1307,6 +1366,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -1371,6 +1431,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
+            .with_user_information(User::Anonymous)
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?

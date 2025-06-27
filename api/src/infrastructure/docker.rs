@@ -31,11 +31,10 @@ use crate::infrastructure::{
     HttpForwarder, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
 };
-use crate::models::service::{
-    ContainerType, Service, ServiceError, ServiceStatus, Services, State,
+use crate::models::{
+    App, AppName, ContainerType, Environment, Image, Service, ServiceConfig, ServiceError,
+    ServiceStatus, State, WebHostMeta,
 };
-use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, Environment, Image, ServiceConfig, WebHostMeta};
 use anyhow::{anyhow, Result};
 use async_stream::stream;
 use async_trait::async_trait;
@@ -289,7 +288,7 @@ impl DockerInfrastructure {
         &self,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Services, DockerInfrastructureError> {
+    ) -> Result<App, DockerInfrastructureError> {
         let app_name = deployment_unit.app_name();
         let services = deployment_unit.services();
         let network_id = self.create_or_get_network_id(app_name).await?;
@@ -315,20 +314,19 @@ impl DockerInfrastructure {
             services.push(service?);
         }
 
-        Ok(Services::from(services))
+        Ok(App::from(services))
     }
 
     async fn stop_services_impl(
         &self,
         app_name: &AppName,
-    ) -> Result<Services, DockerInfrastructureError> {
-        let container_details = match self
+    ) -> Result<App, DockerInfrastructureError> {
+        let Some(container_details) = self
             .get_container_details(Some(app_name), None)
             .await?
-            .get_vec(app_name)
-        {
-            None => return Ok(Services::empty()),
-            Some(services) => services.clone(),
+            .remove(app_name)
+        else {
+            return Ok(App::empty());
         };
 
         let docker = Docker::connect_with_socket_defaults()?;
@@ -386,7 +384,7 @@ impl DockerInfrastructure {
         self.delete_network(app_name).await?;
         self.delete_volume_mount(app_name).await?;
 
-        Ok(Services::from(services))
+        Ok(App::from(services))
     }
 
     async fn start_container(
@@ -607,7 +605,7 @@ impl DockerInfrastructure {
         for (path, data) in files.into_iter() {
             let mut header = tar::Header::new_gnu();
             let file_contents = data.into_unsecure();
-            header.set_size(file_contents.as_bytes().len() as u64);
+            header.set_size(file_contents.len() as u64);
             header.set_mode(0o644);
             tar_builder.append_data(
                 &mut header,
@@ -825,7 +823,7 @@ impl DockerInfrastructure {
 
 #[async_trait]
 impl Infrastructure for DockerInfrastructure {
-    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>> {
+    async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let mut apps = HashMap::new();
         let container_details = self.get_container_details(None, None).await?;
 
@@ -844,31 +842,27 @@ impl Infrastructure for DockerInfrastructure {
                 services.push(service);
             }
 
-            apps.insert(app_name, Services::from(services));
+            // TODO: copy at least owner
+            apps.insert(app_name, App::from(services));
         }
 
         Ok(apps)
     }
 
-    async fn fetch_services_and_user_defined_payload_of_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>> {
+    async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>> {
         let container_details = self.get_container_details(Some(app_name), None).await?;
 
         if container_details.is_empty() {
             return Ok(None);
         }
 
-        Ok(Some((
-            Services::from(
-                container_details
-                    .into_iter()
-                    .flat_map(|(_, details)| details.into_iter())
-                    .filter_map(|details| Service::try_from(details).ok())
-                    .collect::<Vec<_>>(),
-            ),
-            None,
+        // TODO: copy at least owner
+        Ok(Some(App::from(
+            container_details
+                .into_iter()
+                .flat_map(|(_, details)| details.into_iter())
+                .filter_map(|details| Service::try_from(details).ok())
+                .collect::<Vec<_>>(),
         )))
     }
 
@@ -877,7 +871,7 @@ impl Infrastructure for DockerInfrastructure {
         status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Services> {
+    ) -> Result<App> {
         let deployment_container = self
             .create_status_change_container(status_id, deployment_unit.app_name())
             .await?;
@@ -891,7 +885,7 @@ impl Infrastructure for DockerInfrastructure {
         Ok(result?)
     }
 
-    async fn get_status_change(&self, status_id: &str) -> Result<Option<Services>> {
+    async fn get_status_change(&self, status_id: &str) -> Result<Option<App>> {
         Ok(
             match self
                 .find_status_change_container(status_id)
@@ -924,7 +918,7 @@ impl Infrastructure for DockerInfrastructure {
     }
 
     /// Deletes all services for the given `app_name`.
-    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<Services> {
+    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<App> {
         let deployment_container = self
             .create_status_change_container(status_id, app_name)
             .await?;
@@ -1353,19 +1347,16 @@ impl TryFrom<ContainerInspectResponse> for Service {
 
 impl From<BollardError> for DockerInfrastructureError {
     fn from(err: BollardError) -> Self {
-        match &err {
-            BollardError::DockerResponseServerError {
-                status_code,
-                message,
-            } => match status_code {
-                404u16 => {
-                    return DockerInfrastructureError::ImageNotFound {
-                        internal_message: message.clone(),
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
+        if let BollardError::DockerResponseServerError {
+            status_code,
+            message,
+        } = &err
+        {
+            if status_code == &404u16 {
+                return DockerInfrastructureError::ImageNotFound {
+                    internal_message: message.clone(),
+                };
+            }
         }
         DockerInfrastructureError::UnexpectedError {
             err: anyhow::Error::new(err),
@@ -1658,7 +1649,7 @@ mod tests {
                 img,
                 ..
             }
-            if img == String::from("\n")// TODO && err == String::from("Invalid image: \n")
+            if img == "\n"// TODO && err == String::from("Invalid image: \n")
         ));
     }
 

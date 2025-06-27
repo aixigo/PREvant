@@ -23,6 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+import { EventSource } from 'eventsource';
 import { Store } from 'vuex';
 
 const SERVICE_TYPE_ORDER = [
@@ -70,9 +71,11 @@ export function createStore(router) {
                }
 
                const ticket = state.tickets[ name ];
+               const owners = appContainers.owners ?? [];
 
                const containers = [
                   ...appContainers
+                     .services
                      .map( ( { name, url, openApiUrl, asyncApiUrl, version, type, state } ) => {
                         return {
                             name, url, openApiUrl, asyncApiUrl, version, type, status: state.status
@@ -80,7 +83,7 @@ export function createStore(router) {
                      } )
                ];
                containers.sort( byTypeAndName );
-               return { name, ticket, containers };
+               return { name, ticket, containers, owners };
             }
 
              function byTypeAndName(containerA, containerB) {
@@ -198,7 +201,15 @@ export function createStore(router) {
 
             context.commit( 'startFetch' );
 
-            const appEvents = new EventSource('/api/apps');
+            const appEvents = new EventSource('/api/apps', {
+               fetch: (input, init) => fetch(input, {
+                  ...init,
+                  headers: {
+                     ...init.headers,
+                     Accept: 'text/vnd.prevant.v2+event-stream'
+                  },
+               }),
+            });
             appEvents.addEventListener('message', (event) => {
                const apps = JSON.parse(event.data);
 

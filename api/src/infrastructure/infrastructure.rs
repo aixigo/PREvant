@@ -27,9 +27,7 @@
 use super::traefik::TraefikIngressRoute;
 use crate::config::ContainerConfig;
 use crate::deployment::DeploymentUnit;
-use crate::models::service::{Service, ServiceStatus, Services};
-use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, WebHostMeta};
+use crate::models::{App, AppName, Service, ServiceStatus, WebHostMeta};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
@@ -39,20 +37,13 @@ use std::collections::{HashMap, HashSet};
 
 #[async_trait]
 pub trait Infrastructure: Send + Sync + DynClone {
-    /// Returns a `map` of `app-name` and the running services for this app.
-    async fn fetch_services(&self) -> Result<HashMap<AppName, Services>>;
+    /// Returns a `map` of `app-name` and the details of the deployed applications.
+    async fn fetch_apps(&self) -> Result<HashMap<AppName, App>>;
 
-    async fn fetch_services_and_user_defined_payload_of_app(
-        &self,
-        app_name: &AppName,
-    ) -> Result<Option<(Services, Option<UserDefinedParameters>)>>;
+    async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>>;
 
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
-        Ok(self
-            .fetch_services()
-            .await?
-            .into_keys()
-            .collect::<HashSet<_>>())
+        Ok(self.fetch_apps().await?.into_keys().collect::<HashSet<_>>())
     }
 
     /// Deploys the services of the given set of `ServiceConfig`.
@@ -68,9 +59,9 @@ pub trait Infrastructure: Send + Sync + DynClone {
         status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
-    ) -> Result<Services>;
+    ) -> Result<App>;
 
-    async fn get_status_change(&self, _status_id: &str) -> Result<Option<Services>> {
+    async fn get_status_change(&self, _status_id: &str) -> Result<Option<App>> {
         Ok(None)
     }
 
@@ -78,7 +69,7 @@ pub trait Infrastructure: Send + Sync + DynClone {
     ///
     /// The implementation must ensure that it returns the services that have been
     /// stopped.
-    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<Services>;
+    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<App>;
 
     /// Streams the log lines with a the corresponding timestamps in it.
     async fn get_logs<'a>(

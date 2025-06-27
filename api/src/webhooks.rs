@@ -24,12 +24,13 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::delete_app_sync;
 use crate::apps::Apps;
+use crate::apps::{delete_app_sync, AppV1};
+use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::HttpResult;
-use crate::models::service::Services;
 use crate::models::web_hook_info::WebHookInfo;
 use crate::models::AppName;
+use http_api_problem::HttpApiProblem;
 use log::info;
 use rocket::serde::json::Json;
 use rocket::State;
@@ -40,7 +41,8 @@ use std::sync::Arc;
 pub async fn webhooks(
     apps: &State<Arc<Apps>>,
     web_hook_info: WebHookInfo,
-) -> HttpResult<Json<Services>> {
+    user: Result<UserValidatedByAccessMode, HttpApiProblem>,
+) -> HttpResult<Json<AppV1>> {
     info!(
         "Deleting app {:?} through web hook {:?} with event {:?}",
         web_hook_info.get_app_name(),
@@ -49,5 +51,5 @@ pub async fn webhooks(
     );
 
     let app_name = AppName::from_str(&web_hook_info.get_app_name());
-    delete_app_sync(app_name, apps).await
+    delete_app_sync(app_name, apps, user).await
 }

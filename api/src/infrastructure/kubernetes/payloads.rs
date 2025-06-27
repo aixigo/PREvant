@@ -27,13 +27,14 @@ use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
     STORAGE_TYPE_LABEL,
 };
+use crate::auth::User;
 use crate::config::{Config, ContainerConfig};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::infrastructure::{
-    TraefikIngressRoute, TraefikRouterRule, USER_DEFINED_PARAMETERS_LABEL,
+    TraefikIngressRoute, TraefikRouterRule, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
 };
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, ServiceConfig};
+use crate::models::{AppName, Owner, ServiceConfig};
 use base64::{engine::general_purpose, Engine};
 use bytesize::ByteSize;
 use chrono::Utc;
@@ -368,7 +369,27 @@ pub fn namespace_payload(
     app_name: &AppName,
     config: &Config,
     user_defined_parameters: &Option<UserDefinedParameters>,
+    users: &[&User],
 ) -> V1Namespace {
+    V1Namespace {
+        metadata: ObjectMeta {
+            name: Some(app_name.to_rfc1123_namespace_id()),
+            annotations: namespace_annotations(config, user_defined_parameters, users),
+            labels: Some(BTreeMap::from([(
+                APP_NAME_LABEL.to_string(),
+                app_name.to_string(),
+            )])),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+pub fn namespace_annotations(
+    config: &Config,
+    user_defined_parameters: &Option<UserDefinedParameters>,
+    users: &[&User],
+) -> Option<BTreeMap<String, String>> {
     let annotations = match config.runtime_config() {
         crate::config::Runtime::Docker => None,
         crate::config::Runtime::Kubernetes(runtime) => {
@@ -393,17 +414,26 @@ pub fn namespace_payload(
         annotations
     };
 
-    V1Namespace {
-        metadata: ObjectMeta {
-            name: Some(app_name.to_rfc1123_namespace_id()),
-            annotations,
-            labels: Some(BTreeMap::from([(
-                APP_NAME_LABEL.to_string(),
-                app_name.to_string(),
-            )])),
-            ..Default::default()
-        },
-        ..Default::default()
+    let owners = users
+        .iter()
+        .filter_map(|user| match user {
+            User::Anonymous => None,
+            User::Oidc { sub, iss } => Some(Owner {
+                sub: sub.clone(),
+                iss: iss.clone(),
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    if !owners.is_empty() {
+        let mut annotations = annotations.unwrap_or_default();
+        annotations.insert(
+            OWNERS_LABEL.to_string(),
+            serde_json::to_string(&owners).unwrap(),
+        );
+        Some(annotations)
+    } else {
+        annotations
     }
 }
 
@@ -890,7 +920,7 @@ pub fn persistent_volume_claim_payload(
                     STORAGE_TYPE_LABEL.to_owned(),
                     declared_volume
                         .split('/')
-                        .last()
+                        .next_back()
                         .unwrap_or("default")
                         .to_owned(),
                 ),
@@ -1605,6 +1635,7 @@ mod tests {
             &AppName::from_str("MY-APP").unwrap(),
             &Default::default(),
             &None,
+            &[],
         );
 
         assert_eq!(
@@ -1635,7 +1666,8 @@ mod tests {
         )
         .unwrap();
 
-        let namespace = namespace_payload(&AppName::from_str("myapp").unwrap(), &config, &None);
+        let namespace =
+            namespace_payload(&AppName::from_str("myapp").unwrap(), &config, &None, &[]);
 
         assert_eq!(
             namespace,
