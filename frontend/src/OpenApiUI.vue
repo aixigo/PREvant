@@ -33,7 +33,7 @@
                   <h1>API Documentation<span v-if="showAdditionalHeadlineInformation"> – {{ $route.params.title }}</span></h1>
 
                   <span @click="close()">
-                     <font-awesome-icon icon="window-close" @click="close()" class="ra-modal-close-button"/>
+                     <font-awesome-icon icon="window-close" class="ra-modal-close-button" aria-label="Close"/>
                   </span>
                </div>
 
@@ -135,11 +135,7 @@
       },
       methods: {
          close() {
-           if (window.history.length > 1) {
-             this.$router.back()
-           } else {
-             this.$router.push('/')
-           }
+           this.$router.push(this.$router.options.history.state.back ?? "/");
          }
       }
    }

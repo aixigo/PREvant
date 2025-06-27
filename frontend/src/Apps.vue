@@ -44,7 +44,6 @@
             v-for="reviewApp in appsWithoutTicket(reviewApps)"
             :key="reviewApp.name"
             :review-app="reviewApp"
-            v-on:showLogs="showServiceLogs"
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
@@ -119,12 +118,6 @@
          appsWithoutTicket( apps ) {
             const self = this;
             return apps.filter( app => self.$store.state.tickets[ app.name ] === undefined );
-         },
-
-         showServiceLogs( appName, serviceName ) {
-            this.selectLogs.appName = appName;
-            this.selectLogs.serviceName = serviceName;
-            this.$refs.logsDialog.open();
          },
 
          changeServiceState( appName, serviceName ) {
