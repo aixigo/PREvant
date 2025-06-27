@@ -6,7 +6,7 @@ You can build PREvant's backend API with [`cargo`](https://doc.rust-lang.org/car
 
 When you than interact with the REST API to deploy service, it is worthwhile to have a look into the [Traefik dashboard](https://doc.traefik.io/traefik/operations/dashboard/#the-dashboard) to double check if PREvant exposes the services as expected.
 
-If you want to use PREvant's frontend during development, head over to the [Frontend Development section](#frontend-development).
+If you want to use PREvant's frontend during development, head over to the [Frontend Development section](#fe-dev).
 
 Without any CLI options, PREvant will use the Docker API. If you want to develop with against Kubernetes, have a look into the [Kubernetes section](#k8s-dev).
 
@@ -61,7 +61,7 @@ To build the static HTML files that can be served by PREvant's backend:
    npm run build
    ```
 
-Afterwards, start the backend (see [Backend Development](#backend-development)). PREvant will then be accessible at:  
+Afterwards, start the backend (see [Backend Development](#backend-development)). PREvant will then be accessible at:
 **http://localhost:8000**
 
 ## <a name="fe-dev-server"></a>Frontend Development Server
@@ -82,7 +82,7 @@ To run the frontend in development mode:
    npm run serve
    ```
 
-4. Open the following URL in your browser:  
+4. Open the following URL in your browser:
    **http://localhost:9001**
 
 ## Frontend Tests
