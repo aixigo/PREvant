@@ -27,7 +27,6 @@ use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
     STORAGE_TYPE_LABEL,
 };
-use crate::auth::User;
 use crate::config::{Config, ContainerConfig};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::infrastructure::{
@@ -369,12 +368,12 @@ pub fn namespace_payload(
     app_name: &AppName,
     config: &Config,
     user_defined_parameters: &Option<UserDefinedParameters>,
-    users: &[&User],
+    owners: &HashSet<Owner>,
 ) -> V1Namespace {
     V1Namespace {
         metadata: ObjectMeta {
             name: Some(app_name.to_rfc1123_namespace_id()),
-            annotations: namespace_annotations(config, user_defined_parameters, users),
+            annotations: namespace_annotations(config, user_defined_parameters, owners),
             labels: Some(BTreeMap::from([(
                 APP_NAME_LABEL.to_string(),
                 app_name.to_string(),
@@ -388,7 +387,7 @@ pub fn namespace_payload(
 pub fn namespace_annotations(
     config: &Config,
     user_defined_parameters: &Option<UserDefinedParameters>,
-    users: &[&User],
+    owners: &HashSet<Owner>,
 ) -> Option<BTreeMap<String, String>> {
     let annotations = match config.runtime_config() {
         crate::config::Runtime::Docker => None,
@@ -413,17 +412,6 @@ pub fn namespace_annotations(
     } else {
         annotations
     };
-
-    let owners = users
-        .iter()
-        .filter_map(|user| match user {
-            User::Anonymous => None,
-            User::Oidc { sub, iss } => Some(Owner {
-                sub: sub.clone(),
-                iss: iss.clone(),
-            }),
-        })
-        .collect::<Vec<_>>();
 
     if !owners.is_empty() {
         let mut annotations = annotations.unwrap_or_default();
@@ -1635,7 +1623,7 @@ mod tests {
             &AppName::from_str("MY-APP").unwrap(),
             &Default::default(),
             &None,
-            &[],
+            &HashSet::new(),
         );
 
         assert_eq!(
@@ -1666,8 +1654,12 @@ mod tests {
         )
         .unwrap();
 
-        let namespace =
-            namespace_payload(&AppName::from_str("myapp").unwrap(), &config, &None, &[]);
+        let namespace = namespace_payload(
+            &AppName::from_str("myapp").unwrap(),
+            &config,
+            &None,
+            &HashSet::new(),
+        );
 
         assert_eq!(
             namespace,

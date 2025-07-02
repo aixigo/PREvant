@@ -35,6 +35,7 @@ use crate::infrastructure::HttpForwarder;
 use crate::infrastructure::Infrastructure;
 use crate::infrastructure::TraefikIngressRoute;
 use crate::models::user_defined_parameters::UserDefinedParameters;
+use crate::models::Owner;
 use crate::models::{
     App, AppName, AppStatusChangeId, ContainerType, LogChunk, Service, ServiceConfig, ServiceStatus,
 };
@@ -430,9 +431,8 @@ impl AppsService {
             };
         }
 
-        let configs_for_templating = running_app
-            .into_services()
-            .into_iter()
+        let (services, mut owners) = running_app.into_services_and_owners();
+        let configs_for_templating = services            .into_iter()
             .filter(|service| service.container_type() == &ContainerType::Instance)
             .filter(|service| {
                 !service_configs
@@ -451,9 +451,17 @@ impl AppsService {
             .resolve_image_infos(&images)
             .await?;
 
+        if let User::Oidc { sub, iss, name } = user {
+            owners.insert(Owner {
+                sub,
+                iss,
+                name,
+            });
+        }
+
         let deployment_unit_builder = deployment_unit_builder
             .extend_with_image_infos(image_infos)
-            .with_user_information(user)
+            .with_owners(owners)
             .apply_templating(
                 &self.prevant_base_route.as_ref().and_then(|r| r.to_url()),
                 user_defined_parameters,

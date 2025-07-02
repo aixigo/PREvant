@@ -148,12 +148,33 @@
                   :spellcheck="false">
             </textarea>
          </div>
+
+         <div class="card-footer text-muted" v-if="reviewApp.owners.length === 0">
+            No known owners
+         </div>
+         <div class="owners card-footer text-muted" v-else>
+            Owners:
+            <span class="badge badge-secondary" v-for="owner in reviewApp.owners">
+               <template v-if="owner.name">{{ owner.name }}</template>
+               <template v-else>{{ owner.sub }}</template>
+            </span>
+         </div>
       </div>
 
       <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name != 'master'"/>
       <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
    </div>
 </template>
+
+<style lang="css" scoped>
+.owners {
+   overflow: hidden;
+   white-space: nowrap;
+}
+.owners span {
+    margin: 0 0.2em;
+}
+</style>
 
 <script>
    import moment from 'moment';

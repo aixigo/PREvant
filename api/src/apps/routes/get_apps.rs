@@ -358,6 +358,7 @@ mod tests {
                             "https://openid.example.com"
                         ))
                         .unwrap(),
+                        name: None,
                     }])
                 )
             )])))

@@ -38,6 +38,7 @@ use url::Url;
 pub struct Owner {
     pub sub: openidconnect::SubjectIdentifier,
     pub iss: openidconnect::IssuerUrl,
+    pub name: Option<String>,
 }
 
 /// Data struct for holding information about the application

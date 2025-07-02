@@ -177,8 +177,6 @@ impl KubernetesInfrastructure {
         deployment_unit: &DeploymentUnit,
     ) -> Result<(), KubernetesInfrastructureError> {
         let app_name = deployment_unit.app_name();
-        // TODO: collect existing users…
-        let users = &[deployment_unit.user()];
 
         let api = Api::all(self.client().await?);
         match api
@@ -188,7 +186,7 @@ impl KubernetesInfrastructure {
                     app_name,
                     &self.config,
                     deployment_unit.user_defined_parameters(),
-                    users,
+                    deployment_unit.owners(),
                 ),
             )
             .await
@@ -209,7 +207,7 @@ impl KubernetesInfrastructure {
                 let annotations = namespace_annotations(
                     &self.config,
                     deployment_unit.user_defined_parameters(),
-                    users,
+                    deployment_unit.owners(),
                 );
                 if annotations.is_some() {
                     debug!(

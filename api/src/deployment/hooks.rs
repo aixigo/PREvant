@@ -235,7 +235,6 @@ impl From<&DeployableService> for JsServiceConfig {
 mod tests {
     use super::*;
     use crate::apps::*;
-    use crate::auth::User;
     use crate::deployment::deployment_unit::DeploymentUnitBuilder;
     use std::collections::HashMap;
     use std::io::Write;
@@ -278,7 +277,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .with_user_information(User::Anonymous)
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -330,7 +329,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .with_user_information(User::Anonymous)
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -368,7 +367,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .with_user_information(User::Anonymous)
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -414,7 +413,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .with_user_information(User::Anonymous)
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -463,7 +462,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .with_user_information(User::Anonymous)
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -502,7 +501,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .with_user_information(User::Anonymous)
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -539,7 +538,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .with_user_information(User::Anonymous)
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await?
@@ -567,7 +566,7 @@ mod tests {
             .extend_with_config(&config)
             .extend_with_templating_only_service_configs(Vec::new())
             .extend_with_image_infos(HashMap::new())
-            .with_user_information(User::Anonymous)
+            .without_owners()
             .apply_templating(&None, None)?
             .apply_hooks(&config)
             .await

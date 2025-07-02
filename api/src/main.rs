@@ -35,11 +35,19 @@ use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
 use auth::Auth;
+use auth::Issuers;
+use auth::User;
 use clap::Parser;
+use http::StatusCode;
+use http_api_problem::HttpApiProblem;
+use http_result::HttpApiError;
+use http_result::HttpResult;
 use infrastructure::TraefikIngressRoute;
 use rocket::fs::{FileServer, Options};
 use rocket::routes;
+use rocket::State;
 use serde_yaml::{to_string, Value};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::fs::File;
@@ -76,6 +84,61 @@ async fn openapi(request_info: RequestInfo) -> Option<String> {
     v["servers"][0]["url"] = Value::String(url.to_string());
 
     Some(to_string(&v).unwrap())
+}
+#[derive(rocket::Responder)]
+#[response(status = 200, content_type = "html")]
+struct Index(String);
+
+#[rocket::get("/")]
+async fn index(user: User, issuers: &State<Issuers>) -> HttpResult<Index> {
+    use handlebars::Handlebars;
+
+    let index_path = Path::new("frontend").join("index.html");
+
+    let mut f = File::open(index_path).await.map_err(|e| {
+        HttpApiError::from(
+            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                .detail(e.to_string()),
+        )
+    })?;
+
+    let mut contents = String::new();
+    f.read_to_string(&mut contents).await.map_err(|e| {
+        HttpApiError::from(
+            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                .detail(e.to_string()),
+        )
+    })?;
+
+    let mut handlebars = Handlebars::new();
+    handlebars.register_escape_fn(handlebars::no_escape);
+    handlebars
+        .register_template_string("index", contents)
+        .map_err(|e| {
+            HttpApiError::from(
+                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                    .detail(e.to_string()),
+            )
+        })?;
+
+    let mut data = BTreeMap::new();
+    let me = match user {
+        User::Anonymous => serde_json::Value::Null,
+        User::Oidc { sub, iss, name } => serde_json::json!({
+            "sub": sub,
+            "iss": iss,
+            "name": name
+        }),
+    };
+    data.insert("me", me.to_string());
+    data.insert("issuers", issuers.inner().to_string());
+
+    Ok(Index(handlebars.render("index", &data).map_err(|e| {
+        HttpApiError::from(
+            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                .detail(e.to_string()),
+        )
+    })?))
 }
 
 fn create_infrastructure(config: &Config) -> Box<dyn Infrastructure> {
@@ -134,6 +197,7 @@ async fn main() -> Result<(), StartUpError> {
         .manage(apps)
         .manage(host_meta_cache)
         .manage(app_updates)
+        .mount("/", routes![index])
         .mount(
             "/",
             FileServer::new(Path::new("frontend"), Options::Index | Options::Missing),

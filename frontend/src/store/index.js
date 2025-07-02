@@ -33,7 +33,7 @@ const SERVICE_TYPE_ORDER = [
     'service-companion'
 ];
 
-export function createStore(router) {
+export function createStore(router, me, issuers) {
    const store = new Store( {
       state: {
          fetchInProgress: false,
@@ -41,9 +41,14 @@ export function createStore(router) {
          appsError: null,
          tickets: {},
          ticketsError: null,
-         appNameFilter: ''
+         appNameFilter: '',
+         me,
+         issuers
       },
       getters: {
+         me: state => state.me,
+         issuers: state => state.issuers,
+
          appNameFilter: state => state.appNameFilter,
 
          reviewApps: state => {
@@ -101,6 +106,27 @@ export function createStore(router) {
                const [ keyA, keyB ] = [ appA, appB ].map( ( { name } ) => name );
                return keyA > keyB ? -1 : 1;
             }
+         },
+
+         myApps: (state, getters) => {
+            if (state.me === null) {
+               return [];
+            }
+
+            return getters.reviewApps
+               .filter(app => app.owners.some(owner => owner.sub == state.me.sub && owner.iss == state.me.iss));
+         },
+
+         appsWithTicket: (state, getters) => {
+            return getters.reviewApps
+               .filter( app => !getters.myApps.some(myApp => app.name == myApp.name) )
+               .filter( app => state.tickets[ app.name ] !== undefined );
+         },
+
+         appsWithoutTicket: (state, getters) => {
+            return getters.reviewApps
+               .filter( app => !getters.myApps.some(myApp => app.name == myApp.name) )
+               .filter( app => state.tickets[ app.name ] === undefined );
          },
 
          errors: state => {

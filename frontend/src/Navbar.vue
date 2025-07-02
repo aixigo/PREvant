@@ -56,6 +56,14 @@
                <font-awesome-icon icon="terminal"/>
                API
             </router-link>
+
+            <a href="#" class="my-2 my-sm-0" v-if="me">
+               {{ name }}
+            </a>
+            <a class="btn btn-outline-success my-2 my-sm-0"
+               v-else-if="issuers != null" v-for="issuer in issuers" :href="issuer.loginUrl">
+               Login with {{ issuer.issuer }}
+            </a>
          </form>
       </div>
    </nav>
@@ -66,7 +74,6 @@
    nav > div > form.form-inline > a {
       margin-left: 10px;
    }
-
 </style>
 
 <script>
@@ -81,7 +88,14 @@
          'open-api-ui': OpenApiUI
       },
       computed: {
-         ...mapGetters( [ 'appNameFilter' ] )
+         ...mapGetters( [ 'appNameFilter', 'me', 'issuers' ] ),
+
+         name() {
+            if (me.name != null) {
+               return me.name;
+            }
+            return me.sub;
+         }
       },
       methods: {
          fireSearchEvent(e) {

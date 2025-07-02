@@ -39,7 +39,6 @@ import { createRouter, createWebHashHistory } from 'vue-router';
 import './scss/theme.scss';
 import Main from './Main.vue';
 import Apps from './Apps.vue';
-import Navbar from './Navbar.vue';
 import AsyncApiUI from './AsyncApiUI.vue';
 import OpenApiUI from './OpenApiUI.vue';
 import LogsDialog from './LogsDialog.vue';
@@ -69,7 +68,8 @@ export const router = createRouter({
    ]
 });
 
-const store = createStore(router);
+// Please note, that me and issuers are injected by the dev server or by the PREvant backend.
+const store = createStore(router, me, issuers);
 store.dispatch('fetchData');
 
 createApp(Main)

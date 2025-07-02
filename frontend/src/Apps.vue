@@ -38,20 +38,30 @@
          No apps to review.
       </h1>
 
-      <h1 class="ra-container__title--preview" v-if="appsWithoutTicket(reviewApps).length > 0">Previews</h1>
+      <h1 class="ra-container__title--preview" v-if="myApps.length > 0">My Previews</h1>
       <transition-group tag="div" name="list-complete" class="ra-container__apps--preview ra-apps ">
          <review-app-card
-            v-for="reviewApp in appsWithoutTicket(reviewApps)"
+            v-for="reviewApp in myApps"
             :key="reviewApp.name"
             :review-app="reviewApp"
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
 
-      <h1 class="ra-container__title--feature" v-if="appsWithTicket(reviewApps).length > 0">Features</h1>
+      <h1 class="ra-container__title--preview" v-if="appsWithoutTicket.length > 0">Previews</h1>
+      <transition-group tag="div" name="list-complete" class="ra-container__apps--preview ra-apps ">
+         <review-app-card
+            v-for="reviewApp in appsWithoutTicket"
+            :key="reviewApp.name"
+            :review-app="reviewApp"
+            v-on:changeState="changeServiceState"
+            class="list-complete-item"/>
+      </transition-group>
+
+      <h1 class="ra-container__title--feature" v-if="appsWithTicket.length > 0">Features</h1>
       <transition-group tag="div" name="list-complete" class="ra-container__apps--feature ra-apps">
          <review-app-card
-            v-for="reviewApp in appsWithTicket(reviewApps)"
+            v-for="reviewApp in appsWithTicket"
             :key="reviewApp.name"
             :review-app="reviewApp"
             v-on:showLogs="showServiceLogs"
@@ -94,12 +104,7 @@
 
    export default {
       data() {
-         return {
-            selectLogs: {
-               appName: null,
-               serviceName: null,
-            }
-         };
+         return {};
       },
       components: {
          'review-app-card': ReviewAppCard,
@@ -107,26 +112,18 @@
          'spinner': Spinner
       },
       computed: {
-         ...mapGetters( [ 'reviewApps', 'errors', 'isFetchInProgress' ] )
+         ...mapGetters([
+            'reviewApps',
+            'appsWithTicket',
+            'appsWithoutTicket',
+            'myApps',
+            'errors',
+            'isFetchInProgress'
+         ])
       },
       methods: {
-         appsWithTicket( apps ) {
-            const self = this;
-            return apps.filter( app => self.$store.state.tickets[ app.name ] !== undefined );
-         },
-
-         appsWithoutTicket( apps ) {
-            const self = this;
-            return apps.filter( app => self.$store.state.tickets[ app.name ] === undefined );
-         },
-
          changeServiceState( appName, serviceName ) {
             this.$store.dispatch( 'changeServiceState', { appName, serviceName } );
-         },
-
-         clearedLogs() {
-            this.selectLogs.appName = null;
-            this.selectLogs.serviceName = null;
          }
       }
    };

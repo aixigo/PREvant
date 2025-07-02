@@ -1,4 +1,4 @@
-use super::SessionCookie;
+use super::{SessionCookie, User};
 use crate::{http_result::HttpApiError, infrastructure::TraefikIngressRoute};
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
@@ -13,15 +13,43 @@ use rocket::{
     routes, State,
 };
 
+#[cfg(not(debug_assertions))]
 pub fn auth_routes() -> Vec<rocket::Route> {
     routes![openid_login, openid_response]
 }
 
-#[get("/login")]
+#[cfg(debug_assertions)]
+pub fn auth_routes() -> Vec<rocket::Route> {
+    routes![openid_login, openid_response, me, issuers]
+}
+
+#[cfg(debug_assertions)]
+#[get("/me", format = "application/json")]
+fn me(user: User) -> serde_json::Value {
+    match user {
+        User::Anonymous => serde_json::Value::Null,
+        User::Oidc { sub, iss, name } => serde_json::json!({
+            "sub": sub,
+            "iss": iss,
+            "name": name
+        }),
+    }
+}
+
+#[cfg(debug_assertions)]
+#[get("/issuers", format = "application/json")]
+fn issuers<'res, 'req: 'res>(
+    issuers: &'req State<super::Issuers>,
+) -> rocket::serde::json::Json<&'res serde_json::Value> {
+    rocket::serde::json::Json(&issuers)
+}
+
+#[get("/login?<issuer>")]
 fn openid_login(
     openid_providers: &State<super::OidcInners>,
     cookie_jar: &CookieJar<'_>,
     prevant_base_route: &State<Option<TraefikIngressRoute>>,
+    issuer: &str,
 ) -> Redirect {
     let base_path = prevant_base_route
         .as_ref()
@@ -34,8 +62,10 @@ fn openid_login(
         "The base path needs to end with a slash"
     );
 
-    // TODO: how to select the OpenID provider?
-    let Some(oidc_provider) = openid_providers.first() else {
+    let Some(oidc_provider) = openid_providers
+        .iter()
+        .find(|provider| provider.issuer_url.as_str() == issuer)
+    else {
         return Redirect::to(base_path);
     };
 
@@ -87,6 +117,8 @@ async fn openid_response(
     };
 
     // TODO: how to select the OpenID provider?
+    //
+    // probably, the issuer url shoudl be retrieved from the nonce cookie.
     let Some(oidc_provider) = openid_providers.first() else {
         return Ok(Redirect::to(base_path));
     };
