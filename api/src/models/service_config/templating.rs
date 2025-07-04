@@ -25,9 +25,8 @@
  */
 
 use crate::config::Routing;
-use crate::models::service::ContainerType;
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, Environment, EnvironmentVariable, ServiceConfig};
+use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, ServiceConfig};
 use handlebars::{
     Context, Handlebars, Helper, HelperResult, Output, RenderContext, RenderError,
     RenderErrorReason, Renderable,
@@ -196,7 +195,7 @@ fn is_not_companion<'reg, 'rc>(
         ))?;
 
     let container_type = ContainerType::from_str(s)
-        .map_err(|e| RenderErrorReason::Other(format!("Invalid type parameter {:?}. {}", s, e)))?;
+        .map_err(|e| RenderErrorReason::Other(format!("Invalid type parameter {s:?}. {e}")))?;
 
     match container_type {
         ContainerType::ServiceCompanion | ContainerType::ApplicationCompanion => h
@@ -227,7 +226,7 @@ fn is_companion<'reg, 'rc>(
         ))?;
 
     let container_type = ContainerType::from_str(s)
-        .map_err(|e| RenderErrorReason::Other(format!("Invalid type paramter {:?}. {}", s, e)))?;
+        .map_err(|e| RenderErrorReason::Other(format!("Invalid type paramter {s:?}. {e}")))?;
 
     match container_type {
         ContainerType::ServiceCompanion | ContainerType::ApplicationCompanion => h
@@ -477,11 +476,11 @@ mod tests {
         let templated_config = config.apply_templating_for_application_companion(
             &AppName::master(),
             &None,
-            &vec![],
+            &[],
             &None,
         );
 
-        assert_eq!(templated_config.is_err(), true);
+        assert!(templated_config.is_err());
     }
 
     #[test]
@@ -851,9 +850,8 @@ location /service-d {
 
         let env = config.env().unwrap().get(0).unwrap();
 
-        assert_eq!(
+        assert!(
             env.original().templated(),
-            true,
             "After applying a template, the environment keep that information"
         );
         assert_eq!(env.original().value().unsecure(), "admin-{{service.name}}");

@@ -37,7 +37,7 @@ pub(super) async fn logs<'r>(
                 return Err(HttpApiProblem::with_title_and_type(
                     http_api_problem::StatusCode::BAD_REQUEST,
                 )
-                .detail(format!("{}", err))
+                .detail(format!("{err}"))
                 .into());
             }
         },
@@ -76,7 +76,7 @@ pub(super) async fn stream_logs<'r>(
                 return Err(HttpApiProblem::with_title_and_type(
                     http_api_problem::StatusCode::BAD_REQUEST,
                 )
-                .detail(format!("{}", err))
+                .detail(format!("{err}"))
                 .into());
             }
         },
@@ -155,7 +155,7 @@ impl<'r, 'o: 'r> Responder<'r, 'o> for LogsResponse<'r> {
         let log_lines = log_chunk.log_lines();
         Response::build()
             .header(ContentType::Plain)
-            .raw_header(LINK.as_str(), format!("<{}>;rel=next", next_logs_url))
+            .raw_header(LINK.as_str(), format!("<{next_logs_url}>;rel=next"))
             .raw_header(CONTENT_DISPOSITION.as_str(), content_disposition_value)
             .sized_body(log_lines.len(), Cursor::new(log_lines.clone()))
             .ok()
@@ -220,6 +220,7 @@ mod test {
                 &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-a")],
+                crate::auth::User::Anonymous,
                 None,
             )
             .await?;

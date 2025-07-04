@@ -208,7 +208,11 @@ impl From<&Url> for TraefikIngressRoute {
     fn from(url: &Url) -> Self {
         let mut matches = Vec::with_capacity(2);
         matches.push(Matcher::Host {
-            domains: vec![url.host().map(|host| host.to_string()).unwrap_or_default()],
+            domains: vec![match (url.host(), url.port()) {
+                (None, _) => panic!("URLs in the context of PREvant should have an host entry"),
+                (Some(host), None) => host.to_string(),
+                (Some(host), Some(port)) => format!("{host}:{port}"),
+            }],
         });
 
         if url.path() != "/" {
@@ -1043,6 +1047,18 @@ mod test {
             let url = route.to_url();
 
             assert_eq!(url, Url::parse("https://example.com").ok());
+        }
+
+        #[test]
+        fn with_host_and_port() {
+            let url = Url::parse("https://prevant.example.com:8443/").unwrap();
+
+            let route = TraefikIngressRoute::from(url);
+
+            assert_eq!(
+                route.to_url(),
+                Url::parse("https://prevant.example.com:8443").ok()
+            );
         }
     }
 

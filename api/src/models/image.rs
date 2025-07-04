@@ -23,7 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use crate::models::service::ServiceError;
+use crate::models::ServiceError;
 use regex::Regex;
 use serde::ser::{Serialize, Serializer};
 use serde::{Deserialize, Deserializer};

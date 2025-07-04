@@ -24,8 +24,7 @@
  * =========================LICENSE_END==================================
  */
 use crate::config::Routing;
-use crate::models::service::ContainerType;
-use crate::models::Image;
+use crate::models::{ContainerType, Image};
 pub use environment::{Environment, EnvironmentVariable};
 use secstr::SecUtf8;
 use serde::Deserialize;
@@ -186,12 +185,12 @@ macro_rules! sc {
         hasher.update($name);
         let img_hash = &format!("sha256:{:x}", hasher.finalize());
 
-        crate::sc!($name, img_hash)
+        $crate::sc!($name, img_hash)
     }};
 
     ( $name:expr, $img:expr ) => {{
         use std::str::FromStr;
-        use crate::models::ServiceConfig;
+        use $crate::models::ServiceConfig;
         ServiceConfig::new(String::from($name), crate::models::Image::from_str($img).unwrap())
     }};
 

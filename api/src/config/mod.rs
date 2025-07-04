@@ -178,9 +178,10 @@ pub struct Config {
     hooks: Option<BTreeMap<String, PathBuf>>,
     #[serde(default)]
     registries: BTreeMap<String, Registry>,
-    #[serde(default)]
-    #[serde(rename = "staticHostMeta")]
+    #[serde(default, rename = "staticHostMeta")]
     static_host_meta: Vec<StaticHostMetaRaw>,
+    #[serde(default, rename = "apiAccess")]
+    pub api_access: ApiAccess,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -413,6 +414,58 @@ pub struct OpenApiSpec<'a> {
     pub sub_path: Option<&'a String>,
 }
 
+#[derive(Clone, Default)]
+pub struct ApiAccess {
+    pub mode: ApiAccessMode,
+    pub openid_providers: Vec<OpenidIdentityProvider>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum ApiAccessMode {
+    #[default]
+    Any,
+    RequireAuth,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenidIdentityProvider {
+    pub issuer_url: String,
+    pub client_id: String,
+    pub client_secret: SecUtf8,
+}
+
+impl<'de> Deserialize<'de> for ApiAccess {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub struct ApiAccessInner {
+            pub mode: Option<ApiAccessMode>,
+            pub openid_providers: Vec<OpenidIdentityProvider>,
+        }
+
+        let ApiAccessInner {
+            mode,
+            openid_providers,
+        } = ApiAccessInner::deserialize(deserializer)?;
+
+        Ok(Self {
+            mode: mode.unwrap_or_else(|| {
+                if openid_providers.is_empty() {
+                    ApiAccessMode::Any
+                } else {
+                    ApiAccessMode::RequireAuth
+                }
+            }),
+            openid_providers,
+        })
+    }
+}
+
 impl JiraConfig {
     pub fn host(&self) -> &String {
         &self.host
@@ -461,7 +514,7 @@ macro_rules! config_from_str {
         use figment::providers::Format;
         let provider = figment::providers::Toml::string($config_str);
         figment::Figment::from(provider)
-            .extract::<crate::config::Config>()
+            .extract::<$crate::config::Config>()
             .unwrap()
     }};
 }
@@ -469,7 +522,7 @@ macro_rules! config_from_str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{service::ContainerType, Image};
+    use crate::models::{ContainerType, Image};
     use std::str::FromStr;
 
     macro_rules! service_config {
@@ -964,6 +1017,61 @@ mod tests {
                     sub_path: Some(&String::from("v3")),
                 })
             })
+        );
+    }
+
+    #[test]
+    fn should_parse_without_api_access() {
+        let config = config_from_str!("");
+
+        assert_eq!(config.api_access.mode, ApiAccessMode::Any);
+        assert_eq!(config.api_access.openid_providers, vec![]);
+    }
+
+    #[test]
+    fn should_require_auth_when_given_id_provider() {
+        let config = config_from_str!(
+            r#"
+            [[apiAccess.openidProviders]]
+            issuerUrl = "https://gitlab.com"
+            clientId = "some-id"
+            clientSecret =  "some-secret"
+        "#
+        );
+
+        assert_eq!(config.api_access.mode, ApiAccessMode::RequireAuth);
+        assert_eq!(
+            config.api_access.openid_providers,
+            vec![OpenidIdentityProvider {
+                issuer_url: String::from("https://gitlab.com"),
+                client_id: String::from("some-id"),
+                client_secret: SecUtf8::from_str("some-secret").unwrap(),
+            }]
+        );
+    }
+
+    #[test]
+    fn should_not_require_auth_when_overwritten() {
+        let config = config_from_str!(
+            r#"
+            [apiAccess]
+            mode = "any"
+
+            [[apiAccess.openidProviders]]
+            issuerUrl = "https://gitlab.com"
+            clientId = "some-id"
+            clientSecret =  "some-secret"
+        "#
+        );
+
+        assert_eq!(config.api_access.mode, ApiAccessMode::Any);
+        assert_eq!(
+            config.api_access.openid_providers,
+            vec![OpenidIdentityProvider {
+                issuer_url: String::from("https://gitlab.com"),
+                client_id: String::from("some-id"),
+                client_secret: SecUtf8::from_str("some-secret").unwrap(),
+            }]
         );
     }
 }
