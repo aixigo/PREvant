@@ -32,7 +32,7 @@ use crate::infrastructure::{
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
 };
 use crate::models::{
-    App, AppName, ContainerType, Environment, Image, Service, ServiceConfig, ServiceError,
+    App, AppName, ContainerType, Environment, Image, Owner, Service, ServiceConfig, ServiceError,
     ServiceStatus, State, WebHostMeta,
 };
 use anyhow::{anyhow, Result};
@@ -65,10 +65,12 @@ use hyper_util::rt::TokioIo;
 use log::{debug, error, info, trace, warn};
 use multimap::MultiMap;
 use rocket::form::validate::Contains;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::{From, TryFrom};
 use std::str::FromStr;
 use tokio::net::TcpStream;
+
+use super::OWNERS_LABEL;
 
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
@@ -304,6 +306,7 @@ impl DockerInfrastructure {
                     service,
                     container_config,
                     &existing_volumes,
+                    deployment_unit.owners(),
                 )
             })
             .map(Box::pin)
@@ -394,6 +397,7 @@ impl DockerInfrastructure {
         service: &DeployableService,
         container_config: &ContainerConfig,
         existing_volumes: &VolumeListResponse,
+        owners: &HashSet<Owner>,
     ) -> Result<Service, DockerInfrastructureError> {
         let docker = Docker::connect_with_socket_defaults()?;
         let service_name = service.service_name();
@@ -468,8 +472,13 @@ impl DockerInfrastructure {
         let host_config_binds =
             Self::create_host_config_binds(app_name, existing_volumes, service).await?;
 
-        let options =
-            Self::create_container_options(app_name, service, container_config, &host_config_binds);
+        let options = Self::create_container_options(
+            app_name,
+            service,
+            container_config,
+            &host_config_binds,
+            owners,
+        );
 
         let container_info = docker
             .create_container::<&str, String>(None, options)
@@ -520,6 +529,7 @@ impl DockerInfrastructure {
         service_config: &'a ServiceConfig,
         container_config: &'a ContainerConfig,
         host_config_binds: &'a [String],
+        owners: &HashSet<Owner>,
     ) -> bollard::container::Config<String> {
         let env = service_config.env().map(|env| {
             env.iter()
@@ -551,6 +561,13 @@ impl DockerInfrastructure {
         labels.insert(CONTAINER_TYPE_LABEL.to_string(), container_type);
         let image_name = service_config.image().to_string();
         labels.insert(IMAGE_LABEL.to_string(), image_name);
+
+        if !owners.is_empty() {
+            labels.insert(
+                OWNERS_LABEL.to_string(),
+                serde_json::to_string(owners).unwrap(),
+            );
+        }
 
         let replicated_env = service_config
             .env()
@@ -829,8 +846,21 @@ impl Infrastructure for DockerInfrastructure {
 
         for (app_name, details_vec) in container_details.into_iter() {
             let mut services = Vec::with_capacity(details_vec.len());
+            let mut owners = HashSet::<Owner>::new();
 
-            for details in details_vec {
+            for mut details in details_vec {
+                {
+                    if let Some(parsed_owners) = details
+                        .config
+                        .as_mut()
+                        .and_then(|config| config.labels.as_mut())
+                        .and_then(|labels| labels.remove(OWNERS_LABEL))
+                        .and_then(|owners| serde_json::from_str::<HashSet<Owner>>(&owners).ok())
+                    {
+                        owners.extend(parsed_owners.into_iter());
+                    }
+                }
+
                 let service = match Service::try_from(details) {
                     Ok(service) => service,
                     Err(e) => {
@@ -842,8 +872,7 @@ impl Infrastructure for DockerInfrastructure {
                 services.push(service);
             }
 
-            // TODO: copy at least owner
-            apps.insert(app_name, App::from(services));
+            apps.insert(app_name, App::new(services, owners, None));
         }
 
         Ok(apps)
@@ -1499,6 +1528,7 @@ mod tests {
             &config,
             &ContainerConfig::default(),
             &Vec::new(),
+            &HashSet::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1536,6 +1566,7 @@ mod tests {
             &config,
             &ContainerConfig::default(),
             &Vec::new(),
+            &HashSet::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1578,6 +1609,7 @@ mod tests {
             &config,
             &ContainerConfig::default(),
             &Vec::new(),
+            &HashSet::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1704,6 +1736,7 @@ mod tests {
             &config,
             &ContainerConfig::default(),
             &[String::from("test-volume:/var/lib/mysql")],
+            &HashSet::new(),
         );
 
         let json = serde_json::to_value(&options).unwrap();

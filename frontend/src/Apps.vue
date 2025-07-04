@@ -44,16 +44,18 @@
             v-for="reviewApp in myApps"
             :key="reviewApp.name"
             :review-app="reviewApp"
+            :showOwners="issuers != null"
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
 
-      <h1 class="ra-container__title--preview" v-if="appsWithoutTicket.length > 0">Previews</h1>
+      <h1 class="ra-container__title--feature" v-if="appsWithoutTicket.length > 0">Previews</h1>
       <transition-group tag="div" name="list-complete" class="ra-container__apps--preview ra-apps ">
          <review-app-card
             v-for="reviewApp in appsWithoutTicket"
             :key="reviewApp.name"
             :review-app="reviewApp"
+            :showOwners="issuers != null"
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
@@ -64,6 +66,7 @@
             v-for="reviewApp in appsWithTicket"
             :key="reviewApp.name"
             :review-app="reviewApp"
+            :showOwners="issuers != null"
             v-on:showLogs="showServiceLogs"
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
@@ -113,6 +116,7 @@
       },
       computed: {
          ...mapGetters([
+            'issuers',
             'reviewApps',
             'appsWithTicket',
             'appsWithoutTicket',

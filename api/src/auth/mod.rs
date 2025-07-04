@@ -39,13 +39,16 @@ impl Fairing for Auth {
             return fairing::Result::Err(rocket);
         };
 
+        if matches!(config.api_access.mode, ApiAccessMode::RequireAuth if config.api_access.openid_providers.is_empty())
+        {
+            log::error!(
+                "The API requires authentication but there are no login providers configured."
+            );
+            return fairing::Result::Err(rocket);
+        }
+
         if matches!(config.api_access.mode, ApiAccessMode::Any) {
             log::warn!("There is no API protection configured which let any API client deploy any OCI image on your infrastructure.");
-            return fairing::Result::Ok(
-                rocket
-                    .manage(Vec::<OidcClient>::new())
-                    .manage::<Issuers>(serde_json::Value::Null),
-            );
         }
 
         let base_url = rocket
@@ -115,31 +118,24 @@ impl Fairing for Auth {
             oidc_providers.push(oidc_client);
         }
 
-        if matches!(config.api_access.mode, ApiAccessMode::RequireAuth if oidc_providers.is_empty())
-        {
-            // TODO: have a good error message here
-            log::error!("");
-            fairing::Result::Err(rocket)
-        } else {
-            let issuers = config
-                .api_access
-                .openid_providers
-                .iter()
-                .map(|oidc| {
-                    let mut login_url = base_url.join("/auth/login").unwrap();
-                    login_url
-                        .query_pairs_mut()
-                        .append_pair("issuer", oidc.issuer_url.as_str());
+        let issuers = config
+            .api_access
+            .openid_providers
+            .iter()
+            .map(|oidc| {
+                let mut login_url = base_url.join("/auth/login").unwrap();
+                login_url
+                    .query_pairs_mut()
+                    .append_pair("issuer", oidc.issuer_url.as_str());
 
-                    serde_json::json!({
-                        "issuer": oidc.issuer_url,
-                        "loginUrl": login_url,
-                    })
+                serde_json::json!({
+                    "issuer": oidc.issuer_url,
+                    "loginUrl": login_url,
                 })
-                .collect::<Issuers>();
+            })
+            .collect::<Issuers>();
 
-            fairing::Result::Ok(rocket.manage(oidc_providers).manage(issuers))
-        }
+        fairing::Result::Ok(rocket.manage(oidc_providers).manage(issuers))
     }
 }
 
@@ -211,11 +207,7 @@ async fn refresh_token_due_to_id_token_expiry<'r>(
         Ok(token_response) => token_response,
         Err(err) => {
             cookies.remove("oidc_user_session");
-            return Outcome::Error((
-                Status::UnprocessableEntity,
-                HttpApiProblem::with_title_and_type(StatusCode::UNAUTHORIZED)
-                    .detail(err.to_string()),
-            ));
+            return Outcome::Success(User::Anonymous);
         }
     };
 
@@ -359,5 +351,38 @@ impl<'r> FromRequest<'r> for UserValidatedByAccessMode {
                 // access_mode: access_mode.clone(),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rocket::local::asynchronous::Client;
+
+    #[rocket::get("/")]
+    pub(super) async fn test_route(_user: User) -> &'static str {
+        ""
+    }
+
+    #[tokio::test]
+    async fn fail_to_create_fairing_because_access_mode_requires_auth_but_no_providers() {
+        let config = crate::config_from_str!(
+            r#"
+            [apiAccess]
+            mode = "requireAuth"
+            openidProviders = []
+            "#
+        );
+        let rocket = rocket::build()
+            .manage(config)
+            .mount("/", rocket::routes![test_route])
+            .attach(Auth::fairing());
+
+        let client = Client::tracked(rocket).await.expect_err("invalid rocket");
+
+        assert!(matches!(
+            client.kind(),
+            rocket::error::ErrorKind::FailedFairings(_)
+        ))
     }
 }

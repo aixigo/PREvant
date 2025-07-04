@@ -76,7 +76,7 @@ export function createStore(router, me, issuers) {
                }
 
                const ticket = state.tickets[ name ];
-               const owners = appContainers.owners ?? [];
+               const owners = appContainers.owners;
 
                const containers = [
                   ...appContainers
@@ -114,7 +114,7 @@ export function createStore(router, me, issuers) {
             }
 
             return getters.reviewApps
-               .filter(app => app.owners.some(owner => owner.sub == state.me.sub && owner.iss == state.me.iss));
+               .filter(app => (app.owners ?? []).some(owner => owner.sub == state.me.sub && owner.iss == state.me.iss));
          },
 
          appsWithTicket: (state, getters) => {

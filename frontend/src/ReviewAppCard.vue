@@ -149,16 +149,18 @@
             </textarea>
          </div>
 
-         <div class="card-footer text-muted" v-if="reviewApp.owners.length === 0">
-            No known owners
-         </div>
-         <div class="owners card-footer text-muted" v-else>
-            Owners:
-            <span class="badge badge-secondary" v-for="owner in reviewApp.owners">
-               <template v-if="owner.name">{{ owner.name }}</template>
-               <template v-else>{{ owner.sub }}</template>
-            </span>
-         </div>
+         <template v-if="showOwners">
+            <div class="card-footer text-muted" v-if="reviewApp.owners == null || reviewApp.owners.length === 0">
+               No known owners
+            </div>
+            <div class="owners card-footer text-muted" v-else>
+               Owners:
+               <span class="badge badge-secondary" v-for="owner in reviewApp.owners">
+                  <template v-if="owner.name">{{ owner.name }}</template>
+                  <template v-else>{{ owner.sub }}</template>
+               </span>
+            </div>
+         </template>
       </div>
 
       <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name != 'master'"/>
@@ -184,7 +186,6 @@
    export default {
       data() {
          return {
-            currentAppName: window.location.hash.slice(1),
             expandedContainers: {}
          };
       },
@@ -193,7 +194,8 @@
          'shutdown-app-dialog': ShutdownAppDialog,
       },
       props: {
-         reviewApp: {type: Object}
+         reviewApp: {type: Object},
+         showOwners: {type: Boolean}
       },
       watch: {
          reviewApp: function (newValue) {
