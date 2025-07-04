@@ -432,7 +432,8 @@ impl AppsService {
         }
 
         let (services, mut owners) = running_app.into_services_and_owners();
-        let configs_for_templating = services            .into_iter()
+        let configs_for_templating = services
+            .into_iter()
             .filter(|service| service.container_type() == &ContainerType::Instance)
             .filter(|service| {
                 !service_configs
@@ -452,11 +453,7 @@ impl AppsService {
             .await?;
 
         if let User::Oidc { sub, iss, name } = user {
-            owners.insert(Owner {
-                sub,
-                iss,
-                name,
-            });
+            owners.insert(Owner { sub, iss, name });
         }
 
         let deployment_unit_builder = deployment_unit_builder
@@ -639,13 +636,13 @@ impl From<RegistryError> for AppsServiceError {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use crate::infrastructure::{Dummy, TraefikIngressRoute, TraefikRouterRule};
     use crate::models::{EnvironmentVariable, State};
     use crate::sc;
     use chrono::Utc;
     use futures::StreamExt;
+    use openidconnect::{IssuerUrl, SubjectIdentifier};
     use secstr::SecUtf8;
     use std::hash::Hash;
     use std::io::Write;
@@ -1707,6 +1704,63 @@ Log msg 3 of service-a of app master
             .collect();
 
         assert_eq!(companion_config[0].service_name(), "db1-my-name");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_owners() -> Result<(), AppsServiceError> {
+        let config = Config::default();
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &AppName::master(),
+            &AppStatusChangeId::new(),
+            None,
+            &vec![sc!("service-a")],
+            User::Oidc {
+                sub: SubjectIdentifier::new(String::from("gitlab-user")),
+                iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                name: None,
+            },
+            None,
+        )
+        .await?;
+        apps.create_or_update(
+            &AppName::master(),
+            &AppStatusChangeId::new(),
+            None,
+            &vec![sc!("service-b")],
+            User::Oidc {
+                sub: SubjectIdentifier::new(String::from("github-user")),
+                iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
+                name: None,
+            },
+            None,
+        )
+        .await?;
+
+        let mut deployed_apps = apps.fetch_apps().await?;
+        assert_eq!(deployed_apps.len(), 1);
+        let app = deployed_apps.remove(&AppName::master()).unwrap();
+
+        let (_, owners) = app.into_services_and_owners();
+        assert_eq!(
+            owners,
+            HashSet::from([
+                Owner {
+                    sub: SubjectIdentifier::new(String::from("gitlab-user")),
+                    iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                    name: None,
+                },
+                Owner {
+                    sub: SubjectIdentifier::new(String::from("github-user")),
+                    iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
+                    name: None,
+                }
+            ])
+        );
 
         Ok(())
     }

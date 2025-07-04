@@ -29,7 +29,7 @@ use crate::deployment::deployment_unit::DeployableService;
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::Infrastructure;
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{App, AppName, Service, ServiceConfig, ServiceStatus, State};
+use crate::models::{App, AppName, Owner, Service, ServiceConfig, ServiceStatus, State};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
@@ -47,6 +47,7 @@ pub struct DummyInfrastructure {
     delay: Option<Duration>,
     services: Arc<Mutex<MultiMap<AppName, DeployableService>>>,
     user_defined_parameters: Arc<Mutex<HashMap<AppName, UserDefinedParameters>>>,
+    owners: Arc<Mutex<MultiMap<AppName, Owner>>>,
 }
 
 #[cfg(test)]
@@ -56,6 +57,7 @@ impl DummyInfrastructure {
             delay: None,
             services: Arc::new(Mutex::new(MultiMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
+            owners: Arc::new(Mutex::new(MultiMap::new())),
         }
     }
 
@@ -64,6 +66,7 @@ impl DummyInfrastructure {
             delay: Some(delay),
             services: Arc::new(Mutex::new(MultiMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
+            owners: Arc::new(Mutex::new(MultiMap::new())),
         }
     }
 
@@ -116,7 +119,13 @@ impl Infrastructure for DummyInfrastructure {
             let user_defined_parameters = self.user_defined_parameters.lock().unwrap();
             let udp = user_defined_parameters.get(&app_name).cloned();
 
-            apps.insert(app_name, App::new(services, HashSet::new(), udp));
+            let owners = self.owners.lock().unwrap();
+            let owners = owners
+                .get_vec(&app_name)
+                .map(|owners| owners.iter().cloned().collect::<HashSet<Owner>>())
+                .unwrap_or_default();
+
+            apps.insert(app_name, App::new(services, owners, udp));
         }
 
         Ok(apps)
@@ -138,6 +147,7 @@ impl Infrastructure for DummyInfrastructure {
 
         let mut services = self.services.lock().unwrap();
         let mut user_defined_parameters = self.user_defined_parameters.lock().unwrap();
+        let mut owners = self.owners.lock().unwrap();
 
         if let Some(p) = deployment_unit.user_defined_parameters() {
             user_defined_parameters.insert(app_name.clone(), p.clone());
@@ -152,6 +162,8 @@ impl Infrastructure for DummyInfrastructure {
 
             running_services.retain(|config| !service_names.contains(config.service_name()));
         }
+
+        owners.insert_many(app_name.clone(), deployment_unit.owners().iter().cloned());
 
         for config in deployable_services {
             info!("started {} for {}.", config.service_name(), app_name);

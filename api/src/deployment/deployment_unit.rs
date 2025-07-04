@@ -366,10 +366,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
         }
     }
 
-    pub fn with_owners(
-        self,
-        owners: HashSet<Owner>,
-    ) -> DeploymentUnitBuilder<WithUserInformation> {
+    pub fn with_owners(self, owners: HashSet<Owner>) -> DeploymentUnitBuilder<WithUserInformation> {
         DeploymentUnitBuilder {
             stage: WithUserInformation {
                 app_name: self.stage.app_name,

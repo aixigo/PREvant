@@ -38,6 +38,7 @@ use url::Url;
 pub struct Owner {
     pub sub: openidconnect::SubjectIdentifier,
     pub iss: openidconnect::IssuerUrl,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
