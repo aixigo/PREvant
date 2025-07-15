@@ -1,6 +1,3 @@
-
-Note: The image `aixigo/prevant` provides the REST-API in order to deploy containers and to compose them into reviewable application.
-
 # Configuration and Customization
 
 Users can customize PREvant's operations by adjusting settings in a
@@ -13,7 +10,7 @@ variable, and from some CLI options.
 
 ## Authentication
 
-See [authentication.md] how to configure authentication (highly recommended).
+See [authentication.md](authentication.md) how to configure authentication (highly recommended).
 
 ## Runtime Configuration
 

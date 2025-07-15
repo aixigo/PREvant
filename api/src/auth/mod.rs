@@ -7,7 +7,7 @@ use futures::{stream::FuturesUnordered, StreamExt as _};
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
 use openidconnect::{
-    core::{CoreIdToken, CoreProviderMetadata},
+    core::{CoreGenderClaim, CoreProviderMetadata},
     Client, ClientId, ClientSecret, EndpointMaybeSet, EndpointNotSet, EndpointSet, IssuerUrl,
     Nonce, RedirectUrl, RefreshToken,
 };
@@ -20,8 +20,10 @@ use rocket::{
 pub use routes::auth_routes;
 use std::{convert::TryFrom, str::FromStr};
 use url::Url;
+pub use user::{AdditionalClaims, User};
 
 mod routes;
+mod user;
 
 pub struct Auth {}
 struct BaseUrl(Url);
@@ -152,7 +154,27 @@ type OidcInners = Vec<OidcClient>;
 
 struct OidcClient {
     issuer_url: IssuerUrl,
-    client: openidconnect::core::CoreClient<
+    client: openidconnect::Client<
+        AdditionalClaims,
+        openidconnect::core::CoreAuthDisplay,
+        openidconnect::core::CoreGenderClaim,
+        openidconnect::core::CoreJweContentEncryptionAlgorithm,
+        openidconnect::core::CoreJsonWebKey,
+        openidconnect::core::CoreAuthPrompt,
+        openidconnect::StandardErrorResponse<openidconnect::core::CoreErrorResponseType>,
+        openidconnect::StandardTokenResponse<
+            openidconnect::IdTokenFields<
+                AdditionalClaims,
+                AdditionalClaims,
+                CoreGenderClaim,
+                openidconnect::core::CoreJweContentEncryptionAlgorithm,
+                openidconnect::core::CoreJwsSigningAlgorithm,
+            >,
+            openidconnect::core::CoreTokenType,
+        >,
+        openidconnect::core::CoreTokenIntrospectionResponse,
+        openidconnect::core::CoreRevocableToken,
+        openidconnect::core::CoreRevocationErrorResponse,
         EndpointSet,
         EndpointNotSet,
         EndpointNotSet,
@@ -163,20 +185,17 @@ struct OidcClient {
 }
 
 pub type Issuers = serde_json::Value;
-
-pub enum User {
-    Anonymous,
-    Oidc {
-        sub: openidconnect::SubjectIdentifier,
-        iss: openidconnect::IssuerUrl,
-        name: Option<String>,
-    },
-}
+type IdToken = openidconnect::IdToken<
+    AdditionalClaims,
+    CoreGenderClaim,
+    openidconnect::core::CoreJweContentEncryptionAlgorithm,
+    openidconnect::core::CoreJwsSigningAlgorithm,
+>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Session {
-    id_token: openidconnect::core::CoreIdToken,
+    id_token: IdToken,
     refresh_token: Option<RefreshToken>,
 }
 
@@ -238,7 +257,7 @@ impl TryFrom<&Request<'_>> for Session {
                 .starts_with("BEARER ")
             {
                 let id_token =
-                    CoreIdToken::from_str(&authorization_header[7..].trim()).map_err(|err| {
+                    IdToken::from_str(authorization_header[7..].trim()).map_err(|err| {
                         format!("Cannot deserialize id token from Authorization header: {err}")
                     })?;
 
@@ -282,7 +301,7 @@ async fn refresh_token_due_to_id_token_expiry<'r>(
 
     let token_response = match oidc
         .client
-        .exchange_refresh_token(&refresh_token)
+        .exchange_refresh_token(refresh_token)
         .expect("Request object should be buildable")
         .request_async(&http_client)
         .await
@@ -306,15 +325,10 @@ async fn refresh_token_due_to_id_token_expiry<'r>(
         .extra_fields()
         .id_token()
         .unwrap()
-        .claims(&id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
+        .claims(id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
     {
         Ok(id_token_claims) => Outcome::Success(User::Oidc {
-            sub: id_token_claims.subject().clone(),
-            iss: id_token_claims.issuer().clone(),
-            name: id_token_claims
-                .name()
-                .and_then(|ln| ln.get(None))
-                .map(|name| name.to_string()),
+            id_token_claims: id_token_claims.clone(),
         }),
         Err(err) => {
             cookies.remove_private(SESSION_COOKIE_NAME);
@@ -362,23 +376,20 @@ impl<'r> FromRequest<'r> for User {
             return Outcome::Success(User::Anonymous);
         };
 
-        let id_token_verifier: openidconnect::core::CoreIdTokenVerifier =
-            oidc.client.id_token_verifier();
+        let id_token_verifier = oidc.client.id_token_verifier();
 
         match session
             .id_token
             .claims(&id_token_verifier, |_: Option<&Nonce>| Ok::<_, String>(()))
         {
             Ok(id_token_claims) => Outcome::Success(User::Oidc {
-                sub: id_token_claims.subject().clone(),
-                iss: id_token_claims.issuer().clone(),
-                name: id_token_claims
-                    .name()
-                    .and_then(|ln| ln.get(None))
-                    .map(|name| name.to_string()),
+                id_token_claims: id_token_claims.clone(),
             }),
             Err(openidconnect::ClaimsVerificationError::Expired(err)) => {
-                let base_url = request.rocket().state::<BaseUrl>().expect("");
+                let base_url = request
+                    .rocket()
+                    .state::<BaseUrl>()
+                    .expect("Must manage the base_url");
 
                 let Some(refresh_token) = &session.refresh_token else {
                     cookies.remove_private(SESSION_COOKIE_NAME);
@@ -391,10 +402,10 @@ impl<'r> FromRequest<'r> for User {
 
                 refresh_token_due_to_id_token_expiry(
                     oidc,
-                    &cookies,
-                    &refresh_token,
+                    cookies,
+                    refresh_token,
                     &id_token_verifier,
-                    &base_url,
+                    base_url,
                 )
                 .await
             }
