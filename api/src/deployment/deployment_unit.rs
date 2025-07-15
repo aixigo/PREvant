@@ -25,7 +25,8 @@ use url::Url;
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use crate::apps::AppsServiceError;
+use super::hooks::HooksError;
+use crate::auth::User;
 use crate::config::{Config, StorageStrategy};
 use crate::deployment::hooks::Hooks;
 use crate::infrastructure::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule};
@@ -103,14 +104,14 @@ pub struct WithUserInformation {
     )>,
     templating_only_service_configs: Vec<ServiceConfig>,
     image_infos: HashMap<Image, ImageInfo>,
-    owners: HashSet<Owner>,
+    existing_owners_and_new_user: (HashSet<Owner>, User),
 }
 
 pub struct WithAppliedTemplating {
     app_name: AppName,
     services: Vec<DeployableService>,
     user_defined_parameters: Option<UserDefinedParameters>,
-    owners: HashSet<Owner>,
+    existing_owners_and_new_user: (HashSet<Owner>, User),
 }
 
 pub struct WithAppliedHooks {
@@ -130,6 +131,22 @@ pub struct WithAppliedIngressRoute {
 
 pub struct DeploymentUnitBuilder<Stage> {
     stage: Stage,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum DeploymentTemplatingError {
+    #[error("Failed to parse traefik rule ({raw_rule}): {err}")]
+    FailedToParseTraefikRule { raw_rule: String, err: String },
+    #[error("Failed to render template: {err}")]
+    TemplateRenderingError { err: String },
+}
+
+impl From<handlebars::RenderError> for DeploymentTemplatingError {
+    fn from(err: handlebars::RenderError) -> Self {
+        Self::TemplateRenderingError {
+            err: err.to_string(),
+        }
+    }
 }
 
 pub struct DeploymentUnit {
@@ -361,12 +378,16 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 app_companions: self.stage.app_companions,
                 templating_only_service_configs: self.stage.templating_only_service_configs,
                 image_infos: self.stage.image_infos,
-                owners: HashSet::new(),
+                existing_owners_and_new_user: (HashSet::new(), User::Anonymous),
             },
         }
     }
 
-    pub fn with_owners(self, owners: HashSet<Owner>) -> DeploymentUnitBuilder<WithUserInformation> {
+    pub fn with_owners(
+        self,
+        existing_owners: HashSet<Owner>,
+        new_owner: User,
+    ) -> DeploymentUnitBuilder<WithUserInformation> {
         DeploymentUnitBuilder {
             stage: WithUserInformation {
                 app_name: self.stage.app_name,
@@ -375,7 +396,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 app_companions: self.stage.app_companions,
                 templating_only_service_configs: self.stage.templating_only_service_configs,
                 image_infos: self.stage.image_infos,
-                owners,
+                existing_owners_and_new_user: (existing_owners, new_owner),
             },
         }
     }
@@ -386,7 +407,7 @@ impl DeploymentUnitBuilder<WithUserInformation> {
         self,
         base_url: &Option<Url>,
         user_defined_parameters: Option<UserDefinedParameters>,
-    ) -> Result<DeploymentUnitBuilder<WithAppliedTemplating>, AppsServiceError> {
+    ) -> Result<DeploymentUnitBuilder<WithAppliedTemplating>, DeploymentTemplatingError> {
         let mut services = HashMap::new();
 
         for config in self.stage.configs.iter() {
@@ -483,7 +504,7 @@ impl DeploymentUnitBuilder<WithUserInformation> {
                         )?,
                     ))
                 })
-                .collect::<Result<Vec<_>, AppsServiceError>>()?,
+                .collect::<Result<Vec<_>, DeploymentTemplatingError>>()?,
         );
 
         let mut templating_only_service_configs =
@@ -533,7 +554,7 @@ impl DeploymentUnitBuilder<WithUserInformation> {
                 app_name: self.stage.app_name,
                 services: strategies,
                 user_defined_parameters,
-                owners: self.stage.owners,
+                existing_owners_and_new_user: self.stage.existing_owners_and_new_user,
             },
         })
     }
@@ -544,7 +565,7 @@ impl DeploymentUnitBuilder<WithUserInformation> {
         strategy: &crate::config::DeploymentStrategy,
         storage_strategy: &StorageStrategy,
         image_infos: &HashMap<Image, ImageInfo>,
-    ) -> Result<DeployableService, AppsServiceError> {
+    ) -> Result<DeployableService, DeploymentTemplatingError> {
         let ingress_route =
             match raw_service_config.routing() {
                 None => TraefikIngressRoute::with_defaults(
@@ -554,7 +575,7 @@ impl DeploymentUnitBuilder<WithUserInformation> {
                 Some(routing) => match &routing.rule {
                     Some(rule) => TraefikIngressRoute::with_rule_and_middlewares(
                         TraefikRouterRule::from_str(rule).map_err(|err| {
-                            AppsServiceError::FailedToParseTraefikRule {
+                            DeploymentTemplatingError::FailedToParseTraefikRule {
                                 raw_rule: rule.clone(),
                                 err,
                             }
@@ -649,17 +670,22 @@ impl DeploymentUnitBuilder<WithAppliedTemplating> {
     pub async fn apply_hooks(
         self,
         config: &Config,
-    ) -> Result<DeploymentUnitBuilder<WithAppliedHooks>, AppsServiceError> {
+    ) -> Result<DeploymentUnitBuilder<WithAppliedHooks>, HooksError> {
         let hooks = Hooks::new(config);
         let services = hooks
             .apply_deployment_hook(&self.stage.app_name, self.stage.services)
             .await?;
 
+        let (mut owners, user) = self.stage.existing_owners_and_new_user;
+        if let Some(owner) = hooks.apply_id_token_claims_to_owner_hook(user).await? {
+            owners.insert(owner);
+        }
+
         Ok(DeploymentUnitBuilder {
             stage: WithAppliedHooks {
                 app_name: self.stage.app_name,
                 services,
-                owners: self.stage.owners,
+                owners: Owner::normalize(owners),
                 user_defined_parameters: self.stage.user_defined_parameters,
             },
         })
@@ -719,13 +745,19 @@ impl DeploymentUnitBuilder<WithAppliedIngressRoute> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AdditionalClaims;
     use crate::infrastructure::TraefikRouterRule;
     use crate::models::{Environment, EnvironmentVariable};
     use crate::{config_from_str, sc};
+    use chrono::TimeZone;
+    use openidconnect::core::CoreGenderClaim;
+    use openidconnect::{
+        EndUserName, IdTokenClaims, IssuerUrl, LocalizedClaim, StandardClaims, SubjectIdentifier,
+    };
     use secstr::SecUtf8;
 
     #[tokio::test]
-    async fn should_return_unique_images() -> Result<(), AppsServiceError> {
+    async fn should_return_unique_images() -> Result<(), DeploymentTemplatingError> {
         let config = Config::default();
         let unit = DeploymentUnitBuilder::init(
             AppName::master(),
@@ -744,7 +776,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_apply_port_mappings() -> Result<(), AppsServiceError> {
+    async fn should_apply_port_mappings() -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.http2]
@@ -782,7 +814,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_merge_with_application_companion_if_services_contain_same_service_name(
-    ) -> Result<(), AppsServiceError> {
+    ) -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -835,7 +867,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_merge_with_service_companion_if_services_contain_same_service_name(
-    ) -> Result<(), AppsServiceError> {
+    ) -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -890,7 +922,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_apply_templating_on_service_companions() -> Result<(), AppsServiceError> {
+    async fn should_apply_templating_on_service_companions() -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.db]
@@ -937,8 +969,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_apply_templating_on_service_environment_variables(
-    ) -> Result<(), AppsServiceError> {
+    async fn should_apply_templating_on_service_environment_variables() -> anyhow::Result<()> {
         let mut service_config = sc!("wordpress-db", "mariadb:10.3.17");
         service_config.set_env(Some(Environment::new(vec![
             EnvironmentVariable::with_templating(
@@ -975,8 +1006,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_not_apply_templating_on_service_environment_variables(
-    ) -> Result<(), AppsServiceError> {
+    async fn should_not_apply_templating_on_service_environment_variables() -> anyhow::Result<()> {
         let mut service_configs = sc!("wordpress-db", "mariadb:10.3.17");
         service_configs.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
             String::from("MYSQL_DATABASE"),
@@ -1012,7 +1042,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_apply_templating_on_app_companions() -> Result<(), AppsServiceError> {
+    async fn should_apply_templating_on_app_companions() -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -1067,7 +1097,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_apply_templating_on_app_companions_with_templating_only_configs(
-    ) -> Result<(), AppsServiceError> {
+    ) -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -1121,8 +1151,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_apply_templating_on_merged_application_companions(
-    ) -> Result<(), AppsServiceError> {
+    async fn should_apply_templating_on_merged_application_companions() -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -1166,8 +1195,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_apply_templating_on_merged_service_companions() -> Result<(), AppsServiceError>
-    {
+    async fn should_apply_templating_on_merged_service_companions() -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.db]
@@ -1231,8 +1259,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_determine_deployment_strategy_for_requested_service(
-    ) -> Result<(), AppsServiceError> {
+    async fn should_determine_deployment_strategy_for_requested_service() -> anyhow::Result<()> {
         let app_name = AppName::master();
         let service_configs = vec![
             sc!("wordpress", "wordpress:alpine"),
@@ -1267,7 +1294,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_determine_deployment_strategy_for_companions() -> Result<(), AppsServiceError> {
+    async fn should_determine_deployment_strategy_for_companions() -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.db]
@@ -1312,7 +1339,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_base_traefik_router_rule() -> Result<(), AppsServiceError> {
+    async fn apply_base_traefik_router_rule() -> anyhow::Result<()> {
         let config = config_from_str!("");
 
         let app_name = AppName::master();
@@ -1356,7 +1383,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_apply_rule_for_companion() -> Result<(), AppsServiceError> {
+    async fn should_apply_rule_for_companion() -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.adminer]
@@ -1424,8 +1451,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_apply_rule_for_companion_with_additional_middleware(
-    ) -> Result<(), AppsServiceError> {
+    async fn should_apply_rule_for_companion_with_additional_middleware() -> anyhow::Result<()> {
         let config = config_from_str!(
             r#"
             [companions.adminer]
@@ -1483,6 +1509,54 @@ mod tests {
                     .unwrap()
                 },
             ]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn merge_owners_with_same_sub_issuer() -> anyhow::Result<()> {
+        let config = Config::default();
+        let app_name = AppName::master();
+        let service_configs = vec![sc!("http1", "nginx:1.13")];
+
+        let owners = HashSet::from([Owner {
+            sub: SubjectIdentifier::new(String::from("gitlab-user")),
+            iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+            name: Some(String::from("user_login")),
+        }]);
+
+        let mut name = LocalizedClaim::new();
+        name.insert(None, EndUserName::new(String::from("Some Person")));
+        let user = User::Oidc {
+            id_token_claims: IdTokenClaims::<AdditionalClaims, CoreGenderClaim>::new(
+                IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                Vec::new(),
+                chrono::Utc.with_ymd_and_hms(2025, 5, 1, 0, 0, 0).unwrap(),
+                chrono::Utc.with_ymd_and_hms(2025, 5, 1, 0, 30, 0).unwrap(),
+                StandardClaims::new(SubjectIdentifier::new(String::from("gitlab-user"))),
+                AdditionalClaims::empty(),
+            )
+            .set_name(Some(name)),
+        };
+
+        let unit = DeploymentUnitBuilder::init(app_name, service_configs)
+            .extend_with_config(&config)
+            .extend_with_templating_only_service_configs(Vec::new())
+            .extend_with_image_infos(HashMap::new())
+            .with_owners(owners, user)
+            .apply_templating(&None, None)?
+            .apply_hooks(&config)
+            .await?
+            .build();
+
+        assert_eq!(
+            unit.owners,
+            HashSet::from([Owner {
+                sub: SubjectIdentifier::new(String::from("gitlab-user")),
+                iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                name: Some(String::from("Some Person")),
+            }])
         );
 
         Ok(())

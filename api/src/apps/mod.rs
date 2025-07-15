@@ -30,12 +30,13 @@ pub use crate::apps::AppsService as Apps;
 pub use crate::apps::AppsServiceError as AppsError;
 use crate::auth::User;
 use crate::config::{Config, ConfigError};
+use crate::deployment::deployment_unit::DeploymentTemplatingError;
 use crate::deployment::deployment_unit::DeploymentUnitBuilder;
+use crate::deployment::hooks::HooksError;
 use crate::infrastructure::HttpForwarder;
 use crate::infrastructure::Infrastructure;
 use crate::infrastructure::TraefikIngressRoute;
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::Owner;
 use crate::models::{
     App, AppName, AppStatusChangeId, ContainerType, LogChunk, Service, ServiceConfig, ServiceStatus,
 };
@@ -44,7 +45,6 @@ use crate::registry::RegistryError;
 use chrono::{DateTime, FixedOffset};
 use futures::stream::BoxStream;
 use futures::StreamExt;
-use handlebars::RenderError;
 pub use host_meta_cache::new as host_meta_crawling;
 pub use host_meta_cache::HostMetaCache;
 use log::debug;
@@ -431,7 +431,7 @@ impl AppsService {
             };
         }
 
-        let (services, mut owners) = running_app.into_services_and_owners();
+        let (services, owners) = running_app.into_services_and_owners();
         let configs_for_templating = services
             .into_iter()
             .filter(|service| service.container_type() == &ContainerType::Instance)
@@ -452,13 +452,9 @@ impl AppsService {
             .resolve_image_infos(&images)
             .await?;
 
-        if let User::Oidc { sub, iss, name } = user {
-            owners.insert(Owner { sub, iss, name });
-        }
-
         let deployment_unit_builder = deployment_unit_builder
             .extend_with_image_infos(image_infos)
-            .with_owners(owners)
+            .with_owners(owners, user)
             .apply_templating(
                 &self.prevant_base_route.as_ref().and_then(|r| r.to_url()),
                 user_defined_parameters,
@@ -590,21 +586,21 @@ pub enum AppsServiceError {
     /// Will be used if the service configuration cannot be loaded.
     #[error("Invalid configuration: {error}")]
     InvalidServerConfiguration { error: Arc<ConfigError> },
-    #[error("Invalid configuration (invalid template): {error}")]
-    InvalidTemplateFormat { error: Arc<RenderError> },
+    #[error(
+        "Internal template processing issue (please, contact administrator of the system): {error}"
+    )]
+    TemplatingIssue { error: DeploymentTemplatingError },
     #[error("Unable to resolve information about image: {error}")]
     UnableToResolveImage { error: Arc<RegistryError> },
-    #[error("Invalid deployment hook.")]
-    InvalidDeploymentHook,
-    #[error("Failed to parse traefik rule ({raw_rule}): {err}")]
-    FailedToParseTraefikRule { raw_rule: String, err: String },
+    #[error("Cannot apply hook {err}")]
+    UnapplicableHook { err: HooksError },
     #[error("User defined payload does not match to the configured value: {err}")]
     InvalidUserDefinedParameters { err: String },
 }
 
 impl From<ConfigError> for AppsServiceError {
     fn from(error: ConfigError) -> Self {
-        AppsServiceError::InvalidServerConfiguration {
+        Self::InvalidServerConfiguration {
             error: Arc::new(error),
         }
     }
@@ -612,37 +608,42 @@ impl From<ConfigError> for AppsServiceError {
 
 impl From<anyhow::Error> for AppsServiceError {
     fn from(error: anyhow::Error) -> Self {
-        AppsServiceError::InfrastructureError {
+        Self::InfrastructureError {
             error: Arc::new(error),
         }
     }
 }
 
-impl From<RenderError> for AppsServiceError {
-    fn from(error: RenderError) -> Self {
-        AppsServiceError::InvalidTemplateFormat {
-            error: Arc::new(error),
-        }
+impl From<DeploymentTemplatingError> for AppsServiceError {
+    fn from(error: DeploymentTemplatingError) -> Self {
+        Self::TemplatingIssue { error }
     }
 }
 
 impl From<RegistryError> for AppsServiceError {
     fn from(error: RegistryError) -> Self {
-        AppsServiceError::UnableToResolveImage {
+        Self::UnableToResolveImage {
             error: Arc::new(error),
         }
+    }
+}
+
+impl From<HooksError> for AppsServiceError {
+    fn from(err: HooksError) -> Self {
+        Self::UnapplicableHook { err }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AdditionalClaims;
     use crate::infrastructure::{Dummy, TraefikIngressRoute, TraefikRouterRule};
-    use crate::models::{EnvironmentVariable, State};
+    use crate::models::{EnvironmentVariable, Owner, State};
     use crate::sc;
     use chrono::Utc;
     use futures::StreamExt;
-    use openidconnect::{IssuerUrl, SubjectIdentifier};
+    use openidconnect::{IdTokenClaims, IssuerUrl, StandardClaims, SubjectIdentifier};
     use secstr::SecUtf8;
     use std::hash::Hash;
     use std::io::Write;
@@ -1723,9 +1724,14 @@ Log msg 3 of service-a of app master
             None,
             &vec![sc!("service-a")],
             User::Oidc {
-                sub: SubjectIdentifier::new(String::from("gitlab-user")),
-                iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
-                name: None,
+                id_token_claims: IdTokenClaims::new(
+                    IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                    Vec::new(),
+                    chrono::Utc::now(),
+                    chrono::Utc::now(),
+                    StandardClaims::new(SubjectIdentifier::new(String::from("gitlab-user"))),
+                    AdditionalClaims::empty(),
+                ),
             },
             None,
         )
@@ -1736,9 +1742,14 @@ Log msg 3 of service-a of app master
             None,
             &vec![sc!("service-b")],
             User::Oidc {
-                sub: SubjectIdentifier::new(String::from("github-user")),
-                iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
-                name: None,
+                id_token_claims: IdTokenClaims::new(
+                    IssuerUrl::new(String::from("https://github.com")).unwrap(),
+                    Vec::new(),
+                    chrono::Utc::now(),
+                    chrono::Utc::now(),
+                    StandardClaims::new(SubjectIdentifier::new(String::from("github-user"))),
+                    AdditionalClaims::empty(),
+                ),
             },
             None,
         )

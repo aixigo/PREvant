@@ -124,10 +124,10 @@ async fn index(user: User, issuers: &State<Issuers>) -> HttpResult<Index> {
     let mut data = BTreeMap::new();
     let me = match user {
         User::Anonymous => serde_json::Value::Null,
-        User::Oidc { sub, iss, name } => serde_json::json!({
-            "sub": sub,
-            "iss": iss,
-            "name": name
+        User::Oidc { id_token_claims } => serde_json::json!({
+            "sub": id_token_claims.subject(),
+            "iss": id_token_claims.issuer(),
+            "name": id_token_claims.name().and_then(|name| name.get(None)).map(|name| name.as_str())
         }),
     };
     data.insert("me", me.to_string());
@@ -172,8 +172,8 @@ async fn main() -> Result<(), StartUpError> {
             }
 
             let mut key = [0u8; 32];
-            key[0..16].copy_from_slice(&uuid::Uuid::new_v4().to_bytes_le().as_slice());
-            key[16..].copy_from_slice(&uuid::Uuid::new_v4().to_bytes_le().as_slice());
+            key[0..16].copy_from_slice(uuid::Uuid::new_v4().to_bytes_le().as_slice());
+            key[16..].copy_from_slice(uuid::Uuid::new_v4().to_bytes_le().as_slice());
             std::env::set_var("ROCKET_SECRET_KEY", BASE64_STANDARD.encode(key));
         }
     }

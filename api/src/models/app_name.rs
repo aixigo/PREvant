@@ -40,6 +40,10 @@ impl AppName {
     pub fn master() -> Self {
         Self(String::from("master"))
     }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
 }
 
 impl serde::Serialize for AppName {
@@ -124,7 +128,7 @@ pub enum AppNameError {
 impl From<Utf8Error> for AppNameError {
     fn from(err: Utf8Error) -> Self {
         AppNameError::InvalidUrlDecodedParam {
-            err: format!("{}", err),
+            err: format!("{err}"),
         }
     }
 }
@@ -132,7 +136,7 @@ impl From<Utf8Error> for AppNameError {
 impl From<AppNameError> for HttpApiError {
     fn from(err: AppNameError) -> Self {
         HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST)
-            .detail(format!("{}", err))
+            .detail(format!("{err}"))
             .into()
     }
 }

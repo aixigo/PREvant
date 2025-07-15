@@ -28,10 +28,10 @@ pub fn auth_routes() -> Vec<rocket::Route> {
 fn me(user: super::User) -> serde_json::Value {
     match user {
         super::User::Anonymous => serde_json::Value::Null,
-        super::User::Oidc { sub, iss, name } => serde_json::json!({
-            "sub": sub,
-            "iss": iss,
-            "name": name
+        super::User::Oidc { id_token_claims } => serde_json::json!({
+            "sub": id_token_claims.subject(),
+            "iss": id_token_claims.issuer(),
+            "name": id_token_claims.name().and_then(|name| name.get(None)).map(|name| name.as_str())
         }),
     }
 }
@@ -41,7 +41,7 @@ fn me(user: super::User) -> serde_json::Value {
 fn issuers<'res, 'req: 'res>(
     issuers: &'req State<super::Issuers>,
 ) -> rocket::serde::json::Json<&'res serde_json::Value> {
-    rocket::serde::json::Json(&issuers)
+    rocket::serde::json::Json(issuers)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -125,7 +125,7 @@ async fn openid_response(
 
     let Some(authorize_session) = cookie_jar
         .get_private(AUTHORIZE_SESSION_COOKIE_NAME)
-        .and_then(|session| serde_json::from_str::<AuthorizeSession>(&session.value()).ok())
+        .and_then(|session| serde_json::from_str::<AuthorizeSession>(session.value()).ok())
     else {
         return Ok(Redirect::to(format!("{base_path}auth/login")));
     };
