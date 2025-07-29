@@ -9,7 +9,7 @@ use http_api_problem::HttpApiProblem;
 use openidconnect::{
     core::{CoreGenderClaim, CoreProviderMetadata},
     Client, ClientId, ClientSecret, EndpointMaybeSet, EndpointNotSet, EndpointSet, IssuerUrl,
-    Nonce, RedirectUrl, RefreshToken,
+    Nonce, OAuth2TokenResponse, RedirectUrl, RefreshToken,
 };
 use rocket::{
     fairing::{self, Fairing, Info, Kind},
@@ -316,7 +316,12 @@ async fn refresh_token_due_to_id_token_expiry<'r>(
 
     let session_cookie = Session {
         id_token: token_response.extra_fields().id_token().unwrap().clone(),
-        refresh_token: Some(refresh_token.clone()),
+        refresh_token: Some(
+            token_response
+                .refresh_token()
+                .unwrap_or(refresh_token)
+                .clone(),
+        ),
     };
 
     cookies.add_private(session_cookie.to_cookie(base_url));
