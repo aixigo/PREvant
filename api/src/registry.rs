@@ -210,9 +210,7 @@ impl ImageConfig {
             None => return None,
         };
 
-        ports
-            .iter()
-            .map(|(k, _)| k)
+        ports.keys()
             .filter_map(|port| regex.captures(port))
             .filter_map(|captures| captures.name("port"))
             .filter_map(|port| u16::from_str(port.as_str()).ok())
@@ -224,7 +222,7 @@ impl ImageConfig {
             Some(volumes) => volumes,
             None => return Vec::new(),
         };
-        volumes.iter().map(|(k, _v)| k).collect::<Vec<&String>>()
+        volumes.keys().collect::<Vec<&String>>()
     }
 }
 

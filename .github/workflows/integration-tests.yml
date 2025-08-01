@@ -83,7 +83,7 @@ jobs:
          # Prevent GitHub from canceling all in-progress jobs when a matrix job fails.
          fail-fast: false
          matrix:
-            k8s: [v1.28, latest]
+            k8s: [v1.30, latest]
       steps:
          - name: Download PREvant image
            uses: actions/download-artifact@v4

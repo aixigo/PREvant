@@ -1050,7 +1050,7 @@ mod tests {
     use kube::api::ObjectMeta;
 
     macro_rules! deployment_object {
-        ($deployment_name:expr, $app_name:expr, $service_name:expr, $image:expr, $container_type:expr, $($a_key:expr => $a_value:expr),*) => {{
+        ($deployment_name:expr_2021, $app_name:expr_2021, $service_name:expr_2021, $image:expr_2021, $container_type:expr_2021, $($a_key:expr_2021 => $a_value:expr_2021),*) => {{
             let mut labels = BTreeMap::new();
 
             if let Some(app_name) = $app_name {

@@ -156,7 +156,7 @@ impl Image {
                     Some(user) => user.clone(),
                 };
 
-                Some(format!("{}/{}", user, image_repository))
+                Some(format!("{user}/{image_repository}"))
             }
         }
     }
@@ -236,7 +236,7 @@ impl FromStr for Image {
 impl Display for Image {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self {
-            Image::Digest { hash } => write!(f, "{}", hash),
+            Image::Digest { hash } => write!(f, "{hash}"),
             Image::Named {
                 image_repository,
                 registry,
@@ -258,7 +258,7 @@ impl Display for Image {
                     Some(tag) => tag.clone(),
                 };
 
-                write!(f, "{}/{}/{}:{}", registry, user, image_repository, tag)
+                write!(f, "{registry}/{user}/{image_repository}:{tag}")
             }
         }
     }

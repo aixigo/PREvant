@@ -39,22 +39,23 @@ use anyhow::{anyhow, Result};
 use async_stream::stream;
 use async_trait::async_trait;
 use bollard::auth::DockerCredentials;
-use bollard::container::{
-    CreateContainerOptions, ListContainersOptions, LogOutput, StartContainerOptions,
-    UploadToContainerOptions,
-};
+use bollard::container::LogOutput;
 use bollard::errors::Error as BollardError;
-use bollard::image::CreateImageOptions;
-use bollard::network::{
-    ConnectNetworkOptions, CreateNetworkOptions, DisconnectNetworkOptions, ListNetworksOptions,
+use bollard::query_parameters::{
+    CreateContainerOptions, CreateImageOptions, InspectContainerOptions, ListContainersOptions,
+    ListNetworksOptions, ListVolumesOptions, LogsOptionsBuilder,
+    RemoveContainerOptions, RemoveImageOptions, RemoveVolumeOptions, StartContainerOptions,
+    StopContainerOptions, UploadToContainerOptions,
 };
-use bollard::secret::Port;
+use bollard::secret::{
+    ContainerCreateBody, NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest,
+    Port, VolumeCreateOptions,
+};
 use bollard::service::{
     ContainerCreateResponse, ContainerInspectResponse, ContainerStateStatusEnum, ContainerSummary,
     CreateImageInfo, EndpointSettings, HostConfig, RestartPolicy, RestartPolicyNameEnum,
     VolumeListResponse,
 };
-use bollard::volume::{CreateVolumeOptions, ListVolumesOptions};
 use bollard::Docker;
 use chrono::{DateTime, FixedOffset, Utc};
 use futures::stream::BoxStream;
@@ -135,9 +136,9 @@ impl DockerInfrastructure {
 
         pull(&image, &self.config).await?;
 
-        let mut labels: HashMap<&str, &str> = HashMap::new();
-        labels.insert(APP_NAME_LABEL, app_name);
-        labels.insert(STATUS_ID, status_id);
+        let mut labels = HashMap::new();
+        labels.insert(APP_NAME_LABEL.to_string(), app_name.to_string());
+        labels.insert(STATUS_ID.to_string(), status_id.to_string());
 
         let docker = Docker::connect_with_socket_defaults()?;
 
@@ -145,15 +146,17 @@ impl DockerInfrastructure {
 
         let container_info = docker
             .create_container(
-                None::<CreateContainerOptions<&str>>,
-                bollard::container::Config::<&str> {
-                    image: Some("docker.io/library/busybox:stable"),
+                None::<CreateContainerOptions>,
+                ContainerCreateBody {
+                    image: Some(String::from("docker.io/library/busybox:stable")),
                     labels: Some(labels),
                     ..Default::default()
                 },
             )
             .await?;
-        Ok(docker.inspect_container(&container_info.id, None).await?)
+        Ok(docker
+            .inspect_container(&container_info.id, None::<InspectContainerOptions>)
+            .await?)
     }
 
     async fn create_or_get_network_id(&self, app_name: &AppName) -> Result<String, BollardError> {
@@ -163,7 +166,7 @@ impl DockerInfrastructure {
 
         let docker = Docker::connect_with_socket_defaults()?;
         let network_id = docker
-            .list_networks(None::<ListNetworksOptions<&str>>)
+            .list_networks(None::<ListNetworksOptions>)
             .await?
             .into_iter()
             .find(|n| n.name.as_ref() == Some(&network_name))
@@ -176,8 +179,8 @@ impl DockerInfrastructure {
         debug!("Creating network for app {app_name}.");
 
         let network_create_info = docker
-            .create_network(CreateNetworkOptions::<&str> {
-                name: &network_name,
+            .create_network(NetworkCreateRequest {
+                name: network_name,
                 ..Default::default()
             })
             .await?;
@@ -192,7 +195,7 @@ impl DockerInfrastructure {
         let docker = Docker::connect_with_socket_defaults()?;
 
         let containers = docker
-            .list_containers(None::<ListContainersOptions<&str>>)
+            .list_containers(None::<ListContainersOptions>)
             .await?;
 
         let traefik_container_id = containers
@@ -208,8 +211,8 @@ impl DockerInfrastructure {
             if let Err(e) = docker
                 .connect_network(
                     network_id,
-                    ConnectNetworkOptions::<&str> {
-                        container: &id,
+                    NetworkConnectRequest {
+                        container: Some(id),
                         ..Default::default()
                     },
                 )
@@ -225,7 +228,7 @@ impl DockerInfrastructure {
     async fn disconnect_traefik(&self, network_id: &str) -> Result<(), BollardError> {
         let docker = Docker::connect_with_socket_defaults()?;
         let containers = docker
-            .list_containers(None::<ListContainersOptions<&str>>)
+            .list_containers(None::<ListContainersOptions>)
             .await?;
         let traefik_container_id = containers
             .into_iter()
@@ -240,8 +243,8 @@ impl DockerInfrastructure {
             docker
                 .disconnect_network(
                     network_id,
-                    DisconnectNetworkOptions::<&str> {
-                        container: &id,
+                    NetworkDisconnectRequest {
+                        container: Some(id),
                         ..Default::default()
                     },
                 )
@@ -257,8 +260,8 @@ impl DockerInfrastructure {
         let docker = Docker::connect_with_socket_defaults()?;
 
         for n in docker
-            .list_networks(Some(ListNetworksOptions::<&str> {
-                filters: HashMap::from([("name", vec![network_name.as_str()])]),
+            .list_networks(Some(ListNetworksOptions {
+                filters: Some(HashMap::from([(String::from("name"), vec![network_name])])),
             }))
             .await?
         {
@@ -280,7 +283,9 @@ impl DockerInfrastructure {
             .into_iter()
             .flatten()
         {
-            docker.remove_volume(&volume.name, None).await?;
+            docker
+                .remove_volume(&volume.name, None::<RemoveVolumeOptions>)
+                .await?;
         }
 
         Ok(())
@@ -347,7 +352,9 @@ impl DockerInfrastructure {
                     .as_ref()
                     .expect("id is mandatory for a docker container");
 
-                docker.stop_container(id, None).await?;
+                docker
+                    .stop_container(id, None::<StopContainerOptions>)
+                    .await?;
 
                 Ok::<ContainerInspectResponse, BollardError>(details)
             })
@@ -370,7 +377,9 @@ impl DockerInfrastructure {
                     .as_ref()
                     .expect("id is mandatory for a docker container");
 
-                docker.remove_container(id, None).await?;
+                docker
+                    .remove_container(id, None::<RemoveContainerOptions>)
+                    .await?;
                 trace!("Deleted container {id} for {app_name}");
 
                 Ok::<ContainerInspectResponse, BollardError>(details)
@@ -414,7 +423,7 @@ impl DockerInfrastructure {
                         .id
                         .as_ref()
                         .expect("id is mandatory for a docker container"),
-                    None,
+                    None::<InspectContainerOptions>,
                 )
                 .await?;
 
@@ -448,7 +457,7 @@ impl DockerInfrastructure {
                             .id
                             .as_ref()
                             .expect("id is mandatory for a docker container"),
-                        None,
+                        None::<StopContainerOptions>,
                     )
                     .await?;
             }
@@ -458,7 +467,7 @@ impl DockerInfrastructure {
                         .id
                         .as_ref()
                         .expect("id is mandatory for a docker container"),
-                    None,
+                    None::<RemoveContainerOptions>,
                 )
                 .await?;
             image_to_delete = container_details.image;
@@ -481,38 +490,43 @@ impl DockerInfrastructure {
         );
 
         let container_info = docker
-            .create_container::<&str, String>(None, options)
+            .create_container(None::<CreateContainerOptions>, options)
             .await?;
-        let container_id = container_info.id.as_ref();
+        let container_id = container_info.id.clone();
 
-        debug!("Created container: {container_info:?}");
+        debug!("Created container: {container_id}");
         self.copy_file_data(&container_info, service).await?;
 
         docker
-            .start_container(container_id, None::<StartContainerOptions<&str>>)
+            .start_container(&container_id, None::<StartContainerOptions>)
             .await?;
         debug!("Started container: {container_info:?}");
 
         docker
             .connect_network(
                 network_id,
-                ConnectNetworkOptions::<&str> {
-                    container: container_id,
-                    endpoint_config: EndpointSettings {
+                NetworkConnectRequest {
+                    container: Some(container_id.clone()),
+                    endpoint_config: Some(EndpointSettings {
                         aliases: Some(vec![service_name.to_string()]),
                         ..Default::default()
-                    },
+                    }),
                 },
             )
             .await?;
 
         debug!("Connected container {container_id} to {network_id}");
 
-        let container_details = docker.inspect_container(container_id, None).await?;
+        let container_details = docker
+            .inspect_container(&container_id, None::<InspectContainerOptions>)
+            .await?;
 
         if let Some(image) = image_to_delete {
             info!("Clean up image {image:?} of app {app_name:?}");
-            match docker.remove_image(&image, None, None).await {
+            match docker
+                .remove_image(&image, None::<RemoveImageOptions>, None)
+                .await
+            {
                 Ok(output) => {
                     for o in output {
                         debug!("{o:?}");
@@ -530,7 +544,7 @@ impl DockerInfrastructure {
         container_config: &'a ContainerConfig,
         host_config_binds: &'a [String],
         owners: &HashSet<Owner>,
-    ) -> bollard::container::Config<String> {
+    ) -> bollard::models::ContainerCreateBody {
         let env = service_config.env().map(|env| {
             env.iter()
                 .map(|v| format!("{}={}", v.key(), v.value().unsecure()))
@@ -582,7 +596,7 @@ impl DockerInfrastructure {
             .memory_limit()
             .map(|mem| mem.as_u64() as i64);
 
-        bollard::container::Config {
+        bollard::models::ContainerCreateBody {
             image: Some(service_config.image().to_string()),
             env,
             labels: Some(labels),
@@ -638,10 +652,10 @@ impl DockerInfrastructure {
             .upload_to_container(
                 &container_info.id,
                 Some(UploadToContainerOptions {
-                    path: "/",
+                    path: String::from("/"),
                     ..Default::default()
                 }),
-                tar_builder.into_inner()?.into(),
+                bollard::body_full(tar_builder.into_inner()?.into()),
             )
             .await?;
 
@@ -654,10 +668,10 @@ impl DockerInfrastructure {
         let docker = Docker::connect_with_socket_defaults()?;
         docker
             .list_volumes(Some(ListVolumesOptions {
-                filters: HashMap::from([(
-                    "label".to_string(),
+                filters: Some(HashMap::from([(
+                    String::from("label"),
                     vec![format!("{APP_NAME_LABEL}={app_name}")],
-                )]),
+                )])),
             }))
             .await
     }
@@ -668,13 +682,16 @@ impl DockerInfrastructure {
     ) -> Result<String, BollardError> {
         let docker = Docker::connect_with_socket_defaults()?;
 
-        let mut labels: HashMap<&str, &str> = HashMap::new();
-        labels.insert(APP_NAME_LABEL, app_name);
-        labels.insert(SERVICE_NAME_LABEL, service.service_name());
+        let mut labels = HashMap::new();
+        labels.insert(APP_NAME_LABEL.to_string(), app_name.to_string());
+        labels.insert(
+            SERVICE_NAME_LABEL.to_string(),
+            service.service_name().clone(),
+        );
 
         docker
-            .create_volume(CreateVolumeOptions {
-                labels,
+            .create_volume(VolumeCreateOptions {
+                labels: Some(labels),
                 ..Default::default()
             })
             .await
@@ -742,7 +759,7 @@ impl DockerInfrastructure {
 
         let list_options = Some(ListContainersOptions {
             all: true,
-            filters,
+            filters: Some(filters),
             ..Default::default()
         });
 
@@ -929,17 +946,11 @@ impl Infrastructure for DockerInfrastructure {
                 })
                 .and_then(|app_name| AppName::from_str(app_name).ok())
             {
-                Some(app_name) => {
-                    if let Some(container_details) = self
-                        .get_container_details(Some(&app_name), None)
-                        .await?
-                        .remove(&app_name)
-                    {
-                        Some(Self::to_app(container_details))
-                    } else {
-                        None
-                    }
-                }
+                Some(app_name) => self
+                    .get_container_details(Some(&app_name), None)
+                    .await?
+                    .remove(&app_name)
+                    .map(Self::to_app),
                 None => None,
             },
         )
@@ -980,22 +991,15 @@ impl Infrastructure for DockerInfrastructure {
                         .expect("id is mandatory for docker container");
                     trace!("Acquiring logs of container {container_id} since {from:?}");
 
+                    let logs_builder = LogsOptionsBuilder::new()
+                        .stdout(true)
+                            .stderr(true)
+                            .timestamps(true)
+                            .follow(follow);
+
                     let log_options = match from {
-                        Some(from) => bollard::container::LogsOptions::<&str> {
-                            stdout: true,
-                            stderr: true,
-                            since: from.timestamp(),
-                            timestamps: true,
-                            follow,
-                            ..Default::default()
-                        },
-                        None => bollard::container::LogsOptions::<&str> {
-                            stdout: true,
-                            stderr: true,
-                            timestamps: true,
-                            follow,
-                            ..Default::default()
-                        },
+                        Some(from) => logs_builder.since(from.timestamp() as i32).build(),
+                        None => logs_builder.build(),
                     };
 
                     let logs = docker.logs(container_id, Some(log_options));
@@ -1044,12 +1048,12 @@ impl Infrastructure for DockerInfrastructure {
                             .id
                             .as_ref()
                             .expect("id is mandatory for a docker container"),
-                        None,
+                        None::<InspectContainerOptions>,
                     )
                     .await?;
 
                 macro_rules! run_future_and_map_err {
-                    ( $future:expr, $log_format:expr ) => {
+                    ( $future:expr_2021, $log_format:expr_2021 ) => {
                         if let Err(err) = $future.await {
                             match err {
                                 BollardError::DockerResponseServerError {
@@ -1088,7 +1092,7 @@ impl Infrastructure for DockerInfrastructure {
                                         .id
                                         .as_ref()
                                         .expect("id is mandatory for a docker container"),
-                                    None::<StartContainerOptions::<&str>>,
+                                    None::<StartContainerOptions>,
                                 ),
                                 "Could not start container: {}"
                             );
@@ -1107,7 +1111,7 @@ impl Infrastructure for DockerInfrastructure {
                                         .id
                                         .as_ref()
                                         .expect("id is mandatory for a docker container"),
-                                    None
+                                    None::<StopContainerOptions>
                                 ),
                                 "Could not pause container: {}"
                             );
@@ -1207,8 +1211,8 @@ fn not_found_to_none<T>(result: Result<T, BollardError>) -> Result<Option<T>, Bo
 
 /// Helper function to pull images
 async fn pull(image: &Image, config: &Config) -> Result<Vec<CreateImageInfo>, BollardError> {
-    let pull_options = CreateImageOptions::<&str> {
-        from_image: &image.to_string(),
+    let pull_options = CreateImageOptions {
+        from_image: Some(image.to_string()),
         ..Default::default()
     };
     let docker_auth = if let Some(registry) = image.registry() {
@@ -1243,7 +1247,7 @@ async fn delete(
                 .id
                 .as_ref()
                 .expect("id is mandatory for a docker container"),
-            None,
+            None::<RemoveContainerOptions>,
         )
         .await?;
     Ok(details)
@@ -1257,7 +1261,7 @@ async fn inspect(container: ContainerSummary) -> Result<ContainerInspectResponse
             &container
                 .id
                 .expect("id is mandatory for a docker container"),
-            None,
+            None::<InspectContainerOptions>,
         )
         .await
 }
@@ -1418,7 +1422,7 @@ mod tests {
     use secstr::SecUtf8;
 
     macro_rules! container_details {
-        ($id:expr, $app_name:expr, $service_name:expr, $image:expr, $container_type:expr, $($l_key:expr => $l_value:expr),* ) => {{
+        ($id:expr_2021, $app_name:expr_2021, $service_name:expr_2021, $image:expr_2021, $container_type:expr_2021, $($l_key:expr_2021 => $l_value:expr_2021),* ) => {{
             let mut labels = std::collections::HashMap::new();
 
             if let Some(app_name) = $app_name {
@@ -1511,7 +1515,7 @@ mod tests {
                     started_at: Some(chrono::Utc::now().to_rfc3339()),
                     ..Default::default()
                 }),
-                created: Some(chrono::Utc::now().to_rfc3339()),
+                created: Some(chrono::Utc::now()),
                 mounts: Some(vec![]),
                 ..Default::default()
             }

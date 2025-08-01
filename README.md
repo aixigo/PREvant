@@ -115,6 +115,22 @@ As shown above in the screenshot, PREvant offers some integration into its
 dashboard. How the integration can be achieved is documented
 [here](docs/web-host-meta.md).
 
+# Where can I find the release version?
+
+The official release of PREvant is available as OCI/Docker image on
+[hub.docker.com](https://hub.docker.com/r/aixigo/prevant). There is only the
+`latest` tag because this projects aims to take backwards compatibility to a
+extreme: any future change must be backwards compatibility and this considers:
+
+1. The HTTP API documented in the PREvant OpenAPI documentation.
+2. Any configuration (TOML file, CLI flags & environment variables prefixed
+   with `PREVANT_`) will stay backwards compatibility and any new configuration
+   parameter will either have no effect or provides a sane default.
+3. Support the currently maintained Docker & Kubernetes APIs. PREvant will use
+   the recent crates/libraries calling out to these API versions that are in
+   maintenance and thus support for unmaintained API version may drop without
+   any notice.
+
 # Development
 
 In the [Development](docs/Develop.md) section, you can view the detailed guide on,
