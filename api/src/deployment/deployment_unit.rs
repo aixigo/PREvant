@@ -1284,8 +1284,7 @@ mod tests {
         for services in services {
             if !matches!(services.strategy, DeploymentStrategy::RedeployAlways) {
                 panic!(
-                    "All services should have a recreation strategy but was {:?}.",
-                    services
+                    "All services should have a recreation strategy but was {services:?}."
                 );
             }
         }
@@ -1330,8 +1329,7 @@ mod tests {
         for service in services {
             if !matches!(service.strategy, DeploymentStrategy::RedeployAlways) {
                 panic!(
-                    "All services should have a recreation strategy but was {:?}.",
-                    service
+                    "All services should have a recreation strategy but was {service:?}."
                 );
             }
         }

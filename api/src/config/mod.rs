@@ -168,9 +168,9 @@ where
                 let value = std::env::var(var_name).map_err(|e| {
                     serde::de::Error::custom(format!("No variable {var_name} available: {e}"))
                 })?;
-                T::from_str(&value).map_err(|e| serde::de::Error::custom(e))?
+                T::from_str(&value).map_err(serde::de::Error::custom)?
             }
-            _ => T::from_str(&value).map_err(|e| serde::de::Error::custom(e))?,
+            _ => T::from_str(&value).map_err(serde::de::Error::custom)?,
         };
         Ok(Self(value))
     }
@@ -493,7 +493,7 @@ impl<'de> Deserialize<'de> for ApiAccess {
         } = ApiAccessInner::deserialize(deserializer)?;
 
         Ok(Self {
-            mode: mode.unwrap_or_else(|| {
+            mode: mode.unwrap_or({
                 if openid_providers.is_empty() {
                     ApiAccessMode::Any
                 } else {
@@ -549,7 +549,7 @@ impl From<TomlError> for ConfigError {
 #[cfg(test)]
 #[macro_export]
 macro_rules! config_from_str {
-    ( $config_str:expr ) => {{
+    ( $config_str:expr_2021 ) => {{
         use figment::providers::Format;
         let provider = figment::providers::Toml::string($config_str);
         figment::Figment::from(provider)
@@ -565,7 +565,7 @@ mod tests {
     use std::str::FromStr;
 
     macro_rules! service_config {
-        ( $name:expr ) => {{
+        ( $name:expr_2021 ) => {{
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update($name);

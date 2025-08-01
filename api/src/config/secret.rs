@@ -58,14 +58,14 @@ impl Secret {
     }
 }
 
-impl Into<(PathBuf, SecUtf8)> for Secret {
-    fn into(self) -> (PathBuf, SecUtf8) {
-        let name = self.name;
+impl From<Secret> for (PathBuf, SecUtf8) {
+    fn from(val: Secret) -> Self {
+        let name = val.name;
         (
-            self.path
+            val.path
                 .map(|path| path.join(&name))
                 .unwrap_or(PathBuf::from(format!("/run/secrets/{}", &name))),
-            self.secret,
+            val.secret,
         )
     }
 }
@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     macro_rules! secret_from_str {
-        ( $config_str:expr ) => {
+        ( $config_str:expr_2021 ) => {
             toml::de::from_str::<Secret>($config_str).unwrap()
         };
     }

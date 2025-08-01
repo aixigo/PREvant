@@ -735,12 +735,12 @@ mod tests {
 
         #[tokio::test]
         async fn fail_with_none_existing_file() {
-            let config = crate::config_from_str!(&format!(
+            let config = crate::config_from_str!(
                 r#"
                 [hooks]
                 idTokenClaimsToOwner = "/path/does/not/exists"
-                "#,
-            ));
+                "#
+            );
             let hook = Hooks::new(&config);
 
             let result = hook

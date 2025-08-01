@@ -174,7 +174,9 @@ async fn main() -> Result<(), StartUpError> {
             let mut key = [0u8; 32];
             key[0..16].copy_from_slice(uuid::Uuid::new_v4().to_bytes_le().as_slice());
             key[16..].copy_from_slice(uuid::Uuid::new_v4().to_bytes_le().as_slice());
-            std::env::set_var("ROCKET_SECRET_KEY", BASE64_STANDARD.encode(key));
+            // safety: this is safe because it is called in the beginning of main and no other
+            // thread is started.
+            unsafe { std::env::set_var("ROCKET_SECRET_KEY", BASE64_STANDARD.encode(key)) };
         }
     }
 

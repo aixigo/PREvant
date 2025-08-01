@@ -58,8 +58,7 @@ impl<'de> Deserialize<'de> for EventKey {
             "pr:declined" => Ok(EventKey::DeclinedPullRequest),
             "pr:deleted" => Ok(EventKey::DeletedPullRequest),
             _ => Err(DeserializeError::custom(format!(
-                "Unsupported event key {:?}",
-                event_key
+                "Unsupported event key {event_key:?}"
             ))),
         }
     }
@@ -121,7 +120,7 @@ impl<'r> FromData<'r> for WebHookInfo {
             Err(err) => {
                 return data::Outcome::Error((
                     Status::BadRequest,
-                    format!("Cannot read body as JSON: {:?}", err),
+                    format!("Cannot read body as JSON: {err:?}"),
                 ));
             }
         };

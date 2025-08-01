@@ -653,13 +653,13 @@ mod tests {
     use tokio::runtime;
 
     macro_rules! config_from_str {
-        ( $config_str:expr ) => {
+        ( $config_str:expr_2021 ) => {
             toml::from_str::<Config>($config_str).unwrap()
         };
     }
 
     macro_rules! assert_contains_service {
-        ( $services:expr, $service_name:expr, $container_type:expr ) => {
+        ( $services:expr_2021, $service_name:expr_2021, $container_type:expr_2021 ) => {
             assert!(
                 $services
                     .iter()
