@@ -930,15 +930,10 @@ impl Infrastructure for DockerInfrastructure {
                 .and_then(|app_name| AppName::from_str(app_name).ok())
             {
                 Some(app_name) => {
-                    if let Some(container_details) = self
+                    self
                         .get_container_details(Some(&app_name), None)
                         .await?
-                        .remove(&app_name)
-                    {
-                        Some(Self::to_app(container_details))
-                    } else {
-                        None
-                    }
+                        .remove(&app_name).map(Self::to_app)
                 }
                 None => None,
             },
@@ -1049,7 +1044,7 @@ impl Infrastructure for DockerInfrastructure {
                     .await?;
 
                 macro_rules! run_future_and_map_err {
-                    ( $future:expr, $log_format:expr ) => {
+                    ( $future:expr_2021, $log_format:expr_2021 ) => {
                         if let Err(err) = $future.await {
                             match err {
                                 BollardError::DockerResponseServerError {
@@ -1418,7 +1413,7 @@ mod tests {
     use secstr::SecUtf8;
 
     macro_rules! container_details {
-        ($id:expr, $app_name:expr, $service_name:expr, $image:expr, $container_type:expr, $($l_key:expr => $l_value:expr),* ) => {{
+        ($id:expr_2021, $app_name:expr_2021, $service_name:expr_2021, $image:expr_2021, $container_type:expr_2021, $($l_key:expr_2021 => $l_value:expr_2021),* ) => {{
             let mut labels = std::collections::HashMap::new();
 
             if let Some(app_name) = $app_name {

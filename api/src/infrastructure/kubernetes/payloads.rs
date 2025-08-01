@@ -120,7 +120,7 @@ pub struct TraefikTls {
 pub struct MiddlewareSpec(pub Value);
 
 macro_rules! secret_name_from_path {
-    ($path:expr) => {{
+    ($path:expr_2021) => {{
         $path
             .components()
             .map(|c| match c {
@@ -135,7 +135,7 @@ macro_rules! secret_name_from_path {
 }
 
 macro_rules! secret_name_from_name {
-    ($path:expr) => {{
+    ($path:expr_2021) => {{
         $path
             .file_name()
             .map(|name| name.to_os_string().into_string().unwrap())

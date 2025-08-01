@@ -116,7 +116,7 @@ impl From<ListTicketsError> for HttpApiError {
         };
 
         HttpApiProblem::with_title_and_type(status)
-            .detail(format!("{}", error))
+            .detail(format!("{error}"))
             .into()
     }
 }
