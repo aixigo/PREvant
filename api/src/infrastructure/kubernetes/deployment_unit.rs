@@ -65,7 +65,7 @@ impl K8sDeploymentUnit {
         client: Client,
         bootstrapping_containers: &[BootstrappingContainer],
         image_pull_secret: Option<Secret>,
-    ) -> Result<(String, Vec<impl AsyncBufReadExt>)> {
+    ) -> Result<(String, Vec<impl AsyncBufReadExt + use<>>)> {
         let image_pull_secrets = match image_pull_secret {
             Some(image_pull_secret) => {
                 let image_pull_secrets = vec![LocalObjectReference {

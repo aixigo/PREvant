@@ -41,7 +41,7 @@ use k8s_openapi::api::apps::v1::DeploymentSpec;
 use k8s_openapi::api::core::v1::{
     Container, ContainerPort, EnvVar, KeyToPath, PersistentVolumeClaim, PersistentVolumeClaimSpec,
     PersistentVolumeClaimVolumeSource, PodSpec, PodTemplateSpec, ResourceRequirements,
-    SecretVolumeSource, Volume, VolumeMount,
+    SecretVolumeSource, Volume, VolumeMount, VolumeResourceRequirements,
 };
 use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::api::{
@@ -120,7 +120,7 @@ pub struct TraefikTls {
 pub struct MiddlewareSpec(pub Value);
 
 macro_rules! secret_name_from_path {
-    ($path:expr) => {{
+    ($path:expr_2021) => {{
         $path
             .components()
             .map(|c| match c {
@@ -135,7 +135,7 @@ macro_rules! secret_name_from_path {
 }
 
 macro_rules! secret_name_from_name {
-    ($path:expr) => {{
+    ($path:expr_2021) => {{
         $path
             .file_name()
             .map(|name| name.to_os_string().into_string().unwrap())
@@ -918,7 +918,7 @@ pub fn persistent_volume_claim_payload(
         spec: Some(PersistentVolumeClaimSpec {
             storage_class_name: Some(storage_class.to_owned()),
             access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
-            resources: Some(ResourceRequirements {
+            resources: Some(VolumeResourceRequirements {
                 requests: Some(BTreeMap::from_iter(vec![(
                     "storage".to_owned(),
                     Quantity(format!("{}", storage_size.as_u64())),
@@ -1422,7 +1422,7 @@ mod tests {
             spec: Some(PersistentVolumeClaimSpec {
                 storage_class_name: Some("local-path".to_owned()),
                 access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
-                resources: Some(ResourceRequirements {
+                resources: Some(VolumeResourceRequirements {
                     requests: Some(BTreeMap::from_iter(vec![(
                         "storage".to_owned(),
                         Quantity("2Gi".to_owned()),

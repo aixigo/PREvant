@@ -624,7 +624,7 @@ mod tests {
         use rocket::{http::ContentType, local::asynchronous::Client, routes};
 
         macro_rules! config_from_str {
-            ( $config_str:expr ) => {
+            ( $config_str:expr_2021 ) => {
                 toml::from_str::<crate::config::Config>($config_str).unwrap()
             };
         }

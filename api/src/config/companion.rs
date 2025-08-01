@@ -344,13 +344,13 @@ mod tests {
     use std::str::FromStr;
 
     macro_rules! companion_from_str {
-        ( $config_str:expr ) => {
+        ( $config_str:expr_2021 ) => {
             toml::de::from_str::<Companion>($config_str).unwrap()
         };
     }
 
     macro_rules! companions_from_str {
-        ( $config_str:expr ) => {
+        ( $config_str:expr_2021 ) => {
             toml::de::from_str::<Companions>($config_str).unwrap()
         };
     }

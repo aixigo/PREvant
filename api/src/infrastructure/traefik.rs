@@ -323,7 +323,7 @@ impl TraefikRouterRule {
                     let mut has_domains = false;
                     for own_matches in self.matches.iter_mut() {
                         if let Matcher::Host {
-                            domains: ref mut own_domains,
+                            domains: own_domains,
                         } = own_matches
                         {
                             has_domains = true;
@@ -341,7 +341,7 @@ impl TraefikRouterRule {
                     let mut has_path_prefixes = false;
                     for own_matches in self.matches.iter_mut() {
                         if let Matcher::PathPrefix {
-                            paths: ref mut own_paths,
+                            paths: own_paths,
                         } = own_matches
                         {
                             has_path_prefixes = true;

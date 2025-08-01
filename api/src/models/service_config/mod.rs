@@ -179,7 +179,7 @@ impl ServiceConfig {
 #[cfg(test)]
 #[macro_export]
 macro_rules! sc {
-    ( $name:expr ) => {{
+    ( $name:expr_2021 ) => {{
         use sha2::Digest;
         let mut hasher = ::sha2::Sha256::new();
         hasher.update($name);
@@ -188,15 +188,15 @@ macro_rules! sc {
         $crate::sc!($name, img_hash)
     }};
 
-    ( $name:expr, $img:expr ) => {{
+    ( $name:expr_2021, $img:expr_2021 ) => {{
         use std::str::FromStr;
         use $crate::models::ServiceConfig;
-        ServiceConfig::new(String::from($name), crate::models::Image::from_str($img).unwrap())
+        ServiceConfig::new(String::from($name), $crate::models::Image::from_str($img).unwrap())
     }};
 
-    ( $name:expr, labels = ($($l_key:expr => $l_value:expr),*),
-        env = ($($env_key:expr => $env_value:expr),*),
-        files = ($($v_key:expr => $v_value:expr),*) ) => {{
+    ( $name:expr_2021, labels = ($($l_key:expr_2021 => $l_value:expr_2021),*),
+        env = ($($env_key:expr_2021 => $env_value:expr_2021),*),
+        files = ($($v_key:expr_2021 => $v_value:expr_2021),*) ) => {{
         use std::str::FromStr;
         use sha2::Digest;
 
@@ -222,8 +222,8 @@ macro_rules! sc {
         config
     }};
 
-    ( $name:expr, $img:expr,
-        env = ($($env_key:expr => $env_value:expr),*)
+    ( $name:expr_2021, $img:expr_2021,
+        env = ($($env_key:expr_2021 => $env_value:expr_2021),*)
         ) => {{
         use std::str::FromStr;
         let mut config =
@@ -236,10 +236,10 @@ macro_rules! sc {
         config
     }};
 
-    ( $name:expr, $img:expr,
-        labels = ($($l_key:expr => $l_value:expr),*),
-        env = ($($env_key:expr => $env_value:expr),*),
-        files = ($($v_key:expr => $v_value:expr),*) ) => {{
+    ( $name:expr_2021, $img:expr_2021,
+        labels = ($($l_key:expr_2021 => $l_value:expr_2021),*),
+        env = ($($env_key:expr_2021 => $env_value:expr_2021),*),
+        files = ($($v_key:expr_2021 => $v_value:expr_2021),*) ) => {{
         use std::str::FromStr;
         let mut config =
             ServiceConfig::new(String::from($name), crate::models::Image::from_str($img).unwrap());

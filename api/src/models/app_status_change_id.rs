@@ -70,7 +70,7 @@ pub enum AppStatusChangeIdError {
 impl From<std::str::Utf8Error> for AppStatusChangeIdError {
     fn from(err: std::str::Utf8Error) -> Self {
         AppStatusChangeIdError::InvalidUrlDecodedParam {
-            err: format!("{}", err),
+            err: format!("{err}"),
         }
     }
 }
@@ -78,7 +78,7 @@ impl From<std::str::Utf8Error> for AppStatusChangeIdError {
 impl From<uuid::Error> for AppStatusChangeIdError {
     fn from(err: uuid::Error) -> Self {
         AppStatusChangeIdError::UuidError {
-            err: format!("{}", err),
+            err: format!("{err}"),
         }
     }
 }
@@ -86,7 +86,7 @@ impl From<uuid::Error> for AppStatusChangeIdError {
 impl From<AppStatusChangeIdError> for HttpApiError {
     fn from(err: AppStatusChangeIdError) -> Self {
         HttpApiProblem::with_title(StatusCode::BAD_REQUEST)
-            .detail(format!("{}", err))
+            .detail(format!("{err}"))
             .into()
     }
 }
