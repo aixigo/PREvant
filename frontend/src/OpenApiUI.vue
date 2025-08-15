@@ -128,14 +128,24 @@
          }
       },
       mounted() {
+         window.addEventListener("keydown", this.handleKeydown);
+
          SwaggerUI( {
             url: this.$route.params.url,
             dom_id: `#swagger-ui-${this.$.uid}`
          } );
       },
+      beforeUnmount() {
+         window.removeEventListener("keydown", this.handleKeydown);
+      },
       methods: {
          close() {
            this.$router.push(this.$router.options.history.state.back ?? "/");
+         },
+         handleKeydown(event) {
+            if (event.key === "Escape") {
+               this.close();
+            }
          }
       }
    }

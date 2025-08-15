@@ -144,4 +144,14 @@ test.describe("app modal dialogs", () => {
       ).toHaveURL(/\/#\/$/);
     });
   });
+
+  test("should close the Open API Documentation dialog when pressing escape", async ({
+    page,
+  }) => {
+    await page.goto(`/#/open-api-ui/%2Fopenapi.yaml`);
+
+    await page.keyboard.down("Escape");
+
+    await expect(page, "should close the dialog").toHaveURL(/\/#\/$/);
+  });
 });
