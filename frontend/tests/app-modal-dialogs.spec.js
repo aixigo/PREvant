@@ -154,4 +154,14 @@ test.describe("app modal dialogs", () => {
 
     await expect(page, "should close the dialog").toHaveURL(/\/#\/$/);
   });
+
+  test("should close the Async API Documentation dialog when pressing escape", async ({
+    page,
+  }) => {
+    await page.goto(`/#/async-api-ui/%2Fopenapi.yaml`);
+
+    await page.keyboard.down("Escape");
+
+    await expect(page, "should close the dialog").toHaveURL(/\/#\/$/);
+  });
 });

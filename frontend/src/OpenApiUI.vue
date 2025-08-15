@@ -38,7 +38,7 @@
                </div>
 
                <div class="ra-modal-body">
-                  <div :id="`swagger-ui-${this.$.uid}`"></div>
+                   <div ref="swagger-ui"></div>
                </div>
             </div>
          </div>
@@ -115,39 +115,27 @@
    }
 </style>
 
-<script>
-   import SwaggerUI from 'swagger-ui';
+<script setup>
+import SwaggerUI from "swagger-ui";
+import { computed, onMounted, useTemplateRef } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { useEscape } from "./composables/useEscape";
 
-   export default {
-      data() {
-         return {};
-      },
-      computed: {
-         showAdditionalHeadlineInformation() {
-            return this.$route.params.title != null;
-         }
-      },
-      mounted() {
-         window.addEventListener("keydown", this.handleKeydown);
+const route = useRoute();
+const showAdditionalHeadlineInformation = computed(() => route.params.title != null);
 
-         SwaggerUI( {
-            url: this.$route.params.url,
-            dom_id: `#swagger-ui-${this.$.uid}`
-         } );
-      },
-      beforeUnmount() {
-         window.removeEventListener("keydown", this.handleKeydown);
-      },
-      methods: {
-         close() {
-           this.$router.push(this.$router.options.history.state.back ?? "/");
-         },
-         handleKeydown(event) {
-            if (event.key === "Escape") {
-               this.close();
-            }
-         }
-      }
-   }
+const router = useRouter();
+function close() {
+  router.push(router.options.history.state.back ?? "/");
+}
+useEscape(close);
+
+const asyncapi = useTemplateRef("swagger-ui");
+onMounted(() => {
+  SwaggerUI({
+    url: route.params.url,
+    domNode: asyncapi.value
+  });
+});
 </script>
 

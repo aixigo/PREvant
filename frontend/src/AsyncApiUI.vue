@@ -23,29 +23,31 @@
 
 <style scope src="@asyncapi/react-component/styles/default.min.css"></style>
 
-<script>
-import AsyncApiStandalone from '@asyncapi/react-component/browser/standalone';
+<script setup>
+import AsyncApiStandalone from "@asyncapi/react-component/browser/standalone";
+import { computed, onMounted, useTemplateRef } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { useEscape } from "./composables/useEscape";
 
-export default {
-   data() {
-      return {};
-   },
-   computed: {
-      showAdditionalHeadlineInformation() {
-         return this.$route.params.title != null;
-      }
-   },
-   mounted() {
-      const container = this.$refs.asyncapi;
-      AsyncApiStandalone.render({
-         schema: { url: this.$route.params.url },
-         config: {}
-      }, container);
-   },
-   methods: {
-      close() {
-        this.$router.push(this.$router.options.history.state.back ?? "/");
-      }
-   }
+const asyncapi = useTemplateRef("asyncapi");
+onMounted(() => {
+  AsyncApiStandalone.render(
+    {
+      schema: { url: route.params.url },
+      config: {},
+    },
+    asyncapi.value
+  );
+});
+
+const route = useRoute();
+const showAdditionalHeadlineInformation = computed(
+  () => route.params.title != null
+);
+
+const router = useRouter();
+function close() {
+  router.push(router.options.history.state.back ?? "/");
 }
+useEscape(close);
 </script>
