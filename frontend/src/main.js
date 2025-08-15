@@ -38,10 +38,6 @@ import { createRouter, createWebHashHistory } from 'vue-router';
 
 import './scss/theme.scss';
 import Main from './Main.vue';
-import Apps from './Apps.vue';
-import AsyncApiUI from './AsyncApiUI.vue';
-import OpenApiUI from './OpenApiUI.vue';
-import LogsDialog from './LogsDialog.vue';
 
 import {library} from '@fortawesome/fontawesome-svg-core';
 import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose, faDownload} from '@fortawesome/free-solid-svg-icons';
@@ -61,10 +57,26 @@ library.add(faWindowClose);
 export const router = createRouter({
    history: createWebHashHistory(),
    routes: [
-      { path: '/', component: Apps, query: { appNameFilter: { type: String } } },
-      { path: '/open-api-ui/:url', name: 'open-api-ui', component: OpenApiUI },
-      { path: '/async-api-ui/:url', name: 'async-api-ui', component: AsyncApiUI },
-      { path: '/logs/:app/:service', name: 'logs', component: LogsDialog }
+      {
+         path: '/',
+         component: () => import('./views/Apps.vue'),
+         query: { appNameFilter: { type: String } }
+      },
+      {
+         path: '/open-api-ui/:url',
+         name: 'open-api-ui',
+         component: () => import('./views/OpenApiUI.vue')
+      },
+      {
+         path: '/async-api-ui/:url',
+         name: 'async-api-ui',
+         component: () => import('./views/AsyncApiUI.vue') 
+      },
+      {
+         path: '/logs/:app/:service',
+         name: 'logs',
+         component: () => import('./views/LogsDialog.vue') 
+      }
    ]
 });
 

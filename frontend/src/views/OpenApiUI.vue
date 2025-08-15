@@ -119,7 +119,7 @@
 import SwaggerUI from "swagger-ui";
 import { computed, onMounted, useTemplateRef } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { useEscape } from "./composables/useEscape";
+import { useEscape } from "../composables/useEscape";
 
 const route = useRoute();
 const showAdditionalHeadlineInformation = computed(() => route.params.title != null);

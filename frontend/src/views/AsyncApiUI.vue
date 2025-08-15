@@ -27,7 +27,7 @@
 import AsyncApiStandalone from "@asyncapi/react-component/browser/standalone";
 import { computed, onMounted, useTemplateRef } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { useEscape } from "./composables/useEscape";
+import { useEscape } from "../composables/useEscape";
 
 const asyncapi = useTemplateRef("asyncapi");
 onMounted(() => {
