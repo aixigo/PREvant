@@ -90,6 +90,12 @@ To run the frontend in development mode:
 4. Open the following URL in your browser:
    **http://localhost:9001**
 
+## Frontend Advanced Development Scenarios
+
+- **Async API Documentation**  
+  You can develop and test the async API documentation locally at:  
+  http://localhost:9001/#/async-api-ui/https%3A%2F%2Fraw.githubusercontent.com%2Fasyncapi%2Fspec%2Frefs%2Fheads%2Fmaster%2Fexamples%2Fstreetlights-kafka-asyncapi.yml
+
 ## Frontend Tests
 
 We use [Playwright](https://playwright.dev/) for end-to-end testing.
