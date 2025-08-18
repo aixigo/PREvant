@@ -7,6 +7,8 @@
       "serve": "vite",
       "build": "vite build",
       "test:e2e": "playwright test",
+      "test:e2e:update-snapshots": "playwright test --update-snapshots",
+      "test:e2e:update-snapshots:linux": "docker run --rm -v \"$(pwd)\":/app -w /app mcr.microsoft.com/playwright:v1.53.1-jammy bash -c \"npm ci && npm run test:e2e:update-snapshots\"",
       "test:e2e:ui": "playwright test --ui"
    },
    "dependencies": {

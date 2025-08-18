@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests",
+  snapshotDir: "./tests/snapshots",
   reporter: [
     ["list"],
     ["html", { open: "never" }],
@@ -15,5 +16,6 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:9001",
     headless: true,
+    viewport: { width: 1280, height: 720 }, // define a fixed viewports to ensure screenshots always match
   },
 });

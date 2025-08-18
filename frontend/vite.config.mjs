@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite'
 import inject from "@rollup/plugin-inject";
 import vue from '@vitejs/plugin-vue'
+import path from 'path';
+import fs from 'fs';
 
 // TODO: make sure that is sticky to the client so that multiple people could access the dev server.
 let cookie = null;
@@ -76,6 +78,32 @@ export default defineConfig({
                children: `var me = ${JSON.stringify(me)}; var issuers = ${JSON.stringify(issuers)}`
             }];
          }
+      },
+
+      /**
+       * This plugin serves fixture files (e.g., AsyncAPI YAMLs) during development only.
+       * It maps requests to /fixtures/... to local files under tests/fixtures.
+       * The files are not included in the production build and are only used for 
+       * development/testing purposes.
+       */
+      {
+         name: 'serve-fixtures-dev-only',
+         configureServer(server) {
+            server.middlewares.use((req, res, next) => {
+               if (req.url?.startsWith('/fixtures/')) {
+                  const filePath = path.join(__dirname, 'tests/fixtures', req.url.replace('/fixtures/', ''));
+                  if (fs.existsSync(filePath)) {
+                     res.setHeader('Content-Type', 'application/octet-stream');
+                     fs.createReadStream(filePath).pipe(res);
+                     return;
+                  }
+                  res.statusCode = 404;
+                  res.end('Not Found');
+                  return;
+               }
+               next();
+            });
+         },
       },
 
       inject({

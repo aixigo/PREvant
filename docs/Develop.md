@@ -70,10 +70,11 @@ To run the frontend in development mode:
 
 1. Start the backend as described in [Backend Development](#backend-development).
 
-  Make also sure t pass `--base-url http://localhost:9001` when starting the
-  backend because some of the features work only if the “guessed” backend URL
-  matches to the frontend development server URL. For example, authentication
-  works only if the redirect URI matches relative to the dev server URL.
+   Make also sure to pass `--base-url http://localhost:9001` when starting the
+   backend because some of the features work only if the “guessed” backend URL
+   matches to the frontend development server URL. For example, authentication
+   works only if the redirect URI matches relative to the dev server URL.
+
 2. Navigate to the `/frontend` directory:
 
    ```bash
@@ -92,13 +93,18 @@ To run the frontend in development mode:
 
 ## Frontend Advanced Development Scenarios
 
-- **Async API Documentation**  
-  You can develop and test the async API documentation locally at:  
-  http://localhost:9001/#/async-api-ui/https%3A%2F%2Fraw.githubusercontent.com%2Fasyncapi%2Fspec%2Frefs%2Fheads%2Fmaster%2Fexamples%2Fstreetlights-kafka-asyncapi.yml
+- **Async API Documentation UI**  
+  You can develop and test the async API UI locally at:  
+  http://localhost:9001/#/async-api-ui/%2Ffixtures%2Fasyncapi%2Fstreetlights-kafka-asyncapi.yml
+- **Open API Documentation UI**  
+  You can also develop and test the openAPI UI locally at:  
+  http://localhost:9001/#/open-api-ui/%2Ffixtures%2Fopenapi%2Fpetstore-api-swagger.json
 
 ## Frontend Tests
 
 We use [Playwright](https://playwright.dev/) for end-to-end testing.
+
+### Installing Browsers
 
 Before running the tests for the first time, you must install the required browsers:
 
@@ -107,6 +113,8 @@ npx playwright install
 ```
 
 This only needs to be done once (or whenever Playwright updates its browser requirements).
+
+### Running Tests
 
 To run the Playwright tests:
 
@@ -119,6 +127,37 @@ Alternatively, you can run the tests in debug mode (with a UI):
 ```bash
 npm run test:e2e:ui
 ```
+
+### Snapshot / Screenshot Tests
+
+Some tests include visual regression checks using screenshots. These tests will:
+
+- Navigate to a specific route or component.
+- Capture a screenshot of the full page or a specific element.
+- Compare the screenshot with a previously approved version to detect unintended visual changes.
+
+If one of the tests stopped working because of intended changes, you can update the snapshots by running
+
+```bash
+npm run test:e2e:update-snapshots
+```
+
+**Important considerations:**
+
+Screenshots can differ depending on the operating system and environment (e.g. macOS vs. Linux). Playwright records the OS in the screenshot filename by default, which may cause test failures if run on different machines. See [Playwright Visual comparisons Docs](https://playwright.dev/docs/test-snapshots).
+To make results reproducible, we provide a Docker-based test script that runs the tests inside the same Linux environment used in CI. This ensures consistent screenshots across machines. You can update the linux snapshots by running
+
+```bash
+npm run test:e2e:update-snapshots:linux
+```
+
+### Fixture Files During Development
+
+Some tests rely on fixture files (e.g., AsyncAPI YAMLs) that are only served during development:
+
+- We use a custom Vite plugin to serve these fixtures at `/fixtures/...`.
+- Fixture files are not included in the production build.
+- This allows Playwright tests to fetch example data without relying on external URLs that may be unavailable in CI or offline environments.
 
 # Integration Testing
 
