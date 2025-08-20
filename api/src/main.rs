@@ -90,7 +90,7 @@ async fn openapi(request_info: RequestInfo) -> Option<String> {
 struct Index(String);
 
 #[rocket::get("/")]
-async fn index(user: User, issuers: &State<Issuers>) -> HttpResult<Index> {
+async fn index(user: User, issuers: &State<Issuers>, config_state: &State<Config>) -> HttpResult<Index> {
     use handlebars::Handlebars;
 
     let index_path = Path::new("frontend").join("index.html");
@@ -132,6 +132,14 @@ async fn index(user: User, issuers: &State<Issuers>) -> HttpResult<Index> {
     };
     data.insert("me", me.to_string());
     data.insert("issuers", issuers.inner().to_string());
+
+    let title = config_state
+        .frontend_config()
+        .as_ref()
+        .and_then(|fe| fe.title())
+        .cloned()
+        .unwrap_or_else(|| "PREvant".to_string());
+    data.insert("title", title);
 
     Ok(Index(handlebars.render("index", &data).map_err(|e| {
         HttpApiError::from(

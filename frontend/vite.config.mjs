@@ -19,11 +19,18 @@ export default defineConfig({
          name: "inject-me-build",
          apply: "build",
          transformIndexHtml(_html) {
-            return [{
-               injectTo: "head",
-               tag: "script",
-               children: "var me = {{ me }}; var issuers = {{ issuers }};"
-            }];
+            return [
+               {
+                  injectTo: "head",
+                  tag: "script",
+                  children: "var me = {{ me }}; var issuers = {{ issuers }};"
+               }, 
+               {
+                  injectTo: "head",
+                  tag: "title",
+                  children: "{{ title }}"
+               }
+            ];
          }
       },
       {
@@ -72,11 +79,18 @@ export default defineConfig({
                })
                .catch(() => null);
 
-            return [{
-               injectTo: "head",
-               tag: "script",
-               children: `var me = ${JSON.stringify(me)}; var issuers = ${JSON.stringify(issuers)}`
-            }];
+            return [
+               {
+                  injectTo: "head",
+                  tag: "script",
+                  children: `var me = ${JSON.stringify(me)}; var issuers = ${JSON.stringify(issuers)}`
+               }, 
+               {
+                  injectTo: "head",
+                  tag: "title",
+                  children: "PREvant (dev)"
+               }
+            ];
          }
       },
 

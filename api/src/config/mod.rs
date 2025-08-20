@@ -177,6 +177,12 @@ where
 }
 
 #[derive(Clone, Deserialize)]
+pub struct FrontendConfig {
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
 pub struct JiraConfig {
     host: String,
     #[serde(flatten)]
@@ -211,6 +217,7 @@ pub struct Config {
     applications: Applications,
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
+    frontend: Option<FrontendConfig>,
     #[serde(default)]
     companions: Companions,
     services: Option<BTreeMap<String, Service>>,
@@ -257,6 +264,10 @@ impl Config {
             Some(containers) => containers.clone(),
             None => ContainerConfig::default(),
         }
+    }
+
+    pub fn frontend_config(&self) -> Option<FrontendConfig> {
+        self.frontend.as_ref().cloned()
     }
 
     pub fn jira_config(&self) -> Option<JiraConfig> {
@@ -502,6 +513,12 @@ impl<'de> Deserialize<'de> for ApiAccess {
             }),
             openid_providers,
         })
+    }
+}
+
+impl FrontendConfig {
+    pub fn title(&self) -> Option<&String> {
+        self.title.as_ref()
     }
 }
 
