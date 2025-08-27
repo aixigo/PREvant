@@ -45,7 +45,6 @@ static SERVICE_NAME_LABEL: &str = "com.aixigo.preview.servant.service-name";
 static CONTAINER_TYPE_LABEL: &str = "com.aixigo.preview.servant.container-type";
 static REPLICATED_ENV_LABEL: &str = "com.aixigo.preview.servant.replicated-env";
 static IMAGE_LABEL: &str = "com.aixigo.preview.servant.image";
-static STATUS_ID: &str = "com.aixigo.preview.servant.status-id";
 static STORAGE_TYPE_LABEL: &str = "com.aixigo.preview.servant.storage-type";
 static USER_DEFINED_PARAMETERS_LABEL: &str = "com.aixigo.preview.servant.user-defined";
 static OWNERS_LABEL: &str = "com.aixigo.preview.servant.owners";

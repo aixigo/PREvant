@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 mod host_meta_cache;
+mod queue;
 mod routes;
 
 pub use crate::apps::AppsService as Apps;
@@ -37,9 +38,7 @@ use crate::infrastructure::HttpForwarder;
 use crate::infrastructure::Infrastructure;
 use crate::infrastructure::TraefikIngressRoute;
 use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{
-    App, AppName, AppStatusChangeId, ContainerType, LogChunk, Service, ServiceConfig, ServiceStatus,
-};
+use crate::models::{App, AppName, ContainerType, LogChunk, Service, ServiceConfig, ServiceStatus};
 use crate::registry::Registry;
 use crate::registry::RegistryError;
 use chrono::{DateTime, FixedOffset};
@@ -50,91 +49,19 @@ pub use host_meta_cache::HostMetaCache;
 use log::debug;
 use log::error;
 use log::trace;
+pub use queue::AppProcessingQueue;
+pub use queue::AppTaskQueueProducer;
 pub use routes::{apps_routes, delete_app_sync, AppV1};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
 
 pub struct AppsService {
     config: Config,
     infrastructure: Box<dyn Infrastructure>,
-    app_guards: Mutex<HashMap<AppName, Arc<AppGuard>>>,
     prevant_base_route: Option<TraefikIngressRoute>,
-}
-
-type GuardedResult = Result<App, AppsServiceError>;
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-enum AppGuardKind {
-    Deployment,
-    Deletion,
-}
-
-/// This helper struct ensures that there is only one thread interacting with an application through
-/// the infrastructure while multiple threads requests want to interact at the same time.
-///
-/// With [#40](https://github.com/aixigo/PREvant/issues/40) this should be replaced with an worker/
-/// producer approach.
-struct AppGuard {
-    app_name: AppName,
-    kind: AppGuardKind,
-    process_mutex: Mutex<(bool, Option<GuardedResult>)>,
-    condvar: Condvar,
-}
-
-impl AppGuard {
-    fn new(app_name: AppName, kind: AppGuardKind) -> Self {
-        AppGuard {
-            app_name,
-            kind,
-            process_mutex: Mutex::new((false, None)),
-            condvar: Condvar::new(),
-        }
-    }
-
-    fn is_first(&self) -> bool {
-        let mut guard = self.process_mutex.lock().unwrap();
-        if guard.0 {
-            false
-        } else {
-            guard.0 = true;
-            true
-        }
-    }
-
-    fn wait_for_result(&self) -> GuardedResult {
-        let mut guard = self.process_mutex.lock().unwrap();
-        while guard.1.is_none() {
-            trace!("waiting for the result of {}", self.app_name);
-            guard = self.condvar.wait(guard).unwrap();
-        }
-        guard
-            .1
-            .as_ref()
-            .cloned()
-            .expect("Here it is expected that the deletion result is always present")
-    }
-
-    fn notify_with_result(
-        &self,
-        apps_service: &AppsService,
-        result: GuardedResult,
-    ) -> GuardedResult {
-        let mut guard = self.process_mutex.lock().unwrap();
-        guard.1 = Some(result.clone());
-        self.condvar.notify_all();
-
-        let mut apps_in_deletion = apps_service.app_guards.lock().unwrap();
-        let removed_guard = apps_in_deletion.remove(&self.app_name);
-        trace!(
-            "Dropped guard for {:?}",
-            removed_guard.as_ref().map(|g| &*g.app_name)
-        );
-
-        result
-    }
 }
 
 impl AppsService {
@@ -145,7 +72,6 @@ impl AppsService {
         Ok(AppsService {
             config,
             infrastructure,
-            app_guards: Mutex::new(HashMap::new()),
             prevant_base_route: None,
         })
     }
@@ -219,26 +145,6 @@ impl AppsService {
         rx
     }
 
-    fn create_or_get_app_guard(
-        &self,
-        app_name: AppName,
-        kind: AppGuardKind,
-    ) -> Result<Arc<AppGuard>, AppsServiceError> {
-        let mut apps_in_deletion = self.app_guards.lock().unwrap();
-        let guard = &*apps_in_deletion
-            .entry(app_name.clone())
-            .or_insert_with(|| Arc::new(AppGuard::new(app_name.clone(), kind)));
-
-        if guard.kind != kind {
-            match guard.kind {
-                AppGuardKind::Deletion => Err(AppsServiceError::AppIsInDeletion { app_name }),
-                AppGuardKind::Deployment => Err(AppsServiceError::AppIsInDeployment { app_name }),
-            }
-        } else {
-            Ok(guard.clone())
-        }
-    }
-
     async fn configs_and_user_defined_parameters_to_replicate(
         &self,
         services_to_deploy: &[ServiceConfig],
@@ -287,22 +193,6 @@ impl AppsService {
         ))
     }
 
-    pub async fn wait_for_status_change(
-        &self,
-        status_id: &AppStatusChangeId,
-    ) -> Result<App, AppsServiceError> {
-        let mut apps = App::empty();
-        while let Some(s) = self
-            .infrastructure
-            .get_status_change(&status_id.to_string())
-            .await?
-        {
-            apps = s;
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        Ok(apps)
-    }
-
     /// Creates or updates an app to review with the given service configurations.
     ///
     /// The list of given services will be extended with:
@@ -312,10 +202,9 @@ impl AppsService {
     ///
     /// # Arguments
     /// * `replicate_from` - The application name that is used as a template.
-    pub async fn create_or_update(
+    async fn create_or_update(
         &self,
         app_name: &AppName,
-        status_id: &AppStatusChangeId,
         replicate_from: Option<AppName>,
         service_configs: &[ServiceConfig],
         user: User,
@@ -338,37 +227,6 @@ impl AppsService {
             }
         };
 
-        let guard = self.create_or_get_app_guard(app_name.clone(), AppGuardKind::Deployment)?;
-
-        if !guard.is_first() {
-            return Err(AppsServiceError::AppIsInDeployment {
-                app_name: app_name.clone(),
-            });
-        }
-
-        guard.notify_with_result(
-            self,
-            self.create_or_update_impl(
-                app_name,
-                status_id,
-                replicate_from,
-                service_configs,
-                user,
-                user_defined_parameters,
-            )
-            .await,
-        )
-    }
-
-    async fn create_or_update_impl(
-        &self,
-        app_name: &AppName,
-        status_id: &AppStatusChangeId,
-        replicate_from: Option<AppName>,
-        service_configs: &[ServiceConfig],
-        user: User,
-        user_defined_parameters: Option<UserDefinedParameters>,
-    ) -> Result<App, AppsServiceError> {
         if let Some(app_limit) = self.config.app_limit() {
             let apps = self.fetch_app_names().await?;
 
@@ -479,40 +337,16 @@ impl AppsService {
 
         let apps = self
             .infrastructure
-            .deploy_services(
-                &status_id.to_string(),
-                &deployment_unit,
-                &self.config.container_config(),
-            )
+            .deploy_services(&deployment_unit, &self.config.container_config())
             .await?;
 
         Ok(apps)
     }
 
     /// Deletes all services for the given `app_name`.
-    pub async fn delete_app(
-        &self,
-        app_name: &AppName,
-        status_id: &AppStatusChangeId,
-    ) -> Result<App, AppsServiceError> {
-        let guard = self.create_or_get_app_guard(app_name.clone(), AppGuardKind::Deletion)?;
+    async fn delete_app(&self, app_name: &AppName) -> Result<App, AppsServiceError> {
+        let app = self.infrastructure.stop_services(app_name).await?;
 
-        if !guard.is_first() {
-            guard.wait_for_result()
-        } else {
-            guard.notify_with_result(self, self.delete_app_impl(app_name, status_id).await)
-        }
-    }
-
-    async fn delete_app_impl(
-        &self,
-        app_name: &AppName,
-        status_id: &AppStatusChangeId,
-    ) -> Result<App, AppsServiceError> {
-        let app = self
-            .infrastructure
-            .stop_services(&status_id.to_string(), app_name)
-            .await?;
         if app.is_empty() {
             Err(AppsServiceError::AppNotFound {
                 app_name: app_name.clone(),
@@ -576,10 +410,6 @@ pub enum AppsServiceError {
     AppNotFound { app_name: AppName },
     #[error("Cannot create more than {limit} apps")]
     AppLimitExceeded { limit: usize },
-    #[error("The app {app_name} is currently within deployment by another request.")]
-    AppIsInDeployment { app_name: AppName },
-    #[error("The app {app_name} is currently within deletion in by another request.")]
-    AppIsInDeletion { app_name: AppName },
     /// Will be used when the service cannot interact correctly with the infrastructure.
     #[error("Cannot interact with infrastructure: {error}")]
     InfrastructureError { error: Arc<anyhow::Error> },
@@ -650,7 +480,6 @@ mod tests {
     use std::path::PathBuf;
     use std::str::FromStr;
     use tempfile::NamedTempFile;
-    use tokio::runtime;
 
     macro_rules! config_from_str {
         ( $config_str:expr_2021 ) => {
@@ -697,7 +526,6 @@ mod tests {
 
         apps.create_or_update(
             &AppName::master(),
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
             User::Anonymous,
@@ -722,7 +550,6 @@ mod tests {
 
         apps.create_or_update(
             &AppName::master(),
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
             User::Anonymous,
@@ -732,7 +559,6 @@ mod tests {
 
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
-            &AppStatusChangeId::new(),
             Some(AppName::master()),
             &vec![sc!("service-b")],
             User::Anonymous,
@@ -760,7 +586,6 @@ mod tests {
 
         apps.create_or_update(
             &AppName::master(),
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
             User::Anonymous,
@@ -770,7 +595,6 @@ mod tests {
 
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
-            &AppStatusChangeId::new(),
             Some(AppName::master()),
             &vec![sc!("service-b")],
             User::Anonymous,
@@ -780,7 +604,6 @@ mod tests {
 
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
-            &AppStatusChangeId::new(),
             Some(AppName::master()),
             &vec![sc!("service-a")],
             User::Anonymous,
@@ -817,7 +640,6 @@ mod tests {
 
         apps.create_or_update(
             &AppName::master(),
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("mariadb")],
             User::Anonymous,
@@ -865,7 +687,6 @@ mod tests {
 
         apps.create_or_update(
             &AppName::from_str("master-1x").unwrap(),
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("mariadb")],
             User::Anonymous,
@@ -901,7 +722,6 @@ mod tests {
 
         apps.create_or_update(
             &app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
             User::Anonymous,
@@ -944,15 +764,8 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::from_str("master").unwrap();
         let services = vec![sc!("service-a"), sc!("service-b")];
-        apps.create_or_update(
-            &app_name,
-            &AppStatusChangeId::new(),
-            None,
-            &services,
-            User::Anonymous,
-            None,
-        )
-        .await?;
+        apps.create_or_update(&app_name, None, &services, User::Anonymous, None)
+            .await?;
         for service in services {
             let mut log_stream = apps
                 .stream_logs(&app_name, service.service_name(), &None, &None)
@@ -1016,7 +829,6 @@ Log msg 3 of service-a of app master
         let app_name = AppName::master();
         apps.create_or_update(
             &app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
             User::Anonymous,
@@ -1059,15 +871,8 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("openid"), sc!("db")];
-        apps.create_or_update(
-            &app_name,
-            &AppStatusChangeId::new(),
-            None,
-            &configs,
-            User::Anonymous,
-            None,
-        )
-        .await?;
+        apps.create_or_update(&app_name, None, &configs, User::Anonymous, None)
+            .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
         let deployed_app = deployed_apps.get(&app_name).unwrap();
@@ -1119,15 +924,8 @@ Log msg 3 of service-a of app master
             files = ()
         )];
 
-        apps.create_or_update(
-            &app_name,
-            &AppStatusChangeId::new(),
-            None,
-            &configs,
-            User::Anonymous,
-            None,
-        )
-        .await?;
+        apps.create_or_update(&app_name, None, &configs, User::Anonymous, None)
+            .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
 
@@ -1185,7 +983,6 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(
             &app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![crate::sc!("service-a")],
             User::Anonymous,
@@ -1194,7 +991,6 @@ Log msg 3 of service-a of app master
         .await?;
         apps.create_or_update(
             &app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![crate::sc!("service-b")],
             User::Anonymous,
@@ -1203,7 +999,6 @@ Log msg 3 of service-a of app master
         .await?;
         apps.create_or_update(
             &app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![crate::sc!("service-c")],
             User::Anonymous,
@@ -1239,16 +1034,13 @@ Log msg 3 of service-a of app master
         let app_name = AppName::master();
         apps.create_or_update(
             &app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
             User::Anonymous,
             None,
         )
         .await?;
-        let deleted_services = apps
-            .delete_app(&app_name, &AppStatusChangeId::new())
-            .await?;
+        let deleted_services = apps.delete_app(&app_name).await?;
 
         assert_eq!(
             deleted_services,
@@ -1269,46 +1061,6 @@ Log msg 3 of service-a of app master
                 None
             )
         );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn should_delete_apps_from_parallel_threads_returning_the_same_result(
-    ) -> Result<(), AppsServiceError> {
-        let config = Config::default();
-        let infrastructure = Box::new(Dummy::with_delay(std::time::Duration::from_millis(500)));
-        let apps = Arc::new(AppsService::new(config, infrastructure)?);
-
-        let app_name = AppName::master();
-        apps.create_or_update(
-            &app_name,
-            &AppStatusChangeId::new(),
-            None,
-            &vec![sc!("service-a")],
-            User::Anonymous,
-            None,
-        )
-        .await?;
-
-        let apps_clone = apps.clone();
-        let handle1 = std::thread::spawn(move || {
-            let rt = runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .unwrap();
-            rt.block_on(apps_clone.delete_app(&app_name, &AppStatusChangeId::new()))
-        });
-        let app_name = AppName::master();
-        let handle2 = std::thread::spawn(move || {
-            let rt = runtime::Builder::new_current_thread()
-                .enable_time()
-                .build()
-                .unwrap();
-            rt.block_on(apps.delete_app(&app_name, &AppStatusChangeId::new()))
-        });
-
-        assert_eq!(handle1.join().unwrap()?, handle2.join().unwrap()?,);
 
         Ok(())
     }
@@ -1339,15 +1091,8 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("db1"), sc!("db2")];
-        apps.create_or_update(
-            &app_name,
-            &AppStatusChangeId::new(),
-            None,
-            &configs,
-            User::Anonymous,
-            None,
-        )
-        .await?;
+        apps.create_or_update(&app_name, None, &configs, User::Anonymous, None)
+            .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
         let db_config1: Vec<ServiceConfig> = apps
@@ -1414,7 +1159,6 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(
             app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
             User::Anonymous,
@@ -1445,7 +1189,6 @@ Log msg 3 of service-a of app master
         let app_name = &AppName::master();
         apps.create_or_update(
             app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
             User::Anonymous,
@@ -1489,7 +1232,6 @@ Log msg 3 of service-a of app master
         let app_name = &AppName::master();
         apps.create_or_update(
             app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
             User::Anonymous,
@@ -1541,7 +1283,6 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(
             &AppName::master(),
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
             User::Anonymous,
@@ -1552,7 +1293,6 @@ Log msg 3 of service-a of app master
         let result = apps
             .create_or_update(
                 &AppName::from_str("other").unwrap(),
-                &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-a"), sc!("service-b")],
                 User::Anonymous,
@@ -1582,7 +1322,6 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(
             &AppName::master(),
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
             User::Anonymous,
@@ -1593,7 +1332,6 @@ Log msg 3 of service-a of app master
         let result = apps
             .create_or_update(
                 &AppName::master(),
-                &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-c")],
                 User::Anonymous,
@@ -1629,7 +1367,6 @@ Log msg 3 of service-a of app master
         let app_name = AppName::master();
         apps.create_or_update(
             &app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("web-service")],
             User::Anonymous,
@@ -1675,7 +1412,6 @@ Log msg 3 of service-a of app master
         let app_name = AppName::master();
         apps.create_or_update(
             &app_name,
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("web-service")],
             User::Anonymous,
@@ -1686,15 +1422,8 @@ Log msg 3 of service-a of app master
         .await?;
 
         let replicated_app_name = AppName::from_str("replica").unwrap();
-        apps.create_or_update(
-            &replicated_app_name,
-            &AppStatusChangeId::new(),
-            None,
-            &[],
-            User::Anonymous,
-            None,
-        )
-        .await?;
+        apps.create_or_update(&replicated_app_name, None, &[], User::Anonymous, None)
+            .await?;
 
         let companion_config: Vec<ServiceConfig> = apps
             .infrastructure
@@ -1720,7 +1449,6 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(
             &AppName::master(),
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-a")],
             User::Oidc {
@@ -1738,7 +1466,6 @@ Log msg 3 of service-a of app master
         .await?;
         apps.create_or_update(
             &AppName::master(),
-            &AppStatusChangeId::new(),
             None,
             &vec![sc!("service-b")],
             User::Oidc {

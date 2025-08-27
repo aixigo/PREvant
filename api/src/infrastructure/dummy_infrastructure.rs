@@ -137,7 +137,6 @@ impl Infrastructure for DummyInfrastructure {
 
     async fn deploy_services(
         &self,
-        _status_id: &str,
         deployment_unit: &DeploymentUnit,
         _container_config: &ContainerConfig,
     ) -> Result<App> {
@@ -175,7 +174,7 @@ impl Infrastructure for DummyInfrastructure {
         Ok(self.fetch_apps().await?.remove(app_name).unwrap())
     }
 
-    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<App> {
+    async fn stop_services(&self, app_name: &AppName) -> Result<App> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();

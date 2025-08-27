@@ -167,12 +167,6 @@ paths:
               schema:
                 type: string
                 format: url
-        '409':
-          description: The application is currently in deployment. A parallel deployment of two apps is not allowed.
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
         '500':
           description: Server error
           content:
@@ -297,10 +291,12 @@ paths:
       description: >-
         Can be used to poll the completion of a status change, such as deploying or stopping an app.
       responses:
+        '200':
+          description: The result of the status change.
         '202':
           description: The status change is still running
         '404':
-          description: The status change finished
+          description: The status change finished and has been cleaned up.
   /webhooks/:
     post:
       summary: Cleans up apps when webhook triggers this resource.
