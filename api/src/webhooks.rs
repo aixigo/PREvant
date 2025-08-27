@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::Apps;
+use crate::apps::AppTaskQueueProducer;
 use crate::apps::{delete_app_sync, AppV1};
 use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::HttpResult;
@@ -35,11 +35,10 @@ use log::info;
 use rocket::serde::json::Json;
 use rocket::State;
 use std::str::FromStr;
-use std::sync::Arc;
 
 #[rocket::post("/webhooks", format = "application/json", data = "<web_hook_info>")]
 pub async fn webhooks(
-    apps: &State<Arc<Apps>>,
+    app_queue: &State<AppTaskQueueProducer>,
     web_hook_info: WebHookInfo,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<Json<AppV1>> {
@@ -51,5 +50,5 @@ pub async fn webhooks(
     );
 
     let app_name = AppName::from_str(&web_hook_info.get_app_name());
-    delete_app_sync(app_name, apps, user).await
+    delete_app_sync(app_name, app_queue, user).await
 }

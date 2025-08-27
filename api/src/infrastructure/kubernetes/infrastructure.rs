@@ -202,7 +202,7 @@ impl KubernetesInfrastructure {
                 Ok(())
             }
             Err(KubeError::Api(ErrorResponse { code: 409, .. })) => {
-                debug!("Namespace {} already exists.", app_name);
+                debug!("Namespace {app_name} already exists.");
 
                 let annotations = namespace_annotations(
                     &self.config,
@@ -210,10 +210,7 @@ impl KubernetesInfrastructure {
                     deployment_unit.owners(),
                 );
                 if annotations.is_some() {
-                    debug!(
-                        "Patching namespace {} with user defined parameters.",
-                        app_name
-                    );
+                    debug!("Patching namespace {app_name} with user defined parameters.");
                     api.patch(
                         &app_name.to_rfc1123_namespace_id(),
                         &PatchParams::apply("PREvant"),
@@ -231,7 +228,7 @@ impl KubernetesInfrastructure {
                 Ok(())
             }
             Err(e) => {
-                error!("Cannot deploy namespace: {}", e);
+                error!("Cannot deploy namespace: {e}");
                 Err(e.into())
             }
         }
@@ -357,7 +354,7 @@ impl KubernetesInfrastructure {
                         persistent_volume_map.insert(declared_volume, pvc);
                     }
                     Err(e) => {
-                        error!("Cannot deploy persistent volume claim: {}", e);
+                        error!("Cannot deploy persistent volume claim: {e}");
                         return Err(e.into());
                     }
                 }
@@ -511,7 +508,7 @@ impl Infrastructure for KubernetesInfrastructure {
             let service = match Service::try_from((deployment, pod)) {
                 Ok(service) => service,
                 Err(e) => {
-                    debug!("Deployment does not provide required data: {:?}", e);
+                    debug!("Deployment does not provide required data: {e:?}");
                     continue;
                 }
             };
@@ -559,7 +556,6 @@ impl Infrastructure for KubernetesInfrastructure {
 
     async fn deploy_services(
         &self,
-        _status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<App> {
@@ -636,7 +632,7 @@ impl Infrastructure for KubernetesInfrastructure {
         ))
     }
 
-    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<App> {
+    async fn stop_services(&self, app_name: &AppName) -> Result<App> {
         let Some(services) = self.fetch_app(app_name).await? else {
             return Ok(App::empty());
         };
@@ -914,7 +910,7 @@ impl HttpForwarder for K8sHttpForwarder {
             hyper::client::conn::http1::handshake(TokioIo::new(port)).await?;
         tokio::spawn(async move {
             if let Err(e) = connection.await {
-                warn!("Error in connection: {}", e);
+                warn!("Error in connection: {e}");
             }
         });
 

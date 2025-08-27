@@ -29,13 +29,13 @@ use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::{
     HttpForwarder, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
-    REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL, STATUS_ID,
+    REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
 };
 use crate::models::{
     App, AppName, ContainerType, Environment, Image, Owner, Service, ServiceConfig, ServiceError,
     ServiceStatus, State, WebHostMeta,
 };
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
 use bollard::auth::DockerCredentials;
@@ -43,13 +43,13 @@ use bollard::container::LogOutput;
 use bollard::errors::Error as BollardError;
 use bollard::query_parameters::{
     CreateContainerOptions, CreateImageOptions, InspectContainerOptions, ListContainersOptions,
-    ListNetworksOptions, ListVolumesOptions, LogsOptionsBuilder,
-    RemoveContainerOptions, RemoveImageOptions, RemoveVolumeOptions, StartContainerOptions,
-    StopContainerOptions, UploadToContainerOptions,
+    ListNetworksOptions, ListVolumesOptions, LogsOptionsBuilder, RemoveContainerOptions,
+    RemoveImageOptions, RemoveVolumeOptions, StartContainerOptions, StopContainerOptions,
+    UploadToContainerOptions,
 };
 use bollard::secret::{
-    ContainerCreateBody, NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest,
-    Port, VolumeCreateOptions,
+    NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest, Port,
+    VolumeCreateOptions,
 };
 use bollard::service::{
     ContainerCreateResponse, ContainerInspectResponse, ContainerStateStatusEnum, ContainerSummary,
@@ -103,60 +103,6 @@ pub enum DockerInfrastructureError {
 impl DockerInfrastructure {
     pub fn new(config: Config) -> Self {
         Self { config }
-    }
-
-    async fn find_status_change_container(
-        &self,
-        status_id: &str,
-    ) -> Result<Option<ContainerSummary>, BollardError> {
-        self.get_status_change_containers(None, Some(status_id))
-            .await
-            .map(|list| list.into_iter().next())
-    }
-
-    async fn create_status_change_container(
-        &self,
-        status_id: &str,
-        app_name: &AppName,
-    ) -> Result<ContainerInspectResponse> {
-        let existing_task = self
-            .get_status_change_containers(Some(app_name), None)
-            .await?
-            .into_iter()
-            .next();
-
-        if let Some(existing_task) = existing_task {
-            // TODO: what to if there is already a deployment
-            return Err(anyhow!(
-                "There is already an operation in progress: {existing_task:?}"
-            ));
-        }
-
-        let image = Image::from_str("docker.io/library/busybox:stable").unwrap();
-
-        pull(&image, &self.config).await?;
-
-        let mut labels = HashMap::new();
-        labels.insert(APP_NAME_LABEL.to_string(), app_name.to_string());
-        labels.insert(STATUS_ID.to_string(), status_id.to_string());
-
-        let docker = Docker::connect_with_socket_defaults()?;
-
-        trace!("Create deployment task container {status_id} for {app_name}");
-
-        let container_info = docker
-            .create_container(
-                None::<CreateContainerOptions>,
-                ContainerCreateBody {
-                    image: Some(String::from("docker.io/library/busybox:stable")),
-                    labels: Some(labels),
-                    ..Default::default()
-                },
-            )
-            .await?;
-        Ok(docker
-            .inspect_container(&container_info.id, None::<InspectContainerOptions>)
-            .await?)
     }
 
     async fn create_or_get_network_id(&self, app_name: &AppName) -> Result<String, BollardError> {
@@ -289,114 +235,6 @@ impl DockerInfrastructure {
         }
 
         Ok(())
-    }
-
-    async fn deploy_services_impl(
-        &self,
-        deployment_unit: &DeploymentUnit,
-        container_config: &ContainerConfig,
-    ) -> Result<App, DockerInfrastructureError> {
-        let app_name = deployment_unit.app_name();
-        let services = deployment_unit.services();
-        let network_id = self.create_or_get_network_id(app_name).await?;
-
-        self.connect_traefik(&network_id).await?;
-        let existing_volumes = Self::fetch_existing_volumes(app_name).await?;
-        let mut futures = services
-            .iter()
-            .map(|service| {
-                self.start_container(
-                    app_name,
-                    &network_id,
-                    service,
-                    container_config,
-                    &existing_volumes,
-                    deployment_unit.owners(),
-                )
-            })
-            .map(Box::pin)
-            .collect::<FuturesUnordered<_>>();
-
-        let mut responses = Vec::with_capacity(futures.len());
-        while let Some(response) = futures.next().await {
-            responses.push(response?);
-        }
-
-        Ok(Self::to_app(responses))
-    }
-
-    async fn stop_services_impl(
-        &self,
-        app_name: &AppName,
-    ) -> Result<App, DockerInfrastructureError> {
-        let Some(container_details) = self
-            .get_container_details(Some(app_name), None)
-            .await?
-            .remove(app_name)
-        else {
-            return Ok(App::empty());
-        };
-
-        let docker = Docker::connect_with_socket_defaults()?;
-
-        let mut futures = container_details
-            .clone()
-            .into_iter()
-            .filter(|p| {
-                p.state.as_ref().and_then(|state| state.status)
-                    == Some(ContainerStateStatusEnum::RUNNING)
-            })
-            .map(|details| async {
-                let id = details
-                    .id
-                    .as_ref()
-                    .expect("id is mandatory for a docker container");
-
-                docker
-                    .stop_container(id, None::<StopContainerOptions>)
-                    .await?;
-
-                Ok::<ContainerInspectResponse, BollardError>(details)
-            })
-            .map(Box::pin)
-            .collect::<FuturesUnordered<_>>();
-
-        while let Some(result) = futures.next().await {
-            let container = result?;
-            let id = container
-                .id
-                .expect("id is mandatory for a docker container");
-            trace!("Stopped container {id} for {app_name}");
-        }
-
-        let mut futures = container_details
-            .into_iter()
-            .map(|details| async {
-                let id = details
-                    .id
-                    .as_ref()
-                    .expect("id is mandatory for a docker container");
-
-                docker
-                    .remove_container(id, None::<RemoveContainerOptions>)
-                    .await?;
-                trace!("Deleted container {id} for {app_name}");
-
-                Ok::<ContainerInspectResponse, BollardError>(details)
-            })
-            .map(Box::pin)
-            .collect::<FuturesUnordered<_>>();
-
-        let mut responses = Vec::with_capacity(futures.len());
-        while let Some(result) = futures.next().await {
-            let container = result?;
-            responses.push(container);
-        }
-
-        self.delete_network(app_name).await?;
-        self.delete_volume_mount(app_name).await?;
-
-        Ok(Self::to_app(responses))
     }
 
     async fn start_container(
@@ -790,26 +628,6 @@ impl DockerInfrastructure {
         Self::get_containers(filters).await
     }
 
-    async fn get_status_change_containers(
-        &self,
-        app_name: Option<&AppName>,
-        status_id: Option<&str>,
-    ) -> Result<Vec<ContainerSummary>, BollardError> {
-        let mut label_filters = vec![];
-        if let Some(app_name_filter) =
-            label_filter(APP_NAME_LABEL, app_name.map(|app_name| app_name.as_str()))
-        {
-            label_filters.push(app_name_filter);
-        }
-
-        if let Some(status_id_filter) = label_filter(STATUS_ID, status_id) {
-            label_filters.push(status_id_filter);
-        }
-
-        let filters = HashMap::from([("label".to_string(), label_filters)]);
-        Self::get_containers(filters).await
-    }
-
     async fn get_app_container(
         app_name: &AppName,
         service_name: &str,
@@ -916,57 +734,108 @@ impl Infrastructure for DockerInfrastructure {
 
     async fn deploy_services(
         &self,
-        status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<App> {
-        let deployment_container = self
-            .create_status_change_container(status_id, deployment_unit.app_name())
-            .await?;
+        let app_name = deployment_unit.app_name();
+        let services = deployment_unit.services();
+        let network_id = self.create_or_get_network_id(app_name).await?;
 
-        let result = self
-            .deploy_services_impl(deployment_unit, container_config)
-            .await;
+        self.connect_traefik(&network_id).await?;
+        let existing_volumes = Self::fetch_existing_volumes(app_name).await?;
+        let mut futures = services
+            .iter()
+            .map(|service| {
+                self.start_container(
+                    app_name,
+                    &network_id,
+                    service,
+                    container_config,
+                    &existing_volumes,
+                    deployment_unit.owners(),
+                )
+            })
+            .map(Box::pin)
+            .collect::<FuturesUnordered<_>>();
 
-        delete(deployment_container).await?;
+        let mut responses = Vec::with_capacity(futures.len());
+        while let Some(response) = futures.next().await {
+            responses.push(response?);
+        }
 
-        Ok(result?)
-    }
-
-    async fn get_status_change(&self, status_id: &str) -> Result<Option<App>> {
-        Ok(
-            match self
-                .find_status_change_container(status_id)
-                .await?
-                .as_ref()
-                .and_then(|c| {
-                    c.labels
-                        .as_ref()
-                        .and_then(|label| label.get(APP_NAME_LABEL))
-                })
-                .and_then(|app_name| AppName::from_str(app_name).ok())
-            {
-                Some(app_name) => self
-                    .get_container_details(Some(&app_name), None)
-                    .await?
-                    .remove(&app_name)
-                    .map(Self::to_app),
-                None => None,
-            },
-        )
+        Ok(Self::to_app(responses))
     }
 
     /// Deletes all services for the given `app_name`.
-    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<App> {
-        let deployment_container = self
-            .create_status_change_container(status_id, app_name)
-            .await?;
+    async fn stop_services(&self, app_name: &AppName) -> Result<App> {
+        let Some(container_details) = self
+            .get_container_details(Some(app_name), None)
+            .await?
+            .remove(app_name)
+        else {
+            return Ok(App::empty());
+        };
 
-        let result = self.stop_services_impl(app_name).await;
+        let docker = Docker::connect_with_socket_defaults()?;
 
-        delete(deployment_container).await?;
+        let mut futures = container_details
+            .clone()
+            .into_iter()
+            .filter(|p| {
+                p.state.as_ref().and_then(|state| state.status)
+                    == Some(ContainerStateStatusEnum::RUNNING)
+            })
+            .map(|details| async {
+                let id = details
+                    .id
+                    .as_ref()
+                    .expect("id is mandatory for a docker container");
 
-        Ok(result?)
+                docker
+                    .stop_container(id, None::<StopContainerOptions>)
+                    .await?;
+
+                Ok::<ContainerInspectResponse, BollardError>(details)
+            })
+            .map(Box::pin)
+            .collect::<FuturesUnordered<_>>();
+
+        while let Some(result) = futures.next().await {
+            let container = result?;
+            let id = container
+                .id
+                .expect("id is mandatory for a docker container");
+            trace!("Stopped container {id} for {app_name}");
+        }
+
+        let mut futures = container_details
+            .into_iter()
+            .map(|details| async {
+                let id = details
+                    .id
+                    .as_ref()
+                    .expect("id is mandatory for a docker container");
+
+                docker
+                    .remove_container(id, None::<RemoveContainerOptions>)
+                    .await?;
+                trace!("Deleted container {id} for {app_name}");
+
+                Ok::<ContainerInspectResponse, BollardError>(details)
+            })
+            .map(Box::pin)
+            .collect::<FuturesUnordered<_>>();
+
+        let mut responses = Vec::with_capacity(futures.len());
+        while let Some(result) = futures.next().await {
+            let container = result?;
+            responses.push(container);
+        }
+
+        self.delete_network(app_name).await?;
+        self.delete_volume_mount(app_name).await?;
+
+        Ok(Self::to_app(responses))
     }
 
     async fn get_logs<'a>(
@@ -1173,7 +1042,7 @@ impl HttpForwarder for DockerHttpForwarder {
             hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
         tokio::spawn(async move {
             if let Err(e) = connection.await {
-                warn!("Error in connection: {}", e);
+                warn!("Error in connection: {e}");
             }
         });
 
@@ -1234,23 +1103,6 @@ async fn pull(image: &Image, config: &Config) -> Result<Vec<CreateImageInfo>, Bo
         .create_image(Some(pull_options), None, docker_auth)
         .try_collect()
         .await
-}
-
-/// Helper function to delete containers with the aid of futures::future::join_all
-async fn delete(
-    details: ContainerInspectResponse,
-) -> Result<ContainerInspectResponse, BollardError> {
-    let docker = Docker::connect_with_socket_defaults()?;
-    docker
-        .remove_container(
-            details
-                .id
-                .as_ref()
-                .expect("id is mandatory for a docker container"),
-            None::<RemoveContainerOptions>,
-        )
-        .await?;
-    Ok(details)
 }
 
 /// Helper function to inspect containers with the aid of futures::future::join_all

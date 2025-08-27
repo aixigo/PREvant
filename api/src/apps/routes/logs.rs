@@ -200,9 +200,7 @@ impl<'r> FromRequest<'r> for AcceptingPlainText {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        apps::HostMetaCache, config::Config, infrastructure::Dummy, models::AppStatusChangeId, sc,
-    };
+    use crate::{apps::HostMetaCache, config::Config, infrastructure::Dummy, sc};
     use rocket::{
         http::{hyper::header::CONTENT_TYPE, Accept, Header},
         local::asynchronous::Client,
@@ -217,7 +215,6 @@ mod test {
         let _result = apps
             .create_or_update(
                 &AppName::master(),
-                &AppStatusChangeId::new(),
                 None,
                 &vec![sc!("service-a")],
                 crate::auth::User::Anonymous,

@@ -146,6 +146,10 @@ impl App {
         &self.services
     }
 
+    pub fn owners(&self) -> &HashSet<Owner> {
+        &self.owners
+    }
+
     pub fn is_empty(&self) -> bool {
         self.services.is_empty()
     }
