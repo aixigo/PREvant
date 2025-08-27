@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
+use super::queue::AppTaskQueueProducer;
 use crate::apps::{Apps, AppsError};
 use crate::auth::UserValidatedByAccessMode;
 use crate::http_result::{HttpApiError, HttpResult};
@@ -41,11 +42,8 @@ use rocket::serde::json::Json;
 use rocket::{FromForm, State};
 use serde::ser::{Serialize, SerializeSeq};
 use serde::Serializer;
-use std::future::Future;
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::Duration;
-use tokio::time::timeout;
 
 mod create_app_payload;
 mod get_apps;
@@ -89,54 +87,46 @@ impl Serialize for AppV1 {
 async fn status_change(
     app_name: Result<AppName, AppNameError>,
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
-    apps: &State<Arc<Apps>>,
-    options: RunOptions,
+    app_queue: &State<AppTaskQueueProducer>,
+    options: WaitForQueueOptions,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
     let app_name = app_name?;
     let status_id = status_id?;
 
-    let apps = (**apps).clone();
-    let future = async move { apps.wait_for_status_change(&status_id).await };
-
-    match spawn_with_options(options, future).await? {
-        Poll::Pending => Ok(AsyncCompletion::Pending(app_name, status_id)),
-        Poll::Ready(Ok(_)) => {
-            Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into())
-        }
-        Poll::Ready(Err(err)) => Err(err.into()),
-    }
+    try_wait_for_task(app_queue, app_name, status_id, options).await
 }
 
 #[rocket::delete("/<app_name>")]
 pub async fn delete_app(
     app_name: Result<AppName, AppNameError>,
-    apps: &State<Arc<Apps>>,
-    options: RunOptions,
+    app_queue: &State<AppTaskQueueProducer>,
+    options: WaitForQueueOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
     // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
     let _user = user.map_err(HttpApiError::from)?;
 
     let app_name = app_name?;
-    let app_name_cloned = app_name.clone();
-    let status_id = AppStatusChangeId::new();
 
-    let apps = (**apps).clone();
-    let future = async move { apps.delete_app(&app_name, &status_id).await };
+    let status_id = app_queue
+        .enqueue_delete_task(app_name.clone())
+        .await
+        .map_err(|e| {
+            HttpApiError::from(
+                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                    .detail(e.to_string()),
+            )
+        })?;
 
-    match spawn_with_options(options, future).await? {
-        Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
-        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(AppV1(app)))),
-        Poll::Ready(Err(err)) => Err(err.into()),
-    }
+    try_wait_for_task(app_queue, app_name, status_id, options).await
 }
 
 pub async fn delete_app_sync(
     app_name: Result<AppName, AppNameError>,
-    apps: &State<Arc<Apps>>,
+    app_queue: &State<AppTaskQueueProducer>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<Json<AppV1>> {
-    match delete_app(app_name, apps, RunOptions::Sync, user).await? {
+    match delete_app(app_name, app_queue, WaitForQueueOptions::Sync, user).await? {
         AsyncCompletion::Pending(_, _) => {
             Err(HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR).into())
         }
@@ -151,39 +141,36 @@ pub async fn delete_app_sync(
 )]
 pub async fn create_app(
     app_name: Result<AppName, AppNameError>,
-    apps: &State<Arc<Apps>>,
+    app_queue: &State<AppTaskQueueProducer>,
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
-    options: RunOptions,
+    options: WaitForQueueOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
     let payload = payload.map_err(HttpApiError::from)?;
     // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
     let user = user.map_err(HttpApiError::from)?;
 
-    let status_id = AppStatusChangeId::new();
     let app_name = app_name?;
-    let app_name_cloned = app_name.clone();
     let replicate_from = create_app_form.replicate_from().clone();
 
-    let apps = (**apps).clone();
-    let future = async move {
-        apps.create_or_update(
-            &app_name.clone(),
-            &status_id,
+    let status_id = app_queue
+        .enqueue_create_or_update_task(
+            app_name.clone(),
             replicate_from,
-            &payload.services,
+            payload.services,
             user.user,
             payload.user_defined_parameters,
         )
         .await
-    };
+        .map_err(|e| {
+            HttpApiError::from(
+                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                    .detail(e.to_string()),
+            )
+        })?;
 
-    match spawn_with_options(options, future).await? {
-        Poll::Pending => Ok(AsyncCompletion::Pending(app_name_cloned, status_id)),
-        Poll::Ready(Ok(app)) => Ok(AsyncCompletion::Ready(Json(AppV1(app)))),
-        Poll::Ready(Err(err)) => Err(err.into()),
-    }
+    try_wait_for_task(app_queue, app_name, status_id, options).await
 }
 
 #[rocket::put(
@@ -206,43 +193,27 @@ async fn change_status(
 }
 
 #[derive(Debug, PartialEq)]
-pub enum RunOptions {
+pub enum WaitForQueueOptions {
     Sync,
     Async { wait: Option<Duration> },
 }
 
-pub async fn spawn_with_options<F>(options: RunOptions, future: F) -> HttpResult<Poll<F::Output>>
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    let join_handle = tokio::spawn(future);
+pub async fn try_wait_for_task(
+    app_queue: &State<AppTaskQueueProducer>,
+    app_name: AppName,
+    status_id: AppStatusChangeId,
+    options: WaitForQueueOptions,
+) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
+    let wait = match options {
+        WaitForQueueOptions::Sync => Duration::from_secs(60 * 5),
+        WaitForQueueOptions::Async { wait } => wait.unwrap_or(Duration::from_secs(10)),
+    };
 
-    match options {
-        RunOptions::Sync => Ok(Poll::Ready(join_handle.await.map_err(map_join_error)?)),
-        RunOptions::Async { wait: None } => Ok(Poll::Pending),
-        RunOptions::Async {
-            wait: Some(duration),
-        } => {
-            match tokio::spawn(timeout(duration, join_handle))
-                .await
-                .map_err(map_join_error)?
-            {
-                // Execution completed before timeout
-                Ok(Ok(result)) => Ok(Poll::Ready(result)),
-                // JoinError occurred before timeout
-                Ok(Err(err)) => Err(map_join_error(err)),
-                // Timeout elapsed while waiting for future
-                Err(_) => Ok(Poll::Pending),
-            }
-        }
+    match app_queue.try_wait_for_task(&status_id, wait).await {
+        Some(Ok(app)) => Ok(AsyncCompletion::Ready(Json(AppV1(app)))),
+        Some(Err(err)) => Err(err.into()),
+        None => Ok(AsyncCompletion::Pending(app_name, status_id)),
     }
-}
-
-fn map_join_error(err: tokio::task::JoinError) -> HttpApiError {
-    HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-        .detail(format!("{err}"))
-        .into()
 }
 
 #[derive(FromForm)]
@@ -308,8 +279,6 @@ impl From<AppsError> for HttpApiError {
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             },
             AppsError::AppNotFound { .. } => StatusCode::NOT_FOUND,
-            AppsError::AppIsInDeployment { .. } => StatusCode::CONFLICT,
-            AppsError::AppIsInDeletion { .. } => StatusCode::CONFLICT,
             AppsError::InfrastructureError { .. }
             | AppsError::InvalidServerConfiguration { .. }
             | AppsError::TemplatingIssue { .. }
@@ -326,13 +295,13 @@ impl From<AppsError> for HttpApiError {
 }
 
 #[rocket::async_trait]
-impl<'r> FromRequest<'r> for RunOptions {
+impl<'r> FromRequest<'r> for WaitForQueueOptions {
     type Error = &'static str;
 
     async fn from_request(request: &'r Request<'_>) -> rocket::request::Outcome<Self, Self::Error> {
         let headers = request.headers().get("Prefer").collect::<Vec<_>>();
 
-        let mut run_options = RunOptions::Sync;
+        let mut wait_options = WaitForQueueOptions::Sync;
         let mut wait = None;
         lazy_static! {
             static ref RE: Regex = Regex::new(r"^wait=(\d+)$").unwrap();
@@ -344,7 +313,7 @@ impl<'r> FromRequest<'r> for RunOptions {
             .map(str::trim)
         {
             if header == "respond-async" {
-                run_options = RunOptions::Async { wait: None };
+                wait_options = WaitForQueueOptions::Async { wait: None };
                 continue;
             }
 
@@ -360,9 +329,9 @@ impl<'r> FromRequest<'r> for RunOptions {
             }
         }
 
-        Outcome::Success(match (run_options, wait) {
-            (RunOptions::Sync, _) => RunOptions::Sync,
-            (RunOptions::Async { .. }, wait) => RunOptions::Async { wait },
+        Outcome::Success(match (wait_options, wait) {
+            (WaitForQueueOptions::Sync, _) => WaitForQueueOptions::Sync,
+            (WaitForQueueOptions::Async { .. }, wait) => WaitForQueueOptions::Async { wait },
         })
     }
 }
@@ -377,7 +346,7 @@ mod tests {
     use chrono::Utc;
     use std::collections::HashSet;
 
-    mod parse_run_options_from_request {
+    mod parse_wait_for_queue_options_from_request {
         use crate::apps::routes::*;
         use rocket::http::Header;
         use rocket::local::asynchronous::Client;
@@ -389,9 +358,10 @@ mod tests {
             let get = client.get("/");
             let request = get.inner();
 
-            let run_options = RunOptions::from_request(request).await.succeeded();
+            let wait_for_queue_options =
+                WaitForQueueOptions::from_request(request).await.succeeded();
 
-            assert_eq!(run_options, Some(RunOptions::Sync));
+            assert_eq!(wait_for_queue_options, Some(WaitForQueueOptions::Sync));
         }
 
         #[tokio::test]
@@ -403,9 +373,10 @@ mod tests {
                 .header(Header::new("Prefer", "handling=lenient"));
             let request = get.inner();
 
-            let run_options = RunOptions::from_request(request).await.succeeded();
+            let wait_for_queue_options =
+                WaitForQueueOptions::from_request(request).await.succeeded();
 
-            assert_eq!(run_options, Some(RunOptions::Sync));
+            assert_eq!(wait_for_queue_options, Some(WaitForQueueOptions::Sync));
         }
 
         #[tokio::test]
@@ -417,9 +388,13 @@ mod tests {
                 .header(Header::new("Prefer", "respond-async"));
             let request = get.inner();
 
-            let run_options = RunOptions::from_request(request).await.succeeded();
+            let wait_for_queue_options =
+                WaitForQueueOptions::from_request(request).await.succeeded();
 
-            assert_eq!(run_options, Some(RunOptions::Async { wait: None }));
+            assert_eq!(
+                wait_for_queue_options,
+                Some(WaitForQueueOptions::Async { wait: None })
+            );
         }
 
         #[tokio::test]
@@ -431,11 +406,12 @@ mod tests {
                 .header(Header::new("Prefer", "respond-async, wait=100"));
             let request = get.inner();
 
-            let run_options = RunOptions::from_request(request).await.succeeded();
+            let wait_for_queue_options =
+                WaitForQueueOptions::from_request(request).await.succeeded();
 
             assert_eq!(
-                run_options,
-                Some(RunOptions::Async {
+                wait_for_queue_options,
+                Some(WaitForQueueOptions::Async {
                     wait: Some(Duration::from_secs(100))
                 })
             );
@@ -451,11 +427,12 @@ mod tests {
                 .header(Header::new("Prefer", "wait=100"));
             let request = get.inner();
 
-            let run_options = RunOptions::from_request(request).await.succeeded();
+            let wait_for_queue_options =
+                WaitForQueueOptions::from_request(request).await.succeeded();
 
             assert_eq!(
-                run_options,
-                Some(RunOptions::Async {
+                wait_for_queue_options,
+                Some(WaitForQueueOptions::Async {
                     wait: Some(Duration::from_secs(100))
                 })
             );
@@ -468,16 +445,17 @@ mod tests {
             let get = client.get("/").header(Header::new("Prefer", "abcd"));
             let request = get.inner();
 
-            let run_options = RunOptions::from_request(request).await.succeeded();
+            let wait_for_queue_options =
+                WaitForQueueOptions::from_request(request).await.succeeded();
 
-            assert_eq!(run_options, Some(RunOptions::Sync));
+            assert_eq!(wait_for_queue_options, Some(WaitForQueueOptions::Sync));
         }
     }
 
     mod http_api_error {
         use super::super::*;
         use crate::{
-            apps::{AppsError, AppsService},
+            apps::{AppProcessingQueue, AppsError, AppsService},
             infrastructure::Dummy,
             registry::RegistryError,
         };
@@ -491,7 +469,8 @@ mod tests {
 
             let rocket = rocket::build()
                 .manage(apps)
-                .mount("/", routes![crate::apps::routes::create_app]);
+                .mount("/", routes![crate::apps::routes::create_app])
+                .attach(AppProcessingQueue::fairing());
 
             let client = Client::tracked(rocket).await.expect("valid rocket");
             let response = client
@@ -619,7 +598,11 @@ mod tests {
 
     mod deployment_with_additional_client_parameters {
         use super::super::*;
-        use crate::{apps::AppsService, config_from_str, infrastructure::Dummy};
+        use crate::{
+            apps::{AppProcessingQueue, AppsService},
+            config_from_str,
+            infrastructure::Dummy,
+        };
         use assert_json_diff::assert_json_include;
         use rocket::{http::ContentType, local::asynchronous::Client, routes};
 
@@ -648,7 +631,8 @@ mod tests {
 
             let rocket = rocket::build()
                 .manage(apps)
-                .mount("/", routes![crate::apps::routes::create_app]);
+                .mount("/", routes![crate::apps::routes::create_app])
+                .attach(AppProcessingQueue::fairing());
 
             Client::tracked(rocket).await.expect("valid rocket")
         }
@@ -818,5 +802,96 @@ mod tests {
             )))
             .unwrap()
         );
+    }
+
+    mod basic_deployment {
+        use crate::{
+            apps::{AppProcessingQueue, AppsService},
+            config_from_str,
+            infrastructure::Dummy,
+        };
+        use assert_json_diff::assert_json_include;
+        use rocket::{
+            http::{ContentType, Status},
+            local::asynchronous::Client,
+            routes,
+        };
+        use std::sync::Arc;
+
+        async fn create_client() -> Client {
+            let config = config_from_str!("");
+
+            let infrastructure = Box::new(Dummy::new());
+            let apps = Arc::new(AppsService::new(config, infrastructure).unwrap());
+
+            let rocket = rocket::build()
+                .manage(apps)
+                .mount(
+                    "/",
+                    routes![
+                        crate::apps::routes::create_app,
+                        crate::apps::routes::delete_app
+                    ],
+                )
+                .attach(AppProcessingQueue::fairing());
+
+            Client::tracked(rocket).await.expect("valid rocket")
+        }
+
+        #[tokio::test]
+        async fn deploy_services_and_respond_with_deployed_client() {
+            let client = create_client().await;
+
+            let response = client
+                .post("/master")
+                .body(
+                    serde_json::json!({
+                        "services": [{
+                            "serviceName": "db",
+                            "image": "postgres"
+                        }],
+                    })
+                    .to_string(),
+                )
+                .header(ContentType::JSON)
+                .dispatch()
+                .await;
+
+            assert_eq!(response.status(), Status::Ok);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_include!(
+                actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                expected: serde_json::json!([{
+                    "name": "db",
+                }])
+            );
+        }
+
+        #[tokio::test]
+        async fn deploy_services_and_delete_services() {
+            let client = create_client().await;
+
+            let response = client
+                .post("/master")
+                .body(
+                    serde_json::json!({
+                        "services": [{
+                            "serviceName": "db",
+                            "image": "postgres"
+                        }],
+                    })
+                    .to_string(),
+                )
+                .header(ContentType::JSON)
+                .dispatch()
+                .await;
+
+            assert_eq!(response.status(), Status::Ok);
+
+            let response = client.delete("/master").dispatch().await;
+
+            assert_eq!(response.status(), Status::Ok);
+        }
     }
 }

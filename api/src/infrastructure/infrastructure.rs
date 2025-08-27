@@ -56,20 +56,15 @@ pub trait Infrastructure: Send + Sync + DynClone {
     ///   must be able to find the corresponding services.
     async fn deploy_services(
         &self,
-        status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<App>;
-
-    async fn get_status_change(&self, _status_id: &str) -> Result<Option<App>> {
-        Ok(None)
-    }
 
     /// Stops the services running for the given `app_name`
     ///
     /// The implementation must ensure that it returns the services that have been
     /// stopped.
-    async fn stop_services(&self, status_id: &str, app_name: &AppName) -> Result<App>;
+    async fn stop_services(&self, app_name: &AppName) -> Result<App>;
 
     /// Streams the log lines with a the corresponding timestamps in it.
     async fn get_logs<'a>(
