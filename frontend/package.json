@@ -3,6 +3,9 @@
    "version": "0.9.0",
    "license": "MIT",
    "private": true,
+   "//scripts comments": {
+      "test:e2e:update-snapshots:linux": "Make sure to use the same image as used in workflows/playwright.yml to avoid mismatches"
+   },
    "scripts": {
       "serve": "vite",
       "build": "vite build",
