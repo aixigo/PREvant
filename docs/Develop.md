@@ -104,8 +104,6 @@ To run the frontend in development mode:
 
 We use [Playwright](https://playwright.dev/) for end-to-end testing.
 
-### Installing Browsers
-
 Before running the tests for the first time, you must install the required browsers:
 
 ```bash
@@ -113,8 +111,6 @@ npx playwright install
 ```
 
 This only needs to be done once (or whenever Playwright updates its browser requirements).
-
-### Running Tests
 
 To run the Playwright tests:
 
@@ -127,8 +123,6 @@ Alternatively, you can run the tests in debug mode (with a UI):
 ```bash
 npm run test:e2e:ui
 ```
-
-### Fixture Files During Development
 
 Some tests rely on fixture files (e.g., AsyncAPI YAMLs) that are only served during development:
 
