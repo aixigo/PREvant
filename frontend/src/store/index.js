@@ -25,6 +25,9 @@
  */
 import { EventSource } from 'eventsource';
 import { Store } from 'vuex';
+import { compareByPropertyWithKeywordFirst } from '../utils/sorting-util';
+import { useConfig } from '../composables/useConfig';
+const { defaultAppName } = useConfig();
 
 const SERVICE_TYPE_ORDER = [
    'instance',
@@ -56,13 +59,9 @@ export function createStore(router, me, issuers) {
                return [];
             }
 
-            const apps = [
-               appDetails('master'),
-               ...Object.keys(state.apps)
-                  .filter(_ => _ != 'master')
-                  .map(appDetails)
-                  .sort(byAppNameDesc)
-            ];
+            const apps = Object.keys(state.apps)
+               .map(appDetails)
+               .sort(compareByPropertyWithKeywordFirst("name", defaultAppName.value));
 
             return apps
                .filter(app => app.name != null)
@@ -101,11 +100,6 @@ export function createStore(router, me, issuers) {
 
                return containerA.name < containerB.name ? -1 : 1;
             }
-
-            function byAppNameDesc(appA, appB) {
-               const [keyA, keyB] = [appA, appB].map(({ name }) => name);
-               return keyA > keyB ? -1 : 1;
-            }
          },
 
          myApps: (state, getters) => {
@@ -117,15 +111,20 @@ export function createStore(router, me, issuers) {
                .filter(app => (app.owners ?? []).some(owner => owner.sub == state.me.sub && owner.iss == state.me.iss));
          },
 
-         appsWithTicket: (state, getters) => {
+         notMyApps: (state, getters) => {
+            const myAppNames = new Set(getters.myApps.map(app => app.name));
+
             return getters.reviewApps
-               .filter(app => !getters.myApps.some(myApp => app.name == myApp.name))
+               .filter(app => !myAppNames.has(app.name));
+         },
+
+         appsWithTicket: (state, getters) => {
+            return getters.notMyApps
                .filter(app => state.tickets[app.name] !== undefined);
          },
 
          appsWithoutTicket: (state, getters) => {
-            return getters.reviewApps
-               .filter(app => !getters.myApps.some(myApp => app.name == myApp.name))
+            return getters.notMyApps
                .filter(app => state.tickets[app.name] === undefined);
          },
 

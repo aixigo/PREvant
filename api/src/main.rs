@@ -148,6 +148,12 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
             .to_string(),
     );
 
+    // bundle remaining configs into one json object
+    let config_json = serde_json::json!({
+        "defaultAppName": config.frontend.default_app_name.as_deref().unwrap_or("master").to_string(),
+    });
+    data.insert("config", config_json.to_string());
+
     Ok(Index(handlebars.render("index", &data).map_err(|e| {
         HttpApiError::from(
             HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)

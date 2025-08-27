@@ -102,7 +102,43 @@ To run the frontend in development mode:
 
 ## Frontend Tests
 
-We use [Playwright](https://playwright.dev/) for end-to-end testing.
+As part of our testing strategy, we provide support for both [Unit Tests](#frontend-unit-tests) and [End-to-End (E2E) Tests](#frontend-e2e-tests), ensuring that individual components work correctly in isolation and that the application behaves as expected in a real-world scenario.
+
+### Frontend Unit Tests
+
+We use [Vitest](https://vitest.dev/) for unit testing the frontend. Unit tests ensure that individual components and utilities work as expected without relying on the full application stack.
+
+#### Running Unit Tests
+
+To run all unit tests in the project:
+
+```bash
+npm run test:unit
+```
+
+This command outputs results in the terminal and also generates a coverage report at:
+
+```
+reports/frontend/coverage/index.html
+```
+
+Alternatively, you can run the tests in debug mode (with a UI):
+
+```bash
+npm run test:unit:ui
+```
+
+This will open a browser-based UI where you can:
+
+- Filter and run individual tests.
+- See real-time test results.
+- Re-run tests automatically when files change.
+
+### Frontend e2e Tests
+
+We use [Playwright](https://playwright.dev/) for end-to-end testing to simulate real user interactions and verify the entire application flow.
+
+#### Installing Browsers
 
 Before running the tests for the first time, you must install the required browsers:
 
@@ -111,6 +147,8 @@ npx playwright install
 ```
 
 This only needs to be done once (or whenever Playwright updates its browser requirements).
+
+#### Running E2E Tests
 
 To run the Playwright tests:
 

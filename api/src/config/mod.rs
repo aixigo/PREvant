@@ -181,6 +181,8 @@ where
 pub struct FrontendConfig {
     #[serde(default)]
     pub title: Option<String>,
+    #[serde(default)]
+    pub default_app_name: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -1137,6 +1139,29 @@ mod tests {
             "#
         );
         assert_eq!(config.frontend.title, None);
+    }
+
+    #[test]
+    fn should_return_custom_default_app_name_when_provided() {
+        let config = config_from_str!(
+            r#"
+            [frontend]
+            default_app_name = "latest"
+            "#
+        );
+
+        assert_eq!(config.frontend.default_app_name, Some(String::from("latest")));
+    }
+
+    #[test]
+    fn should_return_none_when_missing_default_appe_name_config() {
+        let config = config_from_str!(
+            r#"
+            [frontend]
+            "#
+        );
+
+        assert_eq!(config.frontend.default_app_name, None);
     }
 
     #[test]

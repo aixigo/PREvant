@@ -108,6 +108,15 @@ PREvant provides configuration options to customize the frontend. Currently, you
 title = 'My Environment'
 ```
 
+and the name of the default app: 
+
+```toml
+[frontend]
+default_app_name = 'latest'
+```
+
+The app with this name will always be shown first. Also this app cannot be deleted through the frontend. It defaults to "master".
+
 ## Services
 
 PREvant offers centralized configuration options for services deployed via its REST-API. For example, you can specify that PREvant mounts a secret for a specific service of an application.
