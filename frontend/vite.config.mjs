@@ -88,6 +88,7 @@ export default defineConfig({
        */
       {
          name: 'serve-fixtures-dev-only',
+         apply: "serve",
          configureServer(server) {
             server.middlewares.use((req, res, next) => {
                if (req.url?.startsWith('/fixtures/')) {
