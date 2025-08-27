@@ -28,9 +28,6 @@
       "vue-virtual-scroller": "^2.0.0-beta.8",
       "vuex": "^4.1.0"
    },
-   "//devDepencies": {
-      "@playwright/test": "Make sure to use the same playwright version as used in workflows/playwright.yml to avoid mismatches"
-   },
    "devDependencies": {
       "@playwright/test": "^1.55.0",
       "@rollup/plugin-inject": "^5.0.5",

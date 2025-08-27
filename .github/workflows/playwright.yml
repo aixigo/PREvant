@@ -10,15 +10,20 @@ jobs:
   test:
     timeout-minutes: 60
     runs-on: ubuntu-latest
-    container:
-      # Make sure to use the same version as playwright dependency in package.json to avoid mismatches
-      image: mcr.microsoft.com/playwright:v1.53.1-jammy
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
 
       - name: Install dependencies
         working-directory: frontend
         run: npm ci
+
+      - name: Install Playwright Browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps
 
       - name: Run Playwright tests
         working-directory: frontend
