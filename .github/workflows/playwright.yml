@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 60
     runs-on: ubuntu-latest
     container:
-      # Make sure to use the same image as used in frontend/package.json to avoid mismatches
+      # Make sure to use the same version as playwright dependency in package.json to avoid mismatches
       image: mcr.microsoft.com/playwright:v1.53.1-jammy
     steps:
       - uses: actions/checkout@v4

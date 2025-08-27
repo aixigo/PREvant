@@ -128,29 +128,6 @@ Alternatively, you can run the tests in debug mode (with a UI):
 npm run test:e2e:ui
 ```
 
-### Snapshot / Screenshot Tests
-
-Some tests include visual regression checks using screenshots. These tests will:
-
-- Navigate to a specific route or component.
-- Capture a screenshot of the full page or a specific element.
-- Compare the screenshot with a previously approved version to detect unintended visual changes.
-
-If one of the tests stopped working because of intended changes, you can update the snapshots by running
-
-```bash
-npm run test:e2e:update-snapshots
-```
-
-**Important considerations:**
-
-Screenshots can differ depending on the operating system and environment (e.g. macOS vs. Linux). Playwright records the OS in the screenshot filename by default, which may cause test failures if run on different machines. See [Playwright Visual comparisons Docs](https://playwright.dev/docs/test-snapshots).
-To make results reproducible, we provide a Docker-based test script that runs the tests inside the same Linux environment used in CI. This ensures consistent screenshots across machines. You can update the linux snapshots by running
-
-```bash
-npm run test:e2e:update-snapshots:linux
-```
-
 ### Fixture Files During Development
 
 Some tests rely on fixture files (e.g., AsyncAPI YAMLs) that are only served during development:

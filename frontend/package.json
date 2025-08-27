@@ -7,9 +7,6 @@
       "serve": "vite",
       "build": "vite build",
       "test:e2e": "playwright test",
-      "test:e2e:update-snapshots": "playwright test --update-snapshots",
-      "//test:e2e:update-snapshots:linux": "Make sure to use the same image as used in workflows/playwright.yml to avoid mismatches",
-      "test:e2e:update-snapshots:linux": "docker run --rm -v \"$(pwd)\":/app -w /app mcr.microsoft.com/playwright:v1.53.1-jammy bash -c \"npm ci && npm run test:e2e:update-snapshots\"",
       "test:e2e:ui": "playwright test --ui"
    },
    "dependencies": {
@@ -30,6 +27,9 @@
       "vue-router": "^4.5.1",
       "vue-virtual-scroller": "^2.0.0-beta.8",
       "vuex": "^4.1.0"
+   },
+   "//devDepencies": {
+      "@playwright/test": "Make sure to use the same playwright version as used in workflows/playwright.yml to avoid mismatches"
    },
    "devDependencies": {
       "@playwright/test": "^1.55.0",
