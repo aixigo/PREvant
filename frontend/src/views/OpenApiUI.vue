@@ -1,6 +1,6 @@
 <template>
   <ModalLikeLayout title="API Documentation" :title-suffix="route.query.title">
-    <div class="open-api-ui" ref="asyncapi"></div>
+    <div class="open-api-ui" ref="openapi"></div>
   </ModalLikeLayout>
 </template>
 
@@ -25,7 +25,7 @@ import SwaggerUI from "swagger-ui";
 import ModalLikeLayout from "../layouts/ModalLikeLayout.vue";
 
 const route = useRoute();
-const asyncapi = useTemplateRef("asyncapi");
+const asyncapi = useTemplateRef("openapi");
 onMounted(() => {
   SwaggerUI({
     url: route.params.url,
