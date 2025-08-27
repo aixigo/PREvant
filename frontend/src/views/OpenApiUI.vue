@@ -1,7 +1,14 @@
 <template>
-  <ModalLikeLayout title="API Documentation" :title-suffix="route.query.title">
-    <div class="open-api-ui" ref="openapi"></div>
-  </ModalLikeLayout>
+  <Dialog
+    ref="dialog"
+    title="API Documentation"
+    large
+    @close="handleClose"
+  >
+    <template v-slot:body>
+      <div class="open-api-ui" ref="openapi"></div>
+    </template>
+  </Dialog>
 </template>
 
 <style lang="css" src="swagger-ui/dist/swagger-ui.css"></style>
@@ -20,16 +27,26 @@
 
 <script setup>
 import { onMounted, useTemplateRef } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import SwaggerUI from "swagger-ui";
-import ModalLikeLayout from "../layouts/ModalLikeLayout.vue";
+import Dialog from "../components/Dialog.vue";
 
 const route = useRoute();
-const asyncapi = useTemplateRef("openapi");
+const router = useRouter();
+
+const dialog = useTemplateRef("dialog");
+const openapi = useTemplateRef("openapi");
+
 onMounted(() => {
+  dialog.value.open();
+
   SwaggerUI({
     url: route.params.url,
-    domNode: asyncapi.value,
+    domNode: openapi.value,
   });
 });
+
+function handleClose() {
+  router.push(router.options.history.state.back ?? "/");
+}
 </script>

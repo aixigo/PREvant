@@ -1,23 +1,33 @@
 <template>
-  <ModalLikeLayout
-    title="AsyncAPI Documentation "
-    :title-suffix="route.query.title"
+  <Dialog
+    ref="dialog"
+    title="AsyncAPI Documentation"
+    large
+    @close="handleClose"
   >
-    <div ref="asyncapi"></div>
-  </ModalLikeLayout>
+    <template v-slot:body>
+      <div ref="asyncapi"></div>
+    </template>
+  </Dialog>
 </template>
 
 <style src="@asyncapi/react-component/styles/default.min.css"></style>
 
 <script setup>
 import { onMounted, useTemplateRef } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import AsyncApiStandalone from "@asyncapi/react-component/browser/standalone";
-import ModalLikeLayout from "../layouts/ModalLikeLayout.vue";
+import Dialog from "../components/Dialog.vue";
 
 const route = useRoute();
+const router = useRouter();
+
+const dialog = useTemplateRef("dialog");
 const asyncapi = useTemplateRef("asyncapi");
+
 onMounted(() => {
+  dialog.value.open();
+
   AsyncApiStandalone.render(
     {
       schema: { url: route.params.url },
@@ -26,4 +36,8 @@ onMounted(() => {
     asyncapi.value
   );
 });
+
+function handleClose() {
+  router.push(router.options.history.state.back ?? "/");
+}
 </script>
