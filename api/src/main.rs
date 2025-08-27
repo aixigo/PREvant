@@ -34,6 +34,7 @@ use crate::apps::Apps;
 use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
+use apps::AppProcessingQueue;
 use auth::Auth;
 use auth::Issuers;
 use auth::User;
@@ -70,7 +71,7 @@ async fn openapi(request_info: RequestInfo) -> Option<String> {
     let mut f = match File::open(openapi_path).await {
         Ok(f) => f,
         Err(e) => {
-            log::error!("Cannot find API documentation: {}", e);
+            log::error!("Cannot find API documentation: {e}");
             return None;
         }
     };
@@ -224,6 +225,7 @@ async fn main() -> Result<(), StartUpError> {
         .mount("/api", routes![webhooks::webhooks])
         .mount("/auth", crate::auth::auth_routes())
         .attach(Auth::fairing())
+        .attach(AppProcessingQueue::fairing())
         .launch()
         .await?;
 
