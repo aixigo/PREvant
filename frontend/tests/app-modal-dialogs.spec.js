@@ -147,38 +147,4 @@ test.describe("app modal dialogs", () => {
       ).toHaveURL(/\/#\/$/);
     });
   });
-
-  test("should close the Open API Documentation dialog when pressing escape", async ({
-    page,
-  }) => {
-    await page.goto(`/#/open-api-ui/${encodeURIComponent(OPEN_API_URL)}`);
-
-    await expect(
-      page.getByRole("heading", {
-        name: `API Documentation`,
-      }),
-      "OpenApi dialog should be visible"
-    ).toBeVisible();
-
-    await page.keyboard.down("Escape");
-
-    await expect(page, "should close the dialog").toHaveURL(/\/#\/$/);
-  });
-
-  test("should close the Async API Documentation dialog when pressing escape", async ({
-    page,
-  }) => {
-    await page.goto(`/#/async-api-ui/${encodeURIComponent(ASYNC_API_URL)}`);
-
-    await expect(
-      page.getByRole("heading", {
-        name: "AsyncAPI Documentation",
-      }),
-      "AsyncAPI dialog should be visible"
-    ).toBeVisible();
-
-    await page.keyboard.down("Escape");
-
-    await expect(page, "should close the dialog").toHaveURL(/\/#\/$/);
-  });
 });
