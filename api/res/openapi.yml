@@ -363,7 +363,7 @@ components:
         (see [RFC-7240](https://tools.ietf.org/html/rfc7240) for details)
       required: false
       example:
-        respond-async,wait=10
+        - respond-async,wait=10
       schema:
         type: array
         minItems: 1
