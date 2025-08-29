@@ -351,10 +351,10 @@ mod tests {
 
     mod url_rendering {
         use super::apps_v1;
-        use crate::apps::{AppsService, HostMetaCache};
+        use crate::apps::{AppProcessingQueue, AppsService, HostMetaCache};
         use crate::config::Config;
         use crate::infrastructure::Dummy;
-        use crate::models::{App, AppName, AppStatusChangeId};
+        use crate::models::{App, AppName};
         use crate::sc;
         use assert_json_diff::assert_json_include;
         use rocket::http::ContentType;
@@ -373,7 +373,6 @@ mod tests {
             let _result = apps
                 .create_or_update(
                     &AppName::master(),
-                    &AppStatusChangeId::new(),
                     None,
                     &vec![sc!("service-a")],
                     crate::auth::User::Anonymous,
@@ -387,7 +386,8 @@ mod tests {
                 .manage(Config::default())
                 .manage(tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new()).1)
                 .mount("/", rocket::routes![apps_v1])
-                .mount("/api/apps", crate::apps::apps_routes());
+                .mount("/api/apps", crate::apps::apps_routes())
+                .attach(AppProcessingQueue::fairing());
             Ok(Client::tracked(rocket).await.expect("valid rocket"))
         }
 

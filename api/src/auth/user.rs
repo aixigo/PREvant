@@ -1,6 +1,7 @@
 use openidconnect::{core::CoreGenderClaim, IdTokenClaims};
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone)]
 pub enum User {
     Anonymous,
     Oidc {
