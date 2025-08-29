@@ -70,10 +70,11 @@ To run the frontend in development mode:
 
 1. Start the backend as described in [Backend Development](#backend-development).
 
-  Make also sure t pass `--base-url http://localhost:9001` when starting the
-  backend because some of the features work only if the “guessed” backend URL
-  matches to the frontend development server URL. For example, authentication
-  works only if the redirect URI matches relative to the dev server URL.
+   Make also sure to pass `--base-url http://localhost:9001` when starting the
+   backend because some of the features work only if the “guessed” backend URL
+   matches to the frontend development server URL. For example, authentication
+   works only if the redirect URI matches relative to the dev server URL.
+
 2. Navigate to the `/frontend` directory:
 
    ```bash
@@ -89,6 +90,15 @@ To run the frontend in development mode:
 
 4. Open the following URL in your browser:
    **http://localhost:9001**
+
+## Frontend Advanced Development Scenarios
+
+- **Async API Documentation UI**  
+  You can develop and test the async API UI locally at:  
+  http://localhost:9001/#/async-api-ui/%2Ffixtures%2Fasyncapi%2Fstreetlights-kafka-asyncapi.yml
+- **Open API Documentation UI**  
+  You can also develop and test the openAPI UI locally at:  
+  http://localhost:9001/#/open-api-ui/%2Ffixtures%2Fopenapi%2Fpetstore-api-swagger.json
 
 ## Frontend Tests
 
@@ -113,6 +123,12 @@ Alternatively, you can run the tests in debug mode (with a UI):
 ```bash
 npm run test:e2e:ui
 ```
+
+Some tests rely on fixture files (e.g., AsyncAPI YAMLs) that are only served during development:
+
+- We use a custom Vite plugin to serve these fixtures at `/fixtures/...`.
+- Fixture files are not included in the production build.
+- This allows Playwright tests to fetch example data without relying on external URLs that may be unavailable in CI or offline environments.
 
 # Integration Testing
 

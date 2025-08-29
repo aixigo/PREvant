@@ -38,10 +38,10 @@ import { createRouter, createWebHashHistory } from 'vue-router';
 
 import './scss/theme.scss';
 import Main from './Main.vue';
-import Apps from './Apps.vue';
-import AsyncApiUI from './AsyncApiUI.vue';
-import OpenApiUI from './OpenApiUI.vue';
-import LogsDialog from './LogsDialog.vue';
+import Apps from './views/Apps.vue';
+import AsyncApiUI from './views/AsyncApiUI.vue';
+import OpenApiUI from './views/OpenApiUI.vue';
+import LogsDialog from './views/LogsDialog.vue';
 
 import {library} from '@fortawesome/fontawesome-svg-core';
 import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose, faDownload} from '@fortawesome/free-solid-svg-icons';
@@ -60,6 +60,7 @@ library.add(faWindowClose);
 
 export const router = createRouter({
    history: createWebHashHistory(),
+   // It is currently not possible to use lazy loading for routes because of bootstrap v4 and jquery
    routes: [
       { path: '/', component: Apps, query: { appNameFilter: { type: String } } },
       { path: '/open-api-ui/:url', name: 'open-api-ui', component: OpenApiUI },

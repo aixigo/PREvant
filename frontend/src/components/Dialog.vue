@@ -72,9 +72,11 @@
       },
       methods: {
          open() {
+            // see configuration options: https://getbootstrap.com/docs/4.0/components/modal/#options
             $(this.$refs.dialog).modal({
-               backdrop: 'static',
-               keyboard: true
+               backdrop: true,
+               keyboard: true,
+               focus: true
             });
          },
 

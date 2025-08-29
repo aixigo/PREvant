@@ -78,14 +78,10 @@
 
 <script>
    import { mapGetters } from 'vuex';
-   import OpenApiUI from './OpenApiUI.vue';
 
    export default {
       data() {
          return {};
-      },
-      components: {
-         'open-api-ui': OpenApiUI
       },
       computed: {
          ...mapGetters( [ 'appNameFilter', 'me', 'issuers' ] ),

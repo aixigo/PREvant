@@ -1,19 +1,22 @@
 import { test, expect } from "@playwright/test";
+import { OPEN_API_URL, ASYNC_API_URL } from "./fixtures/urls";
 
 const PREVIEW_NAME = "master";
 const SERVICE_NAME = "whoami";
 const FILTER_STRING = PREVIEW_NAME.substring(0, 4);
 const mockedApps = {
-   [PREVIEW_NAME]: {
-      services: [{
-         name: SERVICE_NAME,
-         url: `http://localhost:9001/${PREVIEW_NAME}/${SERVICE_NAME}/`,
-         type: "service",
-         state: { status: "running" },
-         openApiUrl: `http://localhost:9001/${PREVIEW_NAME}/${SERVICE_NAME}/swagger.json`,
-         asyncApiUrl: `http://localhost:9001/${PREVIEW_NAME}/${SERVICE_NAME}/asyncApi.json`,
-      }]
-   },
+  [PREVIEW_NAME]: {
+    services: [
+      {
+        name: SERVICE_NAME,
+        url: `http://localhost:9001/${PREVIEW_NAME}/${SERVICE_NAME}/`,
+        type: "service",
+        state: { status: "running" },
+        openApiUrl: OPEN_API_URL,
+        asyncApiUrl: ASYNC_API_URL,
+      },
+    ],
+  },
 };
 
 // We need to use this format because the apps are fetched using event streams

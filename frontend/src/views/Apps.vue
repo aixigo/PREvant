@@ -101,9 +101,8 @@
 
 <script>
    import { mapGetters } from 'vuex';
-   import LogsDialog from './LogsDialog.vue';
-   import ReviewAppCard from './ReviewAppCard.vue';
-   import Spinner from './Spinner.vue';
+   import ReviewAppCard from '../components/ReviewAppCard.vue';
+   import Spinner from '../components/Spinner.vue';
 
    export default {
       data() {
@@ -111,7 +110,6 @@
       },
       components: {
          'review-app-card': ReviewAppCard,
-         'logs-dialog': LogsDialog,
          'spinner': Spinner
       },
       computed: {

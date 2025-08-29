@@ -74,7 +74,7 @@
 <script>
    import LinkHeader from 'http-link-header';
    import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
-   import Dialog from './Dialog.vue';
+   import Dialog from '../components/Dialog.vue';
    import moment from 'moment';
 
    let requestUri;
