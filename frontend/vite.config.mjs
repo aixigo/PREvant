@@ -16,7 +16,7 @@ export default defineConfig({
       vue(),
 
       {
-         name: "inject-me-build",
+         name: "inject-template-vars",
          apply: "build",
          transformIndexHtml(_html) {
             return [
@@ -49,7 +49,7 @@ export default defineConfig({
          },
       },
       {
-         name: "inject-me",
+         name: "inject-runtime-context",
          apply: "serve",
          async transformIndexHtml(_html) {
             const me= await fetch("http://127.0.0.1:8000/auth/me", {
