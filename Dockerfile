@@ -1,5 +1,5 @@
 # Build Frontend
-FROM node:18-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 WORKDIR /usr/src/frontend/
 COPY frontend/package.json frontend/index.html frontend/package-lock.json frontend/*.config.mjs /usr/src/frontend/
 COPY frontend/public /usr/src/frontend/public/
