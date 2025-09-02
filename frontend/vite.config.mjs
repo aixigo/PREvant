@@ -110,7 +110,13 @@ export default defineConfig({
       inject({
          $: 'jquery',
          jQuery: 'jquery',
-         Popper: ['popper.js', 'default']
+         Popper: ['popper.js', 'default'],
+
+         // Exclude CSS files, especially those imported by Swagger UI (swagger-ui.css),
+         // because rollup-plugin-inject tries to parse all files as JavaScript. 
+         // Parsing CSS as JS causes warnings like:
+         //   "rollup-plugin-inject: failed to parse ...swagger-ui.css?... Consider restricting the plugin"
+         exclude: ['**/*.css']
       })
    ],
    server: {
