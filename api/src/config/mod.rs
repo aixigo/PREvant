@@ -270,6 +270,14 @@ impl Config {
         self.frontend.as_ref().cloned()
     }
 
+    pub fn frontend_title(&self) -> String {
+        self.frontend_config()
+            .as_ref()
+            .and_then(|fe| fe.title())
+            .cloned()
+            .unwrap_or_else(|| "PREvant".to_string())
+    }
+
     pub fn jira_config(&self) -> Option<JiraConfig> {
         self.jira.as_ref().cloned()
     }
@@ -1022,6 +1030,38 @@ mod tests {
                 api_key: SecUtf8::from_str("key").unwrap()
             }
         );
+    }
+
+    #[test]
+    fn should_return_custom_frontend_title_when_provided() {
+        let config = config_from_str!(
+            r#"
+            [frontend]
+            title = "My Custom Title"
+            "#
+        );
+
+        assert_eq!(config.frontend_title(), "My Custom Title");
+    }
+
+    #[test]
+    fn should_return_default_frontend_title_when_missing_frontend_title_config() {
+        let config = config_from_str!(
+            r#"
+            [frontend]
+            "#
+        );
+
+        assert_eq!(config.frontend_title(), "PREvant");
+    }
+
+    #[test]
+    fn should_return_default_frontend_title_when_missing_frontend_config_section() {
+        let config = config_from_str!(
+            r#"
+            "#
+        );
+        assert_eq!(config.frontend_title(), "PREvant");
     }
 
     #[test]

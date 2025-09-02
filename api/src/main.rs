@@ -133,13 +133,7 @@ async fn index(user: User, issuers: &State<Issuers>, config_state: &State<Config
     data.insert("me", me.to_string());
     data.insert("issuers", issuers.inner().to_string());
 
-    let title = config_state
-        .frontend_config()
-        .as_ref()
-        .and_then(|fe| fe.title())
-        .cloned()
-        .unwrap_or_else(|| "PREvant".to_string());
-    data.insert("title", title);
+    data.insert("title", config_state.frontend_title());
 
     Ok(Index(handlebars.render("index", &data).map_err(|e| {
         HttpApiError::from(
