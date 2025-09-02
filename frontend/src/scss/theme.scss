@@ -24,10 +24,10 @@
  * =========================LICENSE_END==================================
  */
 
-@import 'colors';
-@import 'basics';
-@import 'application';
-@import 'menu';
-@import 'badge';
-@import 'card';
-@import 'review-app-card';
+@use 'colors';
+@use 'basics';
+@use 'application';
+@use 'menu';
+@use 'badge';
+@use 'card';
+@use 'review-app-card';

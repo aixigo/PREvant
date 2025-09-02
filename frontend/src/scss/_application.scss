@@ -1,3 +1,5 @@
+@use "colors";
+
 /*-
  * ========================LICENSE_START=================================
  * PREvant Frontend
@@ -35,7 +37,7 @@
 body {
    padding: 7rem 0;
 
-   background-color: $app-background-color;
+   background-color: colors.$app-background-color;
 }
 
 .container {
@@ -46,7 +48,7 @@ body {
 
       margin-bottom: 1rem;
 
-      color: $dusty-gray;
+      color: colors.$dusty-gray;
    }
 }
 
