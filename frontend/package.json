@@ -10,7 +10,7 @@
       "test:e2e:ui": "playwright test --ui"
    },
    "dependencies": {
-      "@asyncapi/react-component": "^2.6.3",
+      "@asyncapi/react-component": "^2.6.4",
       "@fortawesome/fontawesome-svg-core": "^1.2.36",
       "@fortawesome/free-solid-svg-icons": "^5.15.4",
       "@fortawesome/vue-fontawesome": "^3.0.3",
