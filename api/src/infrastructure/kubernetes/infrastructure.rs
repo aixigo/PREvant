@@ -559,7 +559,6 @@ impl Infrastructure for KubernetesInfrastructure {
 
     async fn deploy_services(
         &self,
-        _status_id: &str,
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<App> {
@@ -636,7 +635,7 @@ impl Infrastructure for KubernetesInfrastructure {
         ))
     }
 
-    async fn stop_services(&self, _status_id: &str, app_name: &AppName) -> Result<App> {
+    async fn stop_services(&self, app_name: &AppName) -> Result<App> {
         let Some(services) = self.fetch_app(app_name).await? else {
             return Ok(App::empty());
         };
