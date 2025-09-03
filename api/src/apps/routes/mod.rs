@@ -84,12 +84,25 @@ impl Serialize for AppV1 {
 }
 
 #[rocket::get("/<app_name>/status-changes/<status_id>", format = "application/json")]
-async fn status_change(
+async fn status_change_v1(
     app_name: Result<AppName, AppNameError>,
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
     app_queue: &State<AppTaskQueueProducer>,
     options: WaitForQueueOptions,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
+    let app_name = app_name?;
+    let status_id = status_id?;
+
+    try_wait_for_task(app_queue, app_name, status_id, options).await
+}
+
+#[rocket::get("/<app_name>/status-changes/<status_id>", format = "application/vnd.prevant.v2+json")]
+async fn status_change_v2(
+    app_name: Result<AppName, AppNameError>,
+    status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
+    app_queue: &State<AppTaskQueueProducer>,
+    options: WaitForQueueOptions,
+) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
     let app_name = app_name?;
     let status_id = status_id?;
 
