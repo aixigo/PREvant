@@ -1,3 +1,5 @@
+@use "colors";
+
 /*-
  * ========================LICENSE_START=================================
  * PREvant Frontend
@@ -37,25 +39,25 @@
 }
 
 .jira--new {
-   background-color: $jira-new;
+   background-color: colors.$jira-new;
 }
 
 .jira--concept {
-   background-color: $jira-concept;
+   background-color: colors.$jira-concept;
 }
 
 .jira--ready {
-   background-color: $jira-ready;
+   background-color: colors.$jira-ready;
 }
 
 .jira--process {
-   background-color: $jira-process;
+   background-color: colors.$jira-process;
 }
 
 .jira--review {
-   background-color: $jira-review;
+   background-color: colors.$jira-review;
 }
 
 .jira--done {
-   background-color: $jira-done;
+   background-color: colors.$jira-done;
 }

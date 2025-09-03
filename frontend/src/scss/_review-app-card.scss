@@ -1,3 +1,5 @@
+@use "colors";
+
 /*-
  * ========================LICENSE_START=================================
  * PREvant Frontend
@@ -30,7 +32,7 @@
    padding: .5em 0;
 
    & + & {
-      border-top: 1px solid $silver;
+      border-top: 1px solid colors.$silver;
    }
 }
 
@@ -51,11 +53,11 @@
 .ra-build-infos {
    margin-top: .25rem;
 
-   color: $dusty-gray;
+   color: colors.$dusty-gray;
 
    a:hover,
    a:focus {
-      color: $aqua-deep;
+      color: colors.$aqua-deep;
    }
 
    a + a {

@@ -1,3 +1,5 @@
+@use "colors";
+
 /*-
  * ========================LICENSE_START=================================
  * PREvant Frontend
@@ -47,19 +49,19 @@
    }
 
    .badge-info {
-      background-color: $pale-sky;
+      background-color: colors.$pale-sky;
    }
 
    .badge-secondary {
-      color: $oxford-blue;
-      background-color: $silver;
+      color: colors.$oxford-blue;
+      background-color: colors.$silver;
    }
 
    .card-header {
       padding: 1rem;
 
       color: white;
-      background-color: $pale-sky;
+      background-color: colors.$pale-sky;
 
       a {
          color: currentColor;
@@ -77,6 +79,6 @@
    .card-body {
       padding: .5rem 1rem;
 
-      color: $pale-sky;
+      color: colors.$pale-sky;
    }
 }
