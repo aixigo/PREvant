@@ -176,7 +176,7 @@ where
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Default)]
 pub struct FrontendConfig {
     #[serde(default)]
     pub title: Option<String>,
@@ -217,7 +217,8 @@ pub struct Config {
     applications: Applications,
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
-    frontend: Option<FrontendConfig>,
+    #[serde(default)]
+    pub frontend: FrontendConfig,
     #[serde(default)]
     companions: Companions,
     services: Option<BTreeMap<String, Service>>,
@@ -264,18 +265,6 @@ impl Config {
             Some(containers) => containers.clone(),
             None => ContainerConfig::default(),
         }
-    }
-
-    pub fn frontend_config(&self) -> Option<FrontendConfig> {
-        self.frontend.as_ref().cloned()
-    }
-
-    pub fn frontend_title(&self) -> String {
-        self.frontend_config()
-            .as_ref()
-            .and_then(|fe| fe.title())
-            .cloned()
-            .unwrap_or_else(|| "PREvant".to_string())
     }
 
     pub fn jira_config(&self) -> Option<JiraConfig> {
@@ -521,12 +510,6 @@ impl<'de> Deserialize<'de> for ApiAccess {
             }),
             openid_providers,
         })
-    }
-}
-
-impl FrontendConfig {
-    pub fn title(&self) -> Option<&String> {
-        self.title.as_ref()
     }
 }
 
@@ -1041,27 +1024,27 @@ mod tests {
             "#
         );
 
-        assert_eq!(config.frontend_title(), "My Custom Title");
+        assert_eq!(config.frontend.title, Some(String::from("My Custom Title")));
     }
 
     #[test]
-    fn should_return_default_frontend_title_when_missing_frontend_title_config() {
+    fn should_return_none_when_missing_frontend_title_config() {
         let config = config_from_str!(
             r#"
             [frontend]
             "#
         );
 
-        assert_eq!(config.frontend_title(), "PREvant");
+        assert_eq!(config.frontend.title, None);
     }
 
     #[test]
-    fn should_return_default_frontend_title_when_missing_frontend_config_section() {
+    fn should_return_none_when_missing_frontend_config_section() {
         let config = config_from_str!(
             r#"
             "#
         );
-        assert_eq!(config.frontend_title(), "PREvant");
+        assert_eq!(config.frontend.title, None);
     }
 
     #[test]
