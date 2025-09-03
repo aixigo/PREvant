@@ -176,6 +176,12 @@ where
     }
 }
 
+#[derive(Clone, Deserialize, Default)]
+pub struct FrontendConfig {
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct JiraConfig {
     host: String,
@@ -211,6 +217,8 @@ pub struct Config {
     applications: Applications,
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
+    #[serde(default)]
+    pub frontend: FrontendConfig,
     #[serde(default)]
     companions: Companions,
     services: Option<BTreeMap<String, Service>>,
@@ -1005,6 +1013,38 @@ mod tests {
                 api_key: SecUtf8::from_str("key").unwrap()
             }
         );
+    }
+
+    #[test]
+    fn should_return_custom_frontend_title_when_provided() {
+        let config = config_from_str!(
+            r#"
+            [frontend]
+            title = "My Custom Title"
+            "#
+        );
+
+        assert_eq!(config.frontend.title, Some(String::from("My Custom Title")));
+    }
+
+    #[test]
+    fn should_return_none_when_missing_frontend_title_config() {
+        let config = config_from_str!(
+            r#"
+            [frontend]
+            "#
+        );
+
+        assert_eq!(config.frontend.title, None);
+    }
+
+    #[test]
+    fn should_return_none_when_missing_frontend_config_section() {
+        let config = config_from_str!(
+            r#"
+            "#
+        );
+        assert_eq!(config.frontend.title, None);
     }
 
     #[test]

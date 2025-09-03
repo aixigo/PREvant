@@ -16,14 +16,21 @@ export default defineConfig({
       vue(),
 
       {
-         name: "inject-me-build",
+         name: "inject-template-vars",
          apply: "build",
          transformIndexHtml(_html) {
-            return [{
-               injectTo: "head",
-               tag: "script",
-               children: "var me = {{ me }}; var issuers = {{ issuers }};"
-            }];
+            return [
+               {
+                  injectTo: "head",
+                  tag: "script",
+                  children: "var me = {{ me }}; var issuers = {{ issuers }};"
+               }, 
+               {
+                  injectTo: "head",
+                  tag: "title",
+                  children: "{{ title }}"
+               }
+            ];
          }
       },
       {
@@ -42,7 +49,7 @@ export default defineConfig({
          },
       },
       {
-         name: "inject-me",
+         name: "inject-runtime-context",
          apply: "serve",
          async transformIndexHtml(_html) {
             const me= await fetch("http://127.0.0.1:8000/auth/me", {
@@ -72,11 +79,18 @@ export default defineConfig({
                })
                .catch(() => null);
 
-            return [{
-               injectTo: "head",
-               tag: "script",
-               children: `var me = ${JSON.stringify(me)}; var issuers = ${JSON.stringify(issuers)}`
-            }];
+            return [
+               {
+                  injectTo: "head",
+                  tag: "script",
+                  children: `var me = ${JSON.stringify(me)}; var issuers = ${JSON.stringify(issuers)}`
+               }, 
+               {
+                  injectTo: "head",
+                  tag: "title",
+                  children: "PREvant (dev)"
+               }
+            ];
          }
       },
 
