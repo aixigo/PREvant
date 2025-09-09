@@ -83,6 +83,15 @@ user = ''
 password = ''
 ```
 
+## Frontend options
+
+PREvant provides configuration options to customize the frontend. Currently, you can set the title of the HTML document:
+
+```toml
+[frontend]
+title = 'My Environment'
+```
+
 ## Services
 
 PREvant offers centralized configuration options for services deployed via its REST-API. For example, you can specify that PREvant mounts a secret for a specific service of an application.
