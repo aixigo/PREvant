@@ -18,6 +18,7 @@ RUN mkdir src && echo "fn main() {}" > src/dummy.rs
 RUN cargo build --release
 
 RUN sed -i 's#src/dummy.rs#src/main.rs#' Cargo.toml && rm src/dummy.rs
+COPY api/migrations /usr/src/api/migrations
 COPY api/src /usr/src/api/src
 RUN cargo build --release
 

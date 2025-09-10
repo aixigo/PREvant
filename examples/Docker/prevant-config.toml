@@ -1,0 +1,5 @@
+[database]
+host = "db"
+username = "postgres"
+password =  "${env:POSTGRES_PASSWORD}"
+database = "postgres"

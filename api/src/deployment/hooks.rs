@@ -17,7 +17,7 @@ pub struct Hooks<'a> {
     config: &'a Config,
 }
 
-#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HooksError {
     #[error("Invalid deployment hook, {err}")]
     InvalidDeploymentHook { err: String },

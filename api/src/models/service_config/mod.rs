@@ -27,18 +27,19 @@ use crate::config::Routing;
 use crate::models::{ContainerType, Image};
 pub use environment::{Environment, EnvironmentVariable};
 use secstr::SecUtf8;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 mod environment;
 mod templating;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
     service_name: String,
     image: Image,
+    #[serde(skip_serializing_if = "Option::is_none")]
     env: Option<Environment>,
     #[serde(alias = "volumes", alias = "files", default)]
     files: Option<BTreeMap<PathBuf, SecUtf8>>,

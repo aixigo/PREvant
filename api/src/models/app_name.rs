@@ -46,6 +46,16 @@ impl AppName {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for AppName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let app_name = String::deserialize(deserializer)?;
+        Self::from_str(&app_name).map_err(serde::de::Error::custom)
+    }
+}
+
 impl serde::Serialize for AppName {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

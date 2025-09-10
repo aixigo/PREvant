@@ -35,6 +35,29 @@ impl AppStatusChangeId {
     pub fn new() -> Self {
         AppStatusChangeId(uuid::Uuid::new_v4())
     }
+
+    pub fn as_uuid(&self) -> &uuid::Uuid {
+        &self.0
+    }
+}
+
+impl serde::Serialize for AppStatusChangeId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AppStatusChangeId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let id = String::deserialize(deserializer)?;
+        Self::from_str(&id).map_err(serde::de::Error::custom)
+    }
 }
 
 impl std::fmt::Display for AppStatusChangeId {

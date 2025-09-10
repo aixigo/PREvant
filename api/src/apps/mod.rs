@@ -54,7 +54,6 @@ pub use queue::AppTaskQueueProducer;
 pub use routes::{apps_routes, delete_app_sync, AppV1};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
 
@@ -405,7 +404,7 @@ impl AppsService {
 }
 
 /// Defines error cases for the [`Apps`](Apps)
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum AppsServiceError {
     #[error("Cannot find app {app_name}.")]
     AppNotFound { app_name: AppName },
@@ -413,16 +412,16 @@ pub enum AppsServiceError {
     AppLimitExceeded { limit: usize },
     /// Will be used when the service cannot interact correctly with the infrastructure.
     #[error("Cannot interact with infrastructure: {error}")]
-    InfrastructureError { error: Arc<anyhow::Error> },
+    InfrastructureError { error: String },
     /// Will be used if the service configuration cannot be loaded.
     #[error("Invalid configuration: {error}")]
-    InvalidServerConfiguration { error: Arc<ConfigError> },
+    InvalidServerConfiguration { error: String },
     #[error(
         "Internal template processing issue (please, contact administrator of the system): {error}"
     )]
     TemplatingIssue { error: DeploymentTemplatingError },
     #[error("Unable to resolve information about image: {error}")]
-    UnableToResolveImage { error: Arc<RegistryError> },
+    UnableToResolveImage { error: RegistryError },
     #[error("Cannot apply hook {err}")]
     UnapplicableHook { err: HooksError },
     #[error("User defined payload does not match to the configured value: {err}")]
@@ -432,7 +431,7 @@ pub enum AppsServiceError {
 impl From<ConfigError> for AppsServiceError {
     fn from(error: ConfigError) -> Self {
         Self::InvalidServerConfiguration {
-            error: Arc::new(error),
+            error: error.to_string(),
         }
     }
 }
@@ -440,7 +439,7 @@ impl From<ConfigError> for AppsServiceError {
 impl From<anyhow::Error> for AppsServiceError {
     fn from(error: anyhow::Error) -> Self {
         Self::InfrastructureError {
-            error: Arc::new(error),
+            error: error.to_string(),
         }
     }
 }
@@ -453,9 +452,7 @@ impl From<DeploymentTemplatingError> for AppsServiceError {
 
 impl From<RegistryError> for AppsServiceError {
     fn from(error: RegistryError) -> Self {
-        Self::UnableToResolveImage {
-            error: Arc::new(error),
-        }
+        Self::UnableToResolveImage { error }
     }
 }
 

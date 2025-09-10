@@ -12,27 +12,45 @@ async fn deploy_app(prevant_base_url: &Url, deploy_payload: DeployPayload) -> Re
         serde_json::to_string(&deploy_payload).unwrap()
     );
 
-    let res = Client::new()
-        .post(
-            prevant_base_url
-                .join(&format!("/api/apps/{app_name}"))
-                .unwrap(),
-        )
-        .json(&deploy_payload)
-        .send()
-        .await
-        .unwrap();
+    for duration in
+        exponential_backoff::Backoff::new(10, Duration::from_secs(1), Duration::from_secs(10))
+    {
+        let res = match Client::new()
+            .post(
+                prevant_base_url
+                    .join(&format!("/api/apps/{app_name}"))
+                    .unwrap(),
+            )
+            .json(&deploy_payload)
+            .send()
+            .await
+        {
+            Ok(res) => res,
+            Err(err) => match duration {
+                Some(duration) => {
+                    log::warn!("Cannot deploy app {app_name}, retrying: {err}");
+                    tokio::time::sleep(duration).await;
+                    continue;
+                }
+                None => {
+                    log::error!("Cannot deploy app {app_name}: {err}");
+                    return Err(());
+                }
+            },
+        };
 
-    log::debug!("PREvant responded with {}", res.status());
+        log::debug!("PREvant responded with {}", res.status());
 
-    match res.status() {
-        StatusCode::OK => Ok(app_name),
-        _ => {
-            let response_text = res.text().await.unwrap();
-            log::error!("Cannot deploy app {app_name}: {response_text}");
-            Err(())
-        }
+        match res.status() {
+            StatusCode::OK => return Ok(app_name),
+            _ => {
+                let response_text = res.text().await.unwrap();
+                log::error!("Cannot deploy app {app_name}: {response_text}");
+                return Err(());
+            }
+        };
     }
+    unreachable!()
 }
 
 async fn replicate_app(prevant_base_url: &Url, from_app_name: &Uuid) -> Result<Uuid, Response> {
