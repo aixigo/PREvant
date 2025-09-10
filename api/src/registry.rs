@@ -83,7 +83,7 @@ impl<'a> Registry<'a> {
                         }
                         err => RegistryError::UnexpectedError {
                             image: image.to_string(),
-                            err: anyhow::Error::new(err),
+                            err: err.to_string(),
                         },
                     });
                 }
@@ -226,10 +226,10 @@ impl ImageConfig {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
 pub enum RegistryError {
     #[error("Unexpected docker registry error when resolving manifest for {image}: {err}")]
-    UnexpectedError { image: String, err: anyhow::Error },
+    UnexpectedError { image: String, err: String },
     #[error("Cannot resolve image {image} due to authentication failure: {failure}")]
     AuthenticationFailure { image: String, failure: String },
     #[error("Cannot find image {image}")]
