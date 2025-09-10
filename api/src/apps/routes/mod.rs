@@ -414,7 +414,7 @@ impl From<AppsError> for HttpApiError {
         let status = match &error {
             AppsError::InvalidUserDefinedParameters { .. } => StatusCode::BAD_REQUEST,
             AppsError::AppLimitExceeded { .. } => StatusCode::PRECONDITION_FAILED,
-            AppsError::UnableToResolveImage { error } => match **error {
+            AppsError::UnableToResolveImage { error } => match error {
                 crate::registry::RegistryError::ImageNotFound { .. } => StatusCode::NOT_FOUND,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             },
@@ -661,10 +661,10 @@ mod tests {
         #[rocket::get("/")]
         fn image_auth_failed() -> HttpResult<&'static str> {
             Err(AppsError::UnableToResolveImage {
-                error: Arc::new(RegistryError::AuthenticationFailure {
+                error: RegistryError::AuthenticationFailure {
                     image: String::from("private-registry.example.com/_/postgres"),
                     failure: String::from("403: invalid user name and password"),
-                }),
+                },
             }
             .into())
         }
@@ -693,10 +693,10 @@ mod tests {
         #[rocket::get("/")]
         fn registry_unexpected() -> HttpResult<&'static str> {
             Err(AppsError::UnableToResolveImage {
-                error: Arc::new(RegistryError::UnexpectedError {
+                error: RegistryError::UnexpectedError {
                     image: String::from("private-registry.example.com/_/postgres"),
-                    err: anyhow::Error::msg("unexpected"),
-                }),
+                    err: String::from("unexpected"),
+                },
             }
             .into())
         }
@@ -725,9 +725,9 @@ mod tests {
         #[rocket::get("/")]
         fn image_not_found() -> HttpResult<&'static str> {
             Err(AppsError::UnableToResolveImage {
-                error: Arc::new(RegistryError::ImageNotFound {
+                error: RegistryError::ImageNotFound {
                     image: String::from("private-registry.example.com/_/postgres"),
-                }),
+                },
             }
             .into())
         }

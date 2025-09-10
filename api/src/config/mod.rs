@@ -47,6 +47,7 @@ use secstr::SecUtf8;
 use selectors::AppSelector;
 use selectors::ImageSelector;
 use serde::Deserialize;
+use sqlx::postgres::PgConnectOptions;
 use std::collections::BTreeMap;
 use std::convert::From;
 use std::fmt::Display;
@@ -229,6 +230,8 @@ pub struct Config {
     static_host_meta: Vec<StaticHostMetaRaw>,
     #[serde(default, rename = "apiAccess")]
     pub api_access: ApiAccess,
+    #[serde(default, deserialize_with = "Config::deserialize_pg_options")]
+    pub database: Option<PgConnectOptions>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -244,6 +247,42 @@ struct Applications {
 }
 
 impl Config {
+    // TODO: remove once https://github.com/launchbadge/sqlx/issues/2439 is implemented.
+    fn deserialize_pg_options<'de, D>(deserializer: D) -> Result<Option<PgConnectOptions>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize, Debug)]
+        struct Options {
+            host: Option<String>,
+            port: Option<u16>,
+            username: Option<String>,
+            password: Option<MaybeEnvInterpolated<SecUtf8>>,
+            database: Option<String>,
+        }
+
+        let options = Options::deserialize(deserializer)?;
+
+        let mut pg_options = PgConnectOptions::new_without_pgpass().application_name("PREvant");
+        if let Some(host) = options.host {
+            pg_options = pg_options.host(&host);
+        }
+        if let Some(port) = options.port {
+            pg_options = pg_options.port(port);
+        }
+        if let Some(username) = options.username {
+            pg_options = pg_options.username(&username);
+        }
+        if let Some(password) = options.password {
+            pg_options = pg_options.password(password.0.unsecure());
+        }
+        if let Some(database) = options.database {
+            pg_options = pg_options.database(&database);
+        }
+
+        Ok(Some(pg_options))
+    }
+
     pub fn from_figment(cli: &CliArgs) -> Result<Self, figment::Error> {
         figment::Figment::new()
             .merge(Toml::file(
@@ -570,6 +609,7 @@ macro_rules! config_from_str {
 mod tests {
     use super::*;
     use crate::models::{ContainerType, Image};
+    use sqlx::postgres::PgConnectOptions;
     use std::str::FromStr;
 
     macro_rules! service_config {
@@ -930,11 +970,13 @@ mod tests {
         figment::Jail::expect_with(|jail| {
             jail.create_file(
                 "config.toml",
-                &format!(r#"
+                &format!(
+                    r#"
                 [registries.'docker.io']
                 username = "user"
                 password = "${{env:{var_name}}}"
-                "#),
+                "#
+                ),
             )?;
 
             let config = Config::from_figment(&Default::default())?;
@@ -1199,6 +1241,37 @@ mod tests {
                 client_id: String::from("some-id"),
                 client_secret: MaybeEnvInterpolated(SecUtf8::from_str("some-secret").unwrap()),
             }]
+        );
+    }
+
+    #[test]
+    fn should_parse_db_config() {
+        use sqlx::ConnectOptions;
+
+        let (var_name, var_value) = std::env::vars()
+            .filter(|(_, v)| !v.contains("/") && !v.contains("\\n"))
+            .next()
+            .unwrap();
+
+        let config = config_from_str!(&format!(
+            r#"
+            [database]
+            host = "postgres.example.com"
+            port = 2345
+            username = "username"
+            password =  "${{env:{var_name}}}"
+            database = "database"
+            "#
+        ));
+
+        let options = PgConnectOptions::from_str(&format!(
+            "postgresql://username:{var_value}@postgres.example.com:2345?dbname=database"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            config.database.map(|c| c.to_url_lossy()),
+            Some(&options).map(|c| c.to_url_lossy())
         );
     }
 }

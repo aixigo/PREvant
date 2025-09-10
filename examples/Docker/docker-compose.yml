@@ -1,22 +1,29 @@
-version: "3"
-
 services:
   prevant:
     image: aixigo/prevant
-    network_mode: "bridge"
-    userns_mode: "host"
     labels:
       traefik.frontend.rule: 'PathPrefix:/;'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./prevant-config.toml:/app/config.toml
+    environment:
+      - POSTGRES_PASSWORD
+    depends_on:
+      - db
 
   traefik:
     image: traefik:v1.7-alpine
-    command: --api --docker
-    network_mode: "bridge"
-    userns_mode: "host"
+    command: --api --docker --logLevel=INFO
     ports:
       - "80:80"
       - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
+  db:
+    image: postgres
+    shm_size: 128mb
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_PASSWORD

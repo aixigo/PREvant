@@ -12,6 +12,10 @@ variable, and from some CLI options.
 
 See [authentication.md](authentication.md) how to configure authentication (highly recommended).
 
+## Persistent Database
+
+See [database.md](database.md) how to configure a database connection (highly recommended).
+
 ## Runtime Configuration
 
 ### Kubernetes

@@ -26,7 +26,7 @@
 
 use secstr::SecUtf8;
 use serde::de::Error as SerdeError;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::convert::TryFrom;
 use std::hash::{Hash, Hasher};
@@ -109,6 +109,36 @@ impl<'de> Deserialize<'de> for Environment {
             }
             _ => Err(SerdeError::custom("Invalid environment payload.")),
         }
+    }
+}
+
+impl Serialize for Environment {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_map(Some(self.values.len()))?;
+
+        #[derive(Serialize)]
+        struct Inner<'a> {
+            value: &'a str,
+            templated: bool,
+            replicate: bool,
+        }
+
+        for value in &self.values {
+            serde::ser::SerializeMap::serialize_entry(
+                &mut state,
+                value.key.as_str(),
+                &Inner {
+                    value: value.value.unsecure(),
+                    templated: value.templated,
+                    replicate: value.replicate,
+                },
+            )?;
+        }
+
+        serde::ser::SerializeMap::end(state)
     }
 }
 
@@ -264,6 +294,7 @@ impl Eq for EnvironmentVariable {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assert_json_diff::assert_json_eq;
     use serde_json::from_value;
 
     #[test]
@@ -307,6 +338,26 @@ mod tests {
         assert_eq!(e.value.unsecure(), "admin".to_string());
         assert!(!e.templated);
         assert!(!e.replicate);
+    }
+
+    #[test]
+    fn serialize_environment() {
+        let e = Environment {
+            values: vec![EnvironmentVariable {
+                key: String::from("MYSQL_USER"),
+                value: SecUtf8::from(String::from("admin-{{application.name}}")),
+                original_value: None,
+                templated: true,
+                replicate: true,
+            }],
+        };
+
+        assert_json_eq!(
+            serde_json::to_value(e).unwrap(),
+            serde_json::json!({
+                "MYSQL_USER": {"value": "admin-{{application.name}}", "templated": true, "replicate": true}
+            })
+        );
     }
 
     #[test]

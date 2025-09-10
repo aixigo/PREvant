@@ -4,9 +4,13 @@ mod container;
 use crate::container::{PREvant, Traefik};
 use container::{prevant_url, traefik_url};
 use log::Level;
+use reqwest::Url;
+use std::{path::Path, str::FromStr};
 use testcontainers::{
-    core::logs::consumer::logging_consumer::LoggingConsumer, core::IntoContainerPort,
-    runners::AsyncRunner, ImageExt,
+    compose::DockerCompose,
+    core::{logs::consumer::logging_consumer::LoggingConsumer, IntoContainerPort, WaitFor},
+    runners::AsyncRunner,
+    ImageExt,
 };
 
 #[tokio::test]
@@ -36,6 +40,36 @@ async fn should_deploy_nginx() {
         .expect("container should be available");
 
     common::should_deploy_nginx(&traefik_url(&traefik).await, &prevant_url(&prevant).await).await
+}
+
+#[tokio::test]
+async fn should_deploy_nginx_in_docker_compose_with_postgres() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    let docker_compose_file = std::fs::canonicalize(
+        &std::path::absolute(Path::new("../examples/Docker/docker-compose.yml")).unwrap(),
+    )
+    .unwrap();
+
+    let mut compose = DockerCompose::with_local_client(&[docker_compose_file])
+        .with_env("POSTGRES_PASSWORD", "example.1234")
+        .with_wait_for_service(
+            "prevant",
+            WaitFor::message_on_stderr("Rocket has launched from"),
+        )
+        .with_wait_for_service(
+            "traefik",
+            WaitFor::message_on_stdout("Server configuration reloaded on :80"),
+        );
+
+    compose.up().await.unwrap();
+
+    let traefik_url = Url::from_str("http://localhost").unwrap();
+    let prevant_url = Url::from_str("http://localhost").unwrap();
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    common::should_deploy_nginx(&traefik_url, &prevant_url).await
 }
 
 #[tokio::test]

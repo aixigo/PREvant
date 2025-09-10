@@ -1,16 +1,21 @@
 use super::{AppsService, AppsServiceError};
+use crate::config::Config;
 use crate::models::{App, AppName, AppStatusChangeId, Owner, ServiceConfig};
 use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
+use postgres::PostgresAppTaskQueueDB;
 use rocket::{
     fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
 };
+use sqlx::postgres::PgConnectOptions;
 use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify},
     time::{sleep, sleep_until, timeout},
 };
+
+mod postgres;
 
 pub struct AppProcessingQueue {}
 
@@ -30,8 +35,30 @@ impl Fairing for AppProcessingQueue {
     }
 
     async fn on_ignite(&self, rocket: Rocket<Build>) -> rocket::fairing::Result {
+        let db = match rocket.state::<Config>() {
+            Some(config) => {
+                if let Some(db_options) = config.database.as_ref() {
+                    match AppTaskQueueDB::db(db_options.clone()).await {
+                        Ok(db) => db,
+                        Err(err) => {
+                            log::error!("Cannot connect to database: {err}");
+                            return Err(rocket);
+                        }
+                    }
+                } else {
+                    AppTaskQueueDB::inmemory()
+                }
+            }
+            None => AppTaskQueueDB::inmemory(),
+        };
+
+        if let Err(err) = db.apply_migrations().await {
+            log::error!("Cannot apply database migrations: {err}");
+            return Err(rocket);
+        }
+
         let producer = AppTaskQueueProducer {
-            db: Arc::new(AppTaskQueueDB::inmemory()),
+            db: Arc::new(db),
             notify: Arc::new(Notify::new()),
         };
 
@@ -140,9 +167,11 @@ impl AppTaskQueueProducer {
                 _ = interval_timer.tick() => {
                     match timeout(wait_timeout, self.db.peek_result(status_id)).await {
                         Ok(Some(result)) => return Some(result),
-                        // TODO: correct so far?
                         Ok(None) => continue,
-                        Err(_) => todo!()
+                        Err(err) => {
+                            log::debug!("Did not receive result within {} sec: {err}", wait_timeout.as_secs());
+                            break;
+                        }
                     }
                 }
                 _ = sleep_until(start_time + wait_timeout) => {
@@ -219,7 +248,8 @@ impl AppTaskQueueConsumer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
 enum AppTask {
     CreateOrUpdate {
         app_name: AppName,
@@ -234,6 +264,7 @@ enum AppTask {
         app_name: AppName,
     },
 }
+
 impl AppTask {
     fn app_name(&self) -> &AppName {
         match self {
@@ -248,6 +279,7 @@ impl AppTask {
         }
     }
 }
+
 pub enum AppTaskStatus {
     New,
     InProcess,
@@ -256,6 +288,7 @@ pub enum AppTaskStatus {
 
 enum AppTaskQueueDB {
     InMemory(Mutex<VecDeque<(AppTask, AppTaskStatus)>>),
+    DB(PostgresAppTaskQueueDB),
 }
 
 impl AppTaskQueueDB {
@@ -263,11 +296,27 @@ impl AppTaskQueueDB {
         Self::InMemory(Mutex::new(VecDeque::new()))
     }
 
+    async fn db(database_options: PgConnectOptions) -> Result<Self> {
+        let db = PostgresAppTaskQueueDB::connect_with_exponential_backoff(database_options).await?;
+        Ok(Self::DB(db))
+    }
+
+    async fn apply_migrations(&self) -> Result<()> {
+        if let AppTaskQueueDB::DB(db) = self {
+            db.migrate().await?;
+        }
+
+        Ok(())
+    }
+
     pub async fn enqueue_task(&self, task: AppTask) -> Result<()> {
         match self {
             AppTaskQueueDB::InMemory(mutex) => {
                 let mut queue = mutex.lock().await;
                 queue.push_back((task, AppTaskStatus::New));
+            }
+            AppTaskQueueDB::DB(db) => {
+                db.enqueue_task(task).await?;
             }
         }
 
@@ -290,9 +339,10 @@ impl AppTaskQueueDB {
                         }
                     }
                 }
+                None
             }
+            AppTaskQueueDB::DB(db) => db.peek_result(status_id).await,
         }
-        None
     }
 
     async fn execute_task<F, Fut>(&self, f: F) -> Result<()>
@@ -329,10 +379,11 @@ impl AppTaskQueueDB {
                 };
 
                 task.1 = AppTaskStatus::Done((Utc::now(), result));
-            }
-        };
 
-        Ok(())
+                Ok(())
+            }
+            AppTaskQueueDB::DB(db) => db.execute_task(f).await,
+        }
     }
 
     async fn clean_up_done_tasks(&self, older_than: DateTime<Utc>) -> Result<usize> {
@@ -347,6 +398,7 @@ impl AppTaskQueueDB {
 
                 Ok(before - queue.len())
             }
+            AppTaskQueueDB::DB(db) => db.clean_up_done_tasks(older_than).await,
         }
     }
 }
