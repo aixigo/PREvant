@@ -1,14 +1,16 @@
 use super::{AppsService, AppsServiceError};
 use crate::{
     auth::User,
+    config::Config,
     models::{App, AppName, AppStatusChangeId, ServiceConfig},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
 use rocket::{
     fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
 };
+use sqlx::{postgres::PgConnectOptions, PgPool};
 use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify},
@@ -33,8 +35,30 @@ impl Fairing for AppProcessingQueue {
     }
 
     async fn on_ignite(&self, rocket: Rocket<Build>) -> rocket::fairing::Result {
+        let db = match rocket.state::<Config>() {
+            Some(config) => {
+                if let Some(db_options) = config.database.as_ref() {
+                    match AppTaskQueueDB::db(db_options.clone()).await {
+                        Ok(db) => db,
+                        Err(err) => {
+                            log::error!("Cannot connect to database: {err}");
+                            return Err(rocket);
+                        }
+                    }
+                } else {
+                    AppTaskQueueDB::inmemory()
+                }
+            }
+            None => AppTaskQueueDB::inmemory(),
+        };
+
+        if let Err(err) = db.apply_migrations().await {
+            log::error!("Cannot apply database migrations: {err}");
+            return Err(rocket);
+        }
+
         let producer = AppTaskQueueProducer {
-            db: Arc::new(AppTaskQueueDB::inmemory()),
+            db: Arc::new(db),
             notify: Arc::new(Notify::new()),
         };
 
@@ -222,13 +246,18 @@ impl AppTaskQueueConsumer {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
 enum AppTask {
     CreateOrUpdate {
         app_name: AppName,
         status_id: AppStatusChangeId,
         replicate_from: Option<AppName>,
         service_configs: Vec<ServiceConfig>,
+        #[serde(
+            deserialize_with = "AppTask::deserialize_user",
+            serialize_with = "AppTask::serialize_user"
+        )]
         user: User,
         user_defined_parameters: Option<serde_json::Value>,
     },
@@ -250,6 +279,20 @@ impl AppTask {
             AppTask::Delete { status_id, .. } => status_id,
         }
     }
+
+    fn serialize_user<S>(user: &User, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        todo!()
+    }
+
+    fn deserialize_user<'de, D>(deserializer: D) -> Result<User, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        todo!()
+    }
 }
 pub enum AppTaskStatus {
     New,
@@ -259,6 +302,7 @@ pub enum AppTaskStatus {
 
 enum AppTaskQueueDB {
     InMemory(Mutex<VecDeque<(AppTask, AppTaskStatus)>>),
+    DB(sqlx::PgPool),
 }
 
 impl AppTaskQueueDB {
@@ -266,11 +310,39 @@ impl AppTaskQueueDB {
         Self::InMemory(Mutex::new(VecDeque::new()))
     }
 
+    async fn db(database_options: PgConnectOptions) -> Result<Self> {
+        Ok(Self::DB(PgPool::connect_with(database_options).await?))
+    }
+
+    async fn apply_migrations(&self) -> Result<()> {
+        if let AppTaskQueueDB::DB(pool) = self {
+            sqlx::migrate!().run(pool).await?
+        }
+
+        Ok(())
+    }
+
     pub async fn enqueue_task(&self, task: AppTask) -> Result<()> {
         match self {
             AppTaskQueueDB::InMemory(mutex) => {
                 let mut queue = mutex.lock().await;
                 queue.push_back((task, AppTaskStatus::New));
+            }
+            AppTaskQueueDB::DB(pool) => {
+                let mut tx = pool.begin().await?;
+
+                sqlx::query(
+                    r#"
+                    INSERT INTO app_task (id, task)
+                    VALUES ($1, $2)
+                    "#,
+                )
+                .bind(task.status_id().as_uuid())
+                .bind(serde_json::to_value(&task).unwrap())
+                .execute(&mut *tx)
+                .await?;
+
+                tx.commit().await?;
             }
         }
 
@@ -293,6 +365,33 @@ impl AppTaskQueueDB {
                         }
                     }
                 }
+            }
+            AppTaskQueueDB::DB(pool) => {
+                let mut connection = pool
+                    .acquire()
+                    .await
+                    // TODO: error handling
+                    .unwrap();
+
+                let result = sqlx::query_as::<_, (sqlx::types::JsonValue)>(
+                    r#"
+                    SELECT result
+                    FROM app_task
+                    WHERE id = $1
+                      AND status = 'done'
+                    "#,
+                )
+                .bind(status_id.as_uuid())
+                .fetch_optional(&mut *connection)
+                .await
+                // TODO: error handling
+                .unwrap();
+
+                Ok(result.map(|result| {
+                    serde_json::from_value::<crate::apps::routes::AppV2>(result)
+                        .unwrap()
+                        .0
+                }))
             }
         }
         None
@@ -333,6 +432,52 @@ impl AppTaskQueueDB {
 
                 task.1 = AppTaskStatus::Done((Utc::now(), result));
             }
+            AppTaskQueueDB::DB(pool) => {
+                let mut tx = pool.begin().await?;
+
+                let task = sqlx::query_as::<_, (sqlx::types::Uuid, sqlx::types::JsonValue)>(
+                    r#"
+                    WITH cte AS (
+                        SELECT id, task
+                        FROM app_task
+                        WHERE status = 'new'
+                        ORDER BY created_at
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                    )
+                    UPDATE app_task
+                    SET status = 'inProcess'
+                    FROM cte
+                    WHERE app_task.id = cte.id
+                    RETURNING cte.id, cte.task;
+                    "#,
+                )
+                .fetch_optional(&mut *tx)
+                .await?;
+
+                if let Some((id, task)) = task {
+                    let task = serde_json::from_value::<AppTask>(task)?;
+
+                    let result = f(task).await;
+
+                    sqlx::query(
+                        r#"
+                        UPDATE app_task
+                        SET status = 'done', result = $2
+                        WHERE id = $1
+                        "#,
+                    )
+                    .bind(id)
+                    .bind(result.map_or_else(
+                        |e| serde_json::to_value(&e).unwrap(),
+                        |e| serde_json::to_value(&super::routes::AppV2(e)).unwrap(),
+                    ))
+                    .execute(&mut *tx)
+                    .await?;
+
+                    tx.commit().await?;
+                }
+            }
         };
 
         Ok(())
@@ -349,6 +494,25 @@ impl AppTaskQueueDB {
                 );
 
                 Ok(before - queue.len())
+            }
+            AppTaskQueueDB::DB(pool) => {
+                let mut tx = pool.begin().await?;
+
+                let affected_rows = sqlx::query(
+                    r#"
+                    DELETE FROM app_task
+                    WHERE status = 'done'
+                      AND created_at <= $1
+                    "#,
+                )
+                .bind(older_than)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+
+                tx.commit().await?;
+
+                Ok(affected_rows as usize)
             }
         }
     }
