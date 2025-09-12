@@ -5,5 +5,6 @@ CREATE TABLE app_task (
    task JSONB NOT NULL,
    status task_status NOT NULL DEFAULT 'new',
    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-   result JSONB
+   result_success JSONB,
+   result_error JSONB,
 );

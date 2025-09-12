@@ -88,7 +88,7 @@ impl Serialize for AppV1 {
     }
 }
 
-pub struct AppV2(pub App);
+pub struct AppV2(App);
 
 impl Serialize for AppV2 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
