@@ -26,7 +26,7 @@
 
 use secstr::SecUtf8;
 use serde::de::Error as SerdeError;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::convert::TryFrom;
 use std::hash::{Hash, Hasher};
@@ -109,6 +109,14 @@ impl<'de> Deserialize<'de> for Environment {
             }
             _ => Err(SerdeError::custom("Invalid environment payload.")),
         }
+    }
+}
+
+impl Serialize for Environment {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        todo!()
     }
 }
 
