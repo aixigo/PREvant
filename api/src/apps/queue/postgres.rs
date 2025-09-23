@@ -3,7 +3,10 @@ use std::{collections::HashSet, future::Future};
 use super::AppTask;
 use crate::{
     apps::AppsServiceError,
-    models::{App, AppStatusChangeId, Owner, Service},
+    models::{
+        user_defined_parameters::{self, UserDefinedParameters},
+        App, AppStatusChangeId, Owner, Service, ServiceConfig, ServiceStatus, State,
+    },
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -22,6 +25,20 @@ struct AppTaskResult {
     error: Option<AppsServiceError>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct RawApp {
+    services: Vec<RawService>,
+    owner: HashSet<Owner>,
+    // user_defined_parameters: Option<UserDefinedParameters>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RawService {
+    id: String,
+    status: ServiceStatus,
+    config: ServiceConfig,
+}
+
 impl<'r> FromRow<'r, PgRow> for AppTaskResult {
     fn from_row(row: &'r PgRow) -> std::result::Result<Self, sqlx::Error> {
         let result_success: Option<Value> = row.try_get("result_success")?;
@@ -29,15 +46,24 @@ impl<'r> FromRow<'r, PgRow> for AppTaskResult {
 
         Ok(Self {
             ok: result_success.and_then(|app| {
-                #[derive(Deserialize)]
-                struct RawApp {
-                    services: Vec<Service>,
-                    owners: HashSet<Owner>,
-                }
-
                 let raw = serde_json::from_value::<RawApp>(app).ok()?;
 
-                Some(App::new(vec![], raw.owners, None))
+                Some(App::new(
+                    raw.services
+                        .into_iter()
+                        .map(|raw_service| Service {
+                            id: raw_service.id,
+                            state: State {
+                                status: raw_service.status,
+                                started_at: None,
+                            },
+                            config: raw_service.config,
+                        })
+                        .collect(),
+                    raw.owner,
+                    // TODO user_defined_parameters
+                    None,
+                ))
             }),
             error: result_error
                 .and_then(|err| serde_json::from_value::<AppsServiceError>(err).ok()),
@@ -138,27 +164,37 @@ impl PostgresAppTaskQueueDB {
             let task = serde_json::from_value::<AppTask>(task)?;
 
             let result = f(task).await;
-
             sqlx::query(
                 r#"
                 UPDATE app_task
-                SET status = 'done', result_success = $2, result_error = $3
+                SET status = 'done', result_success = $3, result_error = $2
                 WHERE id = $1
                 "#,
             )
             .bind(id)
             .bind(result.as_ref().map_or_else(
-                |_| serde_json::Value::Null,
-                |app| {
-                    serde_json::json!({
-                        "services": app.services(),
-                        "owner": app.owners()
-                    })
-                },
-            ))
-            .bind(result.as_ref().map_or_else(
                 |e| serde_json::to_value(e).unwrap(),
                 |_| serde_json::Value::Null,
+            ))
+            .bind(result.map_or_else(
+                |_| serde_json::Value::Null,
+                |app| {
+                    // TODO: user_defined_parameters
+                    let (services, owner, _user_defined_parameters) =
+                        app.into_services_and_owners_and_user_defined_parameters();
+                    let raw = RawApp {
+                        owner,
+                        services: services
+                            .into_iter()
+                            .map(|service| RawService {
+                                id: service.id,
+                                status: service.state.status,
+                                config: service.config,
+                            })
+                            .collect(),
+                    };
+                    serde_json::to_value(raw).unwrap()
+                },
             ))
             .execute(&mut *tx)
             .await?;
