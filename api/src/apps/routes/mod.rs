@@ -27,6 +27,8 @@
 use super::queue::AppTaskQueueProducer;
 use crate::apps::{Apps, AppsError};
 use crate::auth::UserValidatedByAccessMode;
+use crate::config::Config;
+use crate::deployment::hooks::{Hooks, HooksError};
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::{
     App, AppName, AppNameError, AppStatusChangeId, AppStatusChangeIdError, Owner, Service,
@@ -212,6 +214,7 @@ async fn create_app<F, R>(
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
     options: WaitForQueueOptions,
+    hooks: &Hooks<'_>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
     create_return_value: F,
 ) -> HttpResult<AsyncCompletion<Json<R>>>
@@ -225,20 +228,26 @@ where
     let app_name = app_name?;
     let replicate_from = create_app_form.replicate_from().clone();
 
+    let owner = hooks
+        .apply_id_token_claims_to_owner_hook(user.user)
+        .await
+        .map_err(|e| {
+            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                .detail(e.to_string())
+        })?;
+
     let status_id = app_queue
         .enqueue_create_or_update_task(
             app_name.clone(),
             replicate_from,
             payload.services,
-            user.user,
+            owner,
             payload.user_defined_parameters,
         )
         .await
         .map_err(|e| {
-            HttpApiError::from(
-                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                    .detail(e.to_string()),
-            )
+            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                .detail(e.to_string())
         })?;
 
     try_wait_for_task(app_queue, app_name, status_id, options, create_return_value).await
@@ -256,6 +265,7 @@ pub async fn create_app_v1(
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
     options: WaitForQueueOptions,
+    hooks: Hooks<'_>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
     create_app(
@@ -264,6 +274,7 @@ pub async fn create_app_v1(
         create_app_form,
         payload,
         options,
+        &hooks,
         user,
         AppV1,
     )
@@ -282,6 +293,7 @@ pub async fn create_app_v2(
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
     options: WaitForQueueOptions,
+    hooks: Hooks<'_>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
     create_app(
@@ -290,6 +302,7 @@ pub async fn create_app_v2(
         create_app_form,
         payload,
         options,
+        &hooks,
         user,
         AppV2,
     )
@@ -463,6 +476,22 @@ impl<'r> FromRequest<'r> for WaitForQueueOptions {
     }
 }
 
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for Hooks<'r> {
+    type Error = HttpApiProblem;
+    async fn from_request(request: &'r Request<'_>) -> rocket::request::Outcome<Self, Self::Error> {
+        let Some(config) = request.rocket().state::<Config>() else {
+            return rocket::request::Outcome::Error((
+                Status::InternalServerError,
+                HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST),
+            ));
+        };
+
+        let hooks = Hooks::new(config);
+        return rocket::request::Outcome::Success(hooks);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -597,6 +626,7 @@ mod tests {
 
             let rocket = rocket::build()
                 .manage(apps)
+                .manage(Config::default())
                 .mount("/", routes![crate::apps::routes::create_app_v1])
                 .attach(AppProcessingQueue::fairing());
 
@@ -755,10 +785,11 @@ mod tests {
             );
 
             let infrastructure = Box::new(Dummy::new());
-            let apps = Arc::new(AppsService::new(config, infrastructure).unwrap());
+            let apps = Arc::new(AppsService::new(config.clone(), infrastructure).unwrap());
 
             let rocket = rocket::build()
                 .manage(apps)
+                .manage(config)
                 .mount("/", routes![crate::apps::routes::create_app_v1])
                 .attach(AppProcessingQueue::fairing());
 
@@ -1003,9 +1034,10 @@ mod tests {
             let config = config_from_str!("");
 
             let infrastructure = Box::new(Dummy::with_delay(Duration::from_secs(5)));
-            let apps = Arc::new(AppsService::new(config, infrastructure).unwrap());
+            let apps = Arc::new(AppsService::new(config.clone(), infrastructure).unwrap());
 
             let rocket = rocket::build()
+                .manage(config)
                 .manage(apps)
                 .mount(
                     "/",

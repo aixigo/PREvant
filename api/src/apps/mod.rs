@@ -29,7 +29,6 @@ mod routes;
 
 pub use crate::apps::AppsService as Apps;
 pub use crate::apps::AppsServiceError as AppsError;
-use crate::auth::User;
 use crate::config::{Config, ConfigError};
 use crate::deployment::deployment_unit::DeploymentTemplatingError;
 use crate::deployment::deployment_unit::DeploymentUnitBuilder;
@@ -38,6 +37,7 @@ use crate::infrastructure::HttpForwarder;
 use crate::infrastructure::Infrastructure;
 use crate::infrastructure::TraefikIngressRoute;
 use crate::models::user_defined_parameters::UserDefinedParameters;
+use crate::models::Owner;
 use crate::models::{App, AppName, ContainerType, LogChunk, Service, ServiceConfig, ServiceStatus};
 use crate::registry::Registry;
 use crate::registry::RegistryError;
@@ -207,7 +207,7 @@ impl AppsService {
         app_name: &AppName,
         replicate_from: Option<AppName>,
         service_configs: &[ServiceConfig],
-        user: User,
+        owners: Vec<Owner>,
         user_defined_parameters: Option<serde_json::Value>,
     ) -> Result<App, AppsServiceError> {
         let user_defined_parameters = match (
@@ -289,7 +289,8 @@ impl AppsService {
             };
         }
 
-        let (services, owners) = running_app.into_services_and_owners();
+        let (services, mut existing_owners) = running_app.into_services_and_owners();
+        existing_owners.extend(owners);
         let configs_for_templating = services
             .into_iter()
             .filter(|service| service.container_type() == &ContainerType::Instance)
@@ -312,7 +313,7 @@ impl AppsService {
 
         let deployment_unit_builder = deployment_unit_builder
             .extend_with_image_infos(image_infos)
-            .with_owners(owners, user)
+            .with_owners(existing_owners)
             .apply_templating(
                 &self.prevant_base_route.as_ref().and_then(|r| r.to_url()),
                 user_defined_parameters,
@@ -467,13 +468,12 @@ impl From<HooksError> for AppsServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::AdditionalClaims;
     use crate::infrastructure::{Dummy, TraefikIngressRoute, TraefikRouterRule};
     use crate::models::{EnvironmentVariable, Owner, State};
     use crate::sc;
     use chrono::Utc;
     use futures::StreamExt;
-    use openidconnect::{IdTokenClaims, IssuerUrl, StandardClaims, SubjectIdentifier};
+    use openidconnect::{IssuerUrl, SubjectIdentifier};
     use secstr::SecUtf8;
     use std::hash::Hash;
     use std::io::Write;
@@ -528,7 +528,7 @@ mod tests {
             &AppName::master(),
             None,
             &vec![sc!("service-a")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -552,7 +552,7 @@ mod tests {
             &AppName::master(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -561,7 +561,7 @@ mod tests {
             &AppName::from_str("branch").unwrap(),
             Some(AppName::master()),
             &vec![sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -588,7 +588,7 @@ mod tests {
             &AppName::master(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -597,7 +597,7 @@ mod tests {
             &AppName::from_str("branch").unwrap(),
             Some(AppName::master()),
             &vec![sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -606,7 +606,7 @@ mod tests {
             &AppName::from_str("branch").unwrap(),
             Some(AppName::master()),
             &vec![sc!("service-a")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -642,7 +642,7 @@ mod tests {
             &AppName::master(),
             None,
             &vec![sc!("mariadb")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -689,7 +689,7 @@ mod tests {
             &AppName::from_str("master-1x").unwrap(),
             None,
             &vec![sc!("mariadb")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -724,7 +724,7 @@ mod tests {
             &app_name,
             None,
             &vec![sc!("service-a"), sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -764,7 +764,7 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::from_str("master").unwrap();
         let services = vec![sc!("service-a"), sc!("service-b")];
-        apps.create_or_update(&app_name, None, &services, User::Anonymous, None)
+        apps.create_or_update(&app_name, None, &services, vec![], None)
             .await?;
         for service in services {
             let mut log_stream = apps
@@ -827,14 +827,8 @@ Log msg 3 of service-a of app master
         let apps = AppsService::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        apps.create_or_update(
-            &app_name,
-            None,
-            &vec![sc!("service-a")],
-            User::Anonymous,
-            None,
-        )
-        .await?;
+        apps.create_or_update(&app_name, None, &vec![sc!("service-a")], vec![], None)
+            .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
         let app = deployed_apps.get(&app_name).unwrap();
@@ -871,7 +865,7 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("openid"), sc!("db")];
-        apps.create_or_update(&app_name, None, &configs, User::Anonymous, None)
+        apps.create_or_update(&app_name, None, &configs, vec![], None)
             .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
@@ -924,7 +918,7 @@ Log msg 3 of service-a of app master
             files = ()
         )];
 
-        apps.create_or_update(&app_name, None, &configs, User::Anonymous, None)
+        apps.create_or_update(&app_name, None, &configs, vec![], None)
             .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
@@ -985,7 +979,7 @@ Log msg 3 of service-a of app master
             &app_name,
             None,
             &vec![crate::sc!("service-a")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -993,7 +987,7 @@ Log msg 3 of service-a of app master
             &app_name,
             None,
             &vec![crate::sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -1001,7 +995,7 @@ Log msg 3 of service-a of app master
             &app_name,
             None,
             &vec![crate::sc!("service-c")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -1032,14 +1026,8 @@ Log msg 3 of service-a of app master
         let apps = AppsService::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        apps.create_or_update(
-            &app_name,
-            None,
-            &vec![sc!("service-a")],
-            User::Anonymous,
-            None,
-        )
-        .await?;
+        apps.create_or_update(&app_name, None, &vec![sc!("service-a")], vec![], None)
+            .await?;
         let deleted_services = apps.delete_app(&app_name).await?;
 
         assert_eq!(
@@ -1091,7 +1079,7 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("db1"), sc!("db2")];
-        apps.create_or_update(&app_name, None, &configs, User::Anonymous, None)
+        apps.create_or_update(&app_name, None, &configs, vec![], None)
             .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
@@ -1161,7 +1149,7 @@ Log msg 3 of service-a of app master
             app_name,
             None,
             &vec![sc!("service-a"), sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -1191,7 +1179,7 @@ Log msg 3 of service-a of app master
             app_name,
             None,
             &vec![sc!("service-a"), sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -1234,7 +1222,7 @@ Log msg 3 of service-a of app master
             app_name,
             None,
             &vec![sc!("service-a"), sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -1285,7 +1273,7 @@ Log msg 3 of service-a of app master
             &AppName::master(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -1295,7 +1283,7 @@ Log msg 3 of service-a of app master
                 &AppName::from_str("other").unwrap(),
                 None,
                 &vec![sc!("service-a"), sc!("service-b")],
-                User::Anonymous,
+                vec![],
                 None,
             )
             .await;
@@ -1324,7 +1312,7 @@ Log msg 3 of service-a of app master
             &AppName::master(),
             None,
             &vec![sc!("service-a"), sc!("service-b")],
-            User::Anonymous,
+            vec![],
             None,
         )
         .await?;
@@ -1334,7 +1322,7 @@ Log msg 3 of service-a of app master
                 &AppName::master(),
                 None,
                 &vec![sc!("service-c")],
-                User::Anonymous,
+                vec![],
                 None,
             )
             .await;
@@ -1369,7 +1357,7 @@ Log msg 3 of service-a of app master
             &app_name,
             None,
             &vec![sc!("web-service")],
-            User::Anonymous,
+            vec![],
             Some(serde_json::json!({
                 "name": "my-name"
             })),
@@ -1414,7 +1402,7 @@ Log msg 3 of service-a of app master
             &app_name,
             None,
             &vec![sc!("web-service")],
-            User::Anonymous,
+            vec![],
             Some(serde_json::json!({
                 "name": "my-name"
             })),
@@ -1422,7 +1410,7 @@ Log msg 3 of service-a of app master
         .await?;
 
         let replicated_app_name = AppName::from_str("replica").unwrap();
-        apps.create_or_update(&replicated_app_name, None, &[], User::Anonymous, None)
+        apps.create_or_update(&replicated_app_name, None, &[], vec![], None)
             .await?;
 
         let companion_config: Vec<ServiceConfig> = apps
@@ -1451,16 +1439,11 @@ Log msg 3 of service-a of app master
             &AppName::master(),
             None,
             &vec![sc!("service-a")],
-            User::Oidc {
-                id_token_claims: IdTokenClaims::new(
-                    IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
-                    Vec::new(),
-                    chrono::Utc::now(),
-                    chrono::Utc::now(),
-                    StandardClaims::new(SubjectIdentifier::new(String::from("gitlab-user"))),
-                    AdditionalClaims::empty(),
-                ),
-            },
+            vec![Owner {
+                iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                sub: SubjectIdentifier::new(String::from("gitlab-user")),
+                name: None,
+            }],
             None,
         )
         .await?;
@@ -1468,16 +1451,11 @@ Log msg 3 of service-a of app master
             &AppName::master(),
             None,
             &vec![sc!("service-b")],
-            User::Oidc {
-                id_token_claims: IdTokenClaims::new(
-                    IssuerUrl::new(String::from("https://github.com")).unwrap(),
-                    Vec::new(),
-                    chrono::Utc::now(),
-                    chrono::Utc::now(),
-                    StandardClaims::new(SubjectIdentifier::new(String::from("github-user"))),
-                    AdditionalClaims::empty(),
-                ),
-            },
+            vec![Owner {
+                iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
+                sub: SubjectIdentifier::new(String::from("github-user")),
+                name: None,
+            }],
             None,
         )
         .await?;
@@ -1501,6 +1479,54 @@ Log msg 3 of service-a of app master
                     name: None,
                 }
             ])
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn merge_owners_with_same_sub_issuer() -> Result<(), AppsServiceError> {
+        let config = Config::default();
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &AppName::master(),
+            None,
+            &vec![sc!("service-a")],
+            vec![Owner {
+                iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                sub: SubjectIdentifier::new(String::from("gitlab-user")),
+                name: None,
+            }],
+            None,
+        )
+        .await?;
+        apps.create_or_update(
+            &AppName::master(),
+            None,
+            &vec![sc!("service-b")],
+            vec![Owner {
+                iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                sub: SubjectIdentifier::new(String::from("gitlab-user")),
+                name: None,
+            }],
+            None,
+        )
+        .await?;
+
+        let mut deployed_apps = apps.fetch_apps().await?;
+        assert_eq!(deployed_apps.len(), 1);
+        let app = deployed_apps.remove(&AppName::master()).unwrap();
+
+        let (_, owners) = app.into_services_and_owners();
+        assert_eq!(
+            owners,
+            HashSet::from([Owner {
+                sub: SubjectIdentifier::new(String::from("gitlab-user")),
+                iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                name: None,
+            },])
         );
 
         Ok(())

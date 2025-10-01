@@ -217,12 +217,13 @@ mod test {
                 &AppName::master(),
                 None,
                 &vec![sc!("service-a")],
-                crate::auth::User::Anonymous,
+                vec![],
                 None,
             )
             .await?;
 
         let rocket = rocket::build()
+            .manage(Config::default())
             .manage(host_meta_cache)
             .manage(apps)
             .mount("/api/apps", routes![logs, stream_logs]);

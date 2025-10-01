@@ -26,7 +26,6 @@ use url::Url;
  * =========================LICENSE_END==================================
  */
 use super::hooks::HooksError;
-use crate::auth::User;
 use crate::config::{Config, StorageStrategy};
 use crate::deployment::hooks::Hooks;
 use crate::infrastructure::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule};
@@ -104,14 +103,14 @@ pub struct WithUserInformation {
     )>,
     templating_only_service_configs: Vec<ServiceConfig>,
     image_infos: HashMap<Image, ImageInfo>,
-    existing_owners_and_new_user: (HashSet<Owner>, User),
+    owners: HashSet<Owner>,
 }
 
 pub struct WithAppliedTemplating {
     app_name: AppName,
     services: Vec<DeployableService>,
     user_defined_parameters: Option<UserDefinedParameters>,
-    existing_owners_and_new_user: (HashSet<Owner>, User),
+    owners: HashSet<Owner>,
 }
 
 pub struct WithAppliedHooks {
@@ -378,16 +377,12 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 app_companions: self.stage.app_companions,
                 templating_only_service_configs: self.stage.templating_only_service_configs,
                 image_infos: self.stage.image_infos,
-                existing_owners_and_new_user: (HashSet::new(), User::Anonymous),
+                owners: HashSet::new(),
             },
         }
     }
 
-    pub fn with_owners(
-        self,
-        existing_owners: HashSet<Owner>,
-        new_owner: User,
-    ) -> DeploymentUnitBuilder<WithUserInformation> {
+    pub fn with_owners(self, owners: HashSet<Owner>) -> DeploymentUnitBuilder<WithUserInformation> {
         DeploymentUnitBuilder {
             stage: WithUserInformation {
                 app_name: self.stage.app_name,
@@ -396,7 +391,7 @@ impl DeploymentUnitBuilder<WithResolvedImages> {
                 app_companions: self.stage.app_companions,
                 templating_only_service_configs: self.stage.templating_only_service_configs,
                 image_infos: self.stage.image_infos,
-                existing_owners_and_new_user: (existing_owners, new_owner),
+                owners,
             },
         }
     }
@@ -554,7 +549,7 @@ impl DeploymentUnitBuilder<WithUserInformation> {
                 app_name: self.stage.app_name,
                 services: strategies,
                 user_defined_parameters,
-                existing_owners_and_new_user: self.stage.existing_owners_and_new_user,
+                owners: self.stage.owners,
             },
         })
     }
@@ -676,16 +671,11 @@ impl DeploymentUnitBuilder<WithAppliedTemplating> {
             .apply_deployment_hook(&self.stage.app_name, self.stage.services)
             .await?;
 
-        let (mut owners, user) = self.stage.existing_owners_and_new_user;
-        if let Some(owner) = hooks.apply_id_token_claims_to_owner_hook(user).await? {
-            owners.insert(owner);
-        }
-
         Ok(DeploymentUnitBuilder {
             stage: WithAppliedHooks {
                 app_name: self.stage.app_name,
                 services,
-                owners: Owner::normalize(owners),
+                owners: Owner::normalize(self.stage.owners),
                 user_defined_parameters: self.stage.user_defined_parameters,
             },
         })
@@ -745,15 +735,9 @@ impl DeploymentUnitBuilder<WithAppliedIngressRoute> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::AdditionalClaims;
     use crate::infrastructure::TraefikRouterRule;
     use crate::models::{Environment, EnvironmentVariable};
     use crate::{config_from_str, sc};
-    use chrono::TimeZone;
-    use openidconnect::core::CoreGenderClaim;
-    use openidconnect::{
-        EndUserName, IdTokenClaims, IssuerUrl, LocalizedClaim, StandardClaims, SubjectIdentifier,
-    };
     use secstr::SecUtf8;
 
     #[tokio::test]
@@ -1283,9 +1267,7 @@ mod tests {
 
         for services in services {
             if !matches!(services.strategy, DeploymentStrategy::RedeployAlways) {
-                panic!(
-                    "All services should have a recreation strategy but was {services:?}."
-                );
+                panic!("All services should have a recreation strategy but was {services:?}.");
             }
         }
 
@@ -1328,9 +1310,7 @@ mod tests {
 
         for service in services {
             if !matches!(service.strategy, DeploymentStrategy::RedeployAlways) {
-                panic!(
-                    "All services should have a recreation strategy but was {service:?}."
-                );
+                panic!("All services should have a recreation strategy but was {service:?}.");
             }
         }
         Ok(())
@@ -1507,54 +1487,6 @@ mod tests {
                     .unwrap()
                 },
             ]
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn merge_owners_with_same_sub_issuer() -> anyhow::Result<()> {
-        let config = Config::default();
-        let app_name = AppName::master();
-        let service_configs = vec![sc!("http1", "nginx:1.13")];
-
-        let owners = HashSet::from([Owner {
-            sub: SubjectIdentifier::new(String::from("gitlab-user")),
-            iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
-            name: Some(String::from("user_login")),
-        }]);
-
-        let mut name = LocalizedClaim::new();
-        name.insert(None, EndUserName::new(String::from("Some Person")));
-        let user = User::Oidc {
-            id_token_claims: IdTokenClaims::<AdditionalClaims, CoreGenderClaim>::new(
-                IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
-                Vec::new(),
-                chrono::Utc.with_ymd_and_hms(2025, 5, 1, 0, 0, 0).unwrap(),
-                chrono::Utc.with_ymd_and_hms(2025, 5, 1, 0, 30, 0).unwrap(),
-                StandardClaims::new(SubjectIdentifier::new(String::from("gitlab-user"))),
-                AdditionalClaims::empty(),
-            )
-            .set_name(Some(name)),
-        };
-
-        let unit = DeploymentUnitBuilder::init(app_name, service_configs)
-            .extend_with_config(&config)
-            .extend_with_templating_only_service_configs(Vec::new())
-            .extend_with_image_infos(HashMap::new())
-            .with_owners(owners, user)
-            .apply_templating(&None, None)?
-            .apply_hooks(&config)
-            .await?
-            .build();
-
-        assert_eq!(
-            unit.owners,
-            HashSet::from([Owner {
-                sub: SubjectIdentifier::new(String::from("gitlab-user")),
-                iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
-                name: Some(String::from("Some Person")),
-            }])
         );
 
         Ok(())

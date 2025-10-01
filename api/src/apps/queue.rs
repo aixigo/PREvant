@@ -1,8 +1,5 @@
 use super::{AppsService, AppsServiceError};
-use crate::{
-    auth::User,
-    models::{App, AppName, AppStatusChangeId, ServiceConfig},
-};
+use crate::models::{App, AppName, AppStatusChangeId, Owner, ServiceConfig};
 use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
 use rocket::{
@@ -88,7 +85,7 @@ impl AppTaskQueueProducer {
         app_name: AppName,
         replicate_from: Option<AppName>,
         service_configs: Vec<ServiceConfig>,
-        user: User,
+        owner: Option<Owner>,
         user_defined_parameters: Option<serde_json::Value>,
     ) -> Result<AppStatusChangeId> {
         let status_id = AppStatusChangeId::new();
@@ -98,7 +95,7 @@ impl AppTaskQueueProducer {
                 status_id,
                 replicate_from,
                 service_configs,
-                user,
+                owners: owner.into_iter().collect(),
                 user_defined_parameters,
             })
             .await?;
@@ -189,7 +186,7 @@ impl AppTaskQueueConsumer {
                         app_name,
                         replicate_from,
                         service_configs,
-                        user,
+                        owners,
                         user_defined_parameters,
                         ..
                     } => {
@@ -200,7 +197,7 @@ impl AppTaskQueueConsumer {
                             &app_name,
                             replicate_from,
                             &service_configs,
-                            user,
+                            owners,
                             user_defined_parameters,
                         )
                         .await
@@ -229,7 +226,7 @@ enum AppTask {
         status_id: AppStatusChangeId,
         replicate_from: Option<AppName>,
         service_configs: Vec<ServiceConfig>,
-        user: User,
+        owners: Vec<Owner>,
         user_defined_parameters: Option<serde_json::Value>,
     },
     Delete {
