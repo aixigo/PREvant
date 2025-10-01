@@ -375,7 +375,7 @@ mod tests {
                     &AppName::master(),
                     None,
                     &vec![sc!("service-a")],
-                    crate::auth::User::Anonymous,
+                    vec![],
                     None,
                 )
                 .await?;
