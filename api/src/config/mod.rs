@@ -146,7 +146,7 @@ impl figment::Provider for CliArgs {
 /// ```toml
 /// some_key = "${env:MY_SECURED_ENV_VAR}"
 /// ```
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MaybeEnvInterpolated<T>(pub T);
 
 impl<'de, T> Deserialize<'de> for MaybeEnvInterpolated<T>
@@ -234,7 +234,7 @@ pub struct Config {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct Registry {
     username: Option<String>,
-    password: Option<SecUtf8>,
+    password: Option<MaybeEnvInterpolated<SecUtf8>>,
     mirror: Option<String>,
 }
 
@@ -341,7 +341,7 @@ impl Config {
         self.registries.get(registry_host).and_then(|registry| {
             Some((
                 registry.username.as_ref()?.as_str(),
-                registry.password.as_ref()?,
+                registry.password.as_ref().map(|p| &p.0)?,
             ))
         })
     }
@@ -918,6 +918,30 @@ mod tests {
             assert_eq!(
                 config.registry_credentials("docker.io"),
                 Some(("user", &SecUtf8::from_str("pass").unwrap()))
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn should_parse_registry_credentials_with_password_from_env() {
+        let (var_name, var_value) = std::env::vars().next().unwrap();
+
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.toml",
+                &format!(r#"
+                [registries.'docker.io']
+                username = "user"
+                password = "${{env:{var_name}}}"
+                "#),
+            )?;
+
+            let config = Config::from_figment(&Default::default())?;
+
+            assert_eq!(
+                config.registry_credentials("docker.io"),
+                Some(("user", &SecUtf8::from_str(&var_value).unwrap()))
             );
             Ok(())
         })

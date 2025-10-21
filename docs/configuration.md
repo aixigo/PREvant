@@ -136,7 +136,8 @@ password = "pass"
 
 [registries.'registry.gitlab.com']
 username = "oauth2"
-password = "your-private-token"
+# Value will be read from the environment variable SOME_VAR_NAME.
+password = "${env:SOME_VAR_NAME}"
 ```
 
 [Docker hub has a pull rate limit.](https://docs.docker.com/docker-hub/download-rate-limit/)

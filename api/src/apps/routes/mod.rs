@@ -28,7 +28,7 @@ use super::queue::AppTaskQueueProducer;
 use crate::apps::{Apps, AppsError};
 use crate::auth::UserValidatedByAccessMode;
 use crate::config::Config;
-use crate::deployment::hooks::{Hooks, HooksError};
+use crate::deployment::hooks::Hooks;
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::{
     App, AppName, AppNameError, AppStatusChangeId, AppStatusChangeIdError, Owner, Service,
