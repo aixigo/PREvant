@@ -286,6 +286,7 @@ paths:
         schema:
           type: string
           format: uuid
+      - $ref: '#/components/parameters/preferAsync'
     get:
       summary: Check if the given status change is still in progress
       description: >-

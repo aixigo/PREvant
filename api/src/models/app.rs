@@ -138,6 +138,12 @@ impl App {
         (self.services, self.user_defined_parameters)
     }
 
+    pub fn into_services_and_owners_and_user_defined_parameters(
+        self,
+    ) -> (Vec<Service>, HashSet<Owner>, Option<UserDefinedParameters>) {
+        (self.services, self.owners, self.user_defined_parameters)
+    }
+
     pub fn into_services_and_owners(self) -> (Vec<Service>, HashSet<Owner>) {
         (self.services, self.owners)
     }

@@ -132,7 +132,7 @@ pub struct DeploymentUnitBuilder<Stage> {
     stage: Stage,
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
 pub enum DeploymentTemplatingError {
     #[error("Failed to parse traefik rule ({raw_rule}): {err}")]
     FailedToParseTraefikRule { raw_rule: String, err: String },
