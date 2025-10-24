@@ -26,6 +26,10 @@ impl UserDefinedParameters {
         Ok(Self { data })
     }
 
+    pub unsafe fn without_validation(data: Value) -> Self {
+        Self { data }
+    }
+
     pub fn merge(mut self, other: Self) -> Self {
         Self::merge_json(&mut self.data, other.data);
         self

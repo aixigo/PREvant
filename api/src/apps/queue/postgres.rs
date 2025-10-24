@@ -4,32 +4,35 @@ use super::AppTask;
 use crate::{
     apps::AppsServiceError,
     models::{
-        user_defined_parameters::{self, UserDefinedParameters},
-        App, AppStatusChangeId, Owner, Service, ServiceConfig, ServiceStatus, State,
+        user_defined_parameters::UserDefinedParameters, App, AppStatusChangeId, Owner, Service,
+        ServiceConfig, ServiceStatus, State,
     },
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde_json::Value;
-use sqlx::{
-    postgres::{PgConnectOptions, PgRow},
-    FromRow, PgPool, Row,
-};
+use sqlx::{postgres::PgConnectOptions, PgPool};
 
 pub struct PostgresAppTaskQueueDB {
     pool: PgPool,
-}
-
-struct AppTaskResult {
-    ok: Option<App>,
-    error: Option<AppsServiceError>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct RawApp {
     services: Vec<RawService>,
     owner: HashSet<Owner>,
-    // user_defined_parameters: Option<UserDefinedParameters>,
+    user_defined_parameters: Option<serde_json::Value>,
+}
+
+impl From<RawApp> for App {
+    fn from(value: RawApp) -> Self {
+        Self::new(
+            value.services.into_iter().map(Service::from).collect(),
+            Owner::normalize(value.owner),
+            value
+                .user_defined_parameters
+                .map(|data| unsafe { UserDefinedParameters::without_validation(data) }),
+        )
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -39,35 +42,16 @@ struct RawService {
     config: ServiceConfig,
 }
 
-impl<'r> FromRow<'r, PgRow> for AppTaskResult {
-    fn from_row(row: &'r PgRow) -> std::result::Result<Self, sqlx::Error> {
-        let result_success: Option<Value> = row.try_get("result_success")?;
-        let result_error: Option<Value> = row.try_get("result_error")?;
-
-        Ok(Self {
-            ok: result_success.and_then(|app| {
-                let raw = serde_json::from_value::<RawApp>(app).ok()?;
-
-                Some(App::new(
-                    raw.services
-                        .into_iter()
-                        .map(|raw_service| Service {
-                            id: raw_service.id,
-                            state: State {
-                                status: raw_service.status,
-                                started_at: None,
-                            },
-                            config: raw_service.config,
-                        })
-                        .collect(),
-                    raw.owner,
-                    // TODO user_defined_parameters
-                    None,
-                ))
-            }),
-            error: result_error
-                .and_then(|err| serde_json::from_value::<AppsServiceError>(err).ok()),
-        })
+impl From<RawService> for Service {
+    fn from(value: RawService) -> Self {
+        Self {
+            id: value.id,
+            state: State {
+                status: value.status,
+                started_at: None,
+            },
+            config: value.config,
+        }
     }
 }
 
@@ -112,7 +96,14 @@ impl PostgresAppTaskQueueDB {
             // TODO: error handling
             .unwrap();
 
-        let result = sqlx::query_as::<_, AppTaskResult>(
+        let result = sqlx::query_as::<
+            _,
+            (
+                sqlx::types::Uuid,
+                Option<sqlx::types::Json<RawApp>>,
+                Option<sqlx::types::Json<AppsServiceError>>,
+            ),
+        >(
             r#"
             SELECT id, result_success, result_error
             FROM app_task
@@ -126,11 +117,13 @@ impl PostgresAppTaskQueueDB {
         // TODO: error handling
         .unwrap();
 
-        result.map(|result| match (result.ok, result.error) {
-            (Some(ok), None) => Ok(ok),
-            (None, Some(err)) => Err(err),
-            _ => unreachable!(""),
-        })
+        result.map(
+            |(_id, app, error)| match (app.map(|app| app.0), error.map(|error| error.0)) {
+                (Some(app), None) => Ok(app.into()),
+                (None, Some(err)) => Err(err),
+                _ => unreachable!(""),
+            },
+        )
     }
 
     pub async fn execute_task<F, Fut>(&self, f: F) -> Result<()>
@@ -140,7 +133,7 @@ impl PostgresAppTaskQueueDB {
     {
         let mut tx = self.pool.begin().await?;
 
-        let task = sqlx::query_as::<_, (sqlx::types::Uuid, sqlx::types::JsonValue)>(
+        let task = sqlx::query_as::<_, (sqlx::types::Uuid, sqlx::types::Json<AppTask>)>(
             r#"
             WITH cte AS (
                 SELECT id, task
@@ -161,9 +154,8 @@ impl PostgresAppTaskQueueDB {
         .await?;
 
         if let Some((id, task)) = task {
-            let task = serde_json::from_value::<AppTask>(task)?;
+            let result = f(task.0).await;
 
-            let result = f(task).await;
             sqlx::query(
                 r#"
                 UPDATE app_task
@@ -173,14 +165,13 @@ impl PostgresAppTaskQueueDB {
             )
             .bind(id)
             .bind(result.as_ref().map_or_else(
-                |e| serde_json::to_value(e).unwrap(),
-                |_| serde_json::Value::Null,
+                |e| serde_json::to_value(e).ok(),
+                |_| None,
             ))
             .bind(result.map_or_else(
-                |_| serde_json::Value::Null,
+                |_| None,
                 |app| {
-                    // TODO: user_defined_parameters
-                    let (services, owner, _user_defined_parameters) =
+                    let (services, owner, user_defined_parameters) =
                         app.into_services_and_owners_and_user_defined_parameters();
                     let raw = RawApp {
                         owner,
@@ -192,8 +183,13 @@ impl PostgresAppTaskQueueDB {
                                 config: service.config,
                             })
                             .collect(),
+                        user_defined_parameters: user_defined_parameters.and_then(
+                            |user_defined_parameters| {
+                                serde_json::to_value(user_defined_parameters).ok()
+                            },
+                        ),
                     };
-                    serde_json::to_value(raw).unwrap()
+                    serde_json::to_value(raw).ok()
                 },
             ))
             .execute(&mut *tx)
