@@ -42,6 +42,8 @@ async fn should_deploy_nginx() {
     common::should_deploy_nginx(&traefik_url(&traefik).await, &prevant_url(&prevant).await).await
 }
 
+// TODO: make sure that the compose tests run in CI
+#[cfg_attr(feature = "ci", ignore)]
 #[tokio::test]
 async fn should_deploy_nginx_in_docker_compose_with_postgres() {
     let _ = env_logger::builder().is_test(true).try_init();

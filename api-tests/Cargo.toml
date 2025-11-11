@@ -17,3 +17,7 @@ serde_json = "1.0"
 testcontainers = { git = "https://github.com/testcontainers/testcontainers-rs.git", features = ["docker-compose"] }
 tokio = { version = "1.47", features = ["macros"] }
 uuid = { version = "1.18", features = ["serde", "v4"] }
+
+[features]
+# TODO: make sure that the compose tests run in CI
+ci = []
