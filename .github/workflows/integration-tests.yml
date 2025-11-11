@@ -73,7 +73,8 @@ jobs:
 
          - name: Run cargo test
            run:
-              cargo test --manifest-path api-tests/Cargo.toml --test docker -- --test-threads=1
+              # TODO: make sure that the compose tests run in CI
+              cargo test --manifest-path api-tests/Cargo.toml --test docker --features ci -- --test-threads=1
 
    k3s:
       name: K3s integration tests
