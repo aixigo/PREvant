@@ -195,11 +195,11 @@ pub struct JiraConfig {
 pub enum JiraAuth {
     Basic {
         user: String,
-        password: SecUtf8,
+        password: MaybeEnvInterpolated<SecUtf8>,
     },
     #[serde(rename_all = "camelCase")]
     ApiKey {
-        api_key: SecUtf8,
+        api_key: MaybeEnvInterpolated<SecUtf8>,
     },
 }
 
@@ -1056,7 +1056,7 @@ mod tests {
             jira_config.auth(),
             &JiraAuth::Basic {
                 user: String::from("user"),
-                password: SecUtf8::from_str("pass").unwrap()
+                password: MaybeEnvInterpolated(SecUtf8::from_str("pass").unwrap())
             }
         );
     }
@@ -1076,7 +1076,7 @@ mod tests {
         assert_eq!(
             jira_config.auth(),
             &JiraAuth::ApiKey {
-                api_key: SecUtf8::from_str("key").unwrap()
+                api_key: MaybeEnvInterpolated(SecUtf8::from_str("key").unwrap())
             }
         );
     }

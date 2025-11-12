@@ -34,6 +34,7 @@ use crate::apps::Apps;
 use crate::config::{Config, Runtime};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
+use crate::tickets::TicketsCaching;
 use apps::AppProcessingQueue;
 use auth::Auth;
 use auth::Issuers;
@@ -231,11 +232,12 @@ async fn main() -> Result<(), StartUpError> {
         )
         .mount("/openapi.yaml", routes![openapi])
         .mount("/api/apps", crate::apps::apps_routes())
-        .mount("/api", routes![tickets::tickets])
+        .mount("/api", crate::tickets::ticket_routes())
         .mount("/api", routes![webhooks::webhooks])
         .mount("/auth", crate::auth::auth_routes())
         .attach(Auth::fairing())
         .attach(AppProcessingQueue::fairing())
+        .attach(TicketsCaching::fairing())
         .launch()
         .await?;
 

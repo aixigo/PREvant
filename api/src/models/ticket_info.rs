@@ -28,10 +28,11 @@ use serde::ser::{Serialize, Serializer};
 use std::convert::From;
 use url::Url;
 
+#[derive(Eq, PartialEq, Hash)]
 pub struct TicketInfo {
-    link: Url,
-    summary: String,
-    status: String,
+    pub link: Url,
+    pub summary: String,
+    pub status: String,
 }
 
 impl From<Issue> for TicketInfo {
