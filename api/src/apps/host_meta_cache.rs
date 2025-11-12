@@ -41,19 +41,18 @@ use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::sync::Arc;
 use tokio::sync::watch::{self, Receiver, Sender};
 use tokio_stream::wrappers::WatchStream;
 use url::Url;
 use yansi::Paint;
 
 pub struct HostMetaCache {
-    reader_factory: ReadHandleFactory<Key, Arc<Value>>,
+    reader_factory: ReadHandleFactory<Key, Box<Value>>,
     update_watch_rx: Receiver<DateTime<Utc>>,
 }
 pub struct HostMetaCrawler {
     config: Config,
-    writer: WriteHandle<Key, Arc<Value>>,
+    writer: WriteHandle<Key, Box<Value>>,
     update_watch_tx: Sender<DateTime<Utc>>,
 }
 
@@ -176,7 +175,11 @@ impl<'r> FromRequest<'r> for HostMetaCache {
 }
 
 impl HostMetaCrawler {
-    pub fn spawn(mut self, apps: Arc<Apps>, apps_updates: Receiver<HashMap<AppName, App>>) {
+    pub fn spawn(
+        mut self,
+        apps: std::sync::Arc<Apps>,
+        apps_updates: Receiver<HashMap<AppName, App>>,
+    ) {
         let timestamp_prevant_startup = Utc::now();
 
         tokio::spawn(async move {
@@ -328,7 +331,7 @@ impl HostMetaCrawler {
 
                 self.writer.insert(
                     key,
-                    Arc::new(Value {
+                    Box::new(Value {
                         last_update_timestamp: now,
                         web_host_meta,
                     }),
@@ -340,7 +343,7 @@ impl HostMetaCrawler {
         for (key, web_host_meta) in static_web_host_config.into_iter() {
             self.writer.insert(
                 key,
-                Arc::new(Value {
+                Box::new(Value {
                     last_update_timestamp: now,
                     web_host_meta,
                 }),
@@ -510,7 +513,7 @@ impl HostMetaCrawler {
     #[cfg(test)]
     pub fn fake_empty_host_meta_info(&mut self, app_name: AppName, service_id: String) {
         let web_host_meta = WebHostMeta::empty();
-        let value = Arc::new(Value {
+        let value = Box::new(Value {
             last_update_timestamp: chrono::Utc::now(),
             web_host_meta,
         });

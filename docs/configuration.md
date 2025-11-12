@@ -77,14 +77,14 @@ Currently, Jira is supported as the tracking system.
 ```toml
 [jira]
 host = 'https://jira.example.com'
-apiKey = ''
+apiKey = '${env:JIRA_API_KEY}'
 ```
 
 ```toml
 [jira]
 host = 'https://jira.example.com'
 user = ''
-password = ''
+password = '${env:JIRA_PASSWORD}'
 ```
 
 ## Frontend options
