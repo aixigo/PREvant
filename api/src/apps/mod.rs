@@ -29,6 +29,7 @@ mod routes;
 
 pub use crate::apps::AppsService as Apps;
 pub use crate::apps::AppsServiceError as AppsError;
+use crate::config::ReplicateApplicationCondition;
 use crate::config::{Config, ConfigError};
 use crate::deployment::deployment_unit::DeploymentTemplatingError;
 use crate::deployment::deployment_unit::DeploymentUnitBuilder;
@@ -262,8 +263,23 @@ impl AppsService {
             }
         };
 
-        let replicate_from_app_name = replicate_from.unwrap_or_else(AppName::master);
-        if &replicate_from_app_name != app_name {
+        let replicate_from_app_name = match (
+            replicate_from.as_ref(),
+            &self.config.applications.replication_condition,
+        ) {
+            (None, ReplicateApplicationCondition::AlwaysFromDefaultApp) => {
+                Some(&self.config.applications.default_app)
+            }
+            (None, ReplicateApplicationCondition::ExplicitlyMentioned) => None,
+            (
+                Some(replicate_from_app_name),
+                ReplicateApplicationCondition::AlwaysFromDefaultApp
+                | ReplicateApplicationCondition::ExplicitlyMentioned,
+            ) if replicate_from_app_name != app_name => Some(replicate_from_app_name),
+            _ => None,
+        };
+
+        if let Some(replicate_from_app_name) = replicate_from_app_name {
             let (config_to_replicate, replication_user_defined_parameters) = self
                 .configs_and_user_defined_parameters_to_replicate(
                     service_configs,
@@ -540,7 +556,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_replication_from_master() -> Result<(), AppsServiceError> {
+    async fn replicate_from_master() -> Result<(), AppsServiceError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
@@ -556,7 +572,7 @@ mod tests {
 
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
-            Some(AppName::master()),
+            None,
             &vec![sc!("service-b")],
             vec![],
             None,
@@ -575,9 +591,74 @@ mod tests {
         Ok(())
     }
 
+
     #[tokio::test]
-    async fn should_override_replicas_from_master() -> Result<(), AppsServiceError> {
-        let config = Config::default();
+    async fn replicate_from_default_application_if_specified() -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [applications]
+            replicationCondition = 'replicate-only-when-requested'
+            "#
+        );
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &AppName::master(),
+            None,
+            &vec![sc!("service-a"), sc!("service-b")],
+            vec![],
+            None,
+        )
+        .await?;
+
+        apps.create_or_update(
+            &AppName::from_str("branch").unwrap(),
+            None,
+            &vec![sc!("service-c")],
+            vec![],
+            None,
+        )
+        .await?;
+
+        let deployed_apps = apps.fetch_apps().await?;
+
+        let app = deployed_apps
+            .get(&AppName::from_str("branch").unwrap())
+            .unwrap();
+        assert_eq!(app.services().len(), 1);
+        assert_contains_service!(app.services(), "service-c", ContainerType::Instance);
+
+        apps.create_or_update(
+            &AppName::from_str("branch").unwrap(),
+            Some(AppName::master()),
+            &vec![sc!("service-c")],
+            vec![],
+            None,
+        )
+        .await?;
+
+        let deployed_apps = apps.fetch_apps().await?;
+
+        let app = deployed_apps
+            .get(&AppName::from_str("branch").unwrap())
+            .unwrap();
+        assert_eq!(app.services().len(), 3);
+        assert_contains_service!(app.services(), "service-a", ContainerType::Replica);
+        assert_contains_service!(app.services(), "service-b", ContainerType::Replica);
+        assert_contains_service!(app.services(), "service-c", ContainerType::Instance);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn never_replicate_from_default_application() -> Result<(), AppsServiceError> {
+        let config = config_from_str!(
+            r#"
+            [applications]
+            replicationCondition = 'never'
+            "#
+        );
         let infrastructure = Box::new(Dummy::new());
         let apps = AppsService::new(config, infrastructure)?;
 
@@ -593,6 +674,41 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             Some(AppName::master()),
+            &vec![sc!("service-c")],
+            vec![],
+            None,
+        )
+        .await?;
+
+        let deployed_apps = apps.fetch_apps().await?;
+
+        let app = deployed_apps
+            .get(&AppName::from_str("branch").unwrap())
+            .unwrap();
+        assert_eq!(app.services().len(), 1);
+        assert_contains_service!(app.services(), "service-c", ContainerType::Instance);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn override_replicas_from_master() -> Result<(), AppsServiceError> {
+        let config = Config::default();
+        let infrastructure = Box::new(Dummy::new());
+        let apps = AppsService::new(config, infrastructure)?;
+
+        apps.create_or_update(
+            &AppName::master(),
+            None,
+            &vec![sc!("service-a"), sc!("service-b")],
+            vec![],
+            None,
+        )
+        .await?;
+
+        apps.create_or_update(
+            &AppName::from_str("branch").unwrap(),
+            None,
             &vec![sc!("service-b")],
             vec![],
             None,
@@ -601,7 +717,7 @@ mod tests {
 
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
-            Some(AppName::master()),
+            None,
             &vec![sc!("service-a")],
             vec![],
             None,
