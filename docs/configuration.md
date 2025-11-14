@@ -52,8 +52,20 @@ all applications that PREVant deploys.
 
 ```toml
 [applications]
-# Restrict the number of applications that can be deployed.
+# Restrict the number of applications that can be deployed. Default is no limit
 max = 10
+
+# The default application name that will be displayed first in the dashboard
+# and also the application from which services will be replicated.
+#
+# See Section 4 “Composing Microservices with PREvant” in
+# http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5 to get a detailed
+# explanation what replication in the context of PREvant is.
+defaultApp = "master"
+
+# Configures PREvant to always replicate, to replicate only when specified in
+# the deployment request or to never replicate.
+replicationCondition = "always-from-default-app" # | "replicate-only-when-requested" | "never"
 ```
 
 ## Container Options

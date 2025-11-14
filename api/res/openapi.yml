@@ -1,6 +1,6 @@
-openapi: 3.0.0
+openapi: "3.0.0"
 servers:
-  - url: 'https://github.com/aixigo/PREvant'
+  - url: {{ serverUrl }}
 info:
   description: >-
     The PREvant RESTful API allows to see and manipulate the deployed apps that are ready for reviewing purposes.
@@ -69,7 +69,7 @@ paths:
           name: replicateFrom
           schema:
             type: string
-            default: 'master'
+            default: {{ defaultApplication }}
           description: The application name that will be used to replicate from.
         - $ref: '#/components/parameters/preferAsync'
       requestBody:

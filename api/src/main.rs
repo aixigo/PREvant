@@ -40,6 +40,7 @@ use auth::Auth;
 use auth::Issuers;
 use auth::User;
 use clap::Parser;
+use handlebars::Handlebars;
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
 use http_result::HttpApiError;
@@ -48,12 +49,9 @@ use infrastructure::TraefikIngressRoute;
 use rocket::fs::{FileServer, Options};
 use rocket::routes;
 use rocket::State;
-use serde_yaml::{to_string, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt as _;
 
 mod apps;
 mod auth;
@@ -66,56 +64,61 @@ mod registry;
 mod tickets;
 mod webhooks;
 
-#[rocket::get("/")]
-async fn openapi(request_info: RequestInfo) -> Option<String> {
-    let openapi_path = Path::new("res").join("openapi.yml");
-    let mut f = match File::open(openapi_path).await {
-        Ok(f) => f,
-        Err(e) => {
-            log::error!("Cannot find API documentation: {e}");
-            return None;
-        }
-    };
+#[derive(rocket::Responder)]
+#[response(status = 200, content_type = "application/yaml")]
+struct OpenAPI(String);
 
-    let mut contents = vec![];
-    f.read_to_end(&mut contents).await.ok()?;
-    let mut v: Value = serde_yaml::from_slice(&contents).ok()?;
+#[rocket::get("/")]
+fn openapi(request_info: RequestInfo, config: &State<Config>) -> HttpResult<OpenAPI> {
+    let openapi_path = Path::new("res").join("openapi.yml");
+
+    let mut handlebars = Handlebars::new();
+    handlebars
+        .register_template_file("openapi", openapi_path)
+        .map_err(|e| {
+            HttpApiError::from(
+                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                    .detail(e.to_string()),
+            )
+        })?;
 
     let mut url = request_info.base_url().clone();
     url.set_path("/api");
-    v["servers"][0]["url"] = Value::String(url.to_string());
 
-    Some(to_string(&v).unwrap())
+    let mut data = BTreeMap::new();
+    data.insert("serverUrl", url.to_string());
+    if matches!(
+        config.applications.replication_condition,
+        config::ReplicateApplicationCondition::AlwaysFromDefaultApp
+    ) {
+        data.insert(
+            "defaultApplication",
+            config.applications.default_app.to_string(),
+        );
+    }
+
+    Ok(OpenAPI(handlebars.render("openapi", &data).map_err(
+        |e| {
+            HttpApiError::from(
+                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                    .detail(e.to_string()),
+            )
+        },
+    )?))
 }
+
 #[derive(rocket::Responder)]
 #[response(status = 200, content_type = "html")]
 struct Index(String);
 
 #[rocket::get("/")]
-async fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpResult<Index> {
-    use handlebars::Handlebars;
-
+fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpResult<Index> {
     let index_path = Path::new("frontend").join("index.html");
-
-    let mut f = File::open(index_path).await.map_err(|e| {
-        HttpApiError::from(
-            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                .detail(e.to_string()),
-        )
-    })?;
-
-    let mut contents = String::new();
-    f.read_to_string(&mut contents).await.map_err(|e| {
-        HttpApiError::from(
-            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                .detail(e.to_string()),
-        )
-    })?;
 
     let mut handlebars = Handlebars::new();
     handlebars.register_escape_fn(handlebars::no_escape);
     handlebars
-        .register_template_string("index", contents)
+        .register_template_file("index", index_path)
         .map_err(|e| {
             HttpApiError::from(
                 HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)

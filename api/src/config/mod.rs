@@ -215,7 +215,7 @@ pub struct Config {
     #[serde(default)]
     runtime: Runtime,
     #[serde(default)]
-    applications: Applications,
+    pub applications: Applications,
     containers: Option<ContainerConfig>,
     jira: Option<JiraConfig>,
     #[serde(default)]
@@ -241,9 +241,35 @@ struct Registry {
     mirror: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Applications {
+    pub max: Option<usize>,
+    #[serde(default = "AppName::master")]
+    pub default_app: AppName,
+    #[serde(default)]
+    pub replication_condition: ReplicateApplicationCondition,
+}
+
+impl Default for Applications {
+    fn default() -> Self {
+        Self {
+            max: None,
+            default_app: AppName::master(),
+            replication_condition: Default::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-struct Applications {
-    max: Option<usize>,
+pub enum ReplicateApplicationCondition {
+    #[default]
+    #[serde(rename = "always-from-default-app")]
+    AlwaysFromDefaultApp,
+    #[serde(rename = "replicate-only-when-requested")]
+    ExplicitlyMentioned,
+    #[serde(rename = "never")]
+    Never,
 }
 
 impl Config {
@@ -1273,5 +1299,19 @@ mod tests {
             config.database.map(|c| c.to_url_lossy()),
             Some(&options).map(|c| c.to_url_lossy())
         );
+    }
+
+    #[test]
+    fn parse_without_application() {
+        let config = config_from_str!("");
+
+        assert_eq!(
+            config.applications,
+            Applications {
+                max: None,
+                default_app: AppName::master(),
+                replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp
+            }
+        )
     }
 }
