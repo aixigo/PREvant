@@ -210,12 +210,8 @@ impl HostMetaCrawler {
                     }
                 };
 
-                if let Some(timestamp) = self
-                    .crawl(http_forwarder, &services, timestamp_prevant_startup)
+                self.crawl(http_forwarder, &services, timestamp_prevant_startup)
                     .await
-                {
-                    self.update_watch_tx.send_replace(timestamp);
-                }
             }
         });
     }
@@ -272,7 +268,7 @@ impl HostMetaCrawler {
         http_forwarder: Box<dyn HttpForwarder>,
         apps: &HashMap<AppName, App>,
         since_timestamp: DateTime<Utc>,
-    ) -> Option<DateTime<Utc>> {
+    ) {
         self.clear_stale_web_host_meta(apps);
 
         let static_web_host_config = self.static_web_host_config(apps);
@@ -303,21 +299,41 @@ impl HostMetaCrawler {
             .filter(|(key, _)| !static_web_host_config.contains_key(key))
             .filter(|(_, service)| *service.status() == ServiceStatus::Running)
             .filter(|(key, _service)| !self.writer.contains_key(key))
-            .collect::<Vec<(Key, Service)>>();
+            // group the services by application so that not all services will be hit with an HTTP
+            // in one go, rather the crawling is chunked by app name. In this form the
+            // FuturesUnordered memory footprint is significantly smaller because for each chunk a
+            // smaller FuturesUnordered is created.
+            .fold(
+                HashMap::<AppName, Vec<(Key, Service)>>::new(),
+                |mut acc, (key, service)| {
+                    match acc.get_mut(&key.app_name) {
+                        Some(services) => {
+                            services.push((key, service));
+                        }
+                        None => {
+                            acc.insert(key.app_name.clone(), vec![(key, service)]);
+                        }
+                    };
+                    acc
+                },
+            );
 
-        let mut updated_host_meta_info_entries = 0;
-        let now = Utc::now();
-        if !running_services_without_host_meta.is_empty() {
+        for (app_name, running_services_without_host_meta) in
+            running_services_without_host_meta.into_iter()
+        {
+            let now = Utc::now();
             debug!(
-                "Resolving web host meta data for {:?}.",
+                "Resolving web host meta data for app {app_name} and the services: {}.",
                 running_services_without_host_meta
                     .iter()
-                    .map(|(k, service)| format!("({}, {})", k.app_name, service.service_name()))
+                    .map(|(_k, service)| service.service_name())
                     .fold(String::new(), |a, b| a + &b + ", ")
+                    .trim_end_matches(", ")
             );
-            let duration_prevant_startup = Utc::now().signed_duration_since(since_timestamp);
+
+            let duration_prevant_startup = now.signed_duration_since(since_timestamp);
             let resolved_host_meta_infos = Self::resolve_host_meta(
-                http_forwarder,
+                dyn_clone::clone_box(&*http_forwarder),
                 running_services_without_host_meta,
                 duration_prevant_startup,
             )
@@ -327,8 +343,6 @@ impl HostMetaCrawler {
                     continue;
                 }
 
-                updated_host_meta_info_entries += 1;
-
                 self.writer.insert(
                     key,
                     Box::new(Value {
@@ -337,25 +351,25 @@ impl HostMetaCrawler {
                     }),
                 );
             }
+
+            self.writer.refresh();
+            self.update_watch_tx.send_replace(now);
         }
 
-        updated_host_meta_info_entries += static_web_host_config.len();
-        for (key, web_host_meta) in static_web_host_config.into_iter() {
-            self.writer.insert(
-                key,
-                Box::new(Value {
-                    last_update_timestamp: now,
-                    web_host_meta,
-                }),
-            );
-        }
+        if !static_web_host_config.is_empty() {
+            let now = Utc::now();
+            for (key, web_host_meta) in static_web_host_config.into_iter() {
+                self.writer.insert(
+                    key,
+                    Box::new(Value {
+                        last_update_timestamp: now,
+                        web_host_meta,
+                    }),
+                );
+            }
 
-        self.writer.refresh();
-
-        if updated_host_meta_info_entries > 0 {
-            Some(now)
-        } else {
-            None
+            self.writer.refresh();
+            self.update_watch_tx.send_replace(now);
         }
     }
 
@@ -399,7 +413,7 @@ impl HostMetaCrawler {
     }
 
     async fn resolve_host_meta(
-        http_forwarder: Box<dyn HttpForwarder>,
+        http_forwarder: Box<dyn HttpForwarder + Send>,
         services_without_host_meta: Vec<(Key, Service)>,
         duration_prevant_startup: chrono::Duration,
     ) -> Vec<(Key, Service, WebHostMeta)> {
