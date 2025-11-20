@@ -150,7 +150,7 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
 
     // bundle remaining configs into one json object
     let config_json = serde_json::json!({
-        "defaultAppName": config.frontend.default_app_name.as_deref().unwrap_or("master").to_string(),
+        "defaultAppName": config.applications.default_app,
     });
     data.insert("config", config_json.to_string());
 
