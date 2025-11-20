@@ -38,10 +38,3 @@ jobs:
           name: coverage-report
           path: frontend/reports/coverage
           if-no-files-found: error
-
-      - name: Upload JUnit Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: junit-report
-          path: frontend/reports/unit/junit.xml
-          if-no-files-found: error

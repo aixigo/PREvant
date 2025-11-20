@@ -6,10 +6,6 @@ export default mergeConfig(
   defineConfig({
     test: {
       include: ["src/**/*.spec.?(c|m)[jt]s?(x)"],
-      reporters: ["default", "junit"],
-      outputFile: {
-        junit: "reports/unit/junit.xml",
-      },
       coverage: {
         provider: "v8",
         reportsDirectory: "reports/coverage",
