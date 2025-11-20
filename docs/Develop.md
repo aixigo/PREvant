@@ -108,8 +108,6 @@ As part of our testing strategy, we provide support for both [Unit Tests](#front
 
 We use [Vitest](https://vitest.dev/) for unit testing the frontend. Unit tests ensure that individual components and utilities work as expected without relying on the full application stack.
 
-#### Running Unit Tests
-
 To run all unit tests in the project:
 
 ```bash
@@ -138,8 +136,6 @@ This will open a browser-based UI where you can:
 
 We use [Playwright](https://playwright.dev/) for end-to-end testing to simulate real user interactions and verify the entire application flow.
 
-#### Installing Browsers
-
 Before running the tests for the first time, you must install the required browsers:
 
 ```bash
@@ -147,8 +143,6 @@ npx playwright install
 ```
 
 This only needs to be done once (or whenever Playwright updates its browser requirements).
-
-#### Running E2E Tests
 
 To run the Playwright tests:
 
