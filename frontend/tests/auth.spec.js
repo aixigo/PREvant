@@ -102,7 +102,7 @@ test.describe("when auth is required", () => {
     });
 
     test("should allow duplicating apps", async ({ page }) => {
-      await shouldAllowDuplicatingApp();
+      await shouldAllowDuplicatingApp(page);
     });
   });
 });
@@ -137,37 +137,24 @@ async function openDialogViaMenu(page, action) {
 }
 
 async function shouldAllowDuplicatingApp(page) {
-  const dialog = await openDialogViaMenu(page, "Duplicate");
-  await expect(
-    page.getByText("To duplicate an app you need to be logged in."),
-    "login required message is not shown"
-  ).not.toBeVisible();
-
-  await expect(
-    page.getByRole("button", { name: "Duplicate" }),
-    "duplicate button should initially be disabled"
-  ).toBeDisabled();
-
-  const input = dialog.getByPlaceholder("Enter app name");
-  await expect(input, "input should not be disabled").not.toBeDisabled();
-  await input.fill(PREVIEW_NAME);
-
-  await expect(
-    page.getByRole("button", { name: "Duplicate" }),
-    "duplicate button should be enabled"
-  ).not.toBeDisabled();
+  await shouldAllowActionOnApp(page, "Duplicate");
 }
 
 async function shouldAllowShuttingDownApp(page) {
-  const dialog = await openDialogViaMenu(page, "Shutdown");
+  await shouldAllowActionOnApp(page, "Shutdown");
+}
+
+async function shouldAllowActionOnApp(page, action) {
+  const dialog = await openDialogViaMenu(page, action);
+  const confirmButtonText = getConfirmButtonText(action);
 
   await expect(
-    page.getByText("To shutdown an app you need to be logged in."),
+    page.getByText(`To ${action} an app you need to be logged in.`),
     "login required message is not shown"
   ).not.toBeVisible();
 
   await expect(
-    page.getByRole("button", { name: "Confirm" }),
+    page.getByRole("button", { name: confirmButtonText }),
     "confirm button should initially be disabled"
   ).toBeDisabled();
 
@@ -176,41 +163,37 @@ async function shouldAllowShuttingDownApp(page) {
   await input.fill(PREVIEW_NAME);
 
   await expect(
-    page.getByRole("button", { name: "Confirm" }),
+    page.getByRole("button", { name: confirmButtonText }),
     "confirm button should be enabled"
   ).not.toBeDisabled();
 }
 
 async function shouldNotAllowDuplicatingApp(page) {
-  const dialog = await openDialogViaMenu(page, "Duplicate");
+  await shouldNotAllowActionOnApp(page, "Duplicate");
+}
+
+async function shouldNotAllowShuttingDownApp(page) {
+  await shouldNotAllowActionOnApp(page, "Shutdown");
+}
+
+async function shouldNotAllowActionOnApp(page, action) {
+  const dialog = await openDialogViaMenu(page, action);
+  const confirmButtonText = getConfirmButtonText(action);
 
   await expect(
-    page.getByText("To duplicate an app you need to be logged in."),
+    page.getByText(`To ${action} an app you need to be logged in.`),
     "login required message is shown"
   ).toBeVisible();
 
   await expect(
-    page.getByRole("button", { name: "Duplicate" }),
-    "duplicate button should be disabled"
+    page.getByRole("button", { name: confirmButtonText }),
+    "confirm button should be disabled"
   ).toBeDisabled();
 
   const input = dialog.getByPlaceholder("Enter app name");
   await expect(input, "input should be disabled").toBeDisabled();
 }
 
-async function shouldNotAllowShuttingDownApp(page) {
-  const dialog = await openDialogViaMenu(page, "Shutdown");
-
-  await expect(
-    page.getByText("To shutdown an app you need to be logged in."),
-    "login required message is shown"
-  ).toBeVisible();
-
-  await expect(
-    page.getByRole("button", { name: "Confirm" }),
-    "confirm button should be disabled"
-  ).toBeDisabled();
-
-  const input = dialog.getByPlaceholder("Enter app name");
-  await expect(input, "input should be disabled").toBeDisabled();
+function getConfirmButtonText(action) {
+  return action === "Duplicate" ? "Duplicate" : "Confirm";
 }
