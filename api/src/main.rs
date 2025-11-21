@@ -151,6 +151,7 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
     // bundle remaining configs into one json object
     let config_json = serde_json::json!({
         "defaultAppName": config.applications.default_app,
+        "isAuthRequired": matches!(config.api_access, ApiAccess::RequireAuth { .. }),
     });
     data.insert("config", config_json.to_string());
 
