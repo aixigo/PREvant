@@ -48,7 +48,7 @@
                type="button"
                class="btn btn-outline-danger"
                @click="deleteApp()"
-               :disabled="hasWritePermissions || confirmedAppName !== appName">
+               :disabled="!hasWritePermissions || confirmedAppName !== appName">
             Confirm
          </button>
       </template>

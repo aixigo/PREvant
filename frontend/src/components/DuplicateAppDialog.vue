@@ -44,7 +44,7 @@
          <button
                type="button"
                class="btn btn-outline-primary"
-               :disabled="hasWritePermissions || newAppName.length === 0"
+               :disabled="!hasWritePermissions || newAppName.length === 0"
                @click="duplicateApp()">
             Duplicate
          </button>
