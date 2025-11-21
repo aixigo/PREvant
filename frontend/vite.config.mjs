@@ -23,7 +23,11 @@ export default defineConfig({
                {
                   injectTo: "head",
                   tag: "script",
-                  children: "var me = {{ me }}; var issuers = {{ issuers }};"
+                  children: `
+                     var me = {{ me }}; 
+                     var issuers = {{ issuers }};
+                     var config = {{ config }};
+                  `
                }, 
                {
                   injectTo: "head",
@@ -83,7 +87,11 @@ export default defineConfig({
                {
                   injectTo: "head",
                   tag: "script",
-                  children: `var me = ${JSON.stringify(me)}; var issuers = ${JSON.stringify(issuers)}`
+                  children: `
+                     var me = ${JSON.stringify(me)}; 
+                     var issuers = ${JSON.stringify(issuers)};
+                     var config = { defaultAppName: 'master' };
+                  `
                }, 
                {
                   injectTo: "head",
@@ -137,13 +145,13 @@ export default defineConfig({
       port: 9001,
       proxy: {
          '/auth': {
-            target: 'http://127.0.0.1:8000'
+            target: `http://127.0.0.1:${process.env.API_PORT ?? 8000}`
          },
          '/api': {
-            target: 'http://127.0.0.1:8000'
+            target: `http://127.0.0.1:${process.env.API_PORT ?? 8000}`
          },
          '/openapi.yaml': {
-            target: 'http://127.0.0.1:8000'
+            target: `http://127.0.0.1:${process.env.API_PORT ?? 8000}`
          }
       }
    }

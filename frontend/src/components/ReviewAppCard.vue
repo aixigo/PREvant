@@ -50,7 +50,7 @@
                         <font-awesome-icon icon="copy"/> &nbsp; Duplicate
                      </button>
                      <button type="button" class="dropdown-item btn btn-danger" @click="openDeleteDialog()"
-                             v-if="reviewApp.name != 'master'">
+                             v-if="reviewApp.name !== defaultAppName">
                         <font-awesome-icon icon="trash"/> &nbsp; Shutdown
                      </button>
                   </div>
@@ -163,7 +163,7 @@
          </template>
       </div>
 
-      <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name != 'master'"/>
+      <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name !== defaultAppName"/>
       <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
    </div>
 </template>
@@ -182,8 +182,16 @@
    import moment from 'moment';
    import DuplicateAppDialog from './DuplicateAppDialog.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
+   import { useConfig } from '../composables/useConfig';
 
    export default {
+      setup() {
+         const { defaultAppName } = useConfig();
+
+         return {
+            defaultAppName
+         };
+      },
       data() {
          return {
             expandedContainers: {}
@@ -263,15 +271,6 @@
                   return 'badge-dark';
             }
             return 'badge-secondary';
-         },
-         tooltip(serviceType) {
-            switch (serviceType) {
-               case 'instance':
-                  return 'This service has been deployed especially for the review-app.';
-               case 'replica':
-                  return 'This service has been replicated from the service of the master review app. Changes to this service won\'t affect the service of master review-app.';
-            }
-            return '';
          },
          toggleContainer(container) {
             this.expandedContainers[container.name] = !this.isExpanded(container);
