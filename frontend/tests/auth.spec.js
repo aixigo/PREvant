@@ -20,10 +20,7 @@ test.describe("when no issuers are configured", () => {
   });
 
   test("should not render a login button", async ({ page }) => {
-    expect(
-      page.locator('a:has-text("Login with")'),
-      "no button with 'Login with' text exists"
-    ).not.toBeVisible();
+    await expectNoLoginButton(page);
   });
 });
 
@@ -34,25 +31,19 @@ test.describe("when at least one issuer is configured", () => {
   });
 
   test("should render a login button", async ({ page }) => {
-    expect(
-      page.locator('a:has-text("Login with")'),
-      "button with 'Login with' text exists"
-    ).toBeVisible();
+    await expectLoginButton(page);
   });
 });
 
 test.describe("when the user is logged in", () => {
   test.beforeEach(async ({ page }) => {
-        await injectGlobalOverride(page, "me", me);
+    await injectGlobalOverride(page, "me", me);
     await injectGlobalOverride(page, "issuers", issuers);
     await page.goto("/");
   });
 
   test("should not render a login button", async ({ page }) => {
-    expect(
-      page.locator('a:has-text("Login with")'),
-      "no button with 'Login with' text exists"
-    ).not.toBeVisible();
+    await expectNoLoginButton(page);
   });
 
   test("should display the name of the user", async ({ page }) => {
@@ -70,19 +61,7 @@ test.describe("when auth is not required", () => {
   });
 
   test("should allow shutting down apps", async ({ page }) => {
-    await page.click(
-      `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button[data-toggle="dropdown"]`
-    );
-
-    await page.click(
-      `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button:text("Shutdown")`
-    );
-
-    const dialog = page
-      .getByRole("dialog")
-      .filter({ hasText: `Shutdown ${PREVIEW_NAME}` });
-
-    await expect(dialog, "shutdown dialog should be visible").toBeVisible();
+    const dialog = await openDialogViaMenu(page, "Shutdown");
 
     await expect(
       page.getByText("To shutdown an app you need to be logged in."),
@@ -105,20 +84,7 @@ test.describe("when auth is not required", () => {
   });
 
   test("should allow duplicating apps", async ({ page }) => {
-    await page.click(
-      `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button[data-toggle="dropdown"]`
-    );
-
-    await page.click(
-      `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button:text("Duplicate")`
-    );
-
-    const dialog = page
-      .getByRole("dialog")
-      .filter({ hasText: `Duplicate ${PREVIEW_NAME}` });
-
-    await expect(dialog, "duplicate dialog should be visible").toBeVisible();
-
+    const dialog = await openDialogViaMenu(page, "Duplicate");
     await expect(
       page.getByText("To duplicate an app you need to be logged in."),
       "login required message is not shown"
@@ -153,19 +119,7 @@ test.describe("when auth is required", () => {
     });
 
     test("should not allow shutting down apps", async ({ page }) => {
-      await page.click(
-        `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button[data-toggle="dropdown"]`
-      );
-
-      await page.click(
-        `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button:text("Shutdown")`
-      );
-
-      const dialog = page
-        .getByRole("dialog")
-        .filter({ hasText: `Shutdown ${PREVIEW_NAME}` });
-
-      await expect(dialog, "shutdown dialog should be visible").toBeVisible();
+      const dialog = await openDialogViaMenu(page, "Shutdown");
 
       await expect(
         page.getByText("To shutdown an app you need to be logged in."),
@@ -182,19 +136,7 @@ test.describe("when auth is required", () => {
     });
 
     test("should not allow duplicating apps", async ({ page }) => {
-      await page.click(
-        `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button[data-toggle="dropdown"]`
-      );
-
-      await page.click(
-        `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button:text("Duplicate")`
-      );
-
-      const dialog = page
-        .getByRole("dialog")
-        .filter({ hasText: `Duplicate ${PREVIEW_NAME}` });
-
-      await expect(dialog, "duplicate dialog should be visible").toBeVisible();
+      const dialog = await openDialogViaMenu(page, "Duplicate");
 
       await expect(
         page.getByText("To duplicate an app you need to be logged in."),
@@ -219,19 +161,7 @@ test.describe("when auth is required", () => {
     });
 
     test("should allow shutting down apps", async ({ page }) => {
-      await page.click(
-        `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button[data-toggle="dropdown"]`
-      );
-
-      await page.click(
-        `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button:text("Shutdown")`
-      );
-
-      const dialog = page
-        .getByRole("dialog")
-        .filter({ hasText: `Shutdown ${PREVIEW_NAME}` });
-
-      await expect(dialog, "shutdown dialog should be visible").toBeVisible();
+      const dialog = await openDialogViaMenu(page, "Shutdown");
 
       await expect(
         page.getByText("To shutdown an app you need to be logged in."),
@@ -254,19 +184,7 @@ test.describe("when auth is required", () => {
     });
 
     test("should allow duplicating apps", async ({ page }) => {
-      await page.click(
-        `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button[data-toggle="dropdown"]`
-      );
-
-      await page.click(
-        `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button:text("Duplicate")`
-      );
-
-      const dialog = page
-        .getByRole("dialog")
-        .filter({ hasText: `Duplicate ${PREVIEW_NAME}` });
-
-      await expect(dialog, "duplicate dialog should be visible").toBeVisible();
+      const dialog = await openDialogViaMenu(page, "Duplicate");
 
       await expect(
         page.getByText("To duplicate an app you need to be logged in."),
@@ -289,3 +207,32 @@ test.describe("when auth is required", () => {
     });
   });
 });
+
+async function expectLoginButton(page) {
+  await expect(
+    page.locator('a:has-text("Login with")'),
+    "button with 'Login with' text exists"
+  ).toBeVisible();
+}
+
+async function expectNoLoginButton(page) {
+  await expect(
+    page.locator('a:has-text("Login with")'),
+    "no button with 'Login with' text exists"
+  ).not.toBeVisible();
+}
+
+async function openDialogViaMenu(page, action) {
+  await page.click(
+    `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button[data-toggle="dropdown"]`
+  );
+  await page.click(
+    `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button:text("${action}")`
+  );
+
+  const dialog = page
+    .getByRole("dialog")
+    .filter({ hasText: `${action} ${PREVIEW_NAME}` });
+  await expect(dialog, `${action} dialog should be visible`).toBeVisible();
+  return dialog;
+}
