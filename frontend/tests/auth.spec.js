@@ -12,9 +12,7 @@ test.describe("when no issuers are configured", () => {
     await page.goto("/");
   });
 
-  test("should not render a login button", async ({ page }) => {
-    await expectNoLoginButton(page);
-  });
+  test("should not render a login button", expectNoLoginButton);
 });
 
 test.describe("when at least one issuer is configured", () => {
@@ -23,9 +21,7 @@ test.describe("when at least one issuer is configured", () => {
     await page.goto("/");
   });
 
-  test("should render a login button", async ({ page }) => {
-    await expectLoginButton(page);
-  });
+  test("should render a login button", expectLoginButton);
 });
 
 test.describe("when the user is logged in", () => {
@@ -35,9 +31,7 @@ test.describe("when the user is logged in", () => {
     await page.goto("/");
   });
 
-  test("should not render a login button", async ({ page }) => {
-    await expectNoLoginButton(page);
-  });
+  test("should not render a login button", expectNoLoginButton);
 
   test("should display the name of the user", async ({ page }) => {
     expect(
@@ -53,13 +47,9 @@ test.describe("when auth is not required", () => {
     await page.goto("/");
   });
 
-  test("should allow shutting down apps", async ({ page }) => {
-    await shouldAllowShuttingDownApp(page);
-  });
+  test("should allow shutting down apps", shouldAllowShuttingDownApp);
 
-  test("should allow duplicating apps", async ({ page }) => {
-    await shouldAllowDuplicatingApp(page);
-  });
+  test("should allow duplicating apps", shouldAllowDuplicatingApp);
 });
 
 test.describe("when auth is required", () => {
@@ -74,13 +64,9 @@ test.describe("when auth is required", () => {
       await page.goto("/");
     });
 
-    test("should not allow shutting down apps", async ({ page }) => {
-      await shouldNotAllowShuttingDownApp(page);
-    });
+    test("should not allow shutting down apps", shouldNotAllowShuttingDownApp);
 
-    test("should not allow duplicating apps", async ({ page }) => {
-      await shouldNotAllowDuplicatingApp(page);
-    });
+    test("should not allow duplicating apps", shouldNotAllowDuplicatingApp);
   });
 
   test.describe("and the user is logged in", () => {
@@ -90,31 +76,27 @@ test.describe("when auth is required", () => {
       await page.goto("/");
     });
 
-    test("should allow shutting down apps", async ({ page }) => {
-      await shouldAllowShuttingDownApp(page);
-    });
+    test("should allow shutting down apps", shouldAllowShuttingDownApp);
 
-    test("should allow duplicating apps", async ({ page }) => {
-      await shouldAllowDuplicatingApp(page);
-    });
+    test("should allow duplicating apps", shouldAllowDuplicatingApp);
   });
 });
 
-async function expectLoginButton(page) {
+async function expectLoginButton({ page }) {
   await expect(
     page.locator('a:has-text("Login with")'),
     "button with 'Login with' text exists"
   ).toBeVisible();
 }
 
-async function expectNoLoginButton(page) {
+async function expectNoLoginButton({ page }) {
   await expect(
     page.locator('a:has-text("Login with")'),
     "no button with 'Login with' text exists"
   ).not.toBeVisible();
 }
 
-async function openDialogViaMenu(page, action) {
+async function openDialogViaMenu({ page, action }) {
   await page.click(
     `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button[data-toggle="dropdown"]`
   );
@@ -129,17 +111,17 @@ async function openDialogViaMenu(page, action) {
   return dialog;
 }
 
-async function shouldAllowDuplicatingApp(page) {
-  await shouldAllowActionOnApp(page, "Duplicate");
+async function shouldAllowDuplicatingApp({ page }) {
+  await shouldAllowActionOnApp({ page, action: "Duplicate" });
 }
 
-async function shouldAllowShuttingDownApp(page) {
-  await shouldAllowActionOnApp(page, "Shutdown");
+async function shouldAllowShuttingDownApp({ page }) {
+  await shouldAllowActionOnApp({ page, action: "Shutdown" });
 }
 
-async function shouldAllowActionOnApp(page, action) {
-  const dialog = await openDialogViaMenu(page, action);
-  const confirmButtonText = getConfirmButtonText(action);
+async function shouldAllowActionOnApp({ page, action }) {
+  const dialog = await openDialogViaMenu({ page, action });
+  const confirmButtonText = getConfirmButtonText({ action });
 
   await expect(
     page.getByText(`To ${action} an app you need to be logged in.`),
@@ -161,17 +143,17 @@ async function shouldAllowActionOnApp(page, action) {
   ).not.toBeDisabled();
 }
 
-async function shouldNotAllowDuplicatingApp(page) {
-  await shouldNotAllowActionOnApp(page, "Duplicate");
+async function shouldNotAllowDuplicatingApp({ page }) {
+  await shouldNotAllowActionOnApp({ page, action: "Duplicate" });
 }
 
-async function shouldNotAllowShuttingDownApp(page) {
-  await shouldNotAllowActionOnApp(page, "Shutdown");
+async function shouldNotAllowShuttingDownApp({ page }) {
+  await shouldNotAllowActionOnApp({ page, action: "Shutdown" });
 }
 
-async function shouldNotAllowActionOnApp(page, action) {
-  const dialog = await openDialogViaMenu(page, action);
-  const confirmButtonText = getConfirmButtonText(action);
+async function shouldNotAllowActionOnApp({ page, action }) {
+  const dialog = await openDialogViaMenu({ page, action });
+  const confirmButtonText = getConfirmButtonText({ action });
 
   await expect(
     page.getByText(`To ${action} an app you need to be logged in.`),
@@ -187,6 +169,6 @@ async function shouldNotAllowActionOnApp(page, action) {
   await expect(input, "input should be disabled").toBeDisabled();
 }
 
-function getConfirmButtonText(action) {
+function getConfirmButtonText({ action }) {
   return action === "Duplicate" ? "Duplicate" : "Confirm";
 }
