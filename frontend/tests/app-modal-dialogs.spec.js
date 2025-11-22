@@ -1,18 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { PREVIEW_NAME, SERVICE_NAME, mockedAppsAsEventStream } from "./fixtures/apps";
+import { PREVIEW_NAME, SERVICE_NAME } from "./fixtures/apps";
+import { interceptAppsApiCall } from "./util/interceptApiCalls";
 
 const FILTER_STRING = PREVIEW_NAME.substring(0, 4);
 
 test.describe("app modal dialogs", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.route("**/api/apps", (route) => {
-      route.fulfill({
-        status: 200,
-        contentType: "text/event-stream;charset=UTF-8",
-        body: mockedAppsAsEventStream,
-      });
-    });
-  });
+  test.beforeEach(interceptAppsApiCall);
 
   test.describe("when entering through the home page and filtering the apps", () => {
     test.beforeEach(async ({ page }) => {

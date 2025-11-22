@@ -1,17 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { PREVIEW_NAME, mockedAppsAsEventStream } from "./fixtures/apps";
+import { PREVIEW_NAME } from "./fixtures/apps";
 import { issuers, me } from "./fixtures/auth";
 import { injectGlobalOverride } from "./util/injectGlobalOverrides";
+import { interceptAppsApiCall } from "./util/interceptApiCalls";
 
-test.beforeEach(async ({ page }) => {
-  await page.route("**/api/apps", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "text/event-stream;charset=UTF-8",
-      body: mockedAppsAsEventStream,
-    });
-  });
-});
+test.beforeEach(interceptAppsApiCall);
 
 test.describe("when no issuers are configured", () => {
   test.beforeEach(async ({ page }) => {
