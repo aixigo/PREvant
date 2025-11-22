@@ -164,7 +164,15 @@ export function createStore(router, me, issuers) {
 
          deleteApp(state, appNameOrResponseError) {
             if (appNameOrResponseError.type) {
-               state.appsError = appNameOrResponseError;
+               const enrichedError = {
+                 ...appNameOrResponseError,
+                 detail:
+                   appNameOrResponseError.detail ??
+                   appNameOrResponseError.status === 403
+                     ? "You need to be logged in to shut down apps."
+                     : "Unknown Error",
+               };
+               state.appsError = enrichedError;
             }
             else {
                delete state.apps[appNameOrResponseError];
@@ -174,7 +182,15 @@ export function createStore(router, me, issuers) {
 
          addApp(state, { appName, servicesOrResponseError }) {
             if (servicesOrResponseError.type) {
-               state.appsError = servicesOrResponseError;
+               const enrichedError = {
+                 ...servicesOrResponseError,
+                 detail:
+                   servicesOrResponseError.detail ??
+                   servicesOrResponseError.status === 403
+                     ? "You need to be logged in to duplicate apps."
+                     : "Unknown Error",
+               };
+               state.appsError = enrichedError;
             }
             else {
                state.apps[appName] = servicesOrResponseError;
