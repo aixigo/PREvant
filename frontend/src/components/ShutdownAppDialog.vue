@@ -39,7 +39,7 @@
                   @keyup="keyPressed">
          </div>
 
-         <div v-if="!hasWritePermissions"class="alert alert-warning text-center" role="alert">
+         <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
             To shutdown an app you need to be logged in.
          </div>
       </template>

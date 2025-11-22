@@ -20,6 +20,5 @@ export function useAuth() {
     me,
     isAuthRequired,
     hasWritePermissions,
-
   };
 }
