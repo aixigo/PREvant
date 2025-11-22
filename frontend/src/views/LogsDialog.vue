@@ -28,9 +28,9 @@
       :errorStatusText="this.errorText">
       <template v-slot:body>
          <div class="d-flex justify-content-end align-items-center">
-            <alert type="alert" class="alert-primary mr-auto" v-if="scrollPosition === 0" role="alert">
+            <div class="alert alert-primary mr-auto" v-if="scrollPosition === 0" role="alert">
                Maximum Log View Reached. For complete log details, please use the 'Download Full Logs' button.
-            </alert>
+            </div>
             <a :href="downloadLink" class="btn btn-primary ml-auto" download="filename.txt"><font-awesome-icon
                   icon="download" />
                &nbsp;
@@ -78,11 +78,11 @@
    import moment from 'moment';
 
    let requestUri;
-   const itemSize = 24;
 
    export default {
       data() {
          return {
+            itemSize: 24,
             logLines: [],
             eventSource: null,
             scrollPosition: null,
@@ -165,7 +165,6 @@
          },
 
          clearLogs() {
-            this.currentPageLink = null;
             this.nextPageLink = null;
             this.logLines = [];
             if (this.eventSource) {
@@ -183,7 +182,7 @@
             const el = this.$refs.scroller.$el;
             const distanceFromBottom =
                el.scrollHeight - (el.scrollTop + el.clientHeight);
-            return distanceFromBottom < itemSize;
+            return distanceFromBottom < this.itemSize;
          },
 
          handleScroll() {
