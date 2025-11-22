@@ -124,7 +124,7 @@ async function shouldAllowActionOnApp({ page, action }) {
   const confirmButtonText = getConfirmButtonText({ action });
 
   await expect(
-    page.getByText(`To ${action} an app you need to be logged in.`),
+    page.getByText(`You need to be logged in to ${action} apps.`),
     "login required message is not shown"
   ).not.toBeVisible();
 
@@ -156,7 +156,7 @@ async function shouldNotAllowActionOnApp({ page, action }) {
   const confirmButtonText = getConfirmButtonText({ action });
 
   await expect(
-    page.getByText(`To ${action} an app you need to be logged in.`),
+    page.getByText(`You need to be logged in to ${action} apps.`),
     "login required message is shown"
   ).toBeVisible();
 

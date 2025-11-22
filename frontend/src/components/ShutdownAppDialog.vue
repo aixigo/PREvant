@@ -40,7 +40,7 @@
          </div>
 
          <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
-            To shutdown an app you need to be logged in.
+            You need to be logged in to shutdown apps.
          </div>
       </template>
       <template v-slot:footer>

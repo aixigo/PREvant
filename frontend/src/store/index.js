@@ -164,15 +164,7 @@ export function createStore(router, me, issuers) {
 
          deleteApp(state, appNameOrResponseError) {
             if (appNameOrResponseError.type) {
-               const enrichedError = {
-                 ...appNameOrResponseError,
-                 detail:
-                   appNameOrResponseError.detail ??
-                   appNameOrResponseError.status === 403
-                     ? "You need to be logged in to shut down apps."
-                     : "Unknown Error",
-               };
-               state.appsError = enrichedError;
+               state.appsError = enrichDeletionError(appNameOrResponseError);
             }
             else {
                delete state.apps[appNameOrResponseError];
@@ -182,15 +174,7 @@ export function createStore(router, me, issuers) {
 
          addApp(state, { appName, servicesOrResponseError }) {
             if (servicesOrResponseError.type) {
-               const enrichedError = {
-                 ...servicesOrResponseError,
-                 detail:
-                   servicesOrResponseError.detail ??
-                   servicesOrResponseError.status === 403
-                     ? "You need to be logged in to duplicate apps."
-                     : "Unknown Error",
-               };
-               state.appsError = enrichedError;
+               state.appsError = enrichDuplicationError(servicesOrResponseError);
             }
             else {
                state.apps[appName] = servicesOrResponseError;
@@ -412,4 +396,27 @@ async function fetchAndPoll(url, init, problemType, problemTitle) {
       console.error('Error triggering or polling API:', error);
       throw error;
    }
+}
+
+function enrichDuplicationError(error) {
+  return enrichError(error, {
+    403: "You need to be logged in to duplicate apps."
+  });
+}
+
+function enrichDeletionError(error) {
+  return enrichError(error, {
+    403: "You need to be logged in to shutdown apps."
+  });
+}
+
+/**
+ * Takes a problem/json error object and enriches it with status code
+ * depenend detail if not present already
+ */
+function enrichError(error, statusSpecificOverrides = {}) {
+  return {
+    ...error,
+    detail: error.detail ?? statusSpecificOverrides[error.status] ?? "Unknown Error",
+  };
 }
