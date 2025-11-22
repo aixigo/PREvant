@@ -31,7 +31,7 @@ extern crate serde_derive;
 
 use crate::apps::host_meta_crawling;
 use crate::apps::Apps;
-use crate::config::{Config, Runtime};
+use crate::config::{Config, Runtime, ApiAccessMode};
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
 use crate::tickets::TicketsCaching;
@@ -151,7 +151,7 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
     // bundle remaining configs into one json object
     let config_json = serde_json::json!({
         "defaultAppName": config.applications.default_app,
-        "isAuthRequired": matches!(config.api_access, ApiAccess::RequireAuth { .. }),
+        "isAuthRequired": matches!(config.api_access.mode, ApiAccessMode::RequireAuth { .. }),
     });
     data.insert("config", config_json.to_string());
 
