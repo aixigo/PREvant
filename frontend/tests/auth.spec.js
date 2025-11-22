@@ -34,7 +34,7 @@ test.describe("when the user is logged in", () => {
   test("should not render a login button", expectNoLoginButton);
 
   test("should display the name of the user", async ({ page }) => {
-    expect(
+    await expect(
       page.locator(`a:has-text("${me.name}")`),
       "name of the logged in user is displayed"
     ).toBeVisible();
