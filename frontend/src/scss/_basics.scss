@@ -36,6 +36,11 @@ a {
    }
 }
 
+.btn:disabled {
+   border-color: currentColor;
+   pointer-events: none;
+}
+
 .ra-ellipsis {
    overflow: hidden;
 
