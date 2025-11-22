@@ -210,7 +210,14 @@ export function createStore(router, me, issuers) {
          },
 
          updateServiceStatus(state, { appName, serviceName, serviceStatus }) {
-            const service = state.apps[appName].find(service => service.name == serviceName);
+            const app = state.apps[appName];
+            const service = app?.services?.find(service => service.name === serviceName);
+            
+            if(!app || !service) {
+               console.warn(`Could not find service "${serviceName}" of app "${appName}"`);
+               return;
+            }
+
             service.state.status = serviceStatus;
          },
 
@@ -264,7 +271,14 @@ export function createStore(router, me, issuers) {
          },
 
          changeServiceState(context, { appName, serviceName }) {
-            const service = context.state.apps[appName].find(service => service.name === serviceName);
+            const app = context.state.apps[appName];
+            const service = app?.services?.find(service => service.name === serviceName);
+            
+            if(!app || !service) {
+               console.warn(`Could not find service "${serviceName}" of app "${appName}"`);
+               return;
+            }
+
             let newStatus;
             if (service.state.status === 'running') {
                newStatus = 'paused';
