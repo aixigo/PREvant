@@ -41,6 +41,10 @@ a {
    pointer-events: none;
 }
 
+input.form-control {
+   padding: .28125rem !important;
+}
+
 .ra-ellipsis {
    overflow: hidden;
 
