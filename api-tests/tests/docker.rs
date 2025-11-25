@@ -1,10 +1,12 @@
 mod common;
 mod container;
 
-use crate::container::{PREvant, Traefik};
+use crate::container::{PREvant, Traefik, TraefikVersion};
 use container::{prevant_url, traefik_url};
 use log::Level;
 use reqwest::Url;
+use rstest::*;
+use uuid::Uuid;
 use std::{path::Path, str::FromStr};
 use testcontainers::{
     compose::DockerCompose,
@@ -13,10 +15,17 @@ use testcontainers::{
     ImageExt,
 };
 
+#[rstest]
 #[tokio::test]
-async fn should_deploy_nginx() {
+async fn should_deploy_nginx(
+    #[values(/* TraefikVersion::V1, */ TraefikVersion::V2, TraefikVersion::V3)]
+    traefik_version: TraefikVersion,
+) {
     let _ = env_logger::builder().is_test(true).try_init();
-    let traefik = Traefik::default()
+
+    let compose_project_name = Uuid::new_v4();
+    let traefik = Traefik::with_major_version(traefik_version)
+        .with_env_var("COMPOSE_PROJECT_NAME", compose_project_name.to_string())
         // TODO: somehow the mapping of ports is not deterministic: When this line is missing, the
         // container gets a random exposed port but querying the port is often but not always off
         // by one or two.
@@ -30,6 +39,7 @@ async fn should_deploy_nginx() {
         .await
         .expect("container should be available");
     let prevant = PREvant::default()
+        .with_env_var("COMPOSE_PROJECT_NAME", compose_project_name.to_string())
         .with_log_consumer(
             LoggingConsumer::new()
                 .with_stdout_level(Level::Debug)
@@ -77,7 +87,10 @@ async fn should_deploy_nginx_in_docker_compose_with_postgres() {
 #[tokio::test]
 async fn should_replicate_mariadb_with_replicated_env() {
     let _ = env_logger::builder().is_test(true).try_init();
-    let _traefik = Traefik::default()
+
+    let compose_project_name = Uuid::new_v4();
+    let _traefik = Traefik::with_major_version(TraefikVersion::V2)
+        .with_env_var("COMPOSE_PROJECT_NAME", compose_project_name.to_string())
         .with_log_consumer(
             LoggingConsumer::new()
                 .with_stdout_level(Level::Debug)
@@ -87,6 +100,7 @@ async fn should_replicate_mariadb_with_replicated_env() {
         .await
         .expect("container should be available");
     let prevant = PREvant::default()
+        .with_env_var("COMPOSE_PROJECT_NAME", compose_project_name.to_string())
         .with_log_consumer(
             LoggingConsumer::new()
                 .with_stdout_level(Level::Debug)

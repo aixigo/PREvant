@@ -142,7 +142,7 @@ paths:
                         "replicate": true
                      },
                      "WORDPRESS_CONFIG_EXTRA": {
-                        "value": "define('WP_HOME','http://localhost');\ndefine('WP_SITEURL','http://localhost/{{application.name}}/blog');",
+                        "value": "define('WP_HOME','http://localhost');\ndefine('WP_SITEURL','http://localhost/\{{application.name}}/blog');",
                         "replicate": true,
                         "templated": true
                      }
@@ -509,7 +509,7 @@ components:
                 type: boolean
             required:
               - value
-            example: { "value": "admin-{{application.name}}", "templated": true, "replicate": true }
+            example: { "value": "admin-\{{application.name}}", "templated": true, "replicate": true }
       description: Key value object of enviroment variables
       example:
         "MYSQL_USER": "admin"

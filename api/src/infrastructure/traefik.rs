@@ -1,7 +1,8 @@
-use crate::models::AppName;
+use crate::config::TraefikVersion;
+use crate::models::{AppName, Image};
 use pest::Parser;
 use serde_value::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::{fmt::Display, str::FromStr};
 use url::Url;
 
@@ -340,10 +341,7 @@ impl TraefikRouterRule {
                 Matcher::PathPrefix { paths: other_paths } => {
                     let mut has_path_prefixes = false;
                     for own_matches in self.matches.iter_mut() {
-                        if let Matcher::PathPrefix {
-                            paths: own_paths,
-                        } = own_matches
-                        {
+                        if let Matcher::PathPrefix { paths: own_paths } = own_matches {
                             has_path_prefixes = true;
 
                             *own_paths = own_paths
@@ -392,6 +390,74 @@ impl TraefikMiddleware {
             serde_value::Value::Map(m)
                 if m.get(&serde_value::Value::String(String::from("stripPrefix")))
                     .is_some())
+    }
+
+    pub fn to_key_value_spec(&self) -> Vec<(String, String)> {
+        let mut elements = Vec::new();
+        let mut path = VecDeque::new();
+
+        traverse_and_append(&mut elements, &self.spec, &mut path);
+
+        elements
+    }
+}
+
+fn traverse_and_append(
+    elements: &mut Vec<(String, String)>,
+    spec: &serde_value::Value,
+    path: &mut VecDeque<String>,
+) {
+    match spec {
+        Value::Unit => {}
+        Value::Option(Some(value)) => {
+            elements.push((path_to_dot_separated_string(path), value_to_string(value)));
+        }
+        Value::Map(btree_map) => {
+            for (k, v) in btree_map {
+                path.push_back(value_to_string(k));
+                traverse_and_append(elements, v, path);
+                path.pop_back();
+            }
+        }
+        value => {
+            elements.push((path_to_dot_separated_string(path), value_to_string(value)));
+        }
+    }
+}
+
+fn path_to_dot_separated_string(path: &VecDeque<String>) -> String {
+    path.iter()
+        .cloned()
+        .reduce(|acc, s| format!("{acc}.{s}"))
+        .unwrap_or_default()
+}
+
+fn value_to_string(value: &Value) -> String {
+    match value {
+        Value::Bool(v) => format!("{v}"),
+        Value::U8(v) => format!("{v}"),
+        Value::U16(v) => format!("{v}"),
+        Value::U32(v) => format!("{v}"),
+        Value::U64(v) => format!("{v}"),
+        Value::I8(v) => format!("{v}"),
+        Value::I16(v) => format!("{v}"),
+        Value::I32(v) => format!("{v}"),
+        Value::I64(v) => format!("{v}"),
+        Value::F32(v) => format!("{v}"),
+        Value::F64(v) => format!("{v}"),
+        Value::Char(v) => format!("{v}"),
+        Value::String(v) => format!("{v}"),
+        Value::Option(value) if value.is_some() => {
+            // SAFETY: match case is protected by is_some()
+            value_to_string(unsafe { value.as_ref().unwrap_unchecked() })
+        }
+        Value::Newtype(value) => value_to_string(value),
+        Value::Seq(values) => values
+            .iter()
+            .map(|v| value_to_string(v))
+            .reduce(|acc, s| format!("{acc},{s}"))
+            .unwrap_or_default(),
+        _ => String::new(),
     }
 }
 
@@ -506,6 +572,36 @@ impl Display for TraefikRouterRule {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraefikTLS {
     pub cert_resolver: String,
+}
+
+impl TryFrom<Image> for TraefikVersion {
+    type Error = String;
+
+    fn try_from(image: Image) -> std::result::Result<Self, Self::Error> {
+        let Some(tag) = image.tag() else {
+            return Err(format!("The image {image} must provide a tag"));
+        };
+
+        match tag.as_str() {
+            "v2" | "2" => Ok(Self::V2),
+            "v3" | "3" => Ok(Self::V3),
+            _ if tag.len() >= 2 => {
+                let tag = if tag.starts_with("v") {
+                    &tag[1..=2]
+                } else {
+                    &tag[0..=1]
+                };
+
+                match tag {
+                    "1." => Ok(Self::V1),
+                    "2." | "2-" => Ok(Self::V2),
+                    "3." | "3-" => Ok(Self::V3),
+                    _ => Err(format!("Unknown version tag in {image}")),
+                }
+            }
+            _ => Err(format!("Unknown version tag in {image}")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1121,5 +1217,58 @@ mod test {
         };
 
         assert!(!middleware.is_strip_prefix());
+    }
+
+    mod parse_traefik_version {
+        use crate::{config::TraefikVersion, models::Image};
+        use rstest::rstest;
+        use std::str::FromStr;
+
+        #[rstest]
+        #[case("2")]
+        #[case("v2")]
+        #[case("v2.11.31")]
+        #[case("v2-nano-server-ltsc2022")]
+        fn parse_v2(#[case] tag: &str) {
+            let img = Image::from_str(&format!("traefik:{tag}")).unwrap();
+            assert_eq!(TraefikVersion::try_from(img), Ok(TraefikVersion::V2));
+        }
+
+        #[rstest]
+        #[case("3")]
+        #[case("v3")]
+        #[case("v3.6.2")]
+        #[case("v3.6.2-nanoserver-ltsc2022")]
+        #[case("v3-nanoserver-ltsc2022")]
+        fn parse_v3(#[case] tag: &str) {
+            let img = Image::from_str(&format!("traefik:{tag}")).unwrap();
+            assert_eq!(TraefikVersion::try_from(img), Ok(TraefikVersion::V3));
+        }
+    }
+
+    mod middleware {
+        use super::*;
+
+        #[test]
+        fn to_key_value_spec() {
+            let middleware = TraefikMiddleware {
+                name: String::from("traefik-forward-auth"),
+                spec: serde_value::to_value(serde_json::json!({
+                    "forwardAuth": {
+                        "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                    }
+                }))
+                .unwrap(),
+            };
+
+            let kv_spec = middleware.to_key_value_spec();
+            assert_eq!(
+                kv_spec,
+                vec![(
+                    String::from("forwardAuth.address"),
+                    String::from("http://traefik-forward-auth.my-namespace.svc.cluster.local:4181")
+                )]
+            )
+        }
     }
 }

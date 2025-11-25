@@ -130,6 +130,12 @@ extreme: any future change must be backwards compatibility and this considers:
    the recent crates/libraries calling out to these API versions that are in
    maintenance and thus support for unmaintained API version may drop without
    any notice.
+4. Supported [Traefik] version:
+
+   | Backend    | Traefik v1                                                 | Traefik v2 | Traefik v3              |
+   |------------|------------------------------------------------------------|------------|-------------------------|
+   | Docker     | 🗸 (be aware that Traefik v1 stops working with Docker v29) | 🗸          | 🗸                       |
+   | Kubernetes | 🗴 (never implemented)                                      | 🗸          | 🗴 (not yet implemented) |
 
 # Development
 
@@ -154,3 +160,4 @@ The talk delivered at the conference is available on [YouTube](http://www.youtub
 [oci-image-spec]: https://specs.opencontainers.org/image-spec/
 [kafka]: https://kafka.apache.org
 [postgres]: https://www.postgresql.org
+[Traefik]: https://traefik.io/

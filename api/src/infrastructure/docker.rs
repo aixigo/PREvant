@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::config::{Config, ContainerConfig};
+use crate::config::{Config, ContainerConfig, TraefikVersion};
 use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
 use crate::deployment::DeploymentUnit;
 use crate::infrastructure::{
@@ -137,35 +137,78 @@ impl DockerInfrastructure {
         Ok(network_id)
     }
 
-    async fn connect_traefik(&self, network_id: &str) -> Result<(), BollardError> {
+    async fn traefik_container(&self) -> Result<Option<ContainerInspectResponse>, BollardError> {
         let docker = Docker::connect_with_socket_defaults()?;
 
-        let containers = docker
+        let mut containers = docker
             .list_containers(None::<ListContainersOptions>)
-            .await?;
-
-        let traefik_container_id = containers
+            .await?
             .into_iter()
-            .find(|c| {
+            .filter(|c| {
                 c.image
                     .as_ref()
                     .is_some_and(|image| image.contains("traefik"))
-            })
-            .and_then(|c| c.id);
+            });
 
-        if let Some(id) = traefik_container_id {
-            if let Err(e) = docker
-                .connect_network(
-                    network_id,
-                    NetworkConnectRequest {
-                        container: Some(id),
-                        ..Default::default()
-                    },
-                )
-                .await
-            {
-                debug!("Cannot traefik: {e}");
+        let compose_project_name = match std::env::var("COMPOSE_PROJECT_NAME") {
+            Ok(compose_project_name) => format!("COMPOSE_PROJECT_NAME={compose_project_name}"),
+            Err(_) => {
+                let Some(c) = containers.next() else {
+                    return Ok(None);
+                };
+
+                return docker
+                    .inspect_container(
+                        c.id.expect("There should be an ID").as_str(),
+                        None::<InspectContainerOptions>,
+                    )
+                    .await
+                    .map(Some);
             }
+        };
+
+        for c in containers {
+            let inspection = docker
+                .inspect_container(
+                    c.id.expect("There should be an ID").as_str(),
+                    None::<InspectContainerOptions>,
+                )
+                .await?;
+
+            if let Some(env) = inspection
+                .config
+                .as_ref()
+                .and_then(|config| config.env.as_ref())
+            {
+                if let Some(_cpn) = env.iter().find(|e| *e == &compose_project_name) {
+                    return Ok(Some(inspection));
+                }
+            }
+        }
+
+        log::warn!("PREvant is configured with {compose_project_name} but there is no traefik container with a matching environment variable.");
+
+        Ok(None)
+    }
+
+    async fn connect_traefik(
+        &self,
+        traefik_id: &str,
+        network_id: &str,
+    ) -> Result<(), BollardError> {
+        let docker = Docker::connect_with_socket_defaults()?;
+
+        if let Err(e) = docker
+            .connect_network(
+                network_id,
+                NetworkConnectRequest {
+                    container: Some(traefik_id.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            debug!("Cannot traefik: {e}");
         }
 
         Ok(())
@@ -245,6 +288,7 @@ impl DockerInfrastructure {
         container_config: &ContainerConfig,
         existing_volumes: &VolumeListResponse,
         owners: &HashSet<Owner>,
+        traefik_version: TraefikVersion,
     ) -> Result<ContainerInspectResponse, DockerInfrastructureError> {
         let docker = Docker::connect_with_socket_defaults()?;
         let service_name = service.service_name();
@@ -312,7 +356,7 @@ impl DockerInfrastructure {
         }
 
         info!(
-            "Creating new review app container for {app_name:?}: service={service_name:?} with image={service_image:?} ({:?})",
+            "Creating new review app container for {app_name}: service={service_name} with image={service_image} ({})",
             service.container_type(),
         );
 
@@ -325,6 +369,7 @@ impl DockerInfrastructure {
             container_config,
             &host_config_binds,
             owners,
+            traefik_version,
         );
 
         let container_info = docker
@@ -376,14 +421,15 @@ impl DockerInfrastructure {
         Ok(container_details)
     }
 
-    fn create_container_options<'a>(
-        app_name: &'a str,
-        service_config: &'a ServiceConfig,
-        container_config: &'a ContainerConfig,
-        host_config_binds: &'a [String],
+    fn create_container_options(
+        app_name: &AppName,
+        service: &DeployableService,
+        container_config: &ContainerConfig,
+        host_config_binds: &[String],
         owners: &HashSet<Owner>,
+        traefik_version: TraefikVersion,
     ) -> bollard::models::ContainerCreateBody {
-        let env = service_config.env().map(|env| {
+        let env = service.env().map(|env| {
             env.iter()
                 .map(|v| format!("{}={}", v.key(), v.value().unsecure()))
                 .collect::<Vec<String>>()
@@ -391,14 +437,55 @@ impl DockerInfrastructure {
 
         let mut labels: HashMap<String, String> = HashMap::new();
 
-        let traefik_frontend = format!(
-            "PathPrefixStrip: /{app_name}/{service_name}/; PathPrefix:/{app_name}/{service_name}/;",
-            app_name = app_name,
-            service_name = service_config.service_name()
-        );
-        labels.insert("traefik.frontend.rule".to_string(), traefik_frontend);
+        match traefik_version {
+            TraefikVersion::V1 => {
+                let traefik_frontend = format!(
+                    "PathPrefixStrip: /{app_name}/{service_name}/; PathPrefix:/{app_name}/{service_name}/;",
+                    app_name = app_name,
+                    service_name = service.service_name()
+                );
+                labels.insert("traefik.frontend.rule".to_string(), traefik_frontend);
+            }
+            TraefikVersion::V2 | TraefikVersion::V3 => {
+                if let Some(route) = service.ingress_route().routes().iter().next() {
+                    labels.insert(
+                        format!(
+                            "traefik.http.routers.{service_name}.rule",
+                            service_name = service.service_name()
+                        ),
+                        route.rule().to_string(),
+                    );
 
-        if let Some(config_labels) = service_config.labels() {
+                    let mut applied_middle_wares = String::new();
+                    for middleware in route.middlewares() {
+                        for (key, value) in middleware.to_key_value_spec() {
+                            if !applied_middle_wares.is_empty() {
+                                applied_middle_wares += ",";
+                            }
+                            applied_middle_wares += &format!("{}@docker", middleware.name);
+                            labels.insert(
+                                format!(
+                                    "traefik.http.middlewares.{}.{}",
+                                    middleware.name,
+                                    key.to_lowercase()
+                                ),
+                                value,
+                            );
+                        }
+                    }
+
+                    labels.insert(
+                        format!(
+                            "traefik.http.routers.{service_name}.middlewares",
+                            service_name = service.service_name()
+                        ),
+                        applied_middle_wares,
+                    );
+                }
+            }
+        };
+
+        if let Some(config_labels) = service.labels() {
             for (k, v) in config_labels {
                 labels.insert(k.to_string(), v.to_string());
             }
@@ -407,11 +494,11 @@ impl DockerInfrastructure {
         labels.insert(APP_NAME_LABEL.to_string(), app_name.to_string());
         labels.insert(
             SERVICE_NAME_LABEL.to_string(),
-            service_config.service_name().to_string(),
+            service.service_name().to_string(),
         );
-        let container_type = service_config.container_type().to_string();
+        let container_type = service.container_type().to_string();
         labels.insert(CONTAINER_TYPE_LABEL.to_string(), container_type);
-        let image_name = service_config.image().to_string();
+        let image_name = service.image().to_string();
         labels.insert(IMAGE_LABEL.to_string(), image_name);
 
         if !owners.is_empty() {
@@ -421,7 +508,7 @@ impl DockerInfrastructure {
             );
         }
 
-        let replicated_env = service_config
+        let replicated_env = service
             .env()
             .and_then(super::replicated_environment_variable_to_json)
             .map(|value| value.to_string());
@@ -435,7 +522,7 @@ impl DockerInfrastructure {
             .map(|mem| mem.as_u64() as i64);
 
         bollard::models::ContainerCreateBody {
-            image: Some(service_config.image().to_string()),
+            image: Some(service.image().to_string()),
             env,
             labels: Some(labels),
             host_config: Some(HostConfig {
@@ -577,8 +664,8 @@ impl DockerInfrastructure {
         let image = config.image();
 
         info!(
-            "Pulling {image:?} for {:?} of app {app_name:?}",
-            config.service_name()
+            "Pulling {image} for {service_name} of app {app_name}",
+            service_name = config.service_name()
         );
 
         let pull_results = pull(image, &self.config).await?;
@@ -741,7 +828,28 @@ impl Infrastructure for DockerInfrastructure {
         let services = deployment_unit.services();
         let network_id = self.create_or_get_network_id(app_name).await?;
 
-        self.connect_traefik(&network_id).await?;
+        let traefik_container = self.traefik_container().await?;
+        if let Some(traefik_container) = traefik_container.as_ref() {
+            self.connect_traefik(
+                traefik_container
+                    .id
+                    .as_ref()
+                    .expect("Traefik container should have an ID"),
+                &network_id,
+            )
+            .await?;
+        }
+
+        let traefik_version = self.config.traefik.version.unwrap_or_else(|| {
+            traefik_container
+                .as_ref()
+                .and_then(|c| c.config.as_ref())
+                .and_then(|config| config.image.as_ref())
+                .and_then(|traefik_image| Image::from_str(traefik_image).ok())
+                .and_then(|traefik_image| TraefikVersion::try_from(traefik_image).ok())
+                .unwrap_or(TraefikVersion::V1)
+        });
+
         let existing_volumes = Self::fetch_existing_volumes(app_name).await?;
         let mut futures = services
             .iter()
@@ -753,6 +861,7 @@ impl Infrastructure for DockerInfrastructure {
                     container_config,
                     &existing_volumes,
                     deployment_unit.owners(),
+                    traefik_version,
                 )
             })
             .map(Box::pin)
@@ -1266,6 +1375,7 @@ impl From<ServiceError> for DockerInfrastructureError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::TraefikIngressRoute;
     use crate::models::{Environment, EnvironmentVariable};
     use crate::sc;
     use bollard::models::ContainerState;
@@ -1379,11 +1489,17 @@ mod tests {
         let config = sc!("db", "mariadb:10.3.17");
 
         let options = DockerInfrastructure::create_container_options(
-            &String::from("master"),
-            &config,
+            &AppName::master(),
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
+                Vec::new(),
+            ),
             &ContainerConfig::default(),
             &Vec::new(),
             &HashSet::new(),
+            TraefikVersion::V1,
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1417,11 +1533,17 @@ mod tests {
         )])));
 
         let options = DockerInfrastructure::create_container_options(
-            &String::from("master"),
-            &config,
+            &AppName::master(),
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
+                Vec::new(),
+            ),
             &ContainerConfig::default(),
             &Vec::new(),
             &HashSet::new(),
+            TraefikVersion::V1,
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1460,11 +1582,17 @@ mod tests {
         ])));
 
         let options = DockerInfrastructure::create_container_options(
-            &String::from("master"),
-            &config,
+            &AppName::master(),
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
+                Vec::new(),
+            ),
             &ContainerConfig::default(),
             &Vec::new(),
             &HashSet::new(),
+            TraefikVersion::V1,
         );
 
         let json = serde_json::to_value(&options).unwrap();
@@ -1587,11 +1715,17 @@ mod tests {
         let config = sc!("db", "mariadb:10.3.17");
 
         let options = DockerInfrastructure::create_container_options(
-            &String::from("master"),
-            &config,
+            &AppName::master(),
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
+                Vec::new(),
+            ),
             &ContainerConfig::default(),
             &[String::from("test-volume:/var/lib/mysql")],
             &HashSet::new(),
+            TraefikVersion::V1,
         );
 
         let json = serde_json::to_value(&options).unwrap();

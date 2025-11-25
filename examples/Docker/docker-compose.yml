@@ -2,21 +2,24 @@ services:
   prevant:
     image: aixigo/prevant
     labels:
-      traefik.frontend.rule: 'PathPrefix:/;'
+      traefik.http.routers.prevant.rule: 'PathPrefix(`/`)'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./prevant-config.toml:/app/config.toml
     environment:
       - POSTGRES_PASSWORD
+      - COMPOSE_PROJECT_NAME
     depends_on:
       - db
 
   traefik:
-    image: traefik:v1.7-alpine
-    command: --api --docker --logLevel=INFO
+    image: traefik:v3
+    command: --api --api.insecure --providers.docker --log.level=INFO
+    environment:
+      - COMPOSE_PROJECT_NAME
     ports:
-      - "80:80"
-      - "8080:8080"
+      - "8080:80"
+      - "8081:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 

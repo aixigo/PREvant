@@ -246,7 +246,7 @@ impl K8sDeploymentUnit {
                 );
             }
 
-            for doc in serde_yaml::Deserializer::from_str(&stdout) {
+            for doc in serde_norway::Deserializer::from_str(&stdout) {
                 match DynamicObject::deserialize(doc) {
                     Ok(mut dy) => {
                         dy.metadata.namespace = Some(app_name.to_rfc1123_namespace_id());
