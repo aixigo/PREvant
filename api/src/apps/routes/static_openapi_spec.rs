@@ -7,7 +7,7 @@ use crate::{
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
 use rocket::State;
-use serde_yaml::Value;
+use serde_norway::Value;
 use std::sync::Arc;
 
 #[rocket::get("/<app_name>/static-open-api-spec/<service_name>", rank = 1)]
@@ -72,16 +72,16 @@ pub(super) async fn static_open_api_spec(
                 .detail(e.to_string())
         })?;
 
-    let mut v: Value = serde_yaml::from_str(&body).map_err(|e| {
+    let mut v: Value = serde_norway::from_str(&body).map_err(|e| {
         HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR).detail(e.to_string())
     })?;
 
-    v["servers"] = serde_yaml::from_str(&format!(
+    v["servers"] = serde_norway::from_str(&format!(
         r#"
         - url: {public_service_url}
     "#
     ))
     .unwrap();
 
-    Ok(serde_yaml::to_string(&v).unwrap())
+    Ok(serde_norway::to_string(&v).unwrap())
 }

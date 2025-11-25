@@ -232,6 +232,8 @@ pub struct Config {
     pub api_access: ApiAccess,
     #[serde(default, deserialize_with = "Config::deserialize_pg_options")]
     pub database: Option<PgConnectOptions>,
+    #[serde(default)]
+    pub traefik: TraefikConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -597,6 +599,31 @@ impl Service {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Deserialize, Debug, Eq, PartialEq)]
+pub enum TraefikVersion {
+    #[serde(rename = "v1")]
+    V1,
+    #[serde(rename = "v2")]
+    V2,
+    #[serde(rename = "v3")]
+    V3,
+}
+
+impl Display for TraefikVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "v{}", match self {
+            TraefikVersion::V1 => 1,
+            TraefikVersion::V2 => 2,
+            TraefikVersion::V3 => 3,
+        })
+    }
+}
+
+#[derive(Clone, Default, Deserialize)]
+pub struct TraefikConfig {
+    pub version: Option<TraefikVersion>,
 }
 
 #[derive(Debug, thiserror::Error)]

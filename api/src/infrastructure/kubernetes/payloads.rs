@@ -548,6 +548,9 @@ pub fn deployment_payload(
             ..Default::default()
         });
 
+    // TODO service.labels() is not considered deprecated anymore and we should annotate the
+    // deployment with lables.
+
     let labels = BTreeMap::from([
         (APP_NAME_LABEL.to_string(), app_name.to_string()),
         (

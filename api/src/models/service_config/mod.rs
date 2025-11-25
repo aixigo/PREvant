@@ -99,12 +99,10 @@ impl ServiceConfig {
         }
     }
 
-    #[deprecated]
     pub fn set_labels(&mut self, labels: Option<BTreeMap<String, String>>) {
         self.labels = labels;
     }
 
-    #[deprecated]
     pub fn labels<'a, 'b: 'a>(&'b self) -> Option<&'a BTreeMap<String, String>> {
         match &self.labels {
             None => None,
