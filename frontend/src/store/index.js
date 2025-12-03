@@ -164,7 +164,7 @@ export function createStore(router, me, issuers) {
 
          deleteApp(state, appNameOrResponseError) {
             if (appNameOrResponseError.type) {
-               state.appsError = appNameOrResponseError;
+               state.appsError = enrichDeletionError(appNameOrResponseError);
             }
             else {
                delete state.apps[appNameOrResponseError];
@@ -174,7 +174,7 @@ export function createStore(router, me, issuers) {
 
          addApp(state, { appName, servicesOrResponseError }) {
             if (servicesOrResponseError.type) {
-               state.appsError = servicesOrResponseError;
+               state.appsError = enrichDuplicationError(servicesOrResponseError);
             }
             else {
                state.apps[appName] = servicesOrResponseError;
@@ -194,7 +194,14 @@ export function createStore(router, me, issuers) {
          },
 
          updateServiceStatus(state, { appName, serviceName, serviceStatus }) {
-            const service = state.apps[appName].find(service => service.name == serviceName);
+            const app = state.apps[appName];
+            const service = app?.services?.find(service => service.name === serviceName);
+            
+            if(!app || !service) {
+               console.warn(`Could not find service "${serviceName}" of app "${appName}"`);
+               return;
+            }
+
             service.state.status = serviceStatus;
          },
 
@@ -248,7 +255,14 @@ export function createStore(router, me, issuers) {
          },
 
          changeServiceState(context, { appName, serviceName }) {
-            const service = context.state.apps[appName].find(service => service.name === serviceName);
+            const app = context.state.apps[appName];
+            const service = app?.services?.find(service => service.name === serviceName);
+            
+            if(!app || !service) {
+               console.warn(`Could not find service "${serviceName}" of app "${appName}"`);
+               return;
+            }
+
             let newStatus;
             if (service.state.status === 'running') {
                newStatus = 'paused';
@@ -382,4 +396,27 @@ async function fetchAndPoll(url, init, problemType, problemTitle) {
       console.error('Error triggering or polling API:', error);
       throw error;
    }
+}
+
+function enrichDuplicationError(error) {
+  return enrichError(error, {
+    403: "You need to be logged in to duplicate apps."
+  });
+}
+
+function enrichDeletionError(error) {
+  return enrichError(error, {
+    403: "You need to be logged in to shutdown apps."
+  });
+}
+
+/**
+ * Takes a problem/json error object and enriches it with status code
+ * depenend detail if not present already
+ */
+function enrichError(error, statusSpecificOverrides = {}) {
+  return {
+    ...error,
+    detail: error.detail ?? statusSpecificOverrides[error.status] ?? "Unknown Error",
+  };
 }

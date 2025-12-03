@@ -67,7 +67,6 @@
             :key="reviewApp.name"
             :review-app="reviewApp"
             :showOwners="issuers != null"
-            v-on:showLogs="showServiceLogs"
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>

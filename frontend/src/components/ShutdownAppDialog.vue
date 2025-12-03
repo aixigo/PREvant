@@ -35,7 +35,12 @@
                   class="form-control"
                   placeholder="Enter app name"
                   v-model="confirmedAppName"
+                  :disabled="!hasWritePermissions"
                   @keyup="keyPressed">
+         </div>
+
+         <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
+            You need to be logged in to shutdown apps.
          </div>
       </template>
       <template v-slot:footer>
@@ -43,7 +48,7 @@
                type="button"
                class="btn btn-outline-danger"
                @click="deleteApp()"
-               :disabled="confirmedAppName !== appName">
+               :disabled="!hasWritePermissions || confirmedAppName !== appName">
             Confirm
          </button>
       </template>
@@ -51,9 +56,17 @@
 </template>
 
 <script>
+   import { useAuth } from '../composables/useAuth';
    import Dialog from './Dialog.vue';
 
    export default {
+      setup() {
+         const { hasWritePermissions } = useAuth();
+
+         return {
+            hasWritePermissions
+         };
+      },
       data() {
          return {
             confirmedAppName: ''

@@ -32,14 +32,19 @@
                   type="name"
                   class="form-control"
                   placeholder="Enter app name"
-                  v-model="newAppName"
+                  v-model.trim="newAppName"
+                  :disabled="!hasWritePermissions"
                   @keyup="keyPressed">
+         </div>
+         <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
+            You need to be logged in to duplicate apps.
          </div>
       </template>
       <template v-slot:footer>
          <button
                type="button"
                class="btn btn-outline-primary"
+               :disabled="!hasWritePermissions || newAppName.length === 0"
                @click="duplicateApp()">
             Duplicate
          </button>
@@ -48,9 +53,17 @@
 </template>
 
 <script>
+   import { useAuth } from '../composables/useAuth';
    import Dialog from './Dialog.vue';
 
    export default {
+      setup() {
+         const { hasWritePermissions } = useAuth();
+
+         return {
+            hasWritePermissions
+         };
+      },
       data() {
          return {
             newAppName: ''
