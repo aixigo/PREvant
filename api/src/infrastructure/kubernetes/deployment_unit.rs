@@ -77,6 +77,17 @@ impl K8sDeploymentUnit {
             None => None,
         };
 
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "Bootstrapping {app_name} with {}",
+                bootstrapping_containers
+                    .iter()
+                    .map(|bc| bc.image.to_string())
+                    .reduce(|acc, s| format!("{acc}.{s}"))
+                    .unwrap_or_default()
+            );
+        }
+
         let containers = bootstrapping_containers
             .iter()
             .enumerate()
@@ -94,6 +105,7 @@ impl K8sDeploymentUnit {
         let pod_name = format!(
             "{}-bootstrap-{}",
             app_name.to_rfc1123_namespace_id(),
+            // TODO pass task id
             uuid::Uuid::new_v4()
         );
 
@@ -136,31 +148,11 @@ impl K8sDeploymentUnit {
             }
         }
 
-        loop {
-            let pod = api.get_status(&pod_name).await?;
-
-            if let Some(phase) = pod.status.and_then(|status| status.phase) {
-                match phase.as_str() {
-                    "Running" | "Succeeded" => {
-                        break;
-                    }
-                    "Failed" | "Unknown" => {
-                        return Err(KubernetesInfrastructureError::BootstrapContainerFailed {
-                            pod_name,
-                            app_name: app_name.clone(),
-                        }
-                        .into());
-                    }
-                    phase => {
-                        if log::log_enabled!(log::Level::Trace) {
-                            trace!("Boot strapping pod {pod_name} for {app_name} still not in running phase. Currently in {phase}.");
-                        }
-                    }
-                }
-            }
-
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        }
+        Self::wait_for_running_pod(app_name, &pod_name, &api)
+            .await
+            .inspect_err(|err| {
+                log::error!("Cannot bootstrap {app_name}: {err}");
+            })?;
 
         let mut log_streams = Vec::with_capacity(bootstrapping_containers.len());
 
@@ -179,6 +171,53 @@ impl K8sDeploymentUnit {
         }
 
         Ok((pod_name, log_streams))
+    }
+
+    async fn wait_for_running_pod(
+        app_name: &AppName,
+        pod_name: &str,
+        api: &Api<Pod>,
+    ) -> Result<()> {
+        let interval = std::time::Duration::from_secs(2);
+        let mut interval_timer = tokio::time::interval(interval);
+        let start_time = tokio::time::Instant::now();
+        let wait_timeout = std::time::Duration::from_secs(60);
+
+        loop {
+            tokio::select! {
+                _ = interval_timer.tick() => {
+                    let pod = api.get_status(&pod_name).await?;
+
+                    if let Some(phase) = pod.status.and_then(|status| status.phase) {
+                        match phase.as_str() {
+                            "Running" | "Succeeded" => {
+                                return Ok(());
+                            }
+                            "Failed" | "Unknown" => {
+                                return Err(KubernetesInfrastructureError::BootstrapContainerFailed {
+                                    pod_name: pod_name.to_string(),
+                                    app_name: app_name.clone(),
+                                }
+                                .into());
+                            }
+                            phase => {
+                                if log::log_enabled!(log::Level::Trace) {
+                                    trace!("Boot strapping pod {pod_name} for {app_name} still not in running phase. Currently in {phase}.");
+                                }
+                            }
+                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(start_time + wait_timeout) => {
+                    log::debug!("Timeout for bootstrapping the application {app_name} reached, stopping querying the pod status");
+                    return Err(KubernetesInfrastructureError::BootstrapContainerFailed {
+                        pod_name: pod_name.to_string(),
+                        app_name: app_name.clone(),
+                    }
+                    .into());
+                }
+            }
+        }
     }
 
     pub(super) async fn bootstrap(
