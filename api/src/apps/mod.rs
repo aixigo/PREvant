@@ -420,7 +420,7 @@ impl AppsService {
 }
 
 /// Defines error cases for the [`Apps`](Apps)
-#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum AppsServiceError {
     #[error("Cannot find app {app_name}.")]
     AppNotFound { app_name: AppName },

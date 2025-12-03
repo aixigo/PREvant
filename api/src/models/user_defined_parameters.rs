@@ -35,13 +35,18 @@ impl UserDefinedParameters {
         self
     }
 
-    fn merge_json(a: &mut Value, b: Value) {
+    pub fn merge_json(a: &mut Value, b: Value) {
         match (a, b) {
             (a @ &mut Value::Object(_), Value::Object(b)) => {
-                let a = a.as_object_mut().unwrap();
+                // SAFETY: this case is protected by the match case
+                let a = unsafe { a.as_object_mut().unwrap_unchecked() };
                 for (k, v) in b {
                     Self::merge_json(a.entry(k).or_insert(Value::Null), v);
                 }
+            }
+            (a @ &mut Value::Array(_), Value::Array(b)) => {
+                // SAFETY: this case is protected by the match case
+                unsafe { a.as_array_mut().unwrap_unchecked() }.extend(b);
             }
             (a, b) => *a = b,
         }

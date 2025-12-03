@@ -132,7 +132,7 @@ pub struct DeploymentUnitBuilder<Stage> {
     stage: Stage,
 }
 
-#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
+#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize, PartialEq)]
 pub enum DeploymentTemplatingError {
     #[error("Failed to parse traefik rule ({raw_rule}): {err}")]
     FailedToParseTraefikRule { raw_rule: String, err: String },
@@ -470,10 +470,13 @@ impl DeploymentUnitBuilder<WithUserInformation> {
                 });
 
         for companion in service_companions_of_request.iter() {
-            services
+            let service = services
                 .get_mut(companion.templated_companion.service_name())
-                .unwrap()
-                .merge_with(&companion.templated_companion);
+                .unwrap();
+            service.raw_service_config = service
+                .raw_service_config
+                .clone()
+                .merge_with(companion.templated_companion.clone());
         }
 
         let image_infos = &self.stage.image_infos;
@@ -519,10 +522,13 @@ impl DeploymentUnitBuilder<WithUserInformation> {
 
             // If a custom application companion was deployed, its config needs to be merged
             // with the companion config
-            let existing_config = services.get_mut(companion_config.service_name());
+            let mut existing_config = services.get_mut(companion_config.service_name());
 
-            if let Some(existing_strategy) = existing_config {
-                existing_strategy.merge_with(&companion_config);
+            if let Some(existing_strategy) = existing_config.as_mut() {
+                existing_strategy.raw_service_config = existing_strategy
+                    .raw_service_config
+                    .clone()
+                    .merge_with(companion_config);
             } else {
                 services.insert(
                     companion_config.service_name().clone(),

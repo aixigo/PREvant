@@ -149,8 +149,8 @@ impl ServiceConfig {
 
     /// Copy labels, envs and files from other into self.
     /// If something is defined in self and other, self has precedence.
-    pub fn merge_with(&mut self, other: &Self) {
-        if let Some(env) = &other.env {
+    pub fn merge_with(mut self, mut other: Self) -> Self {
+        if let Some(env) = other.env {
             self.env = match self.env.take() {
                 Some(mut self_env) => {
                     for env in env.iter() {
@@ -161,17 +161,31 @@ impl ServiceConfig {
                     }
                     Some(self_env)
                 }
-                None => Some(env.clone()),
+                None => Some(env),
             }
         }
 
-        let mut files = other.files.as_ref().cloned().unwrap_or_default();
-        files.extend(self.files.as_ref().cloned().unwrap_or_default());
-        self.files = Some(files);
+        if let Some(mut files) = other.files.take() {
+            self.files = match self.files.take() {
+                Some(self_files) => {
+                    files.extend(self_files);
+                    Some(files)
+                }
+                None => Some(files),
+            }
+        }
 
-        let mut labels = other.labels.as_ref().cloned().unwrap_or_default();
-        labels.extend(self.labels.as_ref().cloned().unwrap_or_default());
-        self.labels = Some(labels);
+        if let Some(mut labels) = other.labels.take() {
+            self.labels = match self.labels.take() {
+                Some(self_labels) => {
+                    labels.extend(self_labels);
+                    Some(labels)
+                }
+                None => Some(labels),
+            }
+        }
+
+        self
     }
 }
 
@@ -304,7 +318,7 @@ mod tests {
             files = ()
         );
 
-        config.merge_with(&config2);
+        config = config.merge_with(config2);
 
         assert_eq!(config.labels().unwrap().len(), 3);
         assert_eq!(
@@ -335,7 +349,7 @@ mod tests {
             env = ("VAR_1" => "efgh", "VAR_3" => "1234")
         );
 
-        config.merge_with(&config2);
+        config = config.merge_with(config2);
 
         let env = config.env().unwrap();
         assert_eq!(env.iter().count(), 3);
@@ -379,7 +393,7 @@ mod tests {
             files = ("/etc/mysql/my.cnf" => "EFGH", "/etc/test.conf" => "5678")
         );
 
-        config.merge_with(&config2);
+        config = config.merge_with(config2);
 
         assert_eq!(config.files().expect("No value found").len(), 3);
         assert_eq!(

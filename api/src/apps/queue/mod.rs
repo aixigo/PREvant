@@ -1,4 +1,4 @@
-use super::{AppsService, AppsServiceError};
+use crate::apps::{queue::task::AppTask, AppsService, AppsServiceError};
 use crate::config::Config;
 use crate::models::{App, AppName, AppStatusChangeId, Owner, ServiceConfig};
 use anyhow::Result;
@@ -16,6 +16,7 @@ use tokio::{
 };
 
 mod postgres;
+mod task;
 
 pub struct AppProcessingQueue {}
 
@@ -202,7 +203,12 @@ impl AppTaskQueueConsumer {
         }
 
         self.db
-            .execute_task(async |task| {
+            .execute_tasks(async |tasks| {
+                let Some(task) = tasks.into_iter().reduce(|acc, e| acc.merge_with(e)) else {
+                    panic!("tasks must not be empty");
+                };
+                let status_id = task.status_id().clone();
+
                 if log::log_enabled!(log::Level::Debug) {
                     log::debug!(
                         "Processing task {} for {}.",
@@ -222,20 +228,23 @@ impl AppTaskQueueConsumer {
                         if log::log_enabled!(log::Level::Debug) {
                             log::debug!("Creating or updating app {app_name}.");
                         }
-                        apps.create_or_update(
-                            &app_name,
-                            replicate_from,
-                            &service_configs,
-                            owners,
-                            user_defined_parameters,
+                        (
+                            status_id,
+                            apps.create_or_update(
+                                &app_name,
+                                replicate_from,
+                                &service_configs,
+                                owners,
+                                user_defined_parameters,
+                            )
+                            .await,
                         )
-                        .await
                     }
                     AppTask::Delete { app_name, .. } => {
                         if log::log_enabled!(log::Level::Debug) {
                             log::debug!("Deleting app {app_name}.");
                         }
-                        apps.delete_app(&app_name).await
+                        (status_id, apps.delete_app(&app_name).await)
                     }
                 }
             })
@@ -248,39 +257,7 @@ impl AppTaskQueueConsumer {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(untagged)]
-enum AppTask {
-    CreateOrUpdate {
-        app_name: AppName,
-        status_id: AppStatusChangeId,
-        replicate_from: Option<AppName>,
-        service_configs: Vec<ServiceConfig>,
-        owners: Vec<Owner>,
-        user_defined_parameters: Option<serde_json::Value>,
-    },
-    Delete {
-        status_id: AppStatusChangeId,
-        app_name: AppName,
-    },
-}
-
-impl AppTask {
-    fn app_name(&self) -> &AppName {
-        match self {
-            AppTask::CreateOrUpdate { app_name, .. } => app_name,
-            AppTask::Delete { app_name, .. } => app_name,
-        }
-    }
-    fn status_id(&self) -> &AppStatusChangeId {
-        match self {
-            AppTask::CreateOrUpdate { status_id, .. } => status_id,
-            AppTask::Delete { status_id, .. } => status_id,
-        }
-    }
-}
-
-pub enum AppTaskStatus {
+enum AppTaskStatus {
     New,
     InProcess,
     Done((DateTime<Utc>, std::result::Result<App, AppsServiceError>)),
@@ -345,16 +322,22 @@ impl AppTaskQueueDB {
         }
     }
 
-    async fn execute_task<F, Fut>(&self, f: F) -> Result<()>
+    async fn execute_tasks<F, Fut>(&self, f: F) -> Result<()>
     where
-        F: FnOnce(AppTask) -> Fut,
-        Fut: Future<Output = std::result::Result<App, AppsServiceError>>,
+        F: FnOnce(Vec<AppTask>) -> Fut,
+        Fut: Future<
+            Output = (
+                AppStatusChangeId,
+                std::result::Result<App, AppsServiceError>,
+            ),
+        >,
     {
         match self {
             AppTaskQueueDB::InMemory(mutex) => {
                 let task = {
                     let mut queue = mutex.lock().await;
 
+                    // TODO: we should process multiple tasks here too
                     let Some(task) = queue
                         .iter_mut()
                         .find(|(_, s)| matches!(s, AppTaskStatus::New))
@@ -368,7 +351,7 @@ impl AppTaskQueueDB {
                 };
 
                 let status_id = *task.status_id();
-                let result = f(task).await;
+                let (task_id, result) = f(vec![task]).await;
 
                 let mut queue = mutex.lock().await;
                 let Some(task) = queue
@@ -378,11 +361,12 @@ impl AppTaskQueueDB {
                     anyhow::bail!("Cannot update {status_id} in queue which should be present");
                 };
 
+                assert!(task_id == *task.0.status_id());
                 task.1 = AppTaskStatus::Done((Utc::now(), result));
 
                 Ok(())
             }
-            AppTaskQueueDB::DB(db) => db.execute_task(f).await,
+            AppTaskQueueDB::DB(db) => db.execute_tasks(f).await,
         }
     }
 
