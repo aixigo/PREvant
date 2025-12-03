@@ -119,27 +119,37 @@ impl PostgresAppTaskQueueDB {
         sqlx::query_as::<
             _,
             (
-                sqlx::types::Uuid,
+                Option<sqlx::types::Json<RawApp>>,
+                Option<sqlx::types::Json<AppsServiceError>>,
                 Option<sqlx::types::Json<RawApp>>,
                 Option<sqlx::types::Json<AppsServiceError>>,
             ),
         >(
             r#"
-            SELECT id, result_success, result_error
-            FROM app_task
-            WHERE id = $1
-              AND status = 'done'
+            SELECT a.result_success, a.result_error, m.result_success, m.result_error
+            FROM app_task a
+                 LEFT OUTER JOIN app_task m
+                 ON a.executed_and_merged_with = m.id
+            WHERE a.id = $1
+              AND a.status = 'done'
             "#,
         )
         .bind(status_id.as_uuid())
         .fetch_optional(&mut *connection)
         .await
-        .inspect_err(|err| log::error!("Cannot peek result: {err}"))
+        .inspect_err(|err| log::error!("Cannot peek result for {status_id}: {err}"))
         .ok()?
-        .map(|(_id, app, error)| {
-            match (app.map(|app| app.0), error.map(|error| error.0)) {
-                (Some(app), None) => Ok(app.into()),
-                (None, Some(err)) => Err(err),
+        .map(|(app, error, merged_app, merged_error)| {
+            match (
+                app.map(|app| app.0),
+                error.map(|error| error.0),
+                merged_app.map(|app| app.0),
+                merged_error.map(|error| error.0),
+            ) {
+                (Some(app), None, None, None) => Ok(app.into()),
+                (None, Some(err), None, None) => Err(err),
+                (None, None, Some(app), None) => Ok(app.into()),
+                (None, None, None, Some(err)) => Err(err),
                 _ => unreachable!(
                     "There should be either a result or an error stored in the database"
                 ),
@@ -147,10 +157,15 @@ impl PostgresAppTaskQueueDB {
         })
     }
 
-    pub async fn execute_task<F, Fut>(&self, f: F) -> Result<()>
+    pub async fn execute_tasks<F, Fut>(&self, f: F) -> Result<()>
     where
-        F: FnOnce(AppTask) -> Fut,
-        Fut: Future<Output = std::result::Result<App, AppsServiceError>>,
+        F: FnOnce(Vec<AppTask>) -> Fut,
+        Fut: Future<
+            Output = (
+                AppStatusChangeId,
+                std::result::Result<App, AppsServiceError>,
+            ),
+        >,
     {
         let mut tx = self.pool.begin().await?;
 
@@ -179,13 +194,16 @@ impl PostgresAppTaskQueueDB {
         .fetch_all(&mut *tx)
         .await?;
 
-        let mut tasks = tasks.into_iter();
+        let tasks_to_work_on = tasks
+            .iter()
+            .map(|task_to_work_on| task_to_work_on.1 .0.clone())
+            .collect::<Vec<_>>();
 
-        let Some((id, task_to_work_one)) = tasks.next() else {
+        if tasks_to_work_on.is_empty() {
             return Ok(());
-        };
+        }
 
-        let result = f(task_to_work_one.0).await;
+        let (id, result) = f(tasks_to_work_on).await;
 
         sqlx::query(
             r#"
@@ -194,7 +212,7 @@ impl PostgresAppTaskQueueDB {
                 WHERE id = $1
                 "#,
         )
-        .bind(id)
+        .bind(id.as_uuid())
         .bind(
             result
                 .as_ref()
@@ -227,15 +245,18 @@ impl PostgresAppTaskQueueDB {
         .execute(&mut *tx)
         .await?;
 
-        for (id, _task_that_was_blocked) in tasks {
+        for (task_id_that_was_merged, _merged_task) in
+            tasks.iter().filter(|task| task.0 != *id.as_uuid())
+        {
             sqlx::query(
                 r#"
                 UPDATE app_task
-                SET status = 'queued'
-                WHERE id = $1
+                SET status = 'done', executed_and_merged_with = $1
+                WHERE id = $2
                 "#,
             )
-            .bind(id)
+            .bind(id.as_uuid())
+            .bind(task_id_that_was_merged)
             .execute(&mut *tx)
             .await?;
         }
@@ -310,19 +331,23 @@ mod tests {
             .unwrap();
 
         queue
-            .execute_task(async |_task| {
-                Ok(App::new(
-                    vec![Service {
-                        id: String::from("nginx-1234"),
-                        state: State {
-                            status: ServiceStatus::Paused,
-                            started_at: None,
-                        },
-                        config: sc!("nginx"),
-                    }],
-                    HashSet::new(),
-                    None,
-                ))
+            .execute_tasks(async |tasks| {
+                let id = tasks.last().unwrap().status_id().clone();
+                (
+                    id,
+                    Ok(App::new(
+                        vec![Service {
+                            id: String::from("nginx-1234"),
+                            state: State {
+                                status: ServiceStatus::Paused,
+                                started_at: None,
+                            },
+                            config: sc!("nginx"),
+                        }],
+                        HashSet::new(),
+                        None,
+                    )),
+                )
             })
             .await
             .unwrap();
@@ -335,7 +360,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_one_task_per_app_name() {
+    async fn execute_all_tasks_per_app_name() {
         let (_postgres_instance, queue) = create_queue().await;
 
         let status_id_1 = AppStatusChangeId::new();
@@ -364,8 +389,8 @@ mod tests {
         let spawn_handle_1 = tokio::spawn(async move {
             let _ = rx.await.unwrap();
             spawned_queue
-                .execute_task(async |task| {
-                    unreachable!("There should be no task to be executed here because the spawned task should have blocked it: {task:?}")
+                .execute_tasks(async |tasks| {
+                    unreachable!("There should be no task to be executed here because the spawned task should have blocked it: {tasks:?}")
                 })
                 .await
         });
@@ -376,23 +401,27 @@ mod tests {
 
         let spawn_handle_2 = tokio::spawn(async move {
             spawned_queue
-                .execute_task(async |_| {
+                .execute_tasks(async |tasks| {
                     tx.send(()).unwrap();
 
                     tokio::time::sleep(Duration::from_secs(4)).await;
 
-                    Ok(App::new(
-                        vec![Service {
-                            id: String::from("nginx-1234"),
-                            state: State {
-                                status: ServiceStatus::Paused,
-                                started_at: None,
-                            },
-                            config: sc!("nginx"),
-                        }],
-                        HashSet::new(),
-                        None,
-                    ))
+                    let id = tasks.last().unwrap().status_id().clone();
+                    (
+                        id,
+                        Ok(App::new(
+                            vec![Service {
+                                id: String::from("nginx-1234"),
+                                state: State {
+                                    status: ServiceStatus::Paused,
+                                    started_at: None,
+                                },
+                                config: sc!("nginx"),
+                            }],
+                            HashSet::new(),
+                            None,
+                        )),
+                    )
                 })
                 .await
         });
@@ -404,12 +433,11 @@ mod tests {
 
         let result_1 = queue.peek_result(&status_id_1).await;
         assert!(matches!(result_1, Some(Ok(_))));
+        let result_2 = queue.peek_result(&status_id_2).await;
+        assert_eq!(result_2, result_1);
 
         let cleaned = queue.clean_up_done_tasks(Utc::now()).await.unwrap();
-        assert_eq!(cleaned, 1);
-
-        let result_2 = queue.peek_result(&status_id_2).await;
-        assert!(matches!(result_2, None));
+        assert_eq!(cleaned, 2);
     }
 
     #[tokio::test]
@@ -432,9 +460,10 @@ mod tests {
             })
             .await
             .unwrap();
+        let status_id_3 = AppStatusChangeId::new();
         queue
             .enqueue_task(AppTask::Delete {
-                status_id: AppStatusChangeId::new(),
+                status_id: status_id_3,
                 app_name: AppName::master(),
             })
             .await
@@ -445,19 +474,23 @@ mod tests {
         };
         let spawn_handle_1 = tokio::spawn(async move {
             spawned_queue
-                .execute_task(async |_task| {
-                    Ok(App::new(
-                        vec![Service {
-                            id: String::from("nginx-1234"),
-                            state: State {
-                                status: ServiceStatus::Paused,
-                                started_at: None,
-                            },
-                            config: sc!("nginx"),
-                        }],
-                        HashSet::new(),
-                        None,
-                    ))
+                .execute_tasks(async |tasks| {
+                    let id = tasks.last().unwrap().status_id().clone();
+                    (
+                        id,
+                        Ok(App::new(
+                            vec![Service {
+                                id: String::from("nginx-1234"),
+                                state: State {
+                                    status: ServiceStatus::Paused,
+                                    started_at: None,
+                                },
+                                config: sc!("nginx"),
+                            }],
+                            HashSet::new(),
+                            None,
+                        )),
+                    )
                 })
                 .await
                 .unwrap();
@@ -468,19 +501,23 @@ mod tests {
         };
         let spawn_handle_2 = tokio::spawn(async move {
             spawned_queue
-                .execute_task(async |_task| {
-                    Ok(App::new(
-                        vec![Service {
-                            id: String::from("nginx-1234"),
-                            state: State {
-                                status: ServiceStatus::Paused,
-                                started_at: None,
-                            },
-                            config: sc!("nginx"),
-                        }],
-                        HashSet::new(),
-                        None,
-                    ))
+                .execute_tasks(async |tasks| {
+                    let id = tasks.last().unwrap().status_id().clone();
+                    (
+                        id,
+                        Ok(App::new(
+                            vec![Service {
+                                id: String::from("nginx-1234"),
+                                state: State {
+                                    status: ServiceStatus::Paused,
+                                    started_at: None,
+                                },
+                                config: sc!("nginx"),
+                            }],
+                            HashSet::new(),
+                            None,
+                        )),
+                    )
                 })
                 .await
                 .unwrap();
@@ -491,9 +528,11 @@ mod tests {
         let result_2 = spawn_handle_2.await;
         assert!(result_2.is_ok());
 
-        let result = queue.peek_result(&status_id_1).await;
-        assert!(matches!(result, Some(Ok(_))));
+        let result_from_master = queue.peek_result(&status_id_1).await;
+        assert!(matches!(result_from_master, Some(Ok(_))));
         let result = queue.peek_result(&status_id_2).await;
         assert!(matches!(result, Some(Ok(_))));
+        let result = queue.peek_result(&status_id_3).await;
+        assert_eq!(result, result_from_master);
     }
 }

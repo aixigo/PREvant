@@ -227,7 +227,7 @@ impl ImageConfig {
     }
 }
 
-#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
+#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize, PartialEq)]
 pub enum RegistryError {
     #[error("Unexpected docker registry error when resolving manifest for {image}: {err}")]
     UnexpectedError { image: String, err: String },
