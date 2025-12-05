@@ -22,3 +22,6 @@ uuid = { version = "1.19", features = ["serde", "v4"] }
 [features]
 # TODO: make sure that the compose tests run in CI
 ci = []
+
+[dependencies]
+scraper = "0.24.0"

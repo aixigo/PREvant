@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use super::{DeployPayload, Service};
 use reqwest::{Client, ClientBuilder, Response, StatusCode, Url};
+use scraper::{Html, Selector};
 use uuid::Uuid;
 
 async fn deploy_app(prevant_base_url: &Url, deploy_payload: DeployPayload) -> Result<Uuid, ()> {
@@ -125,6 +126,8 @@ async fn make_request(
             .unwrap(),
     };
 
+    log::debug!("Making request to {url}");
+
     let client = ClientBuilder::new()
         .build()
         .expect("Client should be buildable");
@@ -134,6 +137,10 @@ async fn make_request(
     {
         match client.get(url.clone()).send().await {
             Ok(response) => {
+                log::debug!(
+                    "Got response code {} from request to {url}",
+                    response.status()
+                );
                 return response;
             }
             Err(err) => match duration {
@@ -262,18 +269,24 @@ pub async fn should_deploy_nginx_with_bootstrapped_httpd(
         exponential_backoff::Backoff::new(10, Duration::from_secs(1), Duration::from_secs(10))
     {
         let response = make_request(&traefik_base_url, &app_name, None).await;
-        if response
-            .text()
-            .await
-            .unwrap()
-            .contains("<html><body><h1>It works!</h1></body></html>")
-        {
+        let text = response.text().await.unwrap();
+
+        let html = Html::parse_document(&text);
+        let s = Selector::parse("body").unwrap();
+
+        let it_works = html
+            .select(&s)
+            .next()
+            .and_then(|e| e.child_elements().next())
+            .and_then(|e| e.text().next());
+
+        if Some("It works!") == it_works {
             success = true;
             break;
         }
 
         if let Some(duration) = duration {
-            log::debug!("Did not find Apache httpd welcome message yet");
+            log::debug!("Did not find Apache httpd welcome message yet, got {text}");
             tokio::time::sleep(duration).await;
             continue;
         }
@@ -317,18 +330,24 @@ pub async fn should_deploy_nginx_with_cloned_bootstrapped_httpd(
         exponential_backoff::Backoff::new(10, Duration::from_secs(1), Duration::from_secs(10))
     {
         let response = make_request(&traefik_base_url, &replicated_app_name, None).await;
-        if response
-            .text()
-            .await
-            .unwrap()
-            .contains("<html><body><h1>It works!</h1></body></html>")
-        {
+        let text = response.text().await.unwrap();
+
+        let html = Html::parse_document(&text);
+        let s = Selector::parse("body").unwrap();
+
+        let it_works = html
+            .select(&s)
+            .next()
+            .and_then(|e| e.child_elements().next())
+            .and_then(|e| e.text().next());
+
+        if Some("It works!") == it_works {
             success = true;
             break;
         }
 
         if let Some(duration) = duration {
-            log::debug!("Did not find Apache httpd welcome message yet");
+            log::debug!("Did not find Apache httpd welcome message yet, got {text}");
             tokio::time::sleep(duration).await;
             continue;
         }

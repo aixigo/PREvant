@@ -93,11 +93,11 @@ To run the frontend in development mode:
 
 ## Frontend Advanced Development Scenarios
 
-- **Async API Documentation UI**  
-  You can develop and test the async API UI locally at:  
+- **Async API Documentation UI**
+  You can develop and test the async API UI locally at:
   http://localhost:9001/#/async-api-ui/%2Ffixtures%2Fasyncapi%2Fstreetlights-kafka-asyncapi.yml
-- **Open API Documentation UI**  
-  You can also develop and test the openAPI UI locally at:  
+- **Open API Documentation UI**
+  You can also develop and test the openAPI UI locally at:
   http://localhost:9001/#/open-api-ui/%2Ffixtures%2Fopenapi%2Fpetstore-api-swagger.json
 
 ## Frontend Tests
@@ -179,9 +179,7 @@ cargo test --manifest-path api-tests/Cargo.toml --test docker -- --test-threads=
 
 0. Build the bootstrap image:
    ```sh
-   cd examples/Kubernetes
-   docker build --pull -t aixigo/httpd-bootstrap-example -f Dockerfile.bootstrap  .
-   cd -
+   docker build --pull -t aixigo/httpd-bootstrap-example -f examples/Kubernetes/Dockerfile.bootstrap  examples/Kubernetes/
    ```
 1. Create cluster and import the PREvant image:
    ```sh
