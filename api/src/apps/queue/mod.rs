@@ -1,4 +1,4 @@
-use crate::apps::{queue::task::AppTask, AppsService, AppsServiceError};
+use crate::apps::{queue::task::AppTask, Apps, AppsError};
 use crate::models::{App, AppName, AppStatusChangeId, Owner, ServiceConfig};
 use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -49,7 +49,7 @@ impl Fairing for AppProcessingQueue {
     }
 
     async fn on_liftoff(&self, rocket: &Rocket<Orbit>) {
-        let apps = rocket.state::<Arc<AppsService>>().unwrap().clone();
+        let apps = rocket.state::<Apps>().unwrap();
         let producer = rocket.state::<AppTaskQueueProducer>().unwrap();
         let consumer = AppTaskQueueConsumer {
             db: producer.db.clone(),
@@ -57,6 +57,7 @@ impl Fairing for AppProcessingQueue {
         };
         let mut shutdown = rocket.shutdown();
 
+        let apps = apps.clone();
         rocket::tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -139,7 +140,7 @@ impl AppTaskQueueProducer {
         &self,
         status_id: &AppStatusChangeId,
         wait_timeout: Duration,
-    ) -> Option<std::result::Result<App, AppsServiceError>> {
+    ) -> Option<std::result::Result<App, AppsError>> {
         let interval = Duration::from_secs(2);
 
         let mut interval_timer = tokio::time::interval(interval);
@@ -174,7 +175,7 @@ struct AppTaskQueueConsumer {
 }
 
 impl AppTaskQueueConsumer {
-    pub async fn process_next_task(&self, apps: &AppsService) -> Result<()> {
+    pub async fn process_next_task(&self, apps: &Apps) -> Result<()> {
         tokio::select! {
             _ = self.notify.notified() => {
                 log::debug!("Got notified by another thread to check for new items in the queue.");
@@ -242,7 +243,7 @@ impl AppTaskQueueConsumer {
 enum AppTaskStatus {
     New,
     InProcess,
-    Done((DateTime<Utc>, std::result::Result<App, AppsServiceError>)),
+    Done((DateTime<Utc>, std::result::Result<App, AppsError>)),
 }
 
 enum AppTaskQueueDB {
@@ -276,7 +277,7 @@ impl AppTaskQueueDB {
     async fn peek_result(
         &self,
         status_id: &AppStatusChangeId,
-    ) -> Option<std::result::Result<App, AppsServiceError>> {
+    ) -> Option<std::result::Result<App, AppsError>> {
         log::debug!("Checking for results for {status_id}.");
         match self {
             AppTaskQueueDB::InMemory(mutex) => {
@@ -298,12 +299,7 @@ impl AppTaskQueueDB {
     async fn execute_tasks<F, Fut>(&self, f: F) -> Result<()>
     where
         F: FnOnce(Vec<AppTask>) -> Fut,
-        Fut: Future<
-            Output = (
-                AppStatusChangeId,
-                std::result::Result<App, AppsServiceError>,
-            ),
-        >,
+        Fut: Future<Output = (AppStatusChangeId, std::result::Result<App, AppsError>)>,
     {
         match self {
             AppTaskQueueDB::InMemory(mutex) => {

@@ -46,7 +46,6 @@ use rocket::{FromForm, State};
 use serde::ser::{Serialize, SerializeSeq};
 use serde::Serializer;
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Duration;
 
 mod create_app_payload;
@@ -317,7 +316,7 @@ pub async fn create_app_v2(
 async fn change_status(
     app_name: Result<AppName, AppNameError>,
     service_name: String,
-    apps: &State<Arc<Apps>>,
+    apps: &State<Apps>,
     status_data: Json<ServiceStatusData>,
 ) -> HttpResult<ServiceStatusResponse> {
     let app_name = app_name?;
@@ -612,7 +611,7 @@ mod tests {
     mod http_api_error {
         use super::super::*;
         use crate::{
-            apps::{AppProcessingQueue, AppsError, AppsService},
+            apps::{AppProcessingQueue, AppsError, Apps},
             infrastructure::Dummy,
             registry::RegistryError,
         };
@@ -622,7 +621,7 @@ mod tests {
         #[tokio::test]
         async fn invalid_service_payload() {
             let infrastructure = Box::new(Dummy::new());
-            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
+            let apps = Apps::new(Default::default(), infrastructure).unwrap();
 
             let rocket = rocket::build()
                 .manage(apps)
@@ -757,7 +756,7 @@ mod tests {
     mod deployment_with_additional_client_parameters {
         use super::super::*;
         use crate::{
-            apps::{AppProcessingQueue, AppsService},
+            apps::{AppProcessingQueue, Apps},
             config_from_str,
             infrastructure::Dummy,
         };
@@ -785,7 +784,7 @@ mod tests {
             );
 
             let infrastructure = Box::new(Dummy::new());
-            let apps = Arc::new(AppsService::new(config.clone(), infrastructure).unwrap());
+            let apps = Apps::new(config.clone(), infrastructure).unwrap();
 
             let rocket = rocket::build()
                 .manage(apps)
@@ -1017,7 +1016,7 @@ mod tests {
 
     mod basic_deployment {
         use crate::{
-            apps::{AppProcessingQueue, AppsService},
+            apps::{AppProcessingQueue, Apps},
             config_from_str,
             infrastructure::Dummy,
         };
@@ -1028,13 +1027,13 @@ mod tests {
             local::asynchronous::Client,
             routes,
         };
-        use std::{sync::Arc, time::Duration};
+        use std::time::Duration;
 
         async fn create_client() -> Client {
             let config = config_from_str!("");
 
             let infrastructure = Box::new(Dummy::with_delay(Duration::from_secs(5)));
-            let apps = Arc::new(AppsService::new(config.clone(), infrastructure).unwrap());
+            let apps = Apps::new(config.clone(), infrastructure).unwrap();
 
             let rocket = rocket::build()
                 .manage(config)
