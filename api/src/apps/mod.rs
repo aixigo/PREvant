@@ -23,12 +23,11 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+mod fairing;
 mod host_meta_cache;
 mod queue;
 mod routes;
 
-pub use crate::apps::AppsService as Apps;
-pub use crate::apps::AppsServiceError as AppsError;
 use crate::config::ReplicateApplicationCondition;
 use crate::config::{Config, ConfigError};
 use crate::deployment::deployment_unit::DeploymentTemplatingError;
@@ -58,18 +57,28 @@ use std::convert::From;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
 
-pub struct AppsService {
+pub struct Apps {
     config: Config,
     infrastructure: Box<dyn Infrastructure>,
     prevant_base_route: Option<TraefikIngressRoute>,
 }
 
-impl AppsService {
+impl Clone for Apps {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            infrastructure: dyn_clone::clone_box(&*self.infrastructure),
+            prevant_base_route: self.prevant_base_route.clone(),
+        }
+    }
+}
+
+impl Apps {
     pub fn new(
         config: Config,
         infrastructure: Box<dyn Infrastructure>,
-    ) -> Result<AppsService, AppsServiceError> {
-        Ok(AppsService {
+    ) -> Result<Apps, AppsError> {
+        Ok(Apps {
             config,
             infrastructure,
             prevant_base_route: None,
@@ -89,7 +98,7 @@ impl AppsService {
         &self,
         app_name: &AppName,
         service_name: &str,
-    ) -> Result<Option<Service>, AppsServiceError> {
+    ) -> Result<Option<Service>, AppsError> {
         Ok(self
             .infrastructure
             .fetch_app(app_name)
@@ -102,13 +111,13 @@ impl AppsService {
             }))
     }
 
-    pub async fn fetch_app_names(&self) -> Result<HashSet<AppName>, AppsServiceError> {
+    pub async fn fetch_app_names(&self) -> Result<HashSet<AppName>, AppsError> {
         Ok(self.infrastructure.fetch_app_names().await?)
     }
 
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
-    pub async fn fetch_apps(&self) -> Result<HashMap<AppName, App>, AppsServiceError> {
+    pub async fn fetch_apps(&self) -> Result<HashMap<AppName, App>, AppsError> {
         Ok(self.infrastructure.fetch_apps().await?)
     }
 
@@ -150,7 +159,7 @@ impl AppsService {
         services_to_deploy: &[ServiceConfig],
         running_app: &App,
         replicate_from_app_name: &AppName,
-    ) -> Result<(Vec<ServiceConfig>, Option<UserDefinedParameters>), AppsServiceError> {
+    ) -> Result<(Vec<ServiceConfig>, Option<UserDefinedParameters>), AppsError> {
         let running_instances_names = running_app
             .services()
             .iter()
@@ -209,7 +218,7 @@ impl AppsService {
         service_configs: &[ServiceConfig],
         owners: Vec<Owner>,
         user_defined_parameters: Option<serde_json::Value>,
-    ) -> Result<App, AppsServiceError> {
+    ) -> Result<App, AppsError> {
         let user_defined_parameters = match (
             self.config.user_defined_schema_validator(),
             user_defined_parameters,
@@ -217,12 +226,12 @@ impl AppsService {
             (None, _) => None,
             (Some(validator), None) => Some(
                 UserDefinedParameters::new(serde_json::json!({}), &validator).map_err(|e| {
-                    AppsServiceError::InvalidUserDefinedParameters { err: e.to_string() }
+                    AppsError::InvalidUserDefinedParameters { err: e.to_string() }
                 })?,
             ),
             (Some(validator), Some(value)) => {
                 Some(UserDefinedParameters::new(value, &validator).map_err(|e| {
-                    AppsServiceError::InvalidUserDefinedParameters { err: e.to_string() }
+                    AppsError::InvalidUserDefinedParameters { err: e.to_string() }
                 })?)
             }
         };
@@ -360,11 +369,11 @@ impl AppsService {
     }
 
     /// Deletes all services for the given `app_name`.
-    async fn delete_app(&self, app_name: &AppName) -> Result<App, AppsServiceError> {
+    async fn delete_app(&self, app_name: &AppName) -> Result<App, AppsError> {
         let app = self.infrastructure.stop_services(app_name).await?;
 
         if app.is_empty() {
-            Err(AppsServiceError::AppNotFound {
+            Err(AppsError::AppNotFound {
                 app_name: app_name.clone(),
             })
         } else {
@@ -390,7 +399,7 @@ impl AppsService {
         service_name: &'a str,
         since: &'a Option<DateTime<FixedOffset>>,
         limit: &'a Option<usize>,
-    ) -> Result<Option<LogChunk>, AppsServiceError> {
+    ) -> Result<Option<LogChunk>, AppsError> {
         let mut log_lines = Vec::new();
         let mut log_stream = self
             .infrastructure
@@ -411,7 +420,7 @@ impl AppsService {
         app_name: &AppName,
         service_name: &str,
         status: ServiceStatus,
-    ) -> Result<Option<Service>, AppsServiceError> {
+    ) -> Result<Option<Service>, AppsError> {
         Ok(self
             .infrastructure
             .change_status(app_name, service_name, status)
@@ -421,7 +430,7 @@ impl AppsService {
 
 /// Defines error cases for the [`Apps`](Apps)
 #[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize, PartialEq)]
-pub enum AppsServiceError {
+pub enum AppsError {
     #[error("Cannot find app {app_name}.")]
     AppNotFound { app_name: AppName },
     #[error("Cannot create more than {limit} apps")]
@@ -444,7 +453,7 @@ pub enum AppsServiceError {
     InvalidUserDefinedParameters { err: String },
 }
 
-impl From<ConfigError> for AppsServiceError {
+impl From<ConfigError> for AppsError {
     fn from(error: ConfigError) -> Self {
         Self::InvalidServerConfiguration {
             error: error.to_string(),
@@ -452,7 +461,7 @@ impl From<ConfigError> for AppsServiceError {
     }
 }
 
-impl From<anyhow::Error> for AppsServiceError {
+impl From<anyhow::Error> for AppsError {
     fn from(error: anyhow::Error) -> Self {
         Self::InfrastructureError {
             error: error.to_string(),
@@ -460,19 +469,19 @@ impl From<anyhow::Error> for AppsServiceError {
     }
 }
 
-impl From<DeploymentTemplatingError> for AppsServiceError {
+impl From<DeploymentTemplatingError> for AppsError {
     fn from(error: DeploymentTemplatingError) -> Self {
         Self::TemplatingIssue { error }
     }
 }
 
-impl From<RegistryError> for AppsServiceError {
+impl From<RegistryError> for AppsError {
     fn from(error: RegistryError) -> Self {
         Self::UnableToResolveImage { error }
     }
 }
 
-impl From<HooksError> for AppsServiceError {
+impl From<HooksError> for AppsError {
     fn from(err: HooksError) -> Self {
         Self::UnapplicableHook { err }
     }
@@ -532,10 +541,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_create_app_for_master() -> Result<(), AppsServiceError> {
+    async fn should_create_app_for_master() -> Result<(), AppsError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),
@@ -556,10 +565,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replicate_from_master() -> Result<(), AppsServiceError> {
+    async fn replicate_from_master() -> Result<(), AppsError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),
@@ -591,9 +600,8 @@ mod tests {
         Ok(())
     }
 
-
     #[tokio::test]
-    async fn replicate_from_default_application_if_specified() -> Result<(), AppsServiceError> {
+    async fn replicate_from_default_application_if_specified() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [applications]
@@ -601,7 +609,7 @@ mod tests {
             "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),
@@ -652,7 +660,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn never_replicate_from_default_application() -> Result<(), AppsServiceError> {
+    async fn never_replicate_from_default_application() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [applications]
@@ -660,7 +668,7 @@ mod tests {
             "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),
@@ -692,10 +700,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn override_replicas_from_master() -> Result<(), AppsServiceError> {
+    async fn override_replicas_from_master() -> Result<(), AppsError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),
@@ -737,7 +745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_create_app_for_master_with_secrets() -> Result<(), AppsServiceError> {
+    async fn should_create_app_for_master_with_secrets() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [services.mariadb]
@@ -749,7 +757,7 @@ mod tests {
         );
 
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),
@@ -784,7 +792,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_create_app_for_master_without_secrets_because_of_none_matching_app_selector(
-    ) -> Result<(), AppsServiceError> {
+    ) -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [services.mariadb]
@@ -796,7 +804,7 @@ mod tests {
         );
 
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::from_str("master-1x").unwrap(),
@@ -826,10 +834,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_collect_log_chunk_from_infrastructure() -> Result<(), AppsServiceError> {
+    async fn should_collect_log_chunk_from_infrastructure() -> Result<(), AppsError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
 
@@ -870,10 +878,10 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn should_stream_logs_from_infrastructure() -> Result<(), AppsServiceError> {
+    async fn should_stream_logs_from_infrastructure() -> Result<(), AppsError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::from_str("master").unwrap();
         let services = vec![sc!("service-a"), sc!("service-b")];
@@ -922,7 +930,7 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn should_deploy_companions() -> Result<(), AppsServiceError> {
+    async fn should_deploy_companions() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -937,7 +945,7 @@ Log msg 3 of service-a of app master
         "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
         apps.create_or_update(&app_name, None, &vec![sc!("service-a")], vec![], None)
@@ -959,7 +967,7 @@ Log msg 3 of service-a of app master
 
     #[tokio::test]
     async fn should_filter_companions_if_services_to_deploy_contain_same_service_name(
-    ) -> Result<(), AppsServiceError> {
+    ) -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -974,7 +982,7 @@ Log msg 3 of service-a of app master
         "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
         let configs = vec![sc!("openid"), sc!("db")];
@@ -1005,7 +1013,7 @@ Log msg 3 of service-a of app master
 
     #[tokio::test]
     async fn should_merge_with_companion_config_if_services_to_deploy_contain_same_service_name(
-    ) -> Result<(), AppsServiceError> {
+    ) -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -1020,7 +1028,7 @@ Log msg 3 of service-a of app master
         "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
 
@@ -1073,7 +1081,7 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn should_include_running_instance_in_templating() -> Result<(), AppsServiceError> {
+    async fn should_include_running_instance_in_templating() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -1085,7 +1093,7 @@ Log msg 3 of service-a of app master
         );
 
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
         let app_name = AppName::master();
 
         apps.create_or_update(
@@ -1133,10 +1141,10 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn should_delete_apps() -> Result<(), AppsServiceError> {
+    async fn should_delete_apps() -> Result<(), AppsError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
         apps.create_or_update(&app_name, None, &vec![sc!("service-a")], vec![], None)
@@ -1167,7 +1175,7 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn should_deploy_companions_with_file_mount() -> Result<(), AppsServiceError> {
+    async fn should_deploy_companions_with_file_mount() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.db1]
@@ -1188,7 +1196,7 @@ Log msg 3 of service-a of app master
         "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
         let configs = vec![sc!("db1"), sc!("db2")];
@@ -1243,7 +1251,7 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn should_create_app_with_hooks_applied() -> Result<(), AppsServiceError> {
+    async fn should_create_app_with_hooks_applied() -> Result<(), AppsError> {
         let script = r#"
         function deploymentHook( appName, configs ) {
             if( appName === 'master' ) {
@@ -1256,7 +1264,7 @@ Log msg 3 of service-a of app master
         let (_temp_js_file, config) = config_with_deployment_hook(script);
         let app_name = &AppName::master();
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             app_name,
@@ -1279,9 +1287,9 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn should_create_app_with_base_ingress_route() -> Result<(), AppsServiceError> {
+    async fn should_create_app_with_base_ingress_route() -> Result<(), AppsError> {
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(Config::default(), infrastructure)?.with_base_route(Some(
+        let apps = Apps::new(Config::default(), infrastructure)?.with_base_route(Some(
             TraefikIngressRoute::with_rule(TraefikRouterRule::host_rule(vec![String::from(
                 "example.com",
             )])),
@@ -1326,9 +1334,9 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn should_create_app_without_base_ingress_route() -> Result<(), AppsServiceError> {
+    async fn should_create_app_without_base_ingress_route() -> Result<(), AppsError> {
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(Config::default(), infrastructure)?;
+        let apps = Apps::new(Config::default(), infrastructure)?;
 
         let app_name = &AppName::master();
         apps.create_or_update(
@@ -1372,7 +1380,7 @@ Log msg 3 of service-a of app master
 
     #[tokio::test]
     async fn do_not_create_app_when_exceeding_application_number_limit(
-    ) -> Result<(), AppsServiceError> {
+    ) -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [applications]
@@ -1380,7 +1388,7 @@ Log msg 3 of service-a of app master
         "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),
@@ -1403,14 +1411,14 @@ Log msg 3 of service-a of app master
 
         assert!(matches!(
             result,
-            Err(AppsServiceError::AppLimitExceeded { limit: 1 })
+            Err(AppsError::AppLimitExceeded { limit: 1 })
         ));
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn do_update_app_when_exceeding_application_number_limit() -> Result<(), AppsServiceError>
+    async fn do_update_app_when_exceeding_application_number_limit() -> Result<(), AppsError>
     {
         let config = config_from_str!(
             r#"
@@ -1419,7 +1427,7 @@ Log msg 3 of service-a of app master
         "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),
@@ -1449,7 +1457,7 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn deploy_companion_with_user_defined_data() -> Result<(), AppsServiceError> {
+    async fn deploy_companion_with_user_defined_data() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.db1]
@@ -1463,7 +1471,7 @@ Log msg 3 of service-a of app master
         "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
         apps.create_or_update(
@@ -1494,7 +1502,7 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn clone_companion_with_user_defined_data() -> Result<(), AppsServiceError> {
+    async fn clone_companion_with_user_defined_data() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.db1]
@@ -1508,7 +1516,7 @@ Log msg 3 of service-a of app master
         "#
         );
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
         apps.create_or_update(
@@ -1543,10 +1551,10 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn update_owners() -> Result<(), AppsServiceError> {
+    async fn update_owners() -> Result<(), AppsError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),
@@ -1598,10 +1606,10 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn merge_owners_with_same_sub_issuer() -> Result<(), AppsServiceError> {
+    async fn merge_owners_with_same_sub_issuer() -> Result<(), AppsError> {
         let config = Config::default();
         let infrastructure = Box::new(Dummy::new());
-        let apps = AppsService::new(config, infrastructure)?;
+        let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(
             &AppName::master(),

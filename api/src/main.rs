@@ -29,9 +29,8 @@ extern crate lazy_static;
 #[macro_use]
 extern crate serde_derive;
 
-use crate::apps::host_meta_crawling;
 use crate::apps::Apps;
-use crate::config::{Config, Runtime, ApiAccessMode};
+use crate::config::{ApiAccessMode, Config, Runtime};
 use crate::db::DatabasePool;
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
@@ -52,7 +51,6 @@ use rocket::routes;
 use rocket::State;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 
 mod apps;
 mod auth;
@@ -217,26 +215,9 @@ async fn main() -> Result<(), StartUpError> {
             .flatten()
     };
 
-    let apps = Apps::new(config.clone(), infrastructure)
-        .map_err(|e| StartUpError::CannotCreateApps { err: e.to_string() })?
-        .with_base_route(prevant_base_route.clone());
-
-    // TODO: Every interaction with apps is blocked by the Arc. For example, the background job in
-    // host_meta_crawler blocks every get request for the waiting time.
-    // Arc<Apps> needs to be replace with Apps
-    let apps = Arc::new(apps);
-
-    let app_updates = apps.app_updates().await;
-
-    let (host_meta_cache, host_meta_crawler) = host_meta_crawling(config.clone());
-    host_meta_crawler.spawn(apps.clone(), app_updates.clone());
-
     let _rocket = rocket::build()
-        .manage(config)
+        .manage(config.clone())
         .manage(prevant_base_route)
-        .manage(apps)
-        .manage(host_meta_cache)
-        .manage(app_updates)
         .mount("/", routes![index])
         .mount(
             "/",
@@ -251,6 +232,7 @@ async fn main() -> Result<(), StartUpError> {
         .attach(Auth::fairing())
         .attach(AppProcessingQueue::fairing())
         .attach(TicketsCaching::fairing())
+        .attach(Apps::fairing(config, infrastructure))
         .launch()
         .await?;
 
@@ -263,8 +245,6 @@ enum StartUpError {
     InvalidConfiguration { err: String },
     #[error("Cannot start HTTP server: {err}")]
     CannotStartWebServer { err: String },
-    #[error("Cannot create apps service: {err}")]
-    CannotCreateApps { err: String },
 }
 
 impl std::convert::From<rocket::Error> for StartUpError {

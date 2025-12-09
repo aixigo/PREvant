@@ -1,6 +1,6 @@
 use super::AppTask;
 use crate::{
-    apps::AppsServiceError,
+    apps::AppsError,
     models::{
         user_defined_parameters::UserDefinedParameters, App, AppStatusChangeId, Owner, Service,
         ServiceConfig, ServiceStatus, State,
@@ -82,7 +82,7 @@ impl PostgresAppTaskQueueDB {
     pub async fn peek_result(
         &self,
         status_id: &AppStatusChangeId,
-    ) -> Option<std::result::Result<App, AppsServiceError>> {
+    ) -> Option<std::result::Result<App, AppsError>> {
         let mut connection = self
             .pool
             .acquire()
@@ -94,9 +94,9 @@ impl PostgresAppTaskQueueDB {
             _,
             (
                 Option<sqlx::types::Json<RawApp>>,
-                Option<sqlx::types::Json<AppsServiceError>>,
+                Option<sqlx::types::Json<AppsError>>,
                 Option<sqlx::types::Json<RawApp>>,
-                Option<sqlx::types::Json<AppsServiceError>>,
+                Option<sqlx::types::Json<AppsError>>,
             ),
         >(
             r#"
@@ -134,12 +134,7 @@ impl PostgresAppTaskQueueDB {
     pub async fn execute_tasks<F, Fut>(&self, f: F) -> Result<()>
     where
         F: FnOnce(Vec<AppTask>) -> Fut,
-        Fut: Future<
-            Output = (
-                AppStatusChangeId,
-                std::result::Result<App, AppsServiceError>,
-            ),
-        >,
+        Fut: Future<Output = (AppStatusChangeId, std::result::Result<App, AppsError>)>,
     {
         let mut tx = self.pool.begin().await?;
 

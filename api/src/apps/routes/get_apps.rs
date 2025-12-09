@@ -9,10 +9,7 @@ use rocket::{
     Shutdown, State,
 };
 use serde::{ser::SerializeMap as _, Serialize};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 use tokio::{select, sync::watch::Receiver};
 use tokio_stream::StreamExt;
 
@@ -65,7 +62,7 @@ impl Serialize for AppsV2 {
 
 #[rocket::get("/", format = "application/json", rank = 1)]
 pub(super) async fn apps_v1(
-    apps: &State<Arc<Apps>>,
+    apps: &State<Apps>,
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
 ) -> HttpResult<Json<AppsV1>> {
@@ -77,7 +74,7 @@ pub(super) async fn apps_v1(
 
 #[rocket::get("/", format = "application/vnd.prevant.v2+json", rank = 2)]
 pub(super) async fn apps_v2(
-    apps: &State<Arc<Apps>>,
+    apps: &State<Apps>,
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
 ) -> HttpResult<Json<AppsV2>> {
@@ -351,7 +348,7 @@ mod tests {
 
     mod url_rendering {
         use super::apps_v1;
-        use crate::apps::{AppProcessingQueue, AppsService, HostMetaCache};
+        use crate::apps::{AppProcessingQueue, Apps, HostMetaCache};
         use crate::config::Config;
         use crate::infrastructure::Dummy;
         use crate::models::{App, AppName};
@@ -363,13 +360,12 @@ mod tests {
         use serde_json::Value;
         use std::collections::HashMap;
         use std::convert::From;
-        use std::sync::Arc;
 
         async fn set_up_rocket_with_dummy_infrastructure_and_a_running_app(
             host_meta_cache: HostMetaCache,
-        ) -> Result<Client, crate::apps::AppsServiceError> {
+        ) -> Result<Client, crate::apps::AppsError> {
             let infrastructure = Box::new(Dummy::new());
-            let apps = Arc::new(AppsService::new(Default::default(), infrastructure).unwrap());
+            let apps = Apps::new(Default::default(), infrastructure).unwrap();
             let _result = apps
                 .create_or_update(
                     &AppName::master(),
@@ -393,9 +389,9 @@ mod tests {
 
         #[tokio::test]
         async fn host_header_response_with_xforwardedhost_and_port_xforwardedproto_and_xforwardedport(
-        ) -> Result<(), crate::apps::AppsServiceError> {
+        ) -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
+                crate::apps::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -429,9 +425,9 @@ mod tests {
         }
         #[tokio::test]
         async fn host_header_response_with_xforwardedhost_xforwardedproto_and_xforwardedport(
-        ) -> Result<(), crate::apps::AppsServiceError> {
+        ) -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
+                crate::apps::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -463,9 +459,9 @@ mod tests {
 
         #[tokio::test]
         async fn host_header_response_with_xforwardedproto_and_other_default_values(
-        ) -> Result<(), crate::apps::AppsServiceError> {
+        ) -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
+                crate::apps::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -495,9 +491,9 @@ mod tests {
 
         #[tokio::test]
         async fn host_header_response_with_xforwardedhost_and_other_default_values(
-        ) -> Result<(), crate::apps::AppsServiceError> {
+        ) -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
+                crate::apps::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -526,9 +522,9 @@ mod tests {
 
         #[tokio::test]
         async fn host_header_response_with_xforwardedport_and_default_values(
-        ) -> Result<(), crate::apps::AppsServiceError> {
+        ) -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
+                crate::apps::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());
@@ -557,10 +553,10 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn host_header_response_with_all_default_values(
-        ) -> Result<(), crate::apps::AppsServiceError> {
+        async fn host_header_response_with_all_default_values() -> Result<(), crate::apps::AppsError>
+        {
             let (host_meta_cache, mut host_meta_crawler) =
-                crate::host_meta_crawling(Config::default());
+                crate::apps::host_meta_crawling(Config::default());
             let client =
                 set_up_rocket_with_dummy_infrastructure_and_a_running_app(host_meta_cache).await?;
             host_meta_crawler.fake_empty_host_meta_info(AppName::master(), "service-a".to_string());

@@ -24,7 +24,6 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::apps::Apps;
 use crate::config::Config;
 use crate::infrastructure::HttpForwarder;
 use crate::models::{
@@ -177,7 +176,7 @@ impl<'r> FromRequest<'r> for HostMetaCache {
 impl HostMetaCrawler {
     pub fn spawn(
         mut self,
-        apps: std::sync::Arc<Apps>,
+        http_forwarder: Box<dyn HttpForwarder>,
         apps_updates: Receiver<HashMap<AppName, App>>,
     ) {
         let timestamp_prevant_startup = Utc::now();
@@ -202,16 +201,12 @@ impl HostMetaCrawler {
                     else => continue,
                 };
 
-                let http_forwarder = match apps.http_forwarder().await {
-                    Ok(http_forwarder) => http_forwarder,
-                    Err(err) => {
-                        error!("Cannot acquire http forwarder for crawling web host meta: {err}");
-                        continue;
-                    }
-                };
-
-                self.crawl(http_forwarder, &services, timestamp_prevant_startup)
-                    .await
+                self.crawl(
+                    dyn_clone::clone_box(&*http_forwarder),
+                    &services,
+                    timestamp_prevant_startup,
+                )
+                .await
             }
         });
     }
