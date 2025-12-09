@@ -86,6 +86,6 @@ impl Fairing for AppsFairing {
             }
         };
 
-        host_meta_crawler.spawn(http_forwarder, app_updates.clone());
+        host_meta_crawler.spawn(http_forwarder, app_updates.clone(), rocket.shutdown());
     }
 }
