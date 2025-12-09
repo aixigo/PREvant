@@ -36,7 +36,7 @@ use jira_query::{JiraInstance, JiraQueryError};
 use log::debug;
 use rocket::fairing::{Fairing, Info};
 use rocket::serde::json::Json;
-use rocket::{Build, Orbit, Rocket, State};
+use rocket::{Build, Orbit, Rocket, Shutdown, State};
 use std::collections::HashMap;
 use std::convert::From;
 use std::sync::Mutex;
@@ -133,7 +133,8 @@ impl Fairing for TicketsCaching {
                 writer,
             };
 
-            rocket::tokio::spawn(async move { crawler.spawn_loop().await });
+            let shutdown = rocket.shutdown();
+            rocket::tokio::spawn(async move { crawler.spawn_loop(shutdown).await });
         }
     }
 }
@@ -164,8 +165,7 @@ impl serde::ser::Serialize for SerializableTickets {
 
 impl TicketsCache {
     fn serializable_tickets(&self) -> Option<SerializableTickets> {
-        self
-            .reader_factory
+        self.reader_factory
             .as_ref()
             .map(|reader_factory| SerializableTickets(reader_factory.clone()))
     }
@@ -178,7 +178,7 @@ struct TicketsCrawler {
 }
 
 impl TicketsCrawler {
-    async fn spawn_loop(mut self) {
+    async fn spawn_loop(mut self, mut shutdown: Shutdown) {
         let mut app_updates = WatchStream::from_changes(self.app_updates);
         let mut app_names = Vec::<AppName>::new();
         loop {
@@ -189,6 +189,10 @@ impl TicketsCrawler {
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
                     log::debug!("Regular tickets check.");
+                }
+                _ = &mut shutdown => {
+                    log::info!("Shutting ticket caching.");
+                    break;
                 }
             }
 

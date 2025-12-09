@@ -38,6 +38,7 @@ use http::header::{HOST, USER_AGENT};
 use log::{debug, error, info};
 use rocket::outcome::Outcome;
 use rocket::request::{self, FromRequest, Request};
+use rocket::Shutdown;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use tokio::sync::watch::{self, Receiver, Sender};
@@ -178,6 +179,7 @@ impl HostMetaCrawler {
         mut self,
         http_forwarder: Box<dyn HttpForwarder>,
         apps_updates: Receiver<HashMap<AppName, App>>,
+        mut shutdown: Shutdown,
     ) {
         let timestamp_prevant_startup = Utc::now();
 
@@ -185,10 +187,6 @@ impl HostMetaCrawler {
             let mut apps_updates = WatchStream::new(apps_updates);
             let mut services = HashMap::with_capacity(0);
             loop {
-                // TODO: include shutdown handle which require that the spawn will be called in
-                // Rocket's adhoc lift off (see
-                // https://api.rocket.rs/v0.5/rocket/struct.Rocket#method.shutdown-1) which
-                // requires us to replace evmap (see comment above).
                 tokio::select! {
                     Some(new_services) = apps_updates.next() => {
                         services = new_services;
@@ -197,6 +195,10 @@ impl HostMetaCrawler {
                         if services.is_empty() {
                             continue;
                         }
+                    }
+                    _ = &mut shutdown => {
+                        log::info!("Shutting host meta crawling processing");
+                        break;
                     }
                     else => continue,
                 };
