@@ -32,6 +32,7 @@ extern crate serde_derive;
 use crate::apps::host_meta_crawling;
 use crate::apps::Apps;
 use crate::config::{Config, Runtime, ApiAccessMode};
+use crate::db::DatabasePool;
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::models::request_info::RequestInfo;
 use crate::tickets::TicketsCaching;
@@ -56,6 +57,7 @@ use std::sync::Arc;
 mod apps;
 mod auth;
 mod config;
+mod db;
 mod deployment;
 mod http_result;
 mod infrastructure;
@@ -245,6 +247,7 @@ async fn main() -> Result<(), StartUpError> {
         .mount("/api", crate::tickets::ticket_routes())
         .mount("/api", routes![webhooks::webhooks])
         .mount("/auth", crate::auth::auth_routes())
+        .attach(DatabasePool::fairing())
         .attach(Auth::fairing())
         .attach(AppProcessingQueue::fairing())
         .attach(TicketsCaching::fairing())

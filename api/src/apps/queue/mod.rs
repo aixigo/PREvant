@@ -1,5 +1,4 @@
 use crate::apps::{queue::task::AppTask, AppsService, AppsServiceError};
-use crate::config::Config;
 use crate::models::{App, AppName, AppStatusChangeId, Owner, ServiceConfig};
 use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -8,7 +7,7 @@ use rocket::{
     fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
 };
-use sqlx::postgres::PgConnectOptions;
+use sqlx::PgPool;
 use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify},
@@ -36,27 +35,10 @@ impl Fairing for AppProcessingQueue {
     }
 
     async fn on_ignite(&self, rocket: Rocket<Build>) -> rocket::fairing::Result {
-        let db = match rocket.state::<Config>() {
-            Some(config) => {
-                if let Some(db_options) = config.database.as_ref() {
-                    match AppTaskQueueDB::db(db_options.clone()).await {
-                        Ok(db) => db,
-                        Err(err) => {
-                            log::error!("Cannot connect to database: {err}");
-                            return Err(rocket);
-                        }
-                    }
-                } else {
-                    AppTaskQueueDB::inmemory()
-                }
-            }
+        let db = match rocket.state::<PgPool>() {
+            Some(pool) => AppTaskQueueDB::db(pool.clone()),
             None => AppTaskQueueDB::inmemory(),
         };
-
-        if let Err(err) = db.apply_migrations().await {
-            log::error!("Cannot apply database migrations: {err}");
-            return Err(rocket);
-        }
 
         let producer = AppTaskQueueProducer {
             db: Arc::new(db),
@@ -273,17 +255,8 @@ impl AppTaskQueueDB {
         Self::InMemory(Mutex::new(VecDeque::new()))
     }
 
-    async fn db(database_options: PgConnectOptions) -> Result<Self> {
-        let db = PostgresAppTaskQueueDB::connect_with_exponential_backoff(database_options).await?;
-        Ok(Self::DB(db))
-    }
-
-    async fn apply_migrations(&self) -> Result<()> {
-        if let AppTaskQueueDB::DB(db) = self {
-            db.migrate().await?;
-        }
-
-        Ok(())
+    fn db(pool: PgPool) -> Self {
+        Self::DB(PostgresAppTaskQueueDB::new(pool))
     }
 
     pub async fn enqueue_task(&self, task: AppTask) -> Result<()> {
