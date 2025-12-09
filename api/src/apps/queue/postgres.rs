@@ -8,8 +8,7 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use exponential_backoff::Backoff;
-use sqlx::{postgres::PgConnectOptions, PgPool};
+use sqlx::PgPool;
 use std::{collections::HashSet, future::Future};
 
 pub struct PostgresAppTaskQueueDB {
@@ -56,33 +55,8 @@ impl From<RawService> for Service {
 }
 
 impl PostgresAppTaskQueueDB {
-    pub async fn connect_with_exponential_backoff(
-        database_options: PgConnectOptions,
-    ) -> Result<Self> {
-        let min = std::time::Duration::from_millis(100);
-        let max = std::time::Duration::from_secs(10);
-        for duration in Backoff::new(5, min, max) {
-            let pool = match PgPool::connect_with(database_options.clone()).await {
-                Ok(pool) => pool,
-                Err(err) => match duration {
-                    Some(duration) => {
-                        log::warn!("Cannot connect to database, trying again: {err}");
-                        tokio::time::sleep(duration).await;
-                        continue;
-                    }
-                    None => {
-                        return Err(err)?;
-                    }
-                },
-            };
-            return Ok(Self { pool });
-        }
-        unreachable!()
-    }
-
-    pub async fn migrate(&self) -> Result<()> {
-        sqlx::migrate!().run(&self.pool).await?;
-        Ok(())
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
     pub async fn enqueue_task(&self, task: AppTask) -> Result<()> {
@@ -292,7 +266,7 @@ mod tests {
     use std::{str::FromStr, time::Duration};
 
     use super::*;
-    use crate::{models::AppName, sc};
+    use crate::{db::DatabasePool, models::AppName, sc};
     use sqlx::postgres::PgConnectOptions;
     use testcontainers_modules::{
         postgres::{self},
@@ -309,12 +283,12 @@ mod tests {
             .username("postgres")
             .password("postgres");
 
-        let queue = PostgresAppTaskQueueDB::connect_with_exponential_backoff(connection)
+        let pool = DatabasePool::connect_with_exponential_backoff(connection)
             .await
             .unwrap();
-        queue.migrate().await.unwrap();
+        sqlx::migrate!().run(&pool).await.unwrap();
 
-        (postgres_instance, queue)
+        (postgres_instance, PostgresAppTaskQueueDB::new(pool))
     }
 
     #[tokio::test]
