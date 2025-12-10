@@ -134,7 +134,7 @@ impl PostgresAppTaskQueueDB {
     pub async fn execute_tasks<F, Fut>(&self, f: F) -> Result<()>
     where
         F: FnOnce(Vec<AppTask>) -> Fut,
-        Fut: Future<Output = (AppStatusChangeId, std::result::Result<App, AppsError>)>,
+        Fut: Future<Output = (AppTask, std::result::Result<App, AppsError>)>,
     {
         let mut tx = self.pool.begin().await?;
 
@@ -172,22 +172,14 @@ impl PostgresAppTaskQueueDB {
             return Ok(());
         }
 
-        let (id, result) = f(tasks_to_work_on).await;
+        let (tasked_worked_on, result) = f(tasks_to_work_on).await;
+        let is_success = result.is_ok();
+        let id = *tasked_worked_on.status_id();
 
-        sqlx::query(
-            r#"
-                UPDATE app_task
-                SET status = 'done', result_success = $3, result_error = $2
-                WHERE id = $1
-                "#,
-        )
-        .bind(id.as_uuid())
-        .bind(
-            result
-                .as_ref()
-                .map_or_else(|e| serde_json::to_value(e).ok(), |_| None),
-        )
-        .bind(result.map_or_else(
+        let failed_result = result
+            .as_ref()
+            .map_or_else(|e| serde_json::to_value(e).ok(), |_| None);
+        let success_result = result.map_or_else(
             |_| None,
             |app| {
                 let (services, owner, user_defined_parameters) =
@@ -210,10 +202,43 @@ impl PostgresAppTaskQueueDB {
                 };
                 serde_json::to_value(raw).ok()
             },
-        ))
+        );
+
+        sqlx::query(
+            r#"
+                UPDATE app_task
+                SET status = 'done', result_success = $3, result_error = $2
+                WHERE id = $1
+                "#,
+        )
+        .bind(id.as_uuid())
+        .bind(failed_result)
+        .bind(&success_result)
         .execute(&mut *tx)
         .await?;
 
+        if let AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
+            app_name,
+            infrastructure_payload,
+            ..
+        } = tasked_worked_on
+        {
+            if is_success {
+                sqlx::query(
+                    r#"
+                    INSERT INTO app_backup (app_name, app, infrastructure_payload)
+                    VALUES ($1, $2, $3);
+                    "#,
+                )
+                .bind(app_name.as_str())
+                .bind(success_result)
+                .bind(infrastructure_payload)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        // TODO: backup cannot be merged… and we should mark up to this task id.
         for (task_id_that_was_merged, _merged_task) in
             tasks.iter().filter(|task| task.0 != *id.as_uuid())
         {
@@ -301,9 +326,9 @@ mod tests {
 
         queue
             .execute_tasks(async |tasks| {
-                let id = tasks.last().unwrap().status_id().clone();
+                let task = tasks.last().unwrap().clone();
                 (
-                    id,
+                    task,
                     Ok(App::new(
                         vec![Service {
                             id: String::from("nginx-1234"),
@@ -375,9 +400,9 @@ mod tests {
 
                     tokio::time::sleep(Duration::from_secs(4)).await;
 
-                    let id = tasks.last().unwrap().status_id().clone();
+                    let task = tasks.last().unwrap().clone();
                     (
-                        id,
+                        task,
                         Ok(App::new(
                             vec![Service {
                                 id: String::from("nginx-1234"),
@@ -444,9 +469,9 @@ mod tests {
         let spawn_handle_1 = tokio::spawn(async move {
             spawned_queue
                 .execute_tasks(async |tasks| {
-                    let id = tasks.last().unwrap().status_id().clone();
+                    let task = tasks.last().unwrap().clone();
                     (
-                        id,
+                        task,
                         Ok(App::new(
                             vec![Service {
                                 id: String::from("nginx-1234"),
@@ -471,9 +496,9 @@ mod tests {
         let spawn_handle_2 = tokio::spawn(async move {
             spawned_queue
                 .execute_tasks(async |tasks| {
-                    let id = tasks.last().unwrap().status_id().clone();
+                    let task = tasks.last().unwrap().clone();
                     (
-                        id,
+                        task,
                         Ok(App::new(
                             vec![Service {
                                 id: String::from("nginx-1234"),
