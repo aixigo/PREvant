@@ -75,16 +75,19 @@ impl AppTask {
                 service_configs
                     .sort_unstable_by(|sc1, sc2| sc1.service_name().cmp(sc2.service_name()));
 
+                let mut owners = Owner::normalize(HashSet::from_iter(
+                    owners.into_iter().chain(o_owners.into_iter()),
+                ))
+                .into_iter()
+                .collect::<Vec<_>>();
+                owners.sort_unstable_by(|o1, o2| o1.sub.cmp(&o2.sub));
+
                 Self::CreateOrUpdate {
                     app_name,
                     status_id,
                     replicate_from,
                     service_configs,
-                    owners: Owner::normalize(HashSet::from_iter(
-                        owners.into_iter().chain(o_owners.into_iter()),
-                    ))
-                    .into_iter()
-                    .collect(),
+                    owners,
                     user_defined_parameters: match (
                         user_defined_parameters,
                         o_user_defined_parameters,
@@ -279,13 +282,13 @@ mod tests {
                 ],
                 owners: vec![
                     Owner {
-                        sub: SubjectIdentifier::new(String::from("gitlab")),
-                        iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
+                        sub: SubjectIdentifier::new(String::from("github")),
+                        iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
                         name: None,
                     },
                     Owner {
-                        sub: SubjectIdentifier::new(String::from("github")),
-                        iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
+                        sub: SubjectIdentifier::new(String::from("gitlab")),
+                        iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                         name: None,
                     },
                 ],
