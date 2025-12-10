@@ -532,6 +532,20 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(Some(App::new(services, owners, udp)))
     }
 
+    async fn fetch_app_as_backup_based_infrastructure_payload(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<Vec<serde_json::Value>>> {
+        let client = self.client().await?;
+
+        let unit = K8sDeploymentUnit::fetch(client, app_name).await?;
+        if unit.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(unit.prepare_for_back_up().to_json_vec()))
+    }
+
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
         let client = self.client().await?;
         Ok(Api::<V1Namespace>::all(client)
@@ -645,6 +659,17 @@ impl Infrastructure for KubernetesInfrastructure {
             .await?;
 
         Ok(services)
+    }
+
+    async fn delete_infrastructure_objects_partially(
+        &self,
+        app_name: &AppName,
+        infrastructure_payload: &[serde_json::Value],
+    ) -> Result<()> {
+        let unit = K8sDeploymentUnit::parse_from_json(app_name, infrastructure_payload)?;
+        unit.prepare_for_back_up()
+            .delete(self.client().await?, app_name)
+            .await
     }
 
     async fn get_logs<'a>(

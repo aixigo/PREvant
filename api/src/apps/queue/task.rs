@@ -7,6 +7,11 @@ use std::collections::{HashMap, HashSet};
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq)]
 #[serde(untagged)]
 pub(super) enum AppTask {
+    MovePayloadToBackUpAndDeleteFromInfrastructure {
+        status_id: AppStatusChangeId,
+        app_name: AppName,
+        infrastructure_payload: Vec<serde_json::Value>,
+    },
     CreateOrUpdate {
         app_name: AppName,
         status_id: AppStatusChangeId,
@@ -26,12 +31,14 @@ impl AppTask {
         match self {
             AppTask::CreateOrUpdate { app_name, .. } => app_name,
             AppTask::Delete { app_name, .. } => app_name,
+            AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { app_name, .. } => app_name,
         }
     }
     pub fn status_id(&self) -> &AppStatusChangeId {
         match self {
             AppTask::CreateOrUpdate { status_id, .. } => status_id,
             AppTask::Delete { status_id, .. } => status_id,
+            AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { status_id, .. } => status_id,
         }
     }
 
@@ -140,6 +147,7 @@ impl AppTask {
                 status_id,
                 app_name,
             },
+            _ => unimplemented!(),
         }
     }
 }

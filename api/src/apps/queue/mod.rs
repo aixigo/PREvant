@@ -136,6 +136,28 @@ impl AppTaskQueueProducer {
         Ok(status_id)
     }
 
+    pub async fn enqueue_backup_task(
+        &self,
+        app_name: AppName,
+        infrastructure_payload: Vec<serde_json::Value>,
+    ) -> Result<AppStatusChangeId> {
+        let status_id = AppStatusChangeId::new();
+        self.db
+            .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
+                status_id,
+                app_name,
+                infrastructure_payload,
+            })
+            .await?;
+
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!("Notify about new backup task: {status_id}.");
+        }
+        self.notify.notify_one();
+
+        Ok(status_id)
+    }
+
     pub async fn try_wait_for_task(
         &self,
         status_id: &AppStatusChangeId,
@@ -190,7 +212,6 @@ impl AppTaskQueueConsumer {
                 let Some(task) = tasks.into_iter().reduce(|acc, e| acc.merge_with(e)) else {
                     panic!("tasks must not be empty");
                 };
-                let status_id = task.status_id().clone();
 
                 if log::log_enabled!(log::Level::Debug) {
                     log::debug!(
@@ -199,7 +220,23 @@ impl AppTaskQueueConsumer {
                         task.app_name()
                     );
                 }
-                match task {
+                match &task {
+                    AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
+                        app_name,
+                        infrastructure_payload,
+                        ..
+                    } => {
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!(
+                                "Dropping infrastructure objects for {app_name} due to back up."
+                            );
+                        }
+
+                        let result = apps
+                            .delete_app_partially(app_name, infrastructure_payload)
+                            .await;
+                        (task, result)
+                    }
                     AppTask::CreateOrUpdate {
                         app_name,
                         replicate_from,
@@ -211,23 +248,24 @@ impl AppTaskQueueConsumer {
                         if log::log_enabled!(log::Level::Debug) {
                             log::debug!("Creating or updating app {app_name}.");
                         }
-                        (
-                            status_id,
-                            apps.create_or_update(
+
+                        let result = apps
+                            .create_or_update(
                                 &app_name,
-                                replicate_from,
+                                replicate_from.clone(),
                                 &service_configs,
-                                owners,
-                                user_defined_parameters,
+                                owners.clone(),
+                                user_defined_parameters.clone(),
                             )
-                            .await,
-                        )
+                            .await;
+                        (task, result)
                     }
                     AppTask::Delete { app_name, .. } => {
                         if log::log_enabled!(log::Level::Debug) {
                             log::debug!("Deleting app {app_name}.");
                         }
-                        (status_id, apps.delete_app(&app_name).await)
+                        let result = apps.delete_app(&app_name).await;
+                        (task, result)
                     }
                 }
             })
@@ -263,6 +301,7 @@ impl AppTaskQueueDB {
     pub async fn enqueue_task(&self, task: AppTask) -> Result<()> {
         match self {
             AppTaskQueueDB::InMemory(mutex) => {
+                // TODO: fail for in memory backup
                 let mut queue = mutex.lock().await;
                 queue.push_back((task, AppTaskStatus::New));
             }
@@ -299,7 +338,7 @@ impl AppTaskQueueDB {
     async fn execute_tasks<F, Fut>(&self, f: F) -> Result<()>
     where
         F: FnOnce(Vec<AppTask>) -> Fut,
-        Fut: Future<Output = (AppStatusChangeId, std::result::Result<App, AppsError>)>,
+        Fut: Future<Output = (AppTask, std::result::Result<App, AppsError>)>,
     {
         match self {
             AppTaskQueueDB::InMemory(mutex) => {
@@ -320,7 +359,7 @@ impl AppTaskQueueDB {
                 };
 
                 let status_id = *task.status_id();
-                let (task_id, result) = f(vec![task]).await;
+                let (task_worked_on, result) = f(vec![task]).await;
 
                 let mut queue = mutex.lock().await;
                 let Some(task) = queue
@@ -330,7 +369,7 @@ impl AppTaskQueueDB {
                     anyhow::bail!("Cannot update {status_id} in queue which should be present");
                 };
 
-                assert!(task_id == *task.0.status_id());
+                assert!(task_worked_on.status_id() == task.0.status_id());
                 task.1 = AppTaskStatus::Done((Utc::now(), result));
 
                 Ok(())
