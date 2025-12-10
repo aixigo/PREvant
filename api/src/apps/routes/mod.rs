@@ -63,6 +63,7 @@ pub fn apps_routes() -> Vec<rocket::Route> {
         delete_app_v2,
         create_app_v1,
         create_app_v2,
+        back_up_app,
         logs::logs,
         logs::stream_logs,
         change_status,
@@ -306,6 +307,41 @@ pub async fn create_app_v2(
         AppV2,
     )
     .await
+}
+
+#[rocket::put(
+    "/<app_name>/states",
+    format = "application/json",
+    // TODO payload data = "<payload>",
+)]
+pub async fn back_up_app(
+    app_name: Result<AppName, AppNameError>,
+    apps: &State<Apps>,
+    app_queue: &State<AppTaskQueueProducer>,
+    user: Result<UserValidatedByAccessMode, HttpApiProblem>,
+    options: WaitForQueueOptions,
+) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
+    // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
+    let _user = user.map_err(HttpApiError::from)?;
+
+    let app_name = app_name?;
+    let Some(infrastructure_payload) = apps
+        .fetch_app_as_backup_based_infrastructure_payload(&app_name)
+        .await?
+    else {
+        // TODO check if already backed up…
+        return Err(AppsError::AppNotFound { app_name }.into());
+    };
+
+    let status_id = app_queue
+        .enqueue_backup_task(app_name.clone(), infrastructure_payload)
+        .await
+        .map_err(|e| {
+            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                .detail(e.to_string())
+        })?;
+
+    try_wait_for_task(app_queue, app_name, status_id, options, AppV2).await
 }
 
 #[rocket::put(
@@ -611,7 +647,7 @@ mod tests {
     mod http_api_error {
         use super::super::*;
         use crate::{
-            apps::{AppProcessingQueue, AppsError, Apps},
+            apps::{AppProcessingQueue, Apps, AppsError},
             infrastructure::Dummy,
             registry::RegistryError,
         };

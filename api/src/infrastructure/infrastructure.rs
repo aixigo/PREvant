@@ -42,6 +42,13 @@ pub trait Infrastructure: Send + Sync + DynClone {
 
     async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>>;
 
+    async fn fetch_app_as_backup_based_infrastructure_payload(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<Vec<serde_json::Value>>> {
+        anyhow::bail!("Cannot back up {app_name}: not yet implemented for the configured backend")
+    }
+
     async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
         Ok(self.fetch_apps().await?.into_keys().collect::<HashSet<_>>())
     }
@@ -65,6 +72,14 @@ pub trait Infrastructure: Send + Sync + DynClone {
     /// The implementation must ensure that it returns the services that have been
     /// stopped.
     async fn stop_services(&self, app_name: &AppName) -> Result<App>;
+
+    async fn delete_infrastructure_objects_partially(
+        &self,
+        app_name: &AppName,
+        infrastructure: &[serde_json::Value],
+    ) -> Result<()> {
+        anyhow::bail!("Cannot back up {app_name}: not yet implemented for the configured backend to delete {infrastructure:?}")
+    }
 
     /// Streams the log lines with a the corresponding timestamps in it.
     async fn get_logs<'a>(
