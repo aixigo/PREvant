@@ -98,7 +98,7 @@
                      <a v-if="container.url" :href='container.url' target="_blank">{{ container.name }}</a>
                      <span v-else>{{ container.name }}</span>
 
-                     <button type="button" class="btn btn-dark ra-container__change-status" @click="changeState($event, container.name)">
+                     <button type="button" class="btn btn-dark ra-container__change-status" @click="changeState($event, container.name)" v-if="reviewApp.status == 'deployed'">
                         <template v-if="container.status === 'running'">
                            <i class="ra-icons  material-icons">pause_circle_outline</i>
                         </template>
