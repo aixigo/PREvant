@@ -19,6 +19,7 @@ impl DatabasePool {
         let min = std::time::Duration::from_millis(100);
         let max = std::time::Duration::from_secs(10);
         for duration in exponential_backoff::Backoff::new(5, min, max) {
+            log::debug!("Connecting to database…");
             let pool = match PgPool::connect_with(database_options.clone()).await {
                 Ok(pool) => pool,
                 Err(err) => match duration {

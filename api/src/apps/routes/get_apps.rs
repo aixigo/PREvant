@@ -1,15 +1,21 @@
 use crate::{
-    apps::{Apps, HostMetaCache},
-    http_result::HttpResult,
-    models::{App, AppName, AppWithHostMeta, Owner, RequestInfo, ServiceWithHostMeta},
+    apps::{
+        repository::{AppPostgresRepository, BackupUpdateReceiver},
+        routes::AppV2,
+        Apps, HostMetaCache,
+    },
+    http_result::{HttpApiError, HttpResult},
+    models::{App, AppName, AppWithHostMeta, RequestInfo},
 };
+use http::StatusCode;
+use http_api_problem::HttpApiProblem;
 use rocket::{
     response::stream::{Event, EventStream},
     serde::json::Json,
     Shutdown, State,
 };
 use serde::{ser::SerializeMap as _, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use tokio::{select, sync::watch::Receiver};
 use tokio_stream::StreamExt;
 
@@ -30,7 +36,7 @@ impl Serialize for AppsV1 {
     }
 }
 
-pub(super) struct AppsV2(HashMap<AppName, AppWithHostMeta>);
+pub(super) struct AppsV2(HashMap<AppName, AppV2>);
 
 impl Serialize for AppsV2 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -39,21 +45,8 @@ impl Serialize for AppsV2 {
     {
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
 
-        #[derive(Serialize)]
-        struct App<'a> {
-            services: &'a [ServiceWithHostMeta],
-            #[serde(skip_serializing_if = "HashSet::is_empty")]
-            owners: &'a HashSet<Owner>,
-        }
-
-        for (app_name, services_with_host_meta) in self.0.iter() {
-            map.serialize_entry(
-                app_name,
-                &App {
-                    services: services_with_host_meta.services(),
-                    owners: services_with_host_meta.owners(),
-                },
-            )?;
+        for (app_name, app) in self.0.iter() {
+            map.serialize_entry(app_name, app)?;
         }
 
         map.end()
@@ -66,51 +59,62 @@ pub(super) async fn apps_v1(
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
 ) -> HttpResult<Json<AppsV1>> {
+    // We don't fetch app backups here because the deprecated API wouldn't have an option to
+    // show the outside what kind of application the consumer received. Seeing the backed up
+    // applications on the receivers' ends would be a semantic breaking change.
     let apps = apps.fetch_apps().await?;
     Ok(Json(AppsV1(
         host_meta_cache.assign_host_meta_data(apps, &request_info),
     )))
 }
 
+fn merge(
+    deployed_apps: HashMap<AppName, AppWithHostMeta>,
+    backed_up_apps: HashMap<AppName, App>,
+) -> HashMap<AppName, AppV2> {
+    let mut deployed_apps = deployed_apps
+        .into_iter()
+        .map(|(app_name, app)| (app_name, AppV2::Deployed(app)))
+        .collect::<HashMap<_, _>>();
+
+    let backed_up_apps = backed_up_apps
+        .into_iter()
+        .map(|(app_name, app)| (app_name, AppV2::BackedUp(app)))
+        .collect::<HashMap<_, _>>();
+
+    deployed_apps.extend(backed_up_apps);
+
+    deployed_apps
+}
+
 #[rocket::get("/", format = "application/vnd.prevant.v2+json", rank = 2)]
 pub(super) async fn apps_v2(
     apps: &State<Apps>,
+    app_repository: &State<Option<AppPostgresRepository>>,
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
 ) -> HttpResult<Json<AppsV2>> {
-    let apps = apps.fetch_apps().await?;
-    Ok(Json(AppsV2(
-        host_meta_cache.assign_host_meta_data(apps, &request_info),
-    )))
-}
-
-macro_rules! stream_apps {
-    ($apps_updates:ident, $host_meta_cache:ident, $request_info:ident, $end:ident, $app_version_type:ty) => {{
-        let mut services = $apps_updates.inner().borrow().clone();
-
-        let mut app_changes =
-            tokio_stream::wrappers::WatchStream::from_changes($apps_updates.inner().clone());
-        let mut host_meta_cache_updates = $host_meta_cache.cache_updates();
-
-        EventStream! {
-            yield Event::json(&$app_version_type($host_meta_cache.assign_host_meta_data(services.clone(), &$request_info)));
-
-            loop {
-                select! {
-                    Some(new_services) = app_changes.next() => {
-                        log::debug!("New app list update: sending app service update");
-                        services = new_services;
-                    }
-                    Some(_t) = host_meta_cache_updates.next() => {
-                        log::debug!("New host meta cache update: sending app service update");
-                    }
-                    _ = &mut $end => break,
-                };
-
-                yield Event::json(&$app_version_type($host_meta_cache.assign_host_meta_data(services.clone(), &$request_info)));
+    let (apps, app_backups) = futures::try_join!(
+        async {
+            apps.fetch_apps()
+                .await
+                .map_err(HttpApiError::from)
+                .map(|apps| host_meta_cache.assign_host_meta_data(apps, &request_info))
+        },
+        async {
+            match &**app_repository {
+                Some(app_repository) => app_repository.fetch_backed_up_apps().await.map_err(|e| {
+                    HttpApiError::from(
+                        HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                            .detail(e.to_string()),
+                    )
+                }),
+                None => Ok(HashMap::new()),
             }
         }
-    }};
+    )?;
+
+    Ok(Json(AppsV2(merge(apps, app_backups))))
 }
 
 #[rocket::get("/", format = "text/event-stream", rank = 3)]
@@ -120,26 +124,98 @@ pub(super) async fn stream_apps_v1(
     request_info: RequestInfo,
     host_meta_cache: HostMetaCache,
 ) -> EventStream![] {
-    stream_apps!(apps_updates, host_meta_cache, request_info, end, AppsV1)
+    // We don't fetch app backups here because the deprecated API wouldn't have an option to
+    // show the outside what kind of application the consumer received. Seeing the backed up
+    // applications on the receivers' ends would be a semantic breaking change.
+    let mut deployed_apps = apps_updates.inner().borrow().clone();
+
+    let mut app_changes =
+        tokio_stream::wrappers::WatchStream::from_changes(apps_updates.inner().clone());
+    let mut host_meta_cache_updates = host_meta_cache.cache_updates();
+
+    EventStream! {
+        yield Event::json(&AppsV1(host_meta_cache.assign_host_meta_data(deployed_apps.clone(), &request_info)));
+
+        loop {
+            select! {
+                Some(new_apps) = app_changes.next() => {
+                    log::debug!("New app list update: sending app service update");
+                    deployed_apps = new_apps;
+                }
+                Some(_t) = host_meta_cache_updates.next() => {
+                    log::debug!("New host meta cache update: sending app service update");
+                }
+                _ = &mut end => break,
+            };
+
+            yield Event::json(&AppsV1(host_meta_cache.assign_host_meta_data(deployed_apps.clone(), &request_info)));
+        }
+    }
 }
 
 #[rocket::get("/", format = "text/vnd.prevant.v2+event-stream", rank = 4)]
 pub(super) async fn stream_apps_v2(
     apps_updates: &State<Receiver<HashMap<AppName, App>>>,
+    backup_updates: &State<Option<BackupUpdateReceiver>>,
     mut end: Shutdown,
     request_info: RequestInfo,
     host_meta_cache: HostMetaCache,
 ) -> EventStream![] {
-    stream_apps!(apps_updates, host_meta_cache, request_info, end, AppsV2)
+    let mut deployed_apps = apps_updates.inner().borrow().clone();
+    let mut backed_up_apps = match &**backup_updates {
+        Some(backup_updates) => backup_updates.0.borrow().clone(),
+        None => HashMap::new(),
+    };
+
+    let mut app_changes =
+        tokio_stream::wrappers::WatchStream::from_changes(apps_updates.inner().clone());
+    let mut backup_changes = match &**backup_updates {
+        Some(backup_updates) => {
+            tokio_stream::wrappers::WatchStream::from_changes(backup_updates.0.clone())
+        }
+        None => {
+            let (_tx, rx) = tokio::sync::watch::channel(HashMap::new());
+            tokio_stream::wrappers::WatchStream::from_changes(rx)
+        }
+    };
+    let mut host_meta_cache_updates = host_meta_cache.cache_updates();
+    EventStream! {
+        yield Event::json(&AppsV2(merge(
+            host_meta_cache.assign_host_meta_data(deployed_apps.clone(), &request_info),
+            backed_up_apps.clone(),
+        )));
+
+        loop {
+            select! {
+                Some(new_apps) = app_changes.next() => {
+                    log::debug!("New app list update: sending app service update");
+                    deployed_apps = new_apps;
+                }
+                Some(new_backups) = backup_changes.next() => {
+                    log::debug!("New backup list update: sending app service update");
+                    backed_up_apps = new_backups;
+                }
+                Some(_t) = host_meta_cache_updates.next() => {
+                    log::debug!("New host meta cache update: sending app service update");
+                }
+                _ = &mut end => break,
+            };
+
+            yield Event::json(&AppsV2(merge(
+                host_meta_cache.assign_host_meta_data(deployed_apps.clone(), &request_info),
+                backed_up_apps.clone(),
+            )));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Service, ServiceStatus, ServiceWithHostMeta, WebHostMeta};
+    use crate::models::{Owner, Service, ServiceStatus, ServiceWithHostMeta, WebHostMeta};
     use assert_json_diff::assert_json_eq;
     use chrono::Utc;
-    use std::str::FromStr;
+    use std::{collections::HashSet, str::FromStr};
     use url::Url;
 
     #[test]
@@ -213,6 +289,7 @@ mod tests {
         assert_json_eq!(
             serde_json::json!({
                 "master": {
+                    "status": "deployed",
                     "services": [{
                         "name": "mariadb",
                         "type": "instance",
@@ -234,7 +311,7 @@ mod tests {
             }),
             serde_json::to_value(AppsV2(HashMap::from([(
                 app_name.clone(),
-                AppWithHostMeta::new(
+                AppV2::Deployed(AppWithHostMeta::new(
                     vec![
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
@@ -264,7 +341,7 @@ mod tests {
                         )
                     ],
                     HashSet::new()
-                )
+                ))
             )])))
             .unwrap()
         );
@@ -278,6 +355,7 @@ mod tests {
         assert_json_eq!(
             serde_json::json!({
                 "master": {
+                    "status": "deployed",
                     "owners": [{
                         "sub": "some-sub",
                         "iss": "https://openid.example.com"
@@ -303,7 +381,7 @@ mod tests {
             }),
             serde_json::to_value(AppsV2(HashMap::from([(
                 app_name.clone(),
-                AppWithHostMeta::new(
+                AppV2::Deployed(AppWithHostMeta::new(
                     vec![
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
@@ -340,7 +418,7 @@ mod tests {
                         .unwrap(),
                         name: None,
                     }])
-                )
+                ))
             )])))
             .unwrap()
         );
@@ -348,7 +426,7 @@ mod tests {
 
     mod url_rendering {
         use super::apps_v1;
-        use crate::apps::repository::AppPostgresRepository;
+        use crate::apps::repository::{AppPostgresRepository, BackupUpdateReceiver};
         use crate::apps::{AppProcessingQueue, Apps, HostMetaCache};
         use crate::config::Config;
         use crate::infrastructure::Dummy;
@@ -368,19 +446,14 @@ mod tests {
             let infrastructure = Box::new(Dummy::new());
             let apps = Apps::new(Default::default(), infrastructure).unwrap();
             let _result = apps
-                .create_or_update(
-                    &AppName::master(),
-                    None,
-                    &[sc!("service-a")],
-                    vec![],
-                    None,
-                )
+                .create_or_update(&AppName::master(), None, &[sc!("service-a")], vec![], None)
                 .await?;
 
             let rocket = rocket::build()
                 .manage(host_meta_cache)
                 .manage(apps)
                 .manage(Config::default())
+                .manage(None::<BackupUpdateReceiver>)
                 .manage(None::<AppPostgresRepository>)
                 .manage(tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new()).1)
                 .mount("/", rocket::routes![apps_v1])

@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq)]
 #[serde(untagged)]
-pub(super) enum AppTask {
+pub enum AppTask {
     MovePayloadToBackUpAndDeleteFromInfrastructure {
         status_id: AppStatusChangeId,
         app_name: AppName,

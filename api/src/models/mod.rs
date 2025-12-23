@@ -25,11 +25,12 @@
  */
 
 pub use app::{
-    App, AppStatus, AppWithHostMeta, AppWithHostMetaAndStatus, ContainerType, Owner, Service,
-    ServiceError, ServiceStatus, ServiceWithHostMeta, State,
+    App, AppStatus, AppWithHostMeta, ContainerType, Owner, Service, ServiceError, ServiceStatus,
+    ServiceWithHostMeta, State,
 };
 pub use app_name::{AppName, AppNameError};
 pub use app_status_change_id::{AppStatusChangeId, AppStatusChangeIdError};
+pub use app_task::AppTask;
 pub use image::Image;
 pub use logs_chunks::LogChunk;
 pub use request_info::RequestInfo;
@@ -40,6 +41,7 @@ pub use web_host_meta::WebHostMeta;
 mod app;
 mod app_name;
 mod app_status_change_id;
+mod app_task;
 mod image;
 mod logs_chunks;
 pub mod request_info;
