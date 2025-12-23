@@ -88,6 +88,40 @@ pub fn new(config: Config) -> (HostMetaCache, HostMetaCrawler) {
 }
 
 impl HostMetaCache {
+    pub fn assign_host_meta_data_for_app(
+        &self,
+        app_name: &AppName,
+        app: App,
+        request_info: &RequestInfo,
+    ) -> AppWithHostMeta {
+        let reader = self.reader_factory.handle();
+
+        let mut services_with_host_meta = Vec::with_capacity(app.services().len());
+
+        let (services, owners) = app.into_services_and_owners();
+        for service in services.into_iter() {
+            let service_id = service.id.clone();
+            let key = Key {
+                app_name: app_name.clone(),
+                service_id,
+            };
+
+            let web_host_meta = match reader.get_one(&key) {
+                Some(value) => value.web_host_meta.with_base_url(request_info.base_url()),
+                None => WebHostMeta::empty(),
+            };
+
+            services_with_host_meta.push(ServiceWithHostMeta::from_service_and_web_host_meta(
+                service,
+                web_host_meta,
+                request_info.base_url().clone(),
+                app_name,
+            ));
+        }
+
+        AppWithHostMeta::new(services_with_host_meta, owners)
+    }
+
     pub fn assign_host_meta_data(
         &self,
         apps: HashMap<AppName, App>,
@@ -319,14 +353,16 @@ impl HostMetaCrawler {
             running_services_without_host_meta.into_iter()
         {
             let now = Utc::now();
-            debug!(
-                "Resolving web host meta data for app {app_name} and the services: {}.",
-                running_services_without_host_meta
-                    .iter()
-                    .map(|(_k, service)| service.service_name())
-                    .fold(String::new(), |a, b| a + &b + ", ")
-                    .trim_end_matches(", ")
-            );
+            if log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "Resolving web host meta data for app {app_name} and the services: {}.",
+                    running_services_without_host_meta
+                        .iter()
+                        .map(|(_k, service)| service.service_name())
+                        .fold(String::new(), |a, b| a + b + ", ")
+                        .trim_end_matches(", ")
+                );
+            }
 
             let duration_prevant_startup = now.signed_duration_since(since_timestamp);
             let resolved_host_meta_infos = Self::resolve_host_meta(

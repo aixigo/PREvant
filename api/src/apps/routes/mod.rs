@@ -26,14 +26,14 @@
 
 use super::queue::AppTaskQueueProducer;
 use crate::apps::repository::AppPostgresRepository;
-use crate::apps::{Apps, AppsError};
+use crate::apps::{Apps, AppsError, HostMetaCache};
 use crate::auth::UserValidatedByAccessMode;
 use crate::config::Config;
 use crate::deployment::hooks::Hooks;
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::{
-    App, AppName, AppNameError, AppStatus, AppStatusChangeId, AppStatusChangeIdError, Owner,
-    Service, ServiceStatus,
+    App, AppName, AppNameError, AppStatus, AppStatusChangeId, AppStatusChangeIdError,
+    AppWithHostMeta, Owner, RequestInfo, Service, ServiceStatus, ServiceWithHostMeta,
 };
 use create_app_payload::CreateAppPayload;
 use http_api_problem::{HttpApiProblem, StatusCode};
@@ -91,7 +91,10 @@ impl Serialize for AppV1 {
     }
 }
 
-pub struct AppV2(App);
+pub enum AppV2 {
+    Deployed(AppWithHostMeta),
+    BackedUp(App),
+}
 
 impl Serialize for AppV2 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -99,15 +102,42 @@ impl Serialize for AppV2 {
         S: Serializer,
     {
         #[derive(Serialize)]
+        #[serde(untagged)]
+        enum Service<'a> {
+            ServiceWithHostMeta(&'a ServiceWithHostMeta),
+            ServiceWithoutStatus(Box<crate::models::Service>),
+        }
+        #[derive(Serialize)]
         struct App<'a> {
-            services: &'a [Service],
+            services: Vec<Service<'a>>,
             #[serde(skip_serializing_if = "HashSet::is_empty")]
             owners: &'a HashSet<Owner>,
+            status: AppStatus,
         }
 
-        let app = App {
-            services: self.0.services(),
-            owners: self.0.owners(),
+        let app = match self {
+            AppV2::Deployed(app_with_host_meta) => App {
+                services: app_with_host_meta
+                    .services()
+                    .iter()
+                    .map(Service::ServiceWithHostMeta)
+                    .collect(),
+                owners: app_with_host_meta.owners(),
+                status: AppStatus::Deployed,
+            },
+            AppV2::BackedUp(app) => App {
+                services: app
+                    .services()
+                    .iter()
+                    .map(|s| {
+                        let mut s = s.clone();
+                        s.state.status = ServiceStatus::Paused;
+                        Service::ServiceWithoutStatus(Box::new(s))
+                    })
+                    .collect(),
+                owners: app.owners(),
+                status: AppStatus::BackedUp,
+            },
         };
 
         app.serialize(serializer)
@@ -141,15 +171,24 @@ async fn status_change_v2(
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
     app_queue: &State<AppTaskQueueProducer>,
     options: WaitForQueueOptions,
+    host_meta_cache: &State<HostMetaCache>,
+    request_info: RequestInfo,
 ) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
     let app_name = app_name?;
     let status_id = status_id?;
 
-    try_wait_for_task(app_queue, app_name, status_id, options, AppV2).await
+    try_wait_for_task(app_queue, app_name.clone(), status_id, options, |app| {
+        AppV2::Deployed(host_meta_cache.assign_host_meta_data_for_app(
+            &app_name,
+            app,
+            &request_info,
+        ))
+    })
+    .await
 }
 
 async fn delete_app<F, R>(
-    app_name: Result<AppName, AppNameError>,
+    app_name: AppName,
     app_queue: &State<AppTaskQueueProducer>,
     options: WaitForQueueOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
@@ -160,8 +199,6 @@ where
 {
     // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
     let _user = user.map_err(HttpApiError::from)?;
-
-    let app_name = app_name?;
 
     let status_id = app_queue
         .enqueue_delete_task(app_name.clone())
@@ -183,6 +220,8 @@ pub async fn delete_app_v1(
     options: WaitForQueueOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
+    let app_name = app_name?;
+
     delete_app(app_name, app_queue, options, user, AppV1).await
 }
 
@@ -192,8 +231,19 @@ pub async fn delete_app_v2(
     app_queue: &State<AppTaskQueueProducer>,
     options: WaitForQueueOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
+    host_meta_cache: &State<HostMetaCache>,
+    request_info: RequestInfo,
 ) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
-    delete_app(app_name, app_queue, options, user, AppV2).await
+    let app_name = app_name?;
+
+    delete_app(app_name.clone(), app_queue, options, user, |app| {
+        AppV2::Deployed(host_meta_cache.assign_host_meta_data_for_app(
+            &app_name,
+            app,
+            &request_info,
+        ))
+    })
+    .await
 }
 
 pub async fn delete_app_sync(
@@ -210,7 +260,7 @@ pub async fn delete_app_sync(
 }
 
 async fn create_app<F, R>(
-    app_name: Result<AppName, AppNameError>,
+    app_name: AppName,
     app_queue: &State<AppTaskQueueProducer>,
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
@@ -226,7 +276,6 @@ where
     // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
     let user = user.map_err(HttpApiError::from)?;
 
-    let app_name = app_name?;
     let replicate_from = create_app_form.replicate_from().clone();
 
     let owner = hooks
@@ -269,6 +318,8 @@ pub async fn create_app_v1(
     hooks: Hooks<'_>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
+    let app_name = app_name?;
+
     create_app(
         app_name,
         app_queue,
@@ -296,16 +347,26 @@ pub async fn create_app_v2(
     options: WaitForQueueOptions,
     hooks: Hooks<'_>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
+    host_meta_cache: &State<HostMetaCache>,
+    request_info: RequestInfo,
 ) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
+    let app_name = app_name?;
+
     create_app(
-        app_name,
+        app_name.clone(),
         app_queue,
         create_app_form,
         payload,
         options,
         &hooks,
         user,
-        AppV2,
+        |app| {
+            AppV2::Deployed(host_meta_cache.assign_host_meta_data_for_app(
+                &app_name,
+                app,
+                &request_info,
+            ))
+        },
     )
     .await
 }
@@ -324,6 +385,8 @@ pub async fn change_app_status(
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
     options: WaitForQueueOptions,
     payload: Json<AppStatesInput>,
+    host_meta_cache: &State<HostMetaCache>,
+    request_info: RequestInfo,
 ) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
     // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
     let _user = user.map_err(HttpApiError::from)?;
@@ -358,6 +421,17 @@ pub async fn change_app_status(
                 })?
         }
         AppStatus::BackedUp => {
+            if let Some(backup) = app_repository
+                .fetch_backed_up_app(&app_name)
+                .await
+                .map_err(|e| {
+                    HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                        .detail(e.to_string())
+                })?
+            {
+                return Ok(AsyncCompletion::Ready(Json(AppV2::BackedUp(backup))));
+            }
+
             let Some(infrastructure_payload) = apps
                 .fetch_app_as_backup_based_infrastructure_payload(&app_name)
                 .await?
@@ -375,7 +449,21 @@ pub async fn change_app_status(
         }
     };
 
-    try_wait_for_task(app_queue, app_name, status_id, options, AppV2).await
+    try_wait_for_task(
+        app_queue,
+        app_name.clone(),
+        status_id,
+        options,
+        |app| match payload.status {
+            AppStatus::Deployed => AppV2::Deployed(host_meta_cache.assign_host_meta_data_for_app(
+                &app_name,
+                app,
+                &request_info,
+            )),
+            AppStatus::BackedUp => AppV2::BackedUp(app),
+        },
+    )
+    .await
 }
 
 #[rocket::put(
@@ -1036,17 +1124,18 @@ mod tests {
     fn serialize_app_v2() {
         assert_json_eq!(
             serde_json::json!({
+                "status": "backed-up",
                 "services": [{
                     "name": "mariadb",
                     "type": "instance",
                     "state": {
-                        "status": "running"
+                        "status": "paused"
                     }
                 }, {
                     "name": "postgres",
                     "type": "instance",
                     "state": {
-                        "status": "running"
+                        "status": "paused"
                     }
                 }],
                 "owners": [{
@@ -1054,7 +1143,7 @@ mod tests {
                     "iss": "https://openid.example.com"
                 }],
             }),
-            serde_json::to_value(AppV2(App::new(
+            serde_json::to_value(AppV2::BackedUp(App::new(
                 vec![
                     Service {
                         id: String::from("some id"),

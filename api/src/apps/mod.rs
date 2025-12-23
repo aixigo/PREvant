@@ -136,6 +136,7 @@ impl Apps {
         let infrastructure = dyn_clone::clone_box(&*self.infrastructure);
         let (tx, rx) = tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new());
 
+        // TODO: we should return this and spawn on liftoff
         tokio::spawn(async move {
             loop {
                 debug!("Fetching list of apps to send updates.");
