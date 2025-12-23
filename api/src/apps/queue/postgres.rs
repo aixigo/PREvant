@@ -217,13 +217,13 @@ impl PostgresAppTaskQueueDB {
         .execute(&mut *tx)
         .await?;
 
-        if let AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
-            app_name,
-            infrastructure_payload,
-            ..
-        } = tasked_worked_on
-        {
-            if is_success {
+        if is_success {
+            if let AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
+                app_name,
+                infrastructure_payload_to_back_up,
+                ..
+            } = tasked_worked_on
+            {
                 sqlx::query(
                     r#"
                     INSERT INTO app_backup (app_name, app, infrastructure_payload)
@@ -232,7 +232,19 @@ impl PostgresAppTaskQueueDB {
                 )
                 .bind(app_name.as_str())
                 .bind(success_result)
-                .bind(serde_json::Value::Array(infrastructure_payload))
+                .bind(serde_json::Value::Array(infrastructure_payload_to_back_up))
+                .execute(&mut *tx)
+                .await?;
+            } else if let AppTask::RestoreOnInfrastructureAndDeleteFromBackup { app_name, .. } =
+                tasked_worked_on
+            {
+                sqlx::query(
+                    r#"
+                    DELETE FROM app_backup
+                    WHERE app_name = $1;
+                    "#,
+                )
+                .bind(app_name.as_str())
                 .execute(&mut *tx)
                 .await?;
             }

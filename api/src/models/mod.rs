@@ -25,8 +25,8 @@
  */
 
 pub use app::{
-    App, AppWithHostMeta, ContainerType, Owner, Service, ServiceError, ServiceStatus,
-    ServiceWithHostMeta, State,
+    App, AppStatus, AppWithHostMeta, AppWithHostMetaAndStatus, ContainerType, Owner, Service,
+    ServiceError, ServiceStatus, ServiceWithHostMeta, State,
 };
 pub use app_name::{AppName, AppNameError};
 pub use app_status_change_id::{AppStatusChangeId, AppStatusChangeIdError};

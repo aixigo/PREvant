@@ -29,7 +29,7 @@ extern crate lazy_static;
 #[macro_use]
 extern crate serde_derive;
 
-use crate::apps::Apps;
+use crate::apps::{AppRepository, Apps};
 use crate::config::{ApiAccessMode, Config, Runtime};
 use crate::db::DatabasePool;
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
@@ -231,6 +231,7 @@ async fn main() -> Result<(), StartUpError> {
         .attach(DatabasePool::fairing())
         .attach(Auth::fairing())
         .attach(AppProcessingQueue::fairing())
+        .attach(AppRepository::fairing())
         .attach(TicketsCaching::fairing())
         .attach(Apps::fairing(config, infrastructure))
         .launch()
