@@ -672,6 +672,16 @@ impl Infrastructure for KubernetesInfrastructure {
             .await
     }
 
+    async fn restore_infrastructure_objects_partially(
+        &self,
+        app_name: &AppName,
+        infrastructure_payload: &[serde_json::Value],
+    ) -> Result<App> {
+        let unit = K8sDeploymentUnit::parse_from_json(app_name, infrastructure_payload)?;
+        unit.deploy(self.client().await?, app_name).await?;
+        Ok(self.fetch_app(app_name).await?.unwrap_or_else(App::empty))
+    }
+
     async fn get_logs<'a>(
         &'a self,
         app_name: &'a AppName,

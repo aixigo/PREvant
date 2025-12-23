@@ -25,14 +25,15 @@
  */
 
 use super::queue::AppTaskQueueProducer;
+use crate::apps::repository::AppPostgresRepository;
 use crate::apps::{Apps, AppsError};
 use crate::auth::UserValidatedByAccessMode;
 use crate::config::Config;
 use crate::deployment::hooks::Hooks;
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::{
-    App, AppName, AppNameError, AppStatusChangeId, AppStatusChangeIdError, Owner, Service,
-    ServiceStatus,
+    App, AppName, AppNameError, AppStatus, AppStatusChangeId, AppStatusChangeIdError, Owner,
+    Service, ServiceStatus,
 };
 use create_app_payload::CreateAppPayload;
 use http_api_problem::{HttpApiProblem, StatusCode};
@@ -55,21 +56,21 @@ mod static_openapi_spec;
 
 pub fn apps_routes() -> Vec<rocket::Route> {
     rocket::routes![
+        change_app_status,
+        change_status,
+        create_app_v1,
+        create_app_v2,
+        delete_app_v1,
+        delete_app_v2,
         get_apps::apps_v1,
         get_apps::apps_v2,
         get_apps::stream_apps_v1,
         get_apps::stream_apps_v2,
-        delete_app_v1,
-        delete_app_v2,
-        create_app_v1,
-        create_app_v2,
-        back_up_app,
         logs::logs,
         logs::stream_logs,
-        change_status,
+        static_openapi_spec::static_open_api_spec,
         status_change_v1,
         status_change_v2,
-        static_openapi_spec::static_open_api_spec,
     ]
 }
 
@@ -309,37 +310,70 @@ pub async fn create_app_v2(
     .await
 }
 
-#[rocket::put(
-    "/<app_name>/states",
-    format = "application/json",
-    // TODO payload data = "<payload>",
-)]
-pub async fn back_up_app(
+#[derive(Deserialize)]
+pub struct AppStatesInput {
+    status: AppStatus,
+}
+
+#[rocket::put("/<app_name>/states", format = "application/json", data = "<payload>")]
+pub async fn change_app_status(
     app_name: Result<AppName, AppNameError>,
     apps: &State<Apps>,
     app_queue: &State<AppTaskQueueProducer>,
+    app_repository: &State<Option<AppPostgresRepository>>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
     options: WaitForQueueOptions,
+    payload: Json<AppStatesInput>,
 ) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
     // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
     let _user = user.map_err(HttpApiError::from)?;
 
-    let app_name = app_name?;
-    let Some(infrastructure_payload) = apps
-        .fetch_app_as_backup_based_infrastructure_payload(&app_name)
-        .await?
-    else {
-        // TODO check if already backed up…
-        return Err(AppsError::AppNotFound { app_name }.into());
+    let Some(app_repository) = &**app_repository else {
+        return Err(
+            HttpApiProblem::with_title_and_type(StatusCode::PRECONDITION_REQUIRED)
+                .detail("There is no database configured. This API is only available if there is a database configuration.")
+                .into(),
+        );
     };
 
-    let status_id = app_queue
-        .enqueue_backup_task(app_name.clone(), infrastructure_payload)
-        .await
-        .map_err(|e| {
-            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                .detail(e.to_string())
-        })?;
+    let app_name = app_name?;
+
+    let status_id = match payload.status {
+        AppStatus::Deployed => {
+            let Some(infrastructure_payload) =
+                app_repository.fetch_backup(&app_name).await.map_err(|e| {
+                    HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                        .detail(e.to_string())
+                })?
+            else {
+                return Err(AppsError::AppNotFound { app_name }.into());
+            };
+
+            app_queue
+                .enqueue_restore_task(app_name.clone(), infrastructure_payload)
+                .await
+                .map_err(|e| {
+                    HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                        .detail(e.to_string())
+                })?
+        }
+        AppStatus::BackedUp => {
+            let Some(infrastructure_payload) = apps
+                .fetch_app_as_backup_based_infrastructure_payload(&app_name)
+                .await?
+            else {
+                return Err(AppsError::AppNotFound { app_name }.into());
+            };
+
+            app_queue
+                .enqueue_backup_task(app_name.clone(), infrastructure_payload)
+                .await
+                .map_err(|e| {
+                    HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                        .detail(e.to_string())
+                })?
+        }
+    };
 
     try_wait_for_task(app_queue, app_name, status_id, options, AppV2).await
 }

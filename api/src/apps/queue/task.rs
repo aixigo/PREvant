@@ -10,7 +10,12 @@ pub(super) enum AppTask {
     MovePayloadToBackUpAndDeleteFromInfrastructure {
         status_id: AppStatusChangeId,
         app_name: AppName,
-        infrastructure_payload: Vec<serde_json::Value>,
+        infrastructure_payload_to_back_up: Vec<serde_json::Value>,
+    },
+    RestoreOnInfrastructureAndDeleteFromBackup {
+        status_id: AppStatusChangeId,
+        app_name: AppName,
+        infrastructure_payload_to_restore: Vec<serde_json::Value>,
     },
     CreateOrUpdate {
         app_name: AppName,
@@ -32,6 +37,7 @@ impl AppTask {
             AppTask::CreateOrUpdate { app_name, .. } => app_name,
             AppTask::Delete { app_name, .. } => app_name,
             AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { app_name, .. } => app_name,
+            AppTask::RestoreOnInfrastructureAndDeleteFromBackup { app_name, .. } => app_name,
         }
     }
     pub fn status_id(&self) -> &AppStatusChangeId {
@@ -39,6 +45,7 @@ impl AppTask {
             AppTask::CreateOrUpdate { status_id, .. } => status_id,
             AppTask::Delete { status_id, .. } => status_id,
             AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { status_id, .. } => status_id,
+            AppTask::RestoreOnInfrastructureAndDeleteFromBackup { status_id, .. } => status_id,
         }
     }
 
