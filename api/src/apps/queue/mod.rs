@@ -1,21 +1,17 @@
-use crate::apps::{queue::task::AppTask, Apps, AppsError};
-use crate::models::{App, AppName, AppStatusChangeId, Owner, ServiceConfig};
+use crate::apps::repository::AppPostgresRepository;
+use crate::apps::{Apps, AppsError};
+use crate::models::{App, AppName, AppStatusChangeId, AppTask, Owner, ServiceConfig};
 use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
-use postgres::PostgresAppTaskQueueDB;
 use rocket::{
     fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
 };
-use sqlx::PgPool;
 use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify},
     time::{sleep, sleep_until, timeout},
 };
-
-mod postgres;
-mod task;
 
 pub struct AppProcessingQueue {}
 
@@ -35,9 +31,9 @@ impl Fairing for AppProcessingQueue {
     }
 
     async fn on_ignite(&self, rocket: Rocket<Build>) -> rocket::fairing::Result {
-        let db = match rocket.state::<PgPool>() {
-            Some(pool) => AppTaskQueueDB::db(pool.clone()),
-            None => AppTaskQueueDB::inmemory(),
+        let db = match rocket.state::<Option<AppPostgresRepository>>() {
+            Some(Some(repository)) => AppTaskQueueDB::db(repository.clone()),
+            _ => AppTaskQueueDB::inmemory(),
         };
 
         let producer = AppTaskQueueProducer {
@@ -289,9 +285,9 @@ impl AppTaskQueueConsumer {
 
                         let result = apps
                             .create_or_update(
-                                &app_name,
+                                app_name,
                                 replicate_from.clone(),
-                                &service_configs,
+                                service_configs,
                                 owners.clone(),
                                 user_defined_parameters.clone(),
                             )
@@ -302,7 +298,7 @@ impl AppTaskQueueConsumer {
                         if log::log_enabled!(log::Level::Debug) {
                             log::debug!("Deleting app {app_name}.");
                         }
-                        let result = apps.delete_app(&app_name).await;
+                        let result = apps.delete_app(app_name).await;
                         (task, result)
                     }
                 }
@@ -324,7 +320,7 @@ enum AppTaskStatus {
 
 enum AppTaskQueueDB {
     InMemory(Mutex<VecDeque<(AppTask, AppTaskStatus)>>),
-    DB(PostgresAppTaskQueueDB),
+    DB(AppPostgresRepository),
 }
 
 impl AppTaskQueueDB {
@@ -332,8 +328,8 @@ impl AppTaskQueueDB {
         Self::InMemory(Mutex::new(VecDeque::new()))
     }
 
-    fn db(pool: PgPool) -> Self {
-        Self::DB(PostgresAppTaskQueueDB::new(pool))
+    fn db(repository: AppPostgresRepository) -> Self {
+        Self::DB(repository)
     }
 
     pub async fn enqueue_task(&self, task: AppTask) -> Result<()> {
@@ -412,7 +408,7 @@ impl AppTaskQueueDB {
 
                 Ok(())
             }
-            AppTaskQueueDB::DB(db) => db.execute_tasks(f).await,
+            AppTaskQueueDB::DB(db) => db.update_queued_tasks_with_executor_result(f).await,
         }
     }
 

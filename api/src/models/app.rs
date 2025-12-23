@@ -347,29 +347,12 @@ impl AppWithHostMeta {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct AppWithHostMetaAndStatus {
-    services: Vec<ServiceWithHostMeta>,
-    owners: HashSet<Owner>,
-    status: AppStatus,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, Serialize, PartialEq)]
 pub enum AppStatus {
     #[serde(rename = "deployed")]
     Deployed,
     #[serde(rename = "backed-up")]
     BackedUp,
-}
-
-impl From<(AppWithHostMeta, AppStatus)> for AppWithHostMetaAndStatus {
-    fn from(value: (AppWithHostMeta, AppStatus)) -> Self {
-        Self {
-            services: value.0.services,
-            owners: value.0.owners,
-            status: value.1,
-        }
-    }
 }
 
 #[derive(Debug, Default, Deserialize, Clone, Eq, Hash, PartialEq, Serialize)]
