@@ -70,6 +70,17 @@
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
+
+      <h1 class="ra-container__title--feature" v-if="appBackups.length > 0">Backups</h1>
+      <transition-group tag="div" name="list-complete" class="ra-container__apps--feature ra-apps">
+         <review-app-card
+            v-for="reviewApp in appBackups"
+            :key="reviewApp.name"
+            :review-app="reviewApp"
+            :showOwners="issuers != null"
+            v-on:changeState="changeServiceState"
+            class="list-complete-item"/>
+      </transition-group>
    </div>
 </template>
 
@@ -117,6 +128,7 @@
             'reviewApps',
             'appsWithTicket',
             'appsWithoutTicket',
+            'appBackups',
             'myApps',
             'errors',
             'isFetchInProgress'
