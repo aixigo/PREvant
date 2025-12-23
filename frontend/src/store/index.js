@@ -80,25 +80,25 @@ export function createStore(router, me, issuers) {
                .filter(app => !state.appNameFilter || app.name.toLocaleLowerCase().indexOf(state.appNameFilter.toLocaleLowerCase()) >= 0);
 
             function appDetails(name) {
-               const appContainers = state.apps[name];
+               const app = state.apps[name];
 
-               if (appContainers == null) {
+               if (app == null) {
                   return {};
                }
 
                const ticket = state.tickets[name];
-               const owners = appContainers.owners;
+               const owners = app.owners;
+               const status = app.status;
 
-               const containers = [
-                  ...(appContainers.services || [])
+               const containers = (app.services || [])
                      .map(({ name, url, openApiUrl, asyncApiUrl, version, type, state }) => {
                         return {
                            name, url, openApiUrl, asyncApiUrl, version, type, status: state.status
                         };
-                     })
-               ];
+                     });
+
                containers.sort(byTypeAndName);
-               return { name, ticket, containers, owners };
+               return { name, ticket, containers, owners, status };
             }
 
             function byTypeAndName(containerA, containerB) {
@@ -119,14 +119,16 @@ export function createStore(router, me, issuers) {
             }
 
             return getters.reviewApps
-               .filter(app => (app.owners ?? []).some(owner => owner.sub == state.me.sub && owner.iss == state.me.iss));
+               .filter(app => (app.owners ?? []).some(owner => owner.sub == state.me.sub && owner.iss == state.me.iss))
+               .filter(app => app.status === "deployed");
          },
 
          notMyApps: (state, getters) => {
             const myAppNames = new Set(getters.myApps.map(app => app.name));
 
             return getters.reviewApps
-               .filter(app => !myAppNames.has(app.name));
+               .filter(app => !myAppNames.has(app.name))
+               .filter(app => app.status === "deployed");
          },
 
          appsWithTicket: (state, getters) => {
@@ -137,6 +139,11 @@ export function createStore(router, me, issuers) {
          appsWithoutTicket: (state, getters) => {
             return getters.notMyApps
                .filter(app => state.tickets[app.name] === undefined);
+         },
+
+         appBackups: (state, getters) => {
+            return getters.reviewApps
+               .filter(app => app.status === "backed-up");
          },
 
          errors: state => {

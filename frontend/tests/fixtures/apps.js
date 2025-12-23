@@ -5,6 +5,7 @@ export const PREVIEW_NAME = "my-preview";
 export const SERVICE_NAME = "whoami";
 export const mockedApps = {
   [PREVIEW_NAME]: {
+    status: 'deployed',
     services: [
       {
         name: SERVICE_NAME,
