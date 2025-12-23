@@ -348,6 +348,7 @@ mod tests {
 
     mod url_rendering {
         use super::apps_v1;
+        use crate::apps::repository::AppPostgresRepository;
         use crate::apps::{AppProcessingQueue, Apps, HostMetaCache};
         use crate::config::Config;
         use crate::infrastructure::Dummy;
@@ -370,7 +371,7 @@ mod tests {
                 .create_or_update(
                     &AppName::master(),
                     None,
-                    &vec![sc!("service-a")],
+                    &[sc!("service-a")],
                     vec![],
                     None,
                 )
@@ -380,6 +381,7 @@ mod tests {
                 .manage(host_meta_cache)
                 .manage(apps)
                 .manage(Config::default())
+                .manage(None::<AppPostgresRepository>)
                 .manage(tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new()).1)
                 .mount("/", rocket::routes![apps_v1])
                 .mount("/api/apps", crate::apps::apps_routes())

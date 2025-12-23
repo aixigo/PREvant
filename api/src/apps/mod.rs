@@ -26,6 +26,7 @@
 mod fairing;
 mod host_meta_cache;
 mod queue;
+mod repository;
 mod routes;
 
 use crate::config::ReplicateApplicationCondition;
@@ -51,6 +52,7 @@ use log::error;
 use log::trace;
 pub use queue::AppProcessingQueue;
 pub use queue::AppTaskQueueProducer;
+pub use repository::AppRepository;
 pub use routes::{apps_routes, delete_app_sync, AppV1};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
@@ -371,6 +373,17 @@ impl Apps {
             .await?;
 
         Ok(apps)
+    }
+
+    async fn restore_app_partially(
+        &self,
+        app_name: &AppName,
+        infrastructure_payload: &[serde_json::Value],
+    ) -> Result<App, AppsError> {
+        Ok(self
+            .infrastructure
+            .restore_infrastructure_objects_partially(app_name, infrastructure_payload)
+            .await?)
     }
 
     /// Deletes all services for the given `app_name`.

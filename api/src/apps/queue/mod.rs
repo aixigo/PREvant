@@ -146,12 +146,34 @@ impl AppTaskQueueProducer {
             .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id,
                 app_name,
-                infrastructure_payload,
+                infrastructure_payload_to_back_up: infrastructure_payload,
             })
             .await?;
 
         if log::log_enabled!(log::Level::Debug) {
             log::debug!("Notify about new backup task: {status_id}.");
+        }
+        self.notify.notify_one();
+
+        Ok(status_id)
+    }
+
+    pub async fn enqueue_restore_task(
+        &self,
+        app_name: AppName,
+        infrastructure_payload: Vec<serde_json::Value>,
+    ) -> Result<AppStatusChangeId> {
+        let status_id = AppStatusChangeId::new();
+        self.db
+            .enqueue_task(AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
+                status_id,
+                app_name,
+                infrastructure_payload_to_restore: infrastructure_payload,
+            })
+            .await?;
+
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!("Notify about new restore task: {status_id}.");
         }
         self.notify.notify_one();
 
@@ -223,7 +245,7 @@ impl AppTaskQueueConsumer {
                 match &task {
                     AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                         app_name,
-                        infrastructure_payload,
+                        infrastructure_payload_to_back_up,
                         ..
                     } => {
                         if log::log_enabled!(log::Level::Debug) {
@@ -233,10 +255,26 @@ impl AppTaskQueueConsumer {
                         }
 
                         let result = apps
-                            .delete_app_partially(app_name, infrastructure_payload)
+                            .delete_app_partially(app_name, infrastructure_payload_to_back_up)
                             .await;
                         (task, result)
                     }
+                    AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
+                        app_name,
+                        infrastructure_payload_to_restore,
+                        ..
+                    } => {
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!(
+                                "Restoring infrastructure objects for {app_name} due to restore task."
+                            );
+                        }
+
+                        let result = apps
+                            .restore_app_partially(app_name, infrastructure_payload_to_restore)
+                            .await;
+                        (task, result)
+                    },
                     AppTask::CreateOrUpdate {
                         app_name,
                         replicate_from,
