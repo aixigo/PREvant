@@ -80,8 +80,8 @@ impl ServiceConfig {
         &self.image
     }
 
-    pub fn set_service_name(&mut self, service_name: &String) {
-        self.service_name = service_name.clone()
+    pub fn set_service_name(&mut self, service_name: String) {
+        self.service_name = service_name
     }
 
     pub fn service_name(&self) -> &String {
@@ -137,6 +137,15 @@ impl ServiceConfig {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// TODO: This method is only available in tests due to the fact that there are mixed
+    /// responsibilities for [`ServiceConfig`]: deserializing at REST API level and internal
+    /// handling within. We have to decouple this responsibility.
+    #[cfg(test)]
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
     }
 
     pub fn set_routing(&mut self, routing: Routing) {
@@ -218,7 +227,7 @@ macro_rules! sc {
         let img_hash = &format!("sha256:{:x}", hasher.finalize());
 
         let mut config =
-            ServiceConfig::new(String::from($name), crate::models::Image::from_str(img_hash).unwrap());
+            ServiceConfig::new(String::from($name), $crate::models::Image::from_str(img_hash).unwrap());
 
         let mut _labels = std::collections::BTreeMap::new();
         $( _labels.insert(String::from($l_key), String::from($l_value)); )*
@@ -228,9 +237,10 @@ macro_rules! sc {
         $( _files.insert(std::path::PathBuf::from($v_key), String::from($v_value)); )*
         config.set_files(Some(_files));
 
-        let mut _env = Vec::new();
-        $( _env.push(crate::models::EnvironmentVariable::new(String::from($env_key), secstr::SecUtf8::from($env_value))); )*
-        config.set_env(Some(crate::models::Environment::new(_env)));
+        let mut _env = vec![
+            $( $crate::models::EnvironmentVariable::new(String::from($env_key), secstr::SecUtf8::from($env_value)), )*
+        ];
+        config.set_env(Some($crate::models::Environment::new(_env)));
 
         config
     }};
@@ -240,11 +250,12 @@ macro_rules! sc {
         ) => {{
         use std::str::FromStr;
         let mut config =
-            ServiceConfig::new(String::from($name), crate::models::Image::from_str($img).unwrap());
+            ServiceConfig::new(String::from($name), $crate::models::Image::from_str($img).unwrap());
 
-        let mut _env = Vec::new();
-        $( _env.push(crate::models::EnvironmentVariable::new(String::from($env_key), secstr::SecUtf8::from($env_value))); )*
-        config.set_env(Some(crate::models::Environment::new(_env)));
+        let mut _env = vec![
+            $( $crate::models::EnvironmentVariable::new(String::from($env_key), secstr::SecUtf8::from($env_value)), )*
+        ];
+        config.set_env(Some($crate::models::Environment::new(_env)));
 
         config
     }};
@@ -255,7 +266,7 @@ macro_rules! sc {
         files = ($($v_key:expr_2021 => $v_value:expr_2021),*) ) => {{
         use std::str::FromStr;
         let mut config =
-            ServiceConfig::new(String::from($name), crate::models::Image::from_str($img).unwrap());
+            ServiceConfig::new(String::from($name), $crate::models::Image::from_str($img).unwrap());
 
         let mut _labels = std::collections::BTreeMap::new();
         $( _labels.insert(String::from($l_key), String::from($l_value)); )*
@@ -266,8 +277,8 @@ macro_rules! sc {
         config.set_files(Some(_files));
 
         let mut _env = Vec::new();
-        $( _env.push(crate::models::EnvironmentVariable::new(String::from($env_key), secstr::SecUtf8::from($env_value))); )*
-        config.set_env(Some(crate::models::Environment::new(_env)));
+        $( _env.push($crate::models::EnvironmentVariable::new(String::from($env_key), secstr::SecUtf8::from($env_value))); )*
+        config.set_env(Some($crate::models::Environment::new(_env)));
 
         config
     }};

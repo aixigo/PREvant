@@ -30,7 +30,7 @@ pub use app::{
 };
 pub use app_name::{AppName, AppNameError};
 pub use app_status_change_id::{AppStatusChangeId, AppStatusChangeIdError};
-pub use app_task::AppTask;
+pub use app_task::{AppTask, MergedAppTask};
 pub use image::Image;
 pub use logs_chunks::LogChunk;
 pub use request_info::RequestInfo;
