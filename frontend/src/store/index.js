@@ -46,7 +46,11 @@ export function createStore(router, me, issuers) {
          ticketsError: null,
          appNameFilter: '',
          me,
-         issuers
+         issuers,
+         // This set keeps all application names that are optimistically deleted
+         hiddenApps: [],
+         // This map keeps all applications that are optimistically in the process of being created
+         appsInCreation: {},
       },
       getters: {
          me: state => state.me,
@@ -54,12 +58,20 @@ export function createStore(router, me, issuers) {
 
          appNameFilter: state => state.appNameFilter,
 
-         reviewApps: state => {
+         hiddenApps: state => {
+            return new Set(state.hiddenApps);
+         },
+
+         appsInCreation: state => state.appsInCreation,
+
+         reviewApps: (state, getters) => {
             if (state.apps === undefined || Object.keys(state.apps).length == 0) {
                return [];
             }
 
-            const apps = Object.keys(state.apps)
+            const appNames = Object.keys(state.apps);
+            const apps = [...appNames, ...Array.from(new Set(Object.keys(getters.appsInCreation)).difference(new Set(appNames)))]
+               .filter(app => !getters.hiddenApps.has(app))
                .map(appDetails)
                .sort(compareByPropertyWithKeywordFirst("name", defaultAppName.value));
 
@@ -78,8 +90,7 @@ export function createStore(router, me, issuers) {
                const owners = appContainers.owners;
 
                const containers = [
-                  ...appContainers
-                     .services
+                  ...(appContainers.services || [])
                      .map(({ name, url, openApiUrl, asyncApiUrl, version, type, state }) => {
                         return {
                            name, url, openApiUrl, asyncApiUrl, version, type, status: state.status
@@ -144,8 +155,15 @@ export function createStore(router, me, issuers) {
          isFetchInProgress: state => state.fetchInProgress
       },
       mutations: {
-         startFetch(state) {
+         startFetch(state, { hiddenApps, appsInCreation }) {
             state.fetchInProgress = true;
+
+            if (hiddenApps) {
+               state.hiddenApps = [...state.hiddenApps, ...hiddenApps]
+            }
+            if (appsInCreation) {
+               state.appsInCreation = { ...state.appsInCreation, ...appsInCreation };
+            }
          },
          endFetch(state) {
             state.fetchInProgress = false;
@@ -158,26 +176,37 @@ export function createStore(router, me, issuers) {
             }
             else {
                state.apps = appsResponse;
+
+               // clear values from the optimistic frontend updates if the new map of apps contains
+               // on does not contain anymore the app names.
+               let appNames = Object.keys(state.apps);
+               for (const appName of appNames) {
+                  delete state.appsInCreation[appName];
+               }
+               state.hiddenApps = Array.from(new Set(state.hiddenApps).intersection(new Set(appNames)));
+
                state.appsError = null;
             }
          },
 
-         deleteApp(state, appNameOrResponseError) {
+         deleteApp(state, { appName, appNameOrResponseError }) {
             if (appNameOrResponseError.type) {
                state.appsError = enrichDeletionError(appNameOrResponseError);
+               state.hiddenApps = state.hiddenApps.filter(app => app != appName);
             }
             else {
-               delete state.apps[appNameOrResponseError];
+               delete state.apps[appName];
                state.appsError = null;
             }
          },
 
-         addApp(state, { appName, servicesOrResponseError }) {
-            if (servicesOrResponseError.type) {
-               state.appsError = enrichDuplicationError(servicesOrResponseError);
+         addApp(state, { appName, newAppOrResponseError  }) {
+            if (newAppOrResponseError.type) {
+               state.appsError = enrichDuplicationError(newAppOrResponseError);
+               delete state.appsInCreation[appName];
             }
             else {
-               state.apps[appName] = servicesOrResponseError;
+               state.apps[appName] = newAppOrResponseError;
                state.appsError = null;
             }
          },
@@ -196,7 +225,7 @@ export function createStore(router, me, issuers) {
          updateServiceStatus(state, { appName, serviceName, serviceStatus }) {
             const app = state.apps[appName];
             const service = app?.services?.find(service => service.name === serviceName);
-            
+
             if(!app || !service) {
                console.warn(`Could not find service "${serviceName}" of app "${appName}"`);
                return;
@@ -231,7 +260,7 @@ export function createStore(router, me, issuers) {
                }));
             }
 
-            context.commit('startFetch');
+            context.commit('startFetch', {});
 
             const appEvents = new EventSource('/api/apps', {
                fetch: (input, init) => fetch(input, {
@@ -257,7 +286,7 @@ export function createStore(router, me, issuers) {
          changeServiceState(context, { appName, serviceName }) {
             const app = context.state.apps[appName];
             const service = app?.services?.find(service => service.name === serviceName);
-            
+
             if(!app || !service) {
                console.warn(`Could not find service "${serviceName}" of app "${appName}"`);
                return;
@@ -285,7 +314,10 @@ export function createStore(router, me, issuers) {
          },
 
          duplicateApp(context, { appToDuplicate, newAppName }) {
-            context.commit('startFetch');
+            const appsInCreation = {};
+            appsInCreation[newAppName] = JSON.parse(JSON.stringify(context.state.apps[appToDuplicate]));
+
+            context.commit('startFetch', { appsInCreation });
 
             fetchAndPoll(
                `/api/apps/${newAppName}?replicateFrom=${appToDuplicate}`,
@@ -297,14 +329,14 @@ export function createStore(router, me, issuers) {
                   },
                   body: JSON.stringify([])
                })
-               .then(servicesOrResponseError => {
-                  context.commit('addApp', { appName: newAppName, servicesOrResponseError });
+               .then(newAppOrResponseError => {
+                  context.commit('addApp', { appName: newAppName, newAppOrResponseError });
                   context.commit('endFetch');
                });
          },
 
          deleteApp(context, { appName }) {
-            context.commit('startFetch');
+            context.commit('startFetch', { hiddenApps: [appName] });
 
             fetchAndPoll(
                `/api/apps/${appName}`,
@@ -312,7 +344,7 @@ export function createStore(router, me, issuers) {
                'cannot-delete-app',
                'Cannot delete app',
             ).then(appNameOrResponseError => {
-               context.commit('deleteApp', appNameOrResponseError);
+               context.commit('deleteApp', { appName, appNameOrResponseError });
                context.commit('endFetch');
             })
          }

@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import inject from "@rollup/plugin-inject";
 import vue from '@vitejs/plugin-vue'
+import vueDevTools from 'vite-plugin-vue-devtools'
 import path from 'path';
 import fs from 'fs';
 
@@ -14,6 +15,7 @@ export default defineConfig({
    },
    plugins: [
       vue(),
+      vueDevTools(),
 
       {
          name: "inject-template-vars",
@@ -24,11 +26,11 @@ export default defineConfig({
                   injectTo: "head",
                   tag: "script",
                   children: `
-                     var me = {{ me }}; 
+                     var me = {{ me }};
                      var issuers = {{ issuers }};
                      var config = {{ config }};
                   `
-               }, 
+               },
                {
                   injectTo: "head",
                   tag: "title",
@@ -88,11 +90,11 @@ export default defineConfig({
                   injectTo: "head",
                   tag: "script",
                   children: `
-                     var me = ${JSON.stringify(me)}; 
+                     var me = ${JSON.stringify(me)};
                      var issuers = ${JSON.stringify(issuers)};
                      var config = { defaultAppName: 'master' };
                   `
-               }, 
+               },
                {
                   injectTo: "head",
                   tag: "title",
@@ -105,7 +107,7 @@ export default defineConfig({
       /**
        * This plugin serves fixture files (e.g., AsyncAPI YAMLs) during development only.
        * It maps requests to /fixtures/... to local files under tests/fixtures.
-       * The files are not included in the production build and are only used for 
+       * The files are not included in the production build and are only used for
        * development/testing purposes.
        */
       {
@@ -135,7 +137,7 @@ export default defineConfig({
          Popper: ['popper.js', 'default'],
 
          // Exclude CSS files, especially those imported by Swagger UI (swagger-ui.css),
-         // because rollup-plugin-inject tries to parse all files as JavaScript. 
+         // because rollup-plugin-inject tries to parse all files as JavaScript.
          // Parsing CSS as JS causes warnings like:
          //   "rollup-plugin-inject: failed to parse ...swagger-ui.css?... Consider restricting the plugin"
          exclude: ['**/*.css']
