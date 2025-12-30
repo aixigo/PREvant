@@ -120,7 +120,7 @@ impl ServiceConfig {
         reg.register_helper("isNotCompanion", Box::new(is_not_companion));
 
         let mut templated_config = self.clone();
-        templated_config.set_service_name(&reg.render_template(self.service_name(), &parameters)?);
+        templated_config.set_service_name(reg.render_template(self.service_name(), &parameters)?);
 
         if let Some(env) = self.env() {
             templated_config.set_env(Some(env.apply_templating(parameters, &mut reg)?));

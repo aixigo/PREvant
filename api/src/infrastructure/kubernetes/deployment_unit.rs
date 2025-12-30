@@ -1185,7 +1185,12 @@ impl K8sDeploymentUnit {
         Ok(())
     }
 
-    pub fn prepare_for_back_up(mut self) -> Self {
+    /// Clears out any Kubernetes object that shouldn't be put into the backup. For example,
+    /// [persistent volumes](https://kubernetes.io/docs/concepts/storage/persistent-volumes/) are
+    /// removed from `self` and then `self` can be deleted from the infrastructure with
+    /// [`Self::delete`].
+    pub(super) fn prepare_for_back_up(mut self) -> Self {
+        // Keep only the pods that aren't created by a deployment
         self.pods.retain(|pod| {
             self.deployments.iter().any(|deployment| {
                 let Some(spec) = deployment.spec.as_ref() else {
@@ -1208,6 +1213,9 @@ impl K8sDeploymentUnit {
 
         empty_read_only_fields!(self.stateful_sets, status);
 
+        // Clear the volume mounts and keep them on the Kubernetes infrastructure because they
+        // might contain data that a tester of the application crafted for a long time and this
+        // should be preserved.
         self.config_maps.clear();
         self.secrets.clear();
         self.pvcs.clear();
@@ -1218,7 +1226,11 @@ impl K8sDeploymentUnit {
         empty_read_only_fields!(self.pods, status);
         empty_read_only_fields!(self.deployments, status);
 
-        empty_read_only_fields!(self.jobs);
+        // The jobs won't be contained in the back-up because “Jobs represent one-off tasks that
+        // run to completion and then stop.” If they are part of the back-up they would restart and
+        // try to the same thing again which might be already done.
+        self.jobs.clear();
+
         empty_read_only_fields!(self.service_accounts);
         empty_read_only_fields!(self.policies);
         empty_read_only_fields!(self.traefik_middlewares);
@@ -2602,6 +2614,33 @@ mod tests {
                     .any(|deployment| deployment.status.is_some()),
                 "Deployment's status will be set by server"
             );
+        }
+
+        #[tokio::test]
+        async fn clean_jobs() {
+            let unit = parse_unit_from_log_stream(
+                r#"
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi
+spec:
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: perl:5.34.0
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
+      restartPolicy: Never
+  backoffLimit: 4 "#,
+            )
+            .await;
+
+            assert!(!unit.jobs.is_empty());
+
+            let prepared_for_back_up = unit.prepare_for_back_up();
+
+            assert!(prepared_for_back_up.jobs.is_empty());
         }
 
         #[tokio::test]

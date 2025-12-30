@@ -403,8 +403,10 @@ pub async fn change_app_status(
 
     let status_id = match payload.status {
         AppStatus::Deployed => {
-            let Some(infrastructure_payload) =
-                app_repository.fetch_backup(&app_name).await.map_err(|e| {
+            let Some(infrastructure_payload) = app_repository
+                .fetch_backup_infrastructure_payload(&app_name)
+                .await
+                .map_err(|e| {
                     HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
                         .detail(e.to_string())
                 })?
