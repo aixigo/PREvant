@@ -347,6 +347,14 @@ impl AppWithHostMeta {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, Serialize, PartialEq)]
+pub enum AppStatus {
+    #[serde(rename = "deployed")]
+    Deployed,
+    #[serde(rename = "backed-up")]
+    BackedUp,
+}
+
 #[derive(Debug, Default, Deserialize, Clone, Eq, Hash, PartialEq, Serialize)]
 pub enum ContainerType {
     #[serde(rename = "instance")]

@@ -59,6 +59,281 @@ pub(super) struct K8sDeploymentUnit {
     traefik_middlewares: Vec<TraefikMiddleware>,
 }
 
+macro_rules! parse_from_dynamic_object {
+    (
+        $roles:ident,
+        $role_bindings:ident,
+        $stateful_sets:ident,
+        $config_maps:ident,
+        $secrets:ident,
+        $pvcs:ident,
+        $services:ident,
+        $pods:ident,
+        $deployments:ident,
+        $jobs:ident,
+        $service_accounts:ident,
+        $ingresses:ident,
+        $policies:ident,
+        $traefik_ingresses:ident,
+        $traefik_middlewares:ident,
+        $api_version:ident,
+        $kind:ident,
+        $app_name:ident,
+        $dyn_obj:ident
+    ) => {
+        match ($api_version, $kind) {
+            (Role::API_VERSION, Role::KIND) => match $dyn_obj.clone().try_parse::<Role>()
+            {
+                Ok(role) => {
+                    $roles.push(role);
+                }
+                Err(e) => {
+                    error!("Cannot parse {:?} as Role: {e}", $dyn_obj.metadata.name);
+                }
+            },
+
+            (RoleBinding::API_VERSION, RoleBinding::KIND) => {
+                match $dyn_obj.clone().try_parse::<RoleBinding>() {
+                    Ok(role_binding) => {
+                        $role_bindings.push(role_binding);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as RoleBinding: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            (StatefulSet::API_VERSION, StatefulSet::KIND) => {
+                match $dyn_obj.clone().try_parse::<StatefulSet>() {
+                    Ok(stateful_set) => {
+                        $stateful_sets.push(stateful_set);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as StatefulSet: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            (ConfigMap::API_VERSION, ConfigMap::KIND) => {
+                match $dyn_obj.clone().try_parse::<ConfigMap>() {
+                    Ok(config_map) => {
+                        $config_maps.push(config_map);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as ConfigMap: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            (Secret::API_VERSION, Secret::KIND) => {
+                if let serde_json::Value::Object(obj) = &mut $dyn_obj.data {
+                    obj.entry("data").and_modify(|obj| {
+                        if let serde_json::Value::Object(obj) = obj {
+                            for (_k, v) in obj.iter_mut() {
+                                if let serde_json::Value::String(str) = v {
+                                    // replacing new lines here because it is assumed
+                                    // that the data is base64 encoded and thus there
+                                    // must be no new lines
+                                    *v = str.replace('\n', "").into();
+                                }
+                            }
+                        }
+                    });
+                }
+
+                match $dyn_obj.clone().try_parse::<Secret>() {
+                    Ok(secret) => {
+                        $secrets.push(secret);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as Secret: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            (PersistentVolumeClaim::API_VERSION, PersistentVolumeClaim::KIND) => {
+                match $dyn_obj.clone().try_parse::<PersistentVolumeClaim>() {
+                    Ok(pvc) => {
+                        $pvcs.push(pvc);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as PersistentVolumeClaim: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            (Service::API_VERSION, Service::KIND) => {
+                match $dyn_obj.clone().try_parse::<Service>() {
+                    Ok(service) => {
+                        $services.push(service);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as Service: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            (Deployment::API_VERSION, Deployment::KIND) => {
+                match $dyn_obj.clone().try_parse::<Deployment>() {
+                    Ok(mut deployment) => {
+                        let service_name = deployment
+                            .labels()
+                            .get("app.kubernetes.io/component")
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                deployment.metadata.name.clone().unwrap_or_default()
+                            });
+
+                        deployment.labels_mut().entry(SERVICE_NAME_LABEL.to_string())
+                            .or_insert(service_name);
+                        deployment.labels_mut().entry(CONTAINER_TYPE_LABEL.to_string())
+                            .or_insert(ContainerType::ApplicationCompanion.to_string());
+
+                        $deployments.push(deployment);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as Deployment: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            (Pod::API_VERSION, Pod::KIND) => match $dyn_obj.clone().try_parse::<Pod>() {
+                Ok(pod) => {
+                    $pods.push(pod);
+                }
+                Err(e) => {
+                    error!("Cannot parse {:?} as Pod: {e}", $dyn_obj.metadata.name);
+                }
+            },
+            (Job::API_VERSION, Job::KIND) => match $dyn_obj.clone().try_parse::<Job>() {
+                Ok(job) => {
+                    $jobs.push(job);
+                }
+                Err(e) => {
+                    error!("Cannot parse {:?} as Job: {e}", $dyn_obj.metadata.name);
+                }
+            },
+            (ServiceAccount::API_VERSION, ServiceAccount::KIND) => {
+                match $dyn_obj.clone().try_parse::<ServiceAccount>() {
+                    Ok(service_account) => {
+                        $service_accounts.push(service_account);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as ServiceAccount: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            (Ingress::API_VERSION, Ingress::KIND) => {
+                match $dyn_obj.clone().try_parse::<Ingress>() {
+                    Ok(ingress) => {
+                        $ingresses.push(ingress);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as Ingress: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            (NetworkPolicy::API_VERSION, NetworkPolicy::KIND) => {
+                match $dyn_obj.clone().try_parse::<NetworkPolicy>() {
+                    Ok(policy) => {
+                        $policies.push(policy);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as NetworkPolicy: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            ("traefik.containo.us/v1alpha1", "Middleware") => {
+                match $dyn_obj.clone().try_parse::<TraefikMiddleware>() {
+                    Ok(middleware) => {
+                        $traefik_middlewares.push(middleware);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as Traefik middleware: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            ("traefik.containo.us/v1alpha1", "IngressRoute") => {
+                match $dyn_obj.clone().try_parse::<TraefikIngressRoute>() {
+                    Ok(ingress) => {
+                        $traefik_ingresses.push(ingress);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Cannot parse {:?} as Traefik ingress route: {e}",
+                            $dyn_obj.metadata.name
+                        );
+                    }
+                }
+            }
+            _ => {
+                warn!(
+                    "Cannot parse {name} ({api_version}, {kind}) for {app_name} because its kind is unknown",
+                    api_version = $api_version,
+                    kind = $kind,
+                    app_name = $app_name,
+                    name = $dyn_obj.metadata.name.unwrap_or_default()
+                );
+            }
+        }
+    };
+}
+
+macro_rules! empty_read_only_fields {
+    ($field:expr) => {
+        for meta in $field.iter_mut().map(|manifest| &mut manifest.metadata) {
+            meta.creation_timestamp = None;
+            meta.deletion_grace_period_seconds = None;
+            meta.deletion_timestamp = None;
+            meta.generation = None;
+            meta.resource_version = None;
+            meta.uid = None;
+        }
+    };
+    ($field:expr, $( $additional_field:ident ),* ) => {
+        empty_read_only_fields!($field);
+
+        for manifest in $field.iter_mut() {
+            $( manifest.$additional_field = None; )*
+        }
+    };
+    ($field:expr, $( $additional_field:ident ),* (spec => $( $additional_field_in_spec:ident ),*)) => {
+        empty_read_only_fields!($field, $( $additional_field )*);
+
+        for manifest in $field.iter_mut() {
+            if let Some(spec) = manifest.spec.as_mut() {
+                $( spec.$additional_field_in_spec = None; )*
+            }
+        }
+    }
+}
+
 impl K8sDeploymentUnit {
     async fn start_bootstrapping_pods(
         app_name: &AppName,
@@ -186,7 +461,7 @@ impl K8sDeploymentUnit {
         loop {
             tokio::select! {
                 _ = interval_timer.tick() => {
-                    let pod = api.get_status(&pod_name).await?;
+                    let pod = api.get_status(pod_name).await?;
 
                     if let Some(phase) = pod.status.and_then(|status| status.phase) {
                         match phase.as_str() {
@@ -273,6 +548,8 @@ impl K8sDeploymentUnit {
         let mut service_accounts = Vec::new();
         let mut ingresses = Vec::new();
         let mut policies = Vec::new();
+        let mut traefik_ingresses = Vec::new();
+        let mut traefik_middlewares = Vec::new();
 
         for mut log_stream in log_streams.into_iter() {
             let mut stdout = String::new();
@@ -306,219 +583,41 @@ impl K8sDeploymentUnit {
                         if log::log_enabled!(log::Level::Trace) {
                             trace!(
                                 "Parsed {} ({api_version}, {kind}) for {app_name} as a bootstrap application element.",
-                                dy.metadata
-                                    .name
-                                    .as_deref()
-                                    .unwrap_or_default(),
+                                dy.metadata.name.as_deref().unwrap_or_default(),
                             );
                         }
 
-                        match (api_version, kind) {
-                            (Role::API_VERSION, Role::KIND) => match dy.clone().try_parse::<Role>()
-                            {
-                                Ok(role) => {
-                                    roles.push(role);
-                                }
-                                Err(e) => {
-                                    error!("Cannot parse {:?} as Role: {e}", dy.metadata.name);
-                                }
-                            },
-
-                            (RoleBinding::API_VERSION, RoleBinding::KIND) => {
-                                match dy.clone().try_parse::<RoleBinding>() {
-                                    Ok(role_binding) => {
-                                        role_bindings.push(role_binding);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as RoleBinding: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            (StatefulSet::API_VERSION, StatefulSet::KIND) => {
-                                match dy.clone().try_parse::<StatefulSet>() {
-                                    Ok(stateful_set) => {
-                                        stateful_sets.push(stateful_set);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as StatefulSet: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            (ConfigMap::API_VERSION, ConfigMap::KIND) => {
-                                match dy.clone().try_parse::<ConfigMap>() {
-                                    Ok(config_map) => {
-                                        config_maps.push(config_map);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as ConfigMap: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            (Secret::API_VERSION, Secret::KIND) => {
-                                if let serde_json::Value::Object(obj) = &mut dy.data {
-                                    obj.entry("data").and_modify(|obj| {
-                                        if let serde_json::Value::Object(obj) = obj {
-                                            for (_k, v) in obj.iter_mut() {
-                                                if let serde_json::Value::String(str) = v {
-                                                    // replacing new lines here because it is assumed
-                                                    // that the data is base64 encoded and thus there
-                                                    // must be no new lines
-                                                    *v = str.replace('\n', "").into();
-                                                }
-                                            }
-                                        }
-                                    });
-                                }
-
-                                match dy.clone().try_parse::<Secret>() {
-                                    Ok(secret) => {
-                                        secrets.push(secret);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as Secret: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            (PersistentVolumeClaim::API_VERSION, PersistentVolumeClaim::KIND) => {
-                                match dy.clone().try_parse::<PersistentVolumeClaim>() {
-                                    Ok(pvc) => {
-                                        pvcs.push(pvc);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as PersistentVolumeClaim: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            (Service::API_VERSION, Service::KIND) => {
-                                match dy.clone().try_parse::<Service>() {
-                                    Ok(service) => {
-                                        services.push(service);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as Service: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            (Deployment::API_VERSION, Deployment::KIND) => {
-                                match dy.clone().try_parse::<Deployment>() {
-                                    Ok(mut deployment) => {
-                                        let service_name = deployment
-                                            .labels()
-                                            .get("app.kubernetes.io/component")
-                                            .cloned()
-                                            .unwrap_or_else(|| {
-                                                deployment.metadata.name.clone().unwrap_or_default()
-                                            });
-
-                                        deployment
-                                            .labels_mut()
-                                            .insert(SERVICE_NAME_LABEL.to_string(), service_name);
-                                        deployment.labels_mut().insert(
-                                            CONTAINER_TYPE_LABEL.to_string(),
-                                            ContainerType::ApplicationCompanion.to_string(),
-                                        );
-
-                                        deployments.push(deployment);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as Deployment: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            (Pod::API_VERSION, Pod::KIND) => match dy.clone().try_parse::<Pod>() {
-                                Ok(pod) => {
-                                    pods.push(pod);
-                                }
-                                Err(e) => {
-                                    error!("Cannot parse {:?} as Pod: {e}", dy.metadata.name);
-                                }
-                            },
-                            (Job::API_VERSION, Job::KIND) => match dy.clone().try_parse::<Job>() {
-                                Ok(job) => {
-                                    jobs.push(job);
-                                }
-                                Err(e) => {
-                                    error!("Cannot parse {:?} as Job: {e}", dy.metadata.name);
-                                }
-                            },
-                            (ServiceAccount::API_VERSION, ServiceAccount::KIND) => {
-                                match dy.clone().try_parse::<ServiceAccount>() {
-                                    Ok(service_account) => {
-                                        service_accounts.push(service_account);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as ServiceAccount: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            (Ingress::API_VERSION, Ingress::KIND) => {
-                                match dy.clone().try_parse::<Ingress>() {
-                                    Ok(ingress) => {
-                                        ingresses.push(ingress);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as Ingress: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            (NetworkPolicy::API_VERSION, NetworkPolicy::KIND) => {
-                                match dy.clone().try_parse::<NetworkPolicy>() {
-                                    Ok(policy) => {
-                                        policies.push(policy);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Cannot parse {:?} as NetworkPolicy: {e}",
-                                            dy.metadata.name
-                                        );
-                                    }
-                                }
-                            }
-                            _ => {
-                                warn!(
-                                    "Cannot parse {name} ({api_version}, {kind}) for {app_name} because its kind is unknown",
-                                    name=dy.metadata.name.unwrap_or_default()
-                                );
-                            }
-                        }
+                        parse_from_dynamic_object!(
+                            roles,
+                            role_bindings,
+                            stateful_sets,
+                            config_maps,
+                            secrets,
+                            pvcs,
+                            services,
+                            pods,
+                            deployments,
+                            jobs,
+                            service_accounts,
+                            ingresses,
+                            policies,
+                            traefik_ingresses,
+                            traefik_middlewares,
+                            api_version,
+                            kind,
+                            app_name,
+                            dy
+                        );
                     }
                     Err(err) => {
-                        warn!("The output of a bootstrap container for {app_name} could not be parsed: {stdout}");
+                        warn!(
+                            "The output of a bootstrap container for {app_name} could not be parsed: {stdout}"
+                        );
                         return Err(err.into());
                     }
                 }
             }
         }
-
-        let mut traefik_ingresses = Vec::new();
-        let mut traefik_middlewares = Vec::new();
 
         for ingress in ingresses {
             let (route, middlewares) = match convert_k8s_ingress_to_traefik_ingress(
@@ -528,7 +627,10 @@ impl K8sDeploymentUnit {
             ) {
                 Ok((route, middlewares)) => (route, middlewares),
                 Err((ingress, err)) => {
-                    warn!("Cannot convert K8s ingress to Traefik ingress and middlewares for {app_name}: {err} ({})", serde_json::to_string(&ingress).unwrap());
+                    warn!(
+                        "Cannot convert K8s ingress to Traefik ingress and middlewares for {app_name}: {err} ({})",
+                        serde_json::to_string(&ingress).unwrap()
+                    );
                     continue;
                 }
             };
@@ -798,6 +900,101 @@ impl K8sDeploymentUnit {
         }
     }
 
+    pub(super) async fn fetch(client: Client, app_name: &AppName) -> Result<Self> {
+        let mut roles = Vec::new();
+        let mut role_bindings = Vec::new();
+        let mut stateful_sets = Vec::new();
+        let mut config_maps = Vec::new();
+        let mut secrets = Vec::new();
+        let mut pvcs = Vec::new();
+        let mut services = Vec::new();
+        let mut pods = Vec::new();
+        let mut deployments = Vec::new();
+        let mut jobs = Vec::new();
+        let mut service_accounts = Vec::new();
+        let mut traefik_ingresses = Vec::new();
+        let mut traefik_middlewares = Vec::new();
+        let mut policies = Vec::new();
+
+        let namespace = app_name.to_rfc1123_namespace_id();
+
+        let api = Api::<Role>::namespaced(client, &namespace);
+        roles.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<RoleBinding>::namespaced(api.into_client(), &namespace);
+        role_bindings.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<StatefulSet>::namespaced(api.into_client(), &namespace);
+        stateful_sets.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<ConfigMap>::namespaced(api.into_client(), &namespace);
+        config_maps.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<Secret>::namespaced(api.into_client(), &namespace);
+        secrets.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<PersistentVolumeClaim>::namespaced(api.into_client(), &namespace);
+        pvcs.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<Service>::namespaced(api.into_client(), &namespace);
+        services.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<Deployment>::namespaced(api.into_client(), &namespace);
+        deployments.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<Pod>::namespaced(api.into_client(), &namespace);
+        pods.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<Job>::namespaced(api.into_client(), &namespace);
+        jobs.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<ServiceAccount>::namespaced(api.into_client(), &namespace);
+        service_accounts.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<TraefikIngressRoute>::namespaced(api.into_client(), &namespace);
+        traefik_ingresses.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<TraefikMiddleware>::namespaced(api.into_client(), &namespace);
+        traefik_middlewares.extend(api.list(&Default::default()).await?.items);
+
+        let api = Api::<NetworkPolicy>::namespaced(api.into_client(), &namespace);
+        policies.extend(api.list(&Default::default()).await?.items);
+
+        Ok(Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.roles.is_empty()
+            && self.role_bindings.is_empty()
+            && self.stateful_sets.is_empty()
+            && self.config_maps.is_empty()
+            && self.secrets.is_empty()
+            && self.pvcs.is_empty()
+            && self.services.is_empty()
+            && self.pods.is_empty()
+            && self.deployments.is_empty()
+            && self.jobs.is_empty()
+            && self.service_accounts.is_empty()
+            && self.policies.is_empty()
+            && self.traefik_ingresses.is_empty()
+            && self.traefik_middlewares.is_empty()
+    }
+
     pub(super) async fn deploy(
         self,
         client: Client,
@@ -851,6 +1048,324 @@ impl K8sDeploymentUnit {
 
         Ok(deployments)
     }
+
+    pub(super) async fn delete(self, client: Client, app_name: &AppName) -> Result<()> {
+        let namespace = app_name.to_rfc1123_namespace_id();
+
+        let api = Api::<Role>::namespaced(client, &namespace);
+        for role in self.roles {
+            api.delete(
+                role.metadata().name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<RoleBinding>::namespaced(api.into_client(), &namespace);
+        for role_binding in self.role_bindings {
+            api.delete(
+                role_binding.metadata().name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<ConfigMap>::namespaced(api.into_client(), &namespace);
+        for config_map in self.config_maps {
+            api.delete(
+                config_map.metadata().name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<Secret>::namespaced(api.into_client(), &namespace);
+        for secret in self.secrets {
+            api.delete(
+                secret.metadata().name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<PersistentVolumeClaim>::namespaced(api.into_client(), &namespace);
+        for pvc in self.pvcs {
+            api.delete(
+                pvc.metadata().name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<Service>::namespaced(api.into_client(), &namespace);
+        for service in self.services {
+            api.delete(
+                service.metadata().name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<ServiceAccount>::namespaced(api.into_client(), &namespace);
+        for service_account in self.service_accounts {
+            api.delete(
+                service_account
+                    .metadata()
+                    .name
+                    .as_deref()
+                    .unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<NetworkPolicy>::namespaced(api.into_client(), &namespace);
+        for policy in self.policies {
+            api.delete(
+                policy.metadata().name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<Deployment>::namespaced(api.into_client(), &namespace);
+        for deployment in self.deployments {
+            api.delete(
+                deployment.metadata().name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<Job>::namespaced(api.into_client(), &namespace);
+        for job in self.jobs {
+            api.delete(
+                job.metadata().name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<StatefulSet>::namespaced(api.into_client(), &namespace);
+        for stateful_set in self.stateful_sets {
+            api.delete(
+                stateful_set.metadata.name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<TraefikIngressRoute>::namespaced(api.into_client(), &namespace);
+        for ingress in self.traefik_ingresses {
+            api.delete(
+                ingress.metadata.name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<TraefikMiddleware>::namespaced(api.into_client(), &namespace);
+        for middleware in self.traefik_middlewares {
+            api.delete(
+                middleware.metadata.name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        let api = Api::<Pod>::namespaced(api.into_client(), &namespace);
+        for pod in self.pods {
+            api.delete(
+                pod.metadata.name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    pub fn prepare_for_back_up(mut self) -> Self {
+        self.pods.retain(|pod| {
+            self.deployments.iter().any(|deployment| {
+                let Some(spec) = deployment.spec.as_ref() else {
+                    return false;
+                };
+                let Some(matches_labels) = spec.selector.match_labels.as_ref() else {
+                    return false;
+                };
+
+                pod.metadata
+                    .labels
+                    .as_ref()
+                    .map(|labels| labels.iter().all(|(k, v)| matches_labels.get(k) == Some(v)))
+                    .unwrap_or(false)
+            })
+        });
+
+        empty_read_only_fields!(self.roles);
+        empty_read_only_fields!(self.role_bindings);
+
+        empty_read_only_fields!(self.stateful_sets, status);
+
+        self.config_maps.clear();
+        self.secrets.clear();
+        self.pvcs.clear();
+
+        empty_read_only_fields!(self.services,
+            status (spec => cluster_ip, cluster_ips)
+        );
+        empty_read_only_fields!(self.pods, status);
+        empty_read_only_fields!(self.deployments, status);
+
+        // TODO: , \\\"batch.kubernetes.io/job-name\\\":\\\"infra-keycloak-keycloak-config-cli\\\", \\\"controller-uid\\\":\\\"6410f4a1-b9fc-43f6-856e-fc994f8ac4cc\\\", \\\"helm.sh/chart\\\":\\\"keycloak-15.1.8\\\", \\\"job-name\\\":\\\"infra-keycloak-keycloak-config-cli\\\"}: must be '5599f469-8ce8-49ed-a3de-a1bfaf8915f2', spec.selector: Invalid value: v1.LabelSelector{MatchLabels:map[string]string{\\\"batch.kubernetes.io/controller-uid\\\":\\\"6410f4a1-b9fc-43f6-856e-fc994f8ac4cc\\\"}, MatchExpressions:[]v1.LabelSelectorRequirement(nil)}: `selector` not auto-generated]\", reason: \"Invalid\", code: 422 })"}
+        empty_read_only_fields!(self.jobs, status);
+        empty_read_only_fields!(self.service_accounts);
+        empty_read_only_fields!(self.policies);
+        empty_read_only_fields!(self.traefik_middlewares);
+        empty_read_only_fields!(self.traefik_ingresses);
+
+        self
+    }
+
+    pub fn parse_from_json<'a, I>(app_name: &AppName, payload: I) -> Result<Self>
+    where
+        I: IntoIterator,
+        <I as IntoIterator>::Item: serde::de::Deserializer<'a>,
+    {
+        let mut roles = Vec::new();
+        let mut role_bindings = Vec::new();
+        let mut stateful_sets = Vec::new();
+        let mut config_maps = Vec::new();
+        let mut secrets = Vec::new();
+        let mut pvcs = Vec::new();
+        let mut services = Vec::new();
+        let mut pods = Vec::new();
+        let mut deployments = Vec::new();
+        let mut jobs = Vec::new();
+        let mut service_accounts = Vec::new();
+        let mut ingresses = Vec::new();
+        let mut policies = Vec::new();
+        let mut traefik_middlewares = Vec::new();
+        let mut traefik_ingresses = Vec::new();
+
+        for pa in payload.into_iter() {
+            match DynamicObject::deserialize(pa) {
+                Ok(mut dyn_obj) => {
+                    let api_version = dyn_obj
+                        .types
+                        .as_ref()
+                        .map(|t| t.api_version.as_str())
+                        .unwrap_or_default();
+                    let kind = dyn_obj
+                        .types
+                        .as_ref()
+                        .map(|t| t.kind.as_str())
+                        .unwrap_or_default();
+
+                    parse_from_dynamic_object!(
+                        roles,
+                        role_bindings,
+                        stateful_sets,
+                        config_maps,
+                        secrets,
+                        pvcs,
+                        services,
+                        pods,
+                        deployments,
+                        jobs,
+                        service_accounts,
+                        ingresses,
+                        policies,
+                        traefik_ingresses,
+                        traefik_middlewares,
+                        api_version,
+                        kind,
+                        app_name,
+                        dyn_obj
+                    );
+                }
+                Err(err) => anyhow::bail!("{err}"),
+            }
+        }
+
+        Ok(Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        })
+    }
+
+    pub fn to_json_vec(&self) -> Vec<serde_json::Value> {
+        let mut json = Vec::with_capacity(
+            self.roles.len()
+                + self.config_maps.len()
+                + self.secrets.len()
+                + self.pvcs.len()
+                + self.services.len()
+                + self.service_accounts.len()
+                + self.policies.len()
+                + self.deployments.len()
+                + self.jobs.len()
+                + self.stateful_sets.len()
+                + self.traefik_ingresses.len()
+                + self.traefik_middlewares.len()
+                + self.pods.len(),
+        );
+
+        for role in self.roles.iter() {
+            json.push(serde_json::to_value(role).unwrap());
+        }
+        for config_map in self.config_maps.iter() {
+            json.push(serde_json::to_value(config_map).unwrap());
+        }
+        for secret in self.secrets.iter() {
+            json.push(serde_json::to_value(secret).unwrap());
+        }
+        for pvc in self.pvcs.iter() {
+            json.push(serde_json::to_value(pvc).unwrap());
+        }
+        for service in self.services.iter() {
+            json.push(serde_json::to_value(service).unwrap());
+        }
+        for service_account in self.service_accounts.iter() {
+            json.push(serde_json::to_value(service_account).unwrap());
+        }
+        for policy in self.policies.iter() {
+            json.push(serde_json::to_value(policy).unwrap());
+        }
+        for deployment in self.deployments.iter() {
+            json.push(serde_json::to_value(deployment).unwrap());
+        }
+        for job in self.jobs.iter() {
+            json.push(serde_json::to_value(job).unwrap());
+        }
+        for stateful_set in self.stateful_sets.iter() {
+            json.push(serde_json::to_value(stateful_set).unwrap());
+        }
+        for ingress in self.traefik_ingresses.iter() {
+            json.push(serde_json::to_value(ingress).unwrap());
+        }
+        for middleware in self.traefik_middlewares.iter() {
+            json.push(serde_json::to_value(middleware).unwrap());
+        }
+        for pod in self.pods.iter() {
+            json.push(serde_json::to_value(pod).unwrap());
+        }
+
+        json
+    }
 }
 
 async fn create_or_patch<T>(client: Client, app_name: &AppName, payload: T) -> Result<T>
@@ -890,6 +1405,7 @@ where
 mod tests {
     use super::*;
     use crate::{deployment::deployment_unit::DeploymentUnitBuilder, models::State};
+    use assert_json_diff::assert_json_include;
     use chrono::Utc;
     use k8s_openapi::api::{
         apps::v1::DeploymentSpec,
@@ -897,7 +1413,7 @@ mod tests {
     };
     use std::collections::HashMap;
 
-    async fn parse_unit(stdout: &'static str) -> K8sDeploymentUnit {
+    async fn parse_unit_from_log_stream(stdout: &'static str) -> K8sDeploymentUnit {
         let log_streams = vec![stdout.as_bytes()];
 
         let deployment_unit = DeploymentUnitBuilder::init(AppName::master(), Vec::new())
@@ -924,7 +1440,7 @@ mod tests {
 
     #[tokio::test]
     async fn parse_unit_from_secret_stdout_where_value_is_base64_encoded() {
-        let unit = parse_unit(
+        let unit = parse_unit_from_log_stream(
             r#"
             apiVersion: v1
             kind: Secret
@@ -981,7 +1497,7 @@ mod tests {
 
     #[tokio::test]
     async fn parse_unit_from_deployment_stdout() {
-        let unit = parse_unit(
+        let unit = parse_unit_from_log_stream(
             r#"
             apiVersion: apps/v1
             kind: Deployment
@@ -1051,7 +1567,7 @@ mod tests {
 
     #[tokio::test]
     async fn merge_deployment_into_bootstrapped_deployment() {
-        let mut unit = parse_unit(
+        let mut unit = parse_unit_from_log_stream(
             r#"
             apiVersion: apps/v1
             kind: Deployment
@@ -1128,7 +1644,6 @@ mod tests {
                             }],
                             ..Default::default()
                         }),
-                        ..Default::default()
                     },
                     ..Default::default()
                 }),
@@ -1199,7 +1714,7 @@ mod tests {
 
     #[tokio::test]
     async fn filter_by_instances_and_replicas() {
-        let mut unit = parse_unit(
+        let mut unit = parse_unit_from_log_stream(
             r#"
             apiVersion: apps/v1
             kind: Deployment
@@ -1239,7 +1754,7 @@ mod tests {
 
     #[tokio::test]
     async fn filter_not_by_instances_and_replicas() {
-        let mut unit = parse_unit(
+        let mut unit = parse_unit_from_log_stream(
             r#"
             apiVersion: apps/v1
             kind: Deployment
@@ -1275,5 +1790,893 @@ mod tests {
         }));
 
         assert!(!unit.deployments.is_empty());
+    }
+
+    fn captured_example_from_k3s() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {
+                    "creationTimestamp": "2025-12-23T09:05:11Z",
+                    "name": "blog",
+                    "namespace": "test",
+                    "resourceVersion": "869",
+                    "uid": "a27286f6-6193-4ab7-a3a8-88f55151e625"
+                },
+                "spec": {
+                    "clusterIP": "10.43.226.56",
+                    "clusterIPs": [
+                        "10.43.226.56"
+                    ],
+                    "internalTrafficPolicy": "Cluster",
+                    "ipFamilies": [
+                        "IPv4"
+                    ],
+                    "ipFamilyPolicy": "SingleStack",
+                    "ports": [
+                        {
+                            "name": "blog",
+                            "port": 80,
+                            "protocol": "TCP",
+                            "targetPort": 80
+                        }
+                    ],
+                    "selector": {
+                        "com.aixigo.preview.servant.app-name": "test",
+                        "com.aixigo.preview.servant.container-type": "instance",
+                        "com.aixigo.preview.servant.service-name": "blog"
+                    },
+                    "sessionAffinity": "None",
+                    "type": "ClusterIP"
+                },
+                "status": {
+                    "loadBalancer": {}
+                }
+            }),
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {
+                    "creationTimestamp": "2025-12-23T09:05:11Z",
+                    "name": "db",
+                    "namespace": "test",
+                    "resourceVersion": "865",
+                    "uid": "ed8c87a2-632d-4cd5-9b0e-7d1cc6f08236"
+                },
+                "spec": {
+                    "clusterIP": "10.43.177.211",
+                    "clusterIPs": [
+                        "10.43.177.211"
+                    ],
+                    "internalTrafficPolicy": "Cluster",
+                    "ipFamilies": [
+                        "IPv4"
+                    ],
+                    "ipFamilyPolicy": "SingleStack",
+                    "ports": [
+                        {
+                            "name": "db",
+                            "port": 3306,
+                            "protocol": "TCP",
+                            "targetPort": 3306
+                        }
+                    ],
+                    "selector": {
+                        "com.aixigo.preview.servant.app-name": "test",
+                        "com.aixigo.preview.servant.container-type": "instance",
+                        "com.aixigo.preview.servant.service-name": "db"
+                    },
+                    "sessionAffinity": "None",
+                    "type": "ClusterIP"
+                },
+                "status": {
+                    "loadBalancer": {}
+                }
+            }),
+            serde_json::json!({
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {
+                    "annotations": {
+                        "com.aixigo.preview.servant.image": "docker.io/library/wordpress:latest",
+                        "com.aixigo.preview.servant.replicated-env": "{\"WORDPRESS_CONFIG_EXTRA\":{\"replicate\":true,\"templated\":true,\"value\":\"define('WP_HOME','http://localhost');\\ndefine('WP_SITEURL','http://localhost/{{application.name}}/blog');\"},\"WORDPRESS_DB_HOST\":{\"replicate\":true,\"templated\":false,\"value\":\"db\"},\"WORDPRESS_DB_NAME\":{\"replicate\":true,\"templated\":false,\"value\":\"example-database\"},\"WORDPRESS_DB_PASSWORD\":{\"replicate\":true,\"templated\":false,\"value\":\"my_cool_secret\"},\"WORDPRESS_DB_USER\":{\"replicate\":true,\"templated\":false,\"value\":\"example-user\"}}",
+                        "deployment.kubernetes.io/revision": "1"
+                    },
+                    "creationTimestamp": "2025-12-23T09:05:11Z",
+                    "generation": 1,
+                    "labels": {
+                        "com.aixigo.preview.servant.app-name": "test",
+                        "com.aixigo.preview.servant.container-type": "instance",
+                        "com.aixigo.preview.servant.service-name": "blog"
+                    },
+                    "name": "test-blog-deployment",
+                    "namespace": "test",
+                    "resourceVersion": "916",
+                    "uid": "43a087ee-0368-4499-8dfc-57739afa8230"
+                },
+                "spec": {
+                    "progressDeadlineSeconds": 600,
+                    "replicas": 1,
+                    "revisionHistoryLimit": 10,
+                    "selector": {
+                        "matchLabels": {
+                            "com.aixigo.preview.servant.app-name": "test",
+                            "com.aixigo.preview.servant.container-type": "instance",
+                            "com.aixigo.preview.servant.service-name": "blog"
+                        }
+                    },
+                    "strategy": {
+                        "rollingUpdate": {
+                            "maxSurge": "25%",
+                            "maxUnavailable": "25%"
+                        },
+                        "type": "RollingUpdate"
+                    },
+                    "template": {
+                        "metadata": {
+                            "annotations": {
+                                "date": "2025-12-23T09:05:11.886481258+00:00"
+                            },
+                            "labels": {
+                                "com.aixigo.preview.servant.app-name": "test",
+                                "com.aixigo.preview.servant.container-type": "instance",
+                                "com.aixigo.preview.servant.service-name": "blog"
+                            }
+                        },
+                        "spec": {
+                            "containers": [
+                                {
+                                    "env": [
+                                        {
+                                            "name": "WORDPRESS_CONFIG_EXTRA",
+                                            "value": "define('WP_HOME','http://localhost');\ndefine('WP_SITEURL','http://localhost/test/blog');"
+                                        },
+                                        {
+                                            "name": "WORDPRESS_DB_HOST",
+                                            "value": "db"
+                                        },
+                                        {
+                                            "name": "WORDPRESS_DB_NAME",
+                                            "value": "example-database"
+                                        },
+                                        {
+                                            "name": "WORDPRESS_DB_PASSWORD",
+                                            "value": "my_cool_secret"
+                                        },
+                                        {
+                                            "name": "WORDPRESS_DB_USER",
+                                            "value": "example-user"
+                                        }
+                                    ],
+                                    "image": "docker.io/library/wordpress:latest",
+                                    "imagePullPolicy": "Always",
+                                    "name": "blog",
+                                    "ports": [
+                                        {
+                                            "containerPort": 80,
+                                            "protocol": "TCP"
+                                        }
+                                    ],
+                                    "resources": {},
+                                    "terminationMessagePath": "/dev/termination-log",
+                                    "terminationMessagePolicy": "File"
+                                }
+                            ],
+                            "dnsPolicy": "ClusterFirst",
+                            "restartPolicy": "Always",
+                            "schedulerName": "default-scheduler",
+                            "securityContext": {},
+                            "terminationGracePeriodSeconds": 30
+                        }
+                    }
+                },
+                "status": {
+                    "availableReplicas": 1,
+                    "conditions": [
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:14Z",
+                            "lastUpdateTime": "2025-12-23T09:05:14Z",
+                            "message": "Deployment has minimum availability.",
+                            "reason": "MinimumReplicasAvailable",
+                            "status": "True",
+                            "type": "Available"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:11Z",
+                            "lastUpdateTime": "2025-12-23T09:05:14Z",
+                            "message": "ReplicaSet \"test-blog-deployment-5bb689bcd9\" has successfully progressed.",
+                            "reason": "NewReplicaSetAvailable",
+                            "status": "True",
+                            "type": "Progressing"
+                        }
+                    ],
+                    "observedGeneration": 1,
+                    "readyReplicas": 1,
+                    "replicas": 1,
+                    "updatedReplicas": 1
+                }
+            }),
+            serde_json::json!({
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {
+                    "annotations": {
+                        "com.aixigo.preview.servant.image": "docker.io/library/mariadb:latest",
+                        "com.aixigo.preview.servant.replicated-env": "{\"MARIADB_DATABASE\":{\"replicate\":true,\"templated\":false,\"value\":\"example-database\"},\"MARIADB_PASSWORD\":{\"replicate\":true,\"templated\":false,\"value\":\"my_cool_secret\"},\"MARIADB_ROOT_PASSWORD\":{\"replicate\":true,\"templated\":false,\"value\":\"example\"},\"MARIADB_USER\":{\"replicate\":true,\"templated\":false,\"value\":\"example-user\"}}",
+                        "deployment.kubernetes.io/revision": "1"
+                    },
+                    "creationTimestamp": "2025-12-23T09:05:11Z",
+                    "generation": 1,
+                    "labels": {
+                        "com.aixigo.preview.servant.app-name": "test",
+                        "com.aixigo.preview.servant.container-type": "instance",
+                        "com.aixigo.preview.servant.service-name": "db"
+                    },
+                    "name": "test-db-deployment",
+                    "namespace": "test",
+                    "resourceVersion": "920",
+                    "uid": "7cae9a70-9187-442e-9700-dce0840d25e6"
+                },
+                "spec": {
+                    "progressDeadlineSeconds": 600,
+                    "replicas": 1,
+                    "revisionHistoryLimit": 10,
+                    "selector": {
+                        "matchLabels": {
+                            "com.aixigo.preview.servant.app-name": "test",
+                            "com.aixigo.preview.servant.container-type": "instance",
+                            "com.aixigo.preview.servant.service-name": "db"
+                        }
+                    },
+                    "strategy": {
+                        "rollingUpdate": {
+                            "maxSurge": "25%",
+                            "maxUnavailable": "25%"
+                        },
+                        "type": "RollingUpdate"
+                    },
+                    "template": {
+                        "metadata": {
+                            "annotations": {
+                                "date": "2025-12-23T09:05:11.873776450+00:00"
+                            },
+                            "labels": {
+                                "com.aixigo.preview.servant.app-name": "test",
+                                "com.aixigo.preview.servant.container-type": "instance",
+                                "com.aixigo.preview.servant.service-name": "db"
+                            }
+                        },
+                        "spec": {
+                            "containers": [
+                                {
+                                    "env": [
+                                        {
+                                            "name": "MARIADB_DATABASE",
+                                            "value": "example-database"
+                                        },
+                                        {
+                                            "name": "MARIADB_PASSWORD",
+                                            "value": "my_cool_secret"
+                                        },
+                                        {
+                                            "name": "MARIADB_ROOT_PASSWORD",
+                                            "value": "example"
+                                        },
+                                        {
+                                            "name": "MARIADB_USER",
+                                            "value": "example-user"
+                                        }
+                                    ],
+                                    "image": "docker.io/library/mariadb:latest",
+                                    "imagePullPolicy": "Always",
+                                    "name": "db",
+                                    "ports": [
+                                        {
+                                            "containerPort": 3306,
+                                            "protocol": "TCP"
+                                        }
+                                    ],
+                                    "resources": {},
+                                    "terminationMessagePath": "/dev/termination-log",
+                                    "terminationMessagePolicy": "File"
+                                }
+                            ],
+                            "dnsPolicy": "ClusterFirst",
+                            "restartPolicy": "Always",
+                            "schedulerName": "default-scheduler",
+                            "securityContext": {},
+                            "terminationGracePeriodSeconds": 30
+                        }
+                    }
+                },
+                "status": {
+                    "availableReplicas": 1,
+                    "conditions": [
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:14Z",
+                            "lastUpdateTime": "2025-12-23T09:05:14Z",
+                            "message": "Deployment has minimum availability.",
+                            "reason": "MinimumReplicasAvailable",
+                            "status": "True",
+                            "type": "Available"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:11Z",
+                            "lastUpdateTime": "2025-12-23T09:05:14Z",
+                            "message": "ReplicaSet \"test-db-deployment-5fcf85b44b\" has successfully progressed.",
+                            "reason": "NewReplicaSetAvailable",
+                            "status": "True",
+                            "type": "Progressing"
+                        }
+                    ],
+                    "observedGeneration": 1,
+                    "readyReplicas": 1,
+                    "replicas": 1,
+                    "updatedReplicas": 1
+                }
+            }),
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {
+                    "annotations": {
+                        "date": "2025-12-23T09:05:11.886481258+00:00"
+                    },
+                    "creationTimestamp": "2025-12-23T09:05:11Z",
+                    "generateName": "test-blog-deployment-5bb689bcd9-",
+                    "labels": {
+                        "com.aixigo.preview.servant.app-name": "test",
+                        "com.aixigo.preview.servant.container-type": "instance",
+                        "com.aixigo.preview.servant.service-name": "blog",
+                        "pod-template-hash": "5bb689bcd9"
+                    },
+                    "name": "test-blog-deployment-5bb689bcd9-wj557",
+                    "namespace": "test",
+                    "ownerReferences": [
+                        {
+                            "apiVersion": "apps/v1",
+                            "blockOwnerDeletion": true,
+                            "controller": true,
+                            "kind": "ReplicaSet",
+                            "name": "test-blog-deployment-5bb689bcd9",
+                            "uid": "13227d25-9fc9-46bf-b199-30137d4dfbb6"
+                        }
+                    ],
+                    "resourceVersion": "911",
+                    "uid": "9730567c-8c14-4264-a790-c347d317056d"
+                },
+                "spec": {
+                    "containers": [
+                        {
+                            "env": [
+                                {
+                                    "name": "WORDPRESS_CONFIG_EXTRA",
+                                    "value": "define('WP_HOME','http://localhost');\ndefine('WP_SITEURL','http://localhost/test/blog');"
+                                },
+                                {
+                                    "name": "WORDPRESS_DB_HOST",
+                                    "value": "db"
+                                },
+                                {
+                                    "name": "WORDPRESS_DB_NAME",
+                                    "value": "example-database"
+                                },
+                                {
+                                    "name": "WORDPRESS_DB_PASSWORD",
+                                    "value": "my_cool_secret"
+                                },
+                                {
+                                    "name": "WORDPRESS_DB_USER",
+                                    "value": "example-user"
+                                }
+                            ],
+                            "image": "docker.io/library/wordpress:latest",
+                            "imagePullPolicy": "Always",
+                            "name": "blog",
+                            "ports": [
+                                {
+                                    "containerPort": 80,
+                                    "protocol": "TCP"
+                                }
+                            ],
+                            "resources": {},
+                            "terminationMessagePath": "/dev/termination-log",
+                            "terminationMessagePolicy": "File",
+                            "volumeMounts": [
+                                {
+                                    "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                    "name": "kube-api-access-8cdhb",
+                                    "readOnly": true
+                                }
+                            ]
+                        }
+                    ],
+                    "dnsPolicy": "ClusterFirst",
+                    "enableServiceLinks": true,
+                    "nodeName": "k3d-dash-server-0",
+                    "preemptionPolicy": "PreemptLowerPriority",
+                    "priority": 0,
+                    "restartPolicy": "Always",
+                    "schedulerName": "default-scheduler",
+                    "securityContext": {},
+                    "serviceAccount": "default",
+                    "serviceAccountName": "default",
+                    "terminationGracePeriodSeconds": 30,
+                    "tolerations": [
+                        {
+                            "effect": "NoExecute",
+                            "key": "node.kubernetes.io/not-ready",
+                            "operator": "Exists",
+                            "tolerationSeconds": 300
+                        },
+                        {
+                            "effect": "NoExecute",
+                            "key": "node.kubernetes.io/unreachable",
+                            "operator": "Exists",
+                            "tolerationSeconds": 300
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "kube-api-access-8cdhb",
+                            "projected": {
+                                "defaultMode": 420,
+                                "sources": [
+                                    {
+                                        "serviceAccountToken": {
+                                            "expirationSeconds": 3607,
+                                            "path": "token"
+                                        }
+                                    },
+                                    {
+                                        "configMap": {
+                                            "items": [
+                                                {
+                                                    "key": "ca.crt",
+                                                    "path": "ca.crt"
+                                                }
+                                            ],
+                                            "name": "kube-root-ca.crt"
+                                        }
+                                    },
+                                    {
+                                        "downwardAPI": {
+                                            "items": [
+                                                {
+                                                    "fieldRef": {
+                                                        "apiVersion": "v1",
+                                                        "fieldPath": "metadata.namespace"
+                                                    },
+                                                    "path": "namespace"
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "status": {
+                    "conditions": [
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:14Z",
+                            "status": "True",
+                            "type": "PodReadyToStartContainers"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:12Z",
+                            "status": "True",
+                            "type": "Initialized"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:14Z",
+                            "status": "True",
+                            "type": "Ready"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:14Z",
+                            "status": "True",
+                            "type": "ContainersReady"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:11Z",
+                            "status": "True",
+                            "type": "PodScheduled"
+                        }
+                    ],
+                    "containerStatuses": [
+                        {
+                            "containerID": "containerd://a58e137c636cd57c0ce8c392990e59d9ad638cd577cc40317cf19beea771a25c",
+                            "image": "docker.io/library/wordpress:latest",
+                            "imageID": "docker.io/library/wordpress@sha256:c6c44891a684b52c0d183d9d1f182dca1e16d58711670a4d973e9625d903efb3",
+                            "lastState": {},
+                            "name": "blog",
+                            "ready": true,
+                            "restartCount": 0,
+                            "started": true,
+                            "state": {
+                                "running": {
+                                    "startedAt": "2025-12-23T09:05:13Z"
+                                }
+                            },
+                            "volumeMounts": [
+                                {
+                                    "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                    "name": "kube-api-access-8cdhb",
+                                    "readOnly": true,
+                                    "recursiveReadOnly": "Disabled"
+                                }
+                            ]
+                        }
+                    ],
+                    "hostIP": "172.24.25.2",
+                    "hostIPs": [
+                        {
+                            "ip": "172.24.25.2"
+                        }
+                    ],
+                    "phase": "Running",
+                    "podIP": "10.42.0.12",
+                    "podIPs": [
+                        {
+                            "ip": "10.42.0.12"
+                        }
+                    ],
+                    "qosClass": "BestEffort",
+                    "startTime": "2025-12-23T09:05:12Z"
+                }
+            }),
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {
+                    "annotations": {
+                        "date": "2025-12-23T09:05:11.873776450+00:00"
+                    },
+                    "creationTimestamp": "2025-12-23T09:05:11Z",
+                    "generateName": "test-db-deployment-5fcf85b44b-",
+                    "labels": {
+                        "com.aixigo.preview.servant.app-name": "test",
+                        "com.aixigo.preview.servant.container-type": "instance",
+                        "com.aixigo.preview.servant.service-name": "db",
+                        "pod-template-hash": "5fcf85b44b"
+                    },
+                    "name": "test-db-deployment-5fcf85b44b-dcfx9",
+                    "namespace": "test",
+                    "ownerReferences": [
+                        {
+                            "apiVersion": "apps/v1",
+                            "blockOwnerDeletion": true,
+                            "controller": true,
+                            "kind": "ReplicaSet",
+                            "name": "test-db-deployment-5fcf85b44b",
+                            "uid": "9b2f3c50-2af2-4b22-8b26-31cc06034769"
+                        }
+                    ],
+                    "resourceVersion": "915",
+                    "uid": "4ff6e7e8-d784-4176-bd48-1cbe8bde8acf"
+                },
+                "spec": {
+                    "containers": [
+                        {
+                            "env": [
+                                {
+                                    "name": "MARIADB_DATABASE",
+                                    "value": "example-database"
+                                },
+                                {
+                                    "name": "MARIADB_PASSWORD",
+                                    "value": "my_cool_secret"
+                                },
+                                {
+                                    "name": "MARIADB_ROOT_PASSWORD",
+                                    "value": "example"
+                                },
+                                {
+                                    "name": "MARIADB_USER",
+                                    "value": "example-user"
+                                }
+                            ],
+                            "image": "docker.io/library/mariadb:latest",
+                            "imagePullPolicy": "Always",
+                            "name": "db",
+                            "ports": [
+                                {
+                                    "containerPort": 3306,
+                                    "protocol": "TCP"
+                                }
+                            ],
+                            "resources": {},
+                            "terminationMessagePath": "/dev/termination-log",
+                            "terminationMessagePolicy": "File",
+                            "volumeMounts": [
+                                {
+                                    "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                    "name": "kube-api-access-ltqf9",
+                                    "readOnly": true
+                                }
+                            ]
+                        }
+                    ],
+                    "dnsPolicy": "ClusterFirst",
+                    "enableServiceLinks": true,
+                    "nodeName": "k3d-dash-server-0",
+                    "preemptionPolicy": "PreemptLowerPriority",
+                    "priority": 0,
+                    "restartPolicy": "Always",
+                    "schedulerName": "default-scheduler",
+                    "securityContext": {},
+                    "serviceAccount": "default",
+                    "serviceAccountName": "default",
+                    "terminationGracePeriodSeconds": 30,
+                    "tolerations": [
+                        {
+                            "effect": "NoExecute",
+                            "key": "node.kubernetes.io/not-ready",
+                            "operator": "Exists",
+                            "tolerationSeconds": 300
+                        },
+                        {
+                            "effect": "NoExecute",
+                            "key": "node.kubernetes.io/unreachable",
+                            "operator": "Exists",
+                            "tolerationSeconds": 300
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "kube-api-access-ltqf9",
+                            "projected": {
+                                "defaultMode": 420,
+                                "sources": [
+                                    {
+                                        "serviceAccountToken": {
+                                            "expirationSeconds": 3607,
+                                            "path": "token"
+                                        }
+                                    },
+                                    {
+                                        "configMap": {
+                                            "items": [
+                                                {
+                                                    "key": "ca.crt",
+                                                    "path": "ca.crt"
+                                                }
+                                            ],
+                                            "name": "kube-root-ca.crt"
+                                        }
+                                    },
+                                    {
+                                        "downwardAPI": {
+                                            "items": [
+                                                {
+                                                    "fieldRef": {
+                                                        "apiVersion": "v1",
+                                                        "fieldPath": "metadata.namespace"
+                                                    },
+                                                    "path": "namespace"
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "status": {
+                    "conditions": [
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:14Z",
+                            "status": "True",
+                            "type": "PodReadyToStartContainers"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:11Z",
+                            "status": "True",
+                            "type": "Initialized"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:14Z",
+                            "status": "True",
+                            "type": "Ready"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:14Z",
+                            "status": "True",
+                            "type": "ContainersReady"
+                        },
+                        {
+                            "lastTransitionTime": "2025-12-23T09:05:11Z",
+                            "status": "True",
+                            "type": "PodScheduled"
+                        }
+                    ],
+                    "containerStatuses": [
+                        {
+                            "containerID": "containerd://5e13883138c5dad22ea0279b005678a0dafb8d80a102f1d5cf1b5b75594600d3",
+                            "image": "docker.io/library/mariadb:latest",
+                            "imageID": "docker.io/library/mariadb@sha256:e1bcd6f85781f4a875abefb11c4166c1d79e4237c23de597bf0df81fec225b40",
+                            "lastState": {},
+                            "name": "db",
+                            "ready": true,
+                            "restartCount": 0,
+                            "started": true,
+                            "state": {
+                                "running": {
+                                    "startedAt": "2025-12-23T09:05:13Z"
+                                }
+                            },
+                            "volumeMounts": [
+                                {
+                                    "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                    "name": "kube-api-access-ltqf9",
+                                    "readOnly": true,
+                                    "recursiveReadOnly": "Disabled"
+                                }
+                            ]
+                        }
+                    ],
+                    "hostIP": "172.24.25.2",
+                    "hostIPs": [
+                        {
+                            "ip": "172.24.25.2"
+                        }
+                    ],
+                    "phase": "Running",
+                    "podIP": "10.42.0.13",
+                    "podIPs": [
+                        {
+                            "ip": "10.42.0.13"
+                        }
+                    ],
+                    "qosClass": "BestEffort",
+                    "startTime": "2025-12-23T09:05:11Z"
+                }
+            }),
+        ]
+    }
+
+    #[test]
+    fn parse_from_json() {
+        let json = captured_example_from_k3s();
+
+        let unit = K8sDeploymentUnit::parse_from_json(&AppName::master(), json).unwrap();
+
+        assert_eq!(unit.roles.len(), 0);
+        assert_eq!(unit.role_bindings.len(), 0);
+        assert_eq!(unit.stateful_sets.len(), 0);
+        assert_eq!(unit.config_maps.len(), 0);
+        assert_eq!(unit.secrets.len(), 0);
+        assert_eq!(unit.pvcs.len(), 0);
+        assert_eq!(unit.services.len(), 2);
+        assert_eq!(unit.pods.len(), 2);
+        assert_eq!(unit.deployments.len(), 2);
+        assert_eq!(unit.jobs.len(), 0);
+        assert_eq!(unit.service_accounts.len(), 0);
+        assert_eq!(unit.policies.len(), 0);
+        assert_eq!(unit.traefik_ingresses.len(), 0);
+        assert_eq!(unit.traefik_middlewares.len(), 0);
+    }
+
+    #[test]
+    fn to_json_vec() {
+        let json = captured_example_from_k3s();
+
+        let unit = K8sDeploymentUnit::parse_from_json(&AppName::master(), json).unwrap();
+
+        assert_json_include!(
+            actual: serde_json::Value::Array(unit.to_json_vec()),
+            expected: serde_json::Value::Array(captured_example_from_k3s())
+        );
+    }
+
+    mod prepare_for_back_up {
+        use super::*;
+
+        #[test]
+        fn clean_system_populations() {
+            let unit =
+                K8sDeploymentUnit::parse_from_json(&AppName::master(), captured_example_from_k3s())
+                    .unwrap();
+
+            let prepare_for_back_up = unit.prepare_for_back_up();
+
+            assert!(
+                prepare_for_back_up.pods.is_empty(),
+                "Pods should be empty because they are covered by deployments"
+            );
+            assert!(
+                !prepare_for_back_up
+                    .services
+                    .iter()
+                    .filter_map(|service| service.spec.as_ref())
+                    .any(|spec| spec.cluster_ip.is_some() || spec.cluster_ips.is_some()),
+                "Don't preserve cluster IP(s)"
+            );
+            assert!(
+                !prepare_for_back_up
+                    .deployments
+                    .iter()
+                    .any(|deployment| deployment.status.is_some()),
+                "Deployment's status will be set by server"
+            );
+        }
+
+        #[tokio::test]
+        async fn clean_volume_mounts() {
+            let unit = parse_unit_from_log_stream(
+                r#"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secret-tls
+type: kubernetes.io/tls
+data:
+  # values are base64 encoded, which obscures them but does NOT provide
+  # any useful level of confidentiality
+  tls.crt: |
+    LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUNVakNDQWJzQ0FnMytNQTBHQ1NxR1NJYjNE
+    UUVCQlFVQU1JR2JNUXN3Q1FZRFZRUUdFd0pLVURFT01Bd0cKQTFVRUNCTUZWRzlyZVc4eEVEQU9C
+    Z05WQkFjVEIwTm9kVzh0YTNVeEVUQVBCZ05WQkFvVENFWnlZVzVyTkVSRQpNUmd3RmdZRFZRUUxF
+    dzlYWldKRFpYSjBJRk4xY0hCdmNuUXhHREFXQmdOVkJBTVREMFp5WVc1ck5FUkVJRmRsCllpQkRR
+    VEVqTUNFR0NTcUdTSWIzRFFFSkFSWVVjM1Z3Y0c5eWRFQm1jbUZ1YXpSa1pDNWpiMjB3SGhjTk1U
+    TXcKTVRFeE1EUTFNVE01V2hjTk1UZ3dNVEV3TURRMU1UTTVXakJMTVFzd0NRWURWUVFHREFKS1VE
+    RVBNQTBHQTFVRQpDQXdHWEZSdmEzbHZNUkV3RHdZRFZRUUtEQWhHY21GdWF6UkVSREVZTUJZR0Ex
+    VUVBd3dQZDNkM0xtVjRZVzF3CmJHVXVZMjl0TUlHYU1BMEdDU3FHU0liM0RRRUJBUVVBQTRHSUFE
+    Q0JoQUo5WThFaUhmeHhNL25PbjJTbkkxWHgKRHdPdEJEVDFKRjBReTliMVlKanV2YjdjaTEwZjVN
+    Vm1UQllqMUZTVWZNOU1vejJDVVFZdW4yRFljV29IcFA4ZQpqSG1BUFVrNVd5cDJRN1ArMjh1bklI
+    QkphVGZlQ09PekZSUFY2MEdTWWUzNmFScG04L3dVVm16eGFLOGtCOWVaCmhPN3F1TjdtSWQxL2pW
+    cTNKODhDQXdFQUFUQU5CZ2txaGtpRzl3MEJBUVVGQUFPQmdRQU1meTQzeE15OHh3QTUKVjF2T2NS
+    OEtyNWNaSXdtbFhCUU8xeFEzazlxSGtyNFlUY1JxTVQ5WjVKTm1rWHYxK2VSaGcwTi9WMW5NUTRZ
+    RgpnWXcxbnlESnBnOTduZUV4VzQyeXVlMFlHSDYyV1hYUUhyOVNVREgrRlowVnQvRGZsdklVTWRj
+    UUFEZjM4aU9zCjlQbG1kb3YrcE0vNCs5a1h5aDhSUEkzZXZ6OS9NQT09Ci0tLS0tRU5EIENFUlRJ
+    RklDQVRFLS0tLS0K
+  # In this example, the key data is not a real PEM-encoded private key
+  tls.key: |
+    RXhhbXBsZSBkYXRhIGZvciB0aGUgVExTIGNydCBmaWVsZA==
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: game-demo
+data:
+  # property-like keys; each key maps to a simple value
+  player_initial_lives: "3"
+  ui_properties_file_name: "user-interface.properties"
+
+  # file-like keys
+  game.properties: |
+    enemy.types=aliens,monsters
+    player.maximum-lives=5
+  user-interface.properties: |
+    color.good=purple
+    color.bad=yellow
+    allow.textmode=true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: foo-pvc
+  namespace: foo
+spec:
+  storageClassName: ""
+  volumeName: foo-pv
+                "#,
+            )
+            .await;
+
+            assert!(!unit.secrets.is_empty());
+            assert!(!unit.config_maps.is_empty());
+            assert!(!unit.pvcs.is_empty());
+
+            let prepared_for_back_up = unit.prepare_for_back_up();
+
+            assert!(prepared_for_back_up.secrets.is_empty());
+            assert!(prepared_for_back_up.config_maps.is_empty());
+            assert!(prepared_for_back_up.pvcs.is_empty());
+        }
     }
 }

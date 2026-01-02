@@ -26,6 +26,7 @@
 mod fairing;
 mod host_meta_cache;
 mod queue;
+mod repository;
 mod routes;
 
 use crate::config::ReplicateApplicationCondition;
@@ -51,6 +52,7 @@ use log::error;
 use log::trace;
 pub use queue::AppProcessingQueue;
 pub use queue::AppTaskQueueProducer;
+pub use repository::AppRepository;
 pub use routes::{apps_routes, delete_app_sync, AppV1};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
@@ -74,10 +76,7 @@ impl Clone for Apps {
 }
 
 impl Apps {
-    pub fn new(
-        config: Config,
-        infrastructure: Box<dyn Infrastructure>,
-    ) -> Result<Apps, AppsError> {
+    pub fn new(config: Config, infrastructure: Box<dyn Infrastructure>) -> Result<Apps, AppsError> {
         Ok(Apps {
             config,
             infrastructure,
@@ -121,12 +120,23 @@ impl Apps {
         Ok(self.infrastructure.fetch_apps().await?)
     }
 
+    pub async fn fetch_app_as_backup_based_infrastructure_payload(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<Vec<serde_json::Value>>, AppsError> {
+        Ok(self
+            .infrastructure
+            .fetch_app_as_backup_based_infrastructure_payload(app_name)
+            .await?)
+    }
+
     /// Provides a [`Receiver`](tokio::sync::watch::Receiver) that notifies about changes of the
     /// list of running [`apps`](AppsService::fetch_apps).
     pub async fn app_updates(&self) -> Receiver<HashMap<AppName, App>> {
         let infrastructure = dyn_clone::clone_box(&*self.infrastructure);
         let (tx, rx) = tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new());
 
+        // TODO: we should return this and spawn on liftoff
         tokio::spawn(async move {
             loop {
                 debug!("Fetching list of apps to send updates.");
@@ -225,15 +235,13 @@ impl Apps {
         ) {
             (None, _) => None,
             (Some(validator), None) => Some(
-                UserDefinedParameters::new(serde_json::json!({}), &validator).map_err(|e| {
-                    AppsError::InvalidUserDefinedParameters { err: e.to_string() }
-                })?,
+                UserDefinedParameters::new(serde_json::json!({}), &validator)
+                    .map_err(|e| AppsError::InvalidUserDefinedParameters { err: e.to_string() })?,
             ),
-            (Some(validator), Some(value)) => {
-                Some(UserDefinedParameters::new(value, &validator).map_err(|e| {
-                    AppsError::InvalidUserDefinedParameters { err: e.to_string() }
-                })?)
-            }
+            (Some(validator), Some(value)) => Some(
+                UserDefinedParameters::new(value, &validator)
+                    .map_err(|e| AppsError::InvalidUserDefinedParameters { err: e.to_string() })?,
+            ),
         };
 
         if let Some(app_limit) = self.config.app_limit() {
@@ -368,6 +376,17 @@ impl Apps {
         Ok(apps)
     }
 
+    async fn restore_app_partially(
+        &self,
+        app_name: &AppName,
+        infrastructure_payload: &[serde_json::Value],
+    ) -> Result<App, AppsError> {
+        Ok(self
+            .infrastructure
+            .restore_infrastructure_objects_partially(app_name, infrastructure_payload)
+            .await?)
+    }
+
     /// Deletes all services for the given `app_name`.
     async fn delete_app(&self, app_name: &AppName) -> Result<App, AppsError> {
         let app = self.infrastructure.stop_services(app_name).await?;
@@ -379,6 +398,24 @@ impl Apps {
         } else {
             Ok(app)
         }
+    }
+
+    async fn delete_app_partially(
+        &self,
+        app_name: &AppName,
+        infrastructure_payload: &[serde_json::Value],
+    ) -> Result<App, AppsError> {
+        let Some(app) = self.infrastructure.fetch_app(app_name).await? else {
+            return Err(AppsError::AppNotFound {
+                app_name: app_name.clone(),
+            });
+        };
+
+        self.infrastructure
+            .delete_infrastructure_objects_partially(app_name, infrastructure_payload)
+            .await?;
+
+        Ok(app)
     }
 
     pub async fn stream_logs<'a>(
@@ -1379,8 +1416,7 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn do_not_create_app_when_exceeding_application_number_limit(
-    ) -> Result<(), AppsError> {
+    async fn do_not_create_app_when_exceeding_application_number_limit() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [applications]
@@ -1418,8 +1454,7 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn do_update_app_when_exceeding_application_number_limit() -> Result<(), AppsError>
-    {
+    async fn do_update_app_when_exceeding_application_number_limit() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [applications]
