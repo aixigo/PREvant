@@ -1218,7 +1218,8 @@ impl K8sDeploymentUnit {
         empty_read_only_fields!(self.pods, status);
         empty_read_only_fields!(self.deployments, status);
 
-        empty_read_only_fields!(self.jobs);
+        // TODO: , \\\"batch.kubernetes.io/job-name\\\":\\\"infra-keycloak-keycloak-config-cli\\\", \\\"controller-uid\\\":\\\"6410f4a1-b9fc-43f6-856e-fc994f8ac4cc\\\", \\\"helm.sh/chart\\\":\\\"keycloak-15.1.8\\\", \\\"job-name\\\":\\\"infra-keycloak-keycloak-config-cli\\\"}: must be '5599f469-8ce8-49ed-a3de-a1bfaf8915f2', spec.selector: Invalid value: v1.LabelSelector{MatchLabels:map[string]string{\\\"batch.kubernetes.io/controller-uid\\\":\\\"6410f4a1-b9fc-43f6-856e-fc994f8ac4cc\\\"}, MatchExpressions:[]v1.LabelSelectorRequirement(nil)}: `selector` not auto-generated]\", reason: \"Invalid\", code: 422 })"}
+        empty_read_only_fields!(self.jobs, status);
         empty_read_only_fields!(self.service_accounts);
         empty_read_only_fields!(self.policies);
         empty_read_only_fields!(self.traefik_middlewares);
