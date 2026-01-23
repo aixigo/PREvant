@@ -14,7 +14,18 @@ See [authentication.md](authentication.md) how to configure authentication (high
 
 ## Persistent Database
 
-See [database.md](database.md) how to configure a database connection (highly recommended).
+ It is recommended to use a database configuration because this provides a) a
+ persistent work queue and b) the back-up and restore of applications will be
+ available. See [database.md](database.md) how to configure a database
+ connection.
+
+> [!NOTE]
+> The back-up and restore feature is only available for Kubernetes backend
+> because it requires that the deployment work with a common deployed
+> description. In Kubernetes land this description are the Kubernetes manifests
+> like deployments, ingresses, etc. In Docker land this is Docker compose and
+> this support has to be implemented first via
+> [#146](https://github.com/aixigo/PREvant/issues/146).
 
 ## Runtime Configuration
 
