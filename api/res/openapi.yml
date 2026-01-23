@@ -20,13 +20,18 @@ paths:
         '200':
           description: ''
           content:
+            application/vnd.prevant.v2+json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/App'
             application/json:
               schema:
                 type: object
-                properties:
-                  "^[a-zA-Z0-9_-]":
-                    # TODO: This is an array and the documentation seems to be wrong all the time…
-                    $ref: '#/components/schemas/Service'
+                additionalProperties:
+                   type: array
+                   items:
+                     $ref: '#/components/schemas/Service'
         '500':
           description: Server error
           content:
@@ -209,6 +214,29 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+  /apps/{appName}/states/:
+    put:
+      summary: Allows to change the state of an application to be deployed or backed up.
+      parameters:
+        - $ref: '#/components/parameters/appName'
+        - $ref: '#/components/parameters/preferAsync'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  $ref: '#/components/schemas/AppStatus'
+      responses:
+        '202':
+          description: ""
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/App'
+
   /apps/{appName}/states/{serviceName}/:
     put:
       summary: Changes the state of a service
@@ -377,6 +405,41 @@ components:
               pattern: ^wait=(\d+)$
               example: wait=20
   schemas:
+    Owner:
+      type: object
+      properties:
+        sub:
+          type: string
+          example: alice
+        iss:
+          type: string
+          example: https://gitlab.com
+        name:
+          type: string
+          example: Alice
+      required:
+        - sub
+        - iss
+    App:
+      type: object
+      properties:
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/Service'
+        owners:
+          type: array
+          items:
+            $ref: '#/components/schemas/Owner'
+        status:
+          $ref: '#/components/schemas/AppStatus'
+      required:
+        - services
+    AppStatus:
+      type: string
+      enum:
+        - deployed
+        - backed-up
     Service:
       type: object
       properties:

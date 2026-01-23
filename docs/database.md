@@ -6,13 +6,7 @@ tasks of application even though PREvant get's shutdown in the middle of
 creating an application. Also, this features provides the advantage to run
 multiple instances of PREvant at the same time.
 
-> [!NOTE]
-> The planned back up and restore feature will rely on a database (see
-> [#149](https://github.com/aixigo/PREvant/issues/149)).
-
-Use following configuration block to connect to a
-PostgreSQL database.
-
+Use following configuration block to connect to a PostgreSQL database.
 
 ```toml
 [database]
@@ -22,4 +16,3 @@ username = "postgres"
 password =  "${env:POSTGRES_PASSWORD}"
 database = "postgres"
 ```
-
