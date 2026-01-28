@@ -448,11 +448,12 @@ impl DockerInfrastructure {
             }
             TraefikVersion::V2 | TraefikVersion::V3 => {
                 if let Some(route) = service.ingress_route().routes().iter().next() {
+                    let router_name = format!(
+                        "{app_name}-{service_name}",
+                        service_name = service.service_name()
+                    );
                     labels.insert(
-                        format!(
-                            "traefik.http.routers.{service_name}.rule",
-                            service_name = service.service_name()
-                        ),
+                        format!("traefik.http.routers.{router_name}.rule",),
                         route.rule().to_string(),
                     );
 
@@ -475,10 +476,7 @@ impl DockerInfrastructure {
                     }
 
                     labels.insert(
-                        format!(
-                            "traefik.http.routers.{service_name}.middlewares",
-                            service_name = service.service_name()
-                        ),
+                        format!("traefik.http.routers.{router_name}.middlewares",),
                         applied_middle_wares,
                     );
                 }
@@ -1747,6 +1745,37 @@ mod tests {
                 "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
                 "com.aixigo.preview.servant.service-name": "db",
                 "traefik.frontend.rule": "PathPrefixStrip: /master/db/; PathPrefix:/master/db/;"
+              }
+            })
+        );
+    }
+
+    #[test]
+    fn create_container_options_with_traefik_v2_rule() {
+        let config = sc!("db", "mariadb:10.3.17");
+
+        let options = DockerInfrastructure::create_container_options(
+            &AppName::master(),
+            &DeployableService::new(
+                config,
+                DeploymentStrategy::RedeployAlways,
+                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
+                Vec::new(),
+            ),
+            &ContainerConfig::default(),
+            &[],
+            &HashSet::new(),
+            TraefikVersion::V2,
+        );
+
+        let json = serde_json::to_value(&options).unwrap();
+        assert_json_diff::assert_json_include!(
+            actual: json,
+            expected: serde_json::json!({
+              "Labels": {
+                "traefik.http.routers.master-db.rule": "PathPrefix(`/master/db/`)",
+                "traefik.http.routers.master-db.middlewares": "master-db-middleware@docker",
+                "traefik.http.middlewares.master-db-middleware.stripprefix.prefixes": "/master/db/",
               }
             })
         );
