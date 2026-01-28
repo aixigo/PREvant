@@ -479,6 +479,11 @@ impl DockerInfrastructure {
                         format!("traefik.http.routers.{router_name}.middlewares",),
                         applied_middle_wares,
                     );
+
+                    labels.insert(
+                        String::from("traefik.docker.network"),
+                        format!("{app_name}-net"),
+                    );
                 }
             }
         };
@@ -1776,6 +1781,7 @@ mod tests {
                 "traefik.http.routers.master-db.rule": "PathPrefix(`/master/db/`)",
                 "traefik.http.routers.master-db.middlewares": "master-db-middleware@docker",
                 "traefik.http.middlewares.master-db-middleware.stripprefix.prefixes": "/master/db/",
+                "traefik.docker.network": "master-net",
               }
             })
         );
