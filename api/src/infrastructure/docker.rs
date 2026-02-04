@@ -460,14 +460,14 @@ impl DockerInfrastructure {
                     let mut applied_middle_wares = String::new();
                     for middleware in route.middlewares() {
                         for (key, value) in middleware.to_key_value_spec() {
+                            let middleware_name = &middleware.name;
                             if !applied_middle_wares.is_empty() {
-                                applied_middle_wares += ",";
+                                applied_middle_wares += ", ";
                             }
-                            applied_middle_wares += &format!("{}@docker", middleware.name);
+                            applied_middle_wares += &middleware_name;
                             labels.insert(
                                 format!(
-                                    "traefik.http.middlewares.{}.{}",
-                                    middleware.name,
+                                    "traefik.http.middlewares.{middleware_name}.{}",
                                     key.to_lowercase()
                                 ),
                                 value,
@@ -1779,7 +1779,7 @@ mod tests {
             expected: serde_json::json!({
               "Labels": {
                 "traefik.http.routers.master-db.rule": "PathPrefix(`/master/db/`)",
-                "traefik.http.routers.master-db.middlewares": "master-db-middleware@docker",
+                "traefik.http.routers.master-db.middlewares": "master-db-middleware",
                 "traefik.http.middlewares.master-db-middleware.stripprefix.prefixes": "/master/db/",
                 "traefik.docker.network": "master-net",
               }

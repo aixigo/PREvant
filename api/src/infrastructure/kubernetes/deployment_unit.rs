@@ -1442,6 +1442,7 @@ mod tests {
                     &AppName::master(),
                 ),
             )
+            .unwrap()
             .build();
 
         K8sDeploymentUnit::parse_from_log_streams(&deployment_unit, log_streams)

@@ -148,15 +148,21 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
     ingress: Ingress,
     base_route: TraefikIngressRoute,
     services: &[V1Service],
-) -> Result<(IngressRoute, Vec<Middleware>), (Ingress, &'static str)> {
+) -> Result<(IngressRoute, Vec<Middleware>), (Ingress, String)> {
     let Some(name) = ingress.metadata.name.as_ref() else {
-        return Err((ingress, "Ingress object does not provide a name"));
+        return Err((
+            ingress,
+            String::from("Ingress object does not provide a name"),
+        ));
     };
     let Some(spec) = ingress.spec.as_ref() else {
-        return Err((ingress, "Ingress does not provide spec"));
+        return Err((ingress, String::from("Ingress does not provide spec")));
     };
     let Some(rules) = spec.rules.as_ref() else {
-        return Err((ingress, "Ingress' spec does not provide rules"));
+        return Err((
+            ingress,
+            String::from("Ingress' spec does not provide rules"),
+        ));
     };
 
     let Some(path) = rules
@@ -166,12 +172,15 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
     else {
         return Err((
             ingress,
-            "Ingress' rule does not a provide http paths object",
+            String::from("Ingress' rule does not a provide http paths object"),
         ));
     };
 
     let Some(path_value) = path.path.as_ref() else {
-        return Err((ingress, "Ingress' path does not provide a HTTP path value"));
+        return Err((
+            ingress,
+            String::from("Ingress' path does not provide a HTTP path value"),
+        ));
     };
 
     let (rule, middleware) = match &spec.ingress_class_name {
@@ -246,7 +255,9 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
 
     let mut route = base_route;
     if let Some(rule) = rule {
-        route.merge_with(rule);
+        if let Err(e) = route.merge_with(rule) {
+            return Err((ingress, e.to_string()));
+        }
     }
 
     let mut middlewares_refs = route
@@ -270,7 +281,10 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
     }));
 
     let Some(service) = path.backend.service.as_ref() else {
-        return Err((ingress, "Expecting a service name for the path"));
+        return Err((
+            ingress,
+            String::from("Expecting a service name for the path"),
+        ));
     };
 
     let port = if let Some(port) = service
@@ -289,7 +303,7 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
         else {
             return Err((
                 ingress,
-                "There is no service matching to the ingress' service.",
+                String::from("There is no service matching to the ingress' service."),
             ));
         };
 
@@ -307,7 +321,7 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
         else {
             return Err((
                 ingress,
-                "There is no service matching to the ingress' service and port name.",
+                String::from("There is no service matching to the ingress' service and port name."),
             ));
         };
         port as u16
@@ -1894,7 +1908,6 @@ mod tests {
                                         }),
                                         ..Default::default()
                                     },
-                                    ..Default::default()
                                 }],
                             }),
                             ..Default::default()
@@ -1992,7 +2005,6 @@ mod tests {
                                         }),
                                         ..Default::default()
                                     },
-                                    ..Default::default()
                                 }],
                             }),
                             ..Default::default()

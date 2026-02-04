@@ -34,9 +34,7 @@ use crate::config::{Config, ConfigError};
 use crate::deployment::deployment_unit::DeploymentTemplatingError;
 use crate::deployment::deployment_unit::DeploymentUnitBuilder;
 use crate::deployment::hooks::HooksError;
-use crate::infrastructure::HttpForwarder;
-use crate::infrastructure::Infrastructure;
-use crate::infrastructure::TraefikIngressRoute;
+use crate::infrastructure::{HttpForwarder, Infrastructure, TraefikIngressRoute};
 use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::Owner;
 use crate::models::{App, AppName, ContainerType, LogChunk, Service, ServiceConfig, ServiceStatus};
@@ -363,6 +361,9 @@ impl Apps {
                 );
                 deployment_unit_builder
                     .apply_base_traefik_ingress_route(base_traefik_ingress_route.clone())
+                    .map_err(|e| AppsError::BaseRouteNotMergeable {
+                        error: e.to_string(),
+                    })?
                     .build()
             } else {
                 deployment_unit_builder.build()
@@ -472,6 +473,8 @@ pub enum AppsError {
     AppNotFound { app_name: AppName },
     #[error("Cannot create more than {limit} apps")]
     AppLimitExceeded { limit: usize },
+    #[error("Cannot merge the base route: {error}")]
+    BaseRouteNotMergeable { error: String },
     /// Will be used when the service cannot interact correctly with the infrastructure.
     #[error("Cannot interact with infrastructure: {error}")]
     InfrastructureError { error: String },
