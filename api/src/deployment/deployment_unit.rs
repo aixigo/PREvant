@@ -28,7 +28,9 @@ use url::Url;
 use super::hooks::HooksError;
 use crate::config::{Config, StorageStrategy};
 use crate::deployment::hooks::Hooks;
-use crate::infrastructure::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule};
+use crate::infrastructure::{
+    TraefikIngressRoute, TraefikIngressRouteMergeError, TraefikMiddleware, TraefikRouterRule,
+};
 use crate::models::user_defined_parameters::UserDefinedParameters;
 use crate::models::{AppName, ContainerType, Image, Owner, ServiceConfig};
 use crate::registry::ImageInfo;
@@ -567,12 +569,12 @@ impl DeploymentUnitBuilder<WithUserInformation> {
         storage_strategy: &StorageStrategy,
         image_infos: &HashMap<Image, ImageInfo>,
     ) -> Result<DeployableService, DeploymentTemplatingError> {
+        let service_name = raw_service_config.service_name();
+        let app_name = &self.stage.app_name;
+
         let ingress_route =
             match raw_service_config.routing() {
-                None => TraefikIngressRoute::with_defaults(
-                    &self.stage.app_name,
-                    raw_service_config.service_name(),
-                ),
+                None => TraefikIngressRoute::with_defaults(&self.stage.app_name, service_name),
                 Some(routing) => match &routing.rule {
                     Some(rule) => TraefikIngressRoute::with_rule_and_middlewares(
                         TraefikRouterRule::from_str(rule).map_err(|err| {
@@ -586,7 +588,7 @@ impl DeploymentUnitBuilder<WithUserInformation> {
                             .iter()
                             .enumerate()
                             .map(|(i, (name, spec))| TraefikMiddleware {
-                                name: format!("custom-middleware-{i}"),
+                                name: format!("{app_name}-{service_name}-custom-middleware-{i}"),
                                 spec: serde_value::to_value(serde_json::json!({
                                     name: spec.clone()
                                 }))
@@ -596,10 +598,10 @@ impl DeploymentUnitBuilder<WithUserInformation> {
                     ),
                     None => TraefikIngressRoute::with_defaults_and_additional_middleware(
                         &self.stage.app_name,
-                        raw_service_config.service_name(),
+                        service_name,
                         routing.additional_middlewares.iter().enumerate().map(
                             |(i, (name, spec))| TraefikMiddleware {
-                                name: format!("custom-middleware-{i}"),
+                                name: format!("{app_name}-{service_name}-custom-middleware-{i}"),
                                 spec: serde_value::to_value(serde_json::json!({
                                     name: spec.clone()
                                 }))
@@ -692,18 +694,18 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
     pub fn apply_base_traefik_ingress_route(
         mut self,
         route: TraefikIngressRoute,
-    ) -> DeploymentUnitBuilder<WithAppliedIngressRoute> {
+    ) -> Result<DeploymentUnitBuilder<WithAppliedIngressRoute>, TraefikIngressRouteMergeError> {
         for service in &mut self.stage.services {
             let service_route = std::mem::replace(&mut service.ingress_route, route.clone());
-            service.ingress_route.merge_with(service_route);
+            service.ingress_route.merge_with(service_route)?;
         }
 
         let mut route = route;
         route.merge_with(TraefikIngressRoute::with_app_only_defaults(
             &self.stage.app_name,
-        ));
+        ))?;
 
-        DeploymentUnitBuilder {
+        Ok(DeploymentUnitBuilder {
             stage: WithAppliedIngressRoute {
                 app_name: self.stage.app_name,
                 services: self.stage.services,
@@ -711,7 +713,7 @@ impl DeploymentUnitBuilder<WithAppliedHooks> {
                 owners: self.stage.owners,
                 user_defined_parameters: self.stage.user_defined_parameters,
             },
-        }
+        })
     }
 
     pub fn build(self) -> DeploymentUnit {
@@ -1339,7 +1341,7 @@ mod tests {
             .await?
             .apply_base_traefik_ingress_route(TraefikIngressRoute::with_rule(
                 TraefikRouterRule::path_prefix_rule(vec![String::from("my-path-prefix")]),
-            ))
+            ))?
             .build();
 
         let service = unit.services.into_iter().next().unwrap();
@@ -1407,7 +1409,7 @@ mod tests {
             configs[0].ingress_route().routes()[0].middlewares(),
             &vec![
                 crate::infrastructure::TraefikMiddleware {
-                    name: String::from("custom-middleware-0"),
+                    name: String::from("master-adminer-custom-middleware-0"),
                     spec: serde_value::to_value(serde_json::json!({
                         "headers": {
                             "customRequestHeaders": {
@@ -1418,7 +1420,7 @@ mod tests {
                     .unwrap()
                 },
                 crate::infrastructure::TraefikMiddleware {
-                    name: String::from("custom-middleware-1"),
+                    name: String::from("master-adminer-custom-middleware-1"),
                     spec: serde_value::to_value(serde_json::json!({
                         "stripPrefix": {
                             "prefixes": [
@@ -1482,7 +1484,7 @@ mod tests {
                     .unwrap()
                 },
                 crate::infrastructure::TraefikMiddleware {
-                    name: String::from("custom-middleware-0"),
+                    name: String::from("master-adminer-custom-middleware-0"),
                     spec: serde_value::to_value(serde_json::json!({
                         "headers": {
                             "customRequestHeaders": {

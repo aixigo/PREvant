@@ -579,6 +579,7 @@ impl From<AppsError> for HttpApiError {
             },
             AppsError::AppNotFound { .. } => StatusCode::NOT_FOUND,
             AppsError::InfrastructureError { .. }
+            | AppsError::BaseRouteNotMergeable { .. }
             | AppsError::InvalidServerConfiguration { .. }
             | AppsError::TemplatingIssue { .. }
             | AppsError::UnapplicableHook { .. } => {

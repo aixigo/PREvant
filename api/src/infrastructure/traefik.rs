@@ -13,6 +13,17 @@ pub struct TraefikIngressRoute {
     tls: Option<TraefikTLS>,
 }
 
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum TraefikIngressRouteMergeError {
+    #[error("The ingress route merging is limited to one route each")]
+    TooManyRoutes,
+    #[error("Cannot merge {rule_1} with {rule_2} because there is currently no known way of implementing this merge logic.")]
+    PathRegexpNotMergable {
+        rule_1: TraefikRouterRule,
+        rule_2: TraefikRouterRule,
+    },
+}
+
 impl TraefikIngressRoute {
     pub fn entry_points(&self) -> &Vec<String> {
         &self.entry_points
@@ -129,11 +140,13 @@ impl TraefikIngressRoute {
         }
     }
 
-    pub fn merge_with(&mut self, other: Self) {
+    pub fn merge_with(&mut self, other: Self) -> Result<(), TraefikIngressRouteMergeError> {
         self.entry_points.extend(other.entry_points);
 
-        // FIXME: at the moment there is no handling of multiple routes which needs to be addessed
-        // in the future when it is required.
+        if self.routes.len() > 1 || other.routes.len() > 1 {
+            return Err(TraefikIngressRouteMergeError::TooManyRoutes);
+        }
+
         match (
             self.routes.iter_mut().next(),
             other.routes.into_iter().next(),
@@ -144,7 +157,7 @@ impl TraefikIngressRoute {
             }
             (Some(_), None) => {}
             (Some(route1), Some(route2)) => {
-                route1.rule.merge_with(route2.rule);
+                route1.rule.merge_with(route2.rule)?;
                 route1.middlewares.extend(route2.middlewares);
             }
         };
@@ -155,6 +168,8 @@ impl TraefikIngressRoute {
             (None, Some(tls)) => Some(tls),
             (Some(_), Some(tls)) => Some(tls),
         };
+
+        Ok(())
     }
 
     pub fn to_url(&self) -> Option<Url> {
@@ -312,8 +327,20 @@ impl TraefikRouterRule {
         })
     }
 
-    pub fn merge_with(&mut self, other: TraefikRouterRule) {
-        for other_match in other.matches {
+    pub fn merge_with(
+        &mut self,
+        other: TraefikRouterRule,
+    ) -> Result<(), TraefikIngressRouteMergeError> {
+        for m in &self.matches {
+            if matches!(m, Matcher::PathRegexp { .. }) {
+                return Err(TraefikIngressRouteMergeError::PathRegexpNotMergable {
+                    rule_1: self.clone(),
+                    rule_2: other,
+                });
+            }
+        }
+
+        for other_match in other.clone().matches {
             match other_match {
                 Matcher::Headers { key, value } => {
                     self.matches.push(Matcher::Headers { key, value });
@@ -363,8 +390,16 @@ impl TraefikRouterRule {
                             .push(Matcher::PathPrefix { paths: other_paths });
                     }
                 }
+                Matcher::PathRegexp { .. } => {
+                    return Err(TraefikIngressRouteMergeError::PathRegexpNotMergable {
+                        rule_1: self.clone(),
+                        rule_2: other,
+                    })
+                }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -446,7 +481,7 @@ fn value_to_string(value: &Value) -> String {
         Value::F32(v) => format!("{v}"),
         Value::F64(v) => format!("{v}"),
         Value::Char(v) => format!("{v}"),
-        Value::String(v) => format!("{v}"),
+        Value::String(v) => v.to_string(),
         Value::Option(value) if value.is_some() => {
             // SAFETY: match case is protected by is_some()
             value_to_string(unsafe { value.as_ref().unwrap_unchecked() })
@@ -454,7 +489,7 @@ fn value_to_string(value: &Value) -> String {
         Value::Newtype(value) => value_to_string(value),
         Value::Seq(values) => values
             .iter()
-            .map(|v| value_to_string(v))
+            .map(value_to_string)
             .reduce(|acc, s| format!("{acc},{s}"))
             .unwrap_or_default(),
         _ => String::new(),
@@ -464,12 +499,14 @@ fn value_to_string(value: &Value) -> String {
 #[derive(pest_derive::Parser)]
 #[grammar_inline = r#"
 ident = { (ASCII_ALPHANUMERIC | PUNCTUATION)+ }
+regexp = { (ASCII_ALPHANUMERIC | PUNCTUATION | "\\" | "/" | "^" | "$" | "[" | "]" | "(" | ")" | "+" | "*" | "|")+ }
 
-Root = _{ (Headers | Host | PathPrefix) ~ ( " "* ~ "&&" ~ " "* ~ (Headers | Host | PathPrefix))* }
+Root = _{ (Headers | Host | PathPrefix | PathRegexp) ~ ( " "* ~ "&&" ~ " "* ~ (Headers | Host | PathPrefix | PathRegexp))* }
 
 Headers = { "Headers" ~ "(`" ~ ident ~ "`, `" ~ ident ~ "`)"  }
 Host = { "Host" ~ "(`" ~ ident ~ ("`, `" ~ ident)* ~ "`)" }
 PathPrefix = { "PathPrefix" ~ "(`" ~ ident ~ ("`, `" ~ ident)* ~ "`)" }
+PathRegexp =  { "PathRegexp" ~ "(`" ~ regexp ~ "`)" }
 "#]
 struct RuleParser;
 
@@ -478,6 +515,7 @@ pub enum Matcher {
     Headers { key: String, value: String },
     Host { domains: Vec<String> },
     PathPrefix { paths: Vec<String> },
+    PathRegexp { regexp: String },
 }
 
 impl FromStr for TraefikRouterRule {
@@ -519,7 +557,18 @@ impl FromStr for TraefikRouterRule {
 
                     rule.matches.push(Matcher::PathPrefix { paths });
                 }
-                Rule::ident | Rule::Root => {}
+                Rule::PathRegexp => {
+                    let Some(regexp) = pair
+                        .into_inner()
+                        .map(|pair| pair.as_str().to_string())
+                        .next()
+                    else {
+                        unreachable!("regexp value should be always available once the grammar has been validated.")
+                    };
+
+                    rule.matches.push(Matcher::PathRegexp { regexp });
+                }
+                Rule::ident | Rule::Root | Rule::regexp => {}
             }
         }
 
@@ -562,6 +611,9 @@ impl Display for TraefikRouterRule {
                     }
 
                     write!(f, ")")?;
+                }
+                Matcher::PathRegexp { regexp } => {
+                    write!(f, "PathRegexp(`{regexp}`)")?;
                 }
             }
         }
@@ -765,11 +817,35 @@ mod test {
         let mut base_prefix_rule = "PathPrefix(`/base`)".parse::<TraefikRouterRule>().unwrap();
         let path_prefix_rule = "PathPrefix(`/test`)".parse::<TraefikRouterRule>().unwrap();
 
-        base_prefix_rule.merge_with(path_prefix_rule);
+        base_prefix_rule.merge_with(path_prefix_rule).unwrap();
 
         assert_eq!(
             Ok(base_prefix_rule),
             "PathPrefix(`/base/test/`)".parse::<TraefikRouterRule>(),
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(
+        "PathPrefix(`/base`)",
+        "PathRegexp(`^/products/(shoes\\|socks)/[0-9]+$`)"
+    )]
+    #[case(
+        "PathRegexp(`^/products/(shoes\\|socks)/[0-9]+$`)",
+        "PathPrefix(`/base`)"
+    )]
+    fn merge_path_prefix_rule_with_regexp_rule(#[case] base: &str, #[case] other: &str) {
+        let mut base_prefix_rule = base.parse::<TraefikRouterRule>().unwrap();
+        let path_prefix_rule = other.parse::<TraefikRouterRule>().unwrap();
+
+        let err = base_prefix_rule.merge_with(path_prefix_rule).unwrap_err();
+
+        assert_eq!(
+            err,
+            TraefikIngressRouteMergeError::PathRegexpNotMergable {
+                rule_1: base.parse().unwrap(),
+                rule_2: other.parse().unwrap()
+            }
         );
     }
 
@@ -778,7 +854,7 @@ mod test {
         let mut host_rule = "Host(`example.com`)".parse::<TraefikRouterRule>().unwrap();
         let path_prefix_rule = "PathPrefix(`/test`)".parse::<TraefikRouterRule>().unwrap();
 
-        host_rule.merge_with(path_prefix_rule);
+        host_rule.merge_with(path_prefix_rule).unwrap();
 
         assert_eq!(
             host_rule,
@@ -802,7 +878,7 @@ mod test {
             .parse::<TraefikRouterRule>()
             .unwrap();
 
-        host_rule1.merge_with(host_rule2);
+        host_rule1.merge_with(host_rule2).unwrap();
 
         assert_eq!(
             host_rule1,
@@ -819,7 +895,7 @@ mod test {
         let host_rule = "Host(`example.com`)".parse::<TraefikRouterRule>().unwrap();
         let mut path_prefix_rule = "PathPrefix(`/test`)".parse::<TraefikRouterRule>().unwrap();
 
-        path_prefix_rule.merge_with(host_rule);
+        path_prefix_rule.merge_with(host_rule).unwrap();
 
         assert_eq!(
             path_prefix_rule,
@@ -845,7 +921,7 @@ mod test {
             .parse::<TraefikRouterRule>()
             .unwrap();
 
-        headers_rule_1.merge_with(headers_rule_2);
+        headers_rule_1.merge_with(headers_rule_2).unwrap();
 
         assert_eq!(
             headers_rule_1,
@@ -862,7 +938,7 @@ mod test {
             .parse::<TraefikRouterRule>()
             .unwrap();
 
-        path_prefix_rule.merge_with(headers_rule);
+        path_prefix_rule.merge_with(headers_rule).unwrap();
 
         assert_eq!(
             path_prefix_rule,
@@ -901,7 +977,7 @@ mod test {
         };
         let route2 = TraefikIngressRoute::with_defaults(&AppName::master(), "whoami");
 
-        route1.merge_with(route2);
+        route1.merge_with(route2).unwrap();
 
         assert_eq!(
             route1,
@@ -963,7 +1039,7 @@ mod test {
         };
         let mut route2 = TraefikIngressRoute::with_defaults(&AppName::master(), "whoami");
 
-        route2.merge_with(route1);
+        route2.merge_with(route1).unwrap();
 
         assert_eq!(
             route2,
@@ -1007,7 +1083,7 @@ mod test {
         let mut route1 = TraefikIngressRoute::empty();
         let route2 = TraefikIngressRoute::empty();
 
-        route1.merge_with(route2);
+        route1.merge_with(route2).unwrap();
 
         assert_eq!(route1, TraefikIngressRoute::empty());
     }
@@ -1016,10 +1092,12 @@ mod test {
     fn merge_empty_with_none_empty_ingress_routes() {
         let mut route1 = TraefikIngressRoute::empty();
 
-        route1.merge_with(TraefikIngressRoute::with_defaults(
-            &AppName::master(),
-            "test",
-        ));
+        route1
+            .merge_with(TraefikIngressRoute::with_defaults(
+                &AppName::master(),
+                "test",
+            ))
+            .unwrap();
 
         assert_eq!(
             route1,
@@ -1038,7 +1116,7 @@ mod test {
             cert_resolver: String::from("second"),
         });
 
-        route1.merge_with(route2);
+        route1.merge_with(route2).unwrap();
 
         assert_eq!(
             route1,
@@ -1050,6 +1128,42 @@ mod test {
                 })
             }
         );
+    }
+
+    #[test]
+    fn cannot_merge_ingress_routes() {
+        let route1 = TraefikIngressRoute {
+            entry_points: vec![String::from("web")],
+            routes: vec![TraefikRoute {
+                rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
+                middlewares: vec![TraefikMiddleware {
+                    name: String::from("traefik-forward-auth"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "forwardAuth": {
+                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                        }
+                    })).unwrap()
+                }],
+            }, TraefikRoute {
+                rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
+                middlewares: vec![TraefikMiddleware {
+                    name: String::from("traefik-forward-auth"),
+                    spec: serde_value::to_value(serde_json::json!({
+                        "forwardAuth": {
+                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                        }
+                    })).unwrap()
+                }],
+            }],
+            tls: Some(TraefikTLS {
+                cert_resolver: String::from("letsencrypt"),
+            }),
+        };
+        let mut route2 = TraefikIngressRoute::with_defaults(&AppName::master(), "whoami");
+
+        let err = route2.merge_with(route1).unwrap_err();
+
+        assert_eq!(err, TraefikIngressRouteMergeError::TooManyRoutes)
     }
 
     mod from_url {
