@@ -14,7 +14,7 @@ services:
 
   traefik:
     image: traefik:v3
-    command: --api --api.insecure --providers.docker --log.level=INFO
+    command: --api --api.insecure --providers.docker --log.level=INFO --metrics.prometheus --metrics.prometheus.addRoutersLabels
     environment:
       - COMPOSE_PROJECT_NAME
     ports:
@@ -30,3 +30,16 @@ services:
       - 5432:5432
     environment:
       - POSTGRES_PASSWORD
+
+  prometheus:
+    image: prom/prometheus:v3.8.1
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - 9090:9090
+
+volumes:
+  prometheus_data:
+
+# time() - max by (entrypoint, code, router) (traefik_router_requests_total)

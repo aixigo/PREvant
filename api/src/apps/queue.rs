@@ -84,6 +84,7 @@ impl Fairing for AppProcessingQueue {
     }
 }
 
+#[derive(Clone)]
 pub struct AppTaskQueueProducer {
     db: Arc<AppTaskQueueDB>,
     notify: Arc<Notify>,
