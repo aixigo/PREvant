@@ -89,6 +89,7 @@ pub struct App {
     services: Vec<Service>,
     owners: HashSet<Owner>,
     user_defined_parameters: Option<UserDefinedParameters>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 impl App {
@@ -96,6 +97,7 @@ impl App {
         services: Vec<Service>,
         owners: HashSet<Owner>,
         user_defined_payload: Option<UserDefinedParameters>,
+        created_at: Option<DateTime<Utc>>,
     ) -> Self {
         if services.is_empty() {
             return Self::empty();
@@ -113,6 +115,7 @@ impl App {
             services,
             owners: Owner::normalize(owners),
             user_defined_parameters: user_defined_payload,
+            created_at,
         }
     }
 
@@ -121,6 +124,7 @@ impl App {
             services: Vec::new(),
             owners: HashSet::new(),
             user_defined_parameters: None,
+            created_at: None,
         }
     }
 
@@ -454,6 +458,7 @@ mod tests {
             ],
             HashSet::new(),
             None,
+            None,
         );
         let app2 = App::new(
             vec![
@@ -475,6 +480,7 @@ mod tests {
                 },
             ],
             HashSet::new(),
+            None,
             None,
         );
 
@@ -579,6 +585,7 @@ mod tests {
                     name: None,
                 },
             ]),
+            None,
             None,
         );
 

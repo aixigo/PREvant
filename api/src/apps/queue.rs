@@ -84,11 +84,21 @@ impl Fairing for AppProcessingQueue {
     }
 }
 
+#[derive(Clone)]
 pub struct AppTaskQueueProducer {
     db: Arc<AppTaskQueueDB>,
     notify: Arc<Notify>,
 }
 impl AppTaskQueueProducer {
+    /// Creates a producer that has no consuming worker. For testing purposes only.
+    #[cfg(test)]
+    pub fn no_op() -> Self {
+        Self {
+            db: Arc::new(AppTaskQueueDB::inmemory()),
+            notify: Arc::new(Notify::new()),
+        }
+    }
+
     pub async fn enqueue_create_or_update_task(
         &self,
         app_name: AppName,
@@ -567,6 +577,7 @@ mod tests {
                     config: sc!("nginx"),
                 }],
                 HashSet::new(),
+                None,
                 None,
             )),
         )

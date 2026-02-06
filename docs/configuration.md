@@ -12,7 +12,7 @@ variable, and from some CLI options.
 
 See [authentication.md](authentication.md) how to configure authentication (highly recommended).
 
-## Persistent Database
+## <a name="db"></a>Persistent Database
 
  It is recommended to use a database configuration because this provides a) a
  persistent work queue and b) the back-up and restore of applications will be
@@ -92,6 +92,77 @@ replicationCondition = "always-from-default-app" # | "replicate-only-when-reques
 #    value: …
 openApiExamples = "/path/to/examples.yaml"
 ```
+
+### Automated Back-up and Clean-up
+
+PREvant offers to clean up applications that aren't in use. Therefore, PREvant
+can utilize [Traefik
+metrics](https://doc.traefik.io/traefik/v3.5/observe/metrics/) together with
+Prometheus as a metrics store.
+
+Please note, that database as persistent store is required (see [database
+config](#db)).
+
+For example, in a Kubernetes spec add metrics flags to your Traefik instance.
+
+```yaml
+spec:
+  containers:
+  - name: traefik
+    args:
+    - --api
+    - --api.insecure
+    - --providers.docker
+    - --log.level=INFO
+    - --metrics.prometheus
+    - --metrics.prometheus.addRoutersLabels
+```
+
+And make sure that Prometheus has a configuration that scrapes the Traefik metrics:
+
+```yaml
+scrape_configs:
+  - job_name: 'traefik'
+    static_configs:
+      - targets: ['traefik:8080']
+```
+
+Then you can configure PREvant to back-up applications based on the usage
+metrics. Following example provides a configuration to move applications into
+back-up if an application hasn't been accessed within two hours.
+
+```toml
+[applications.backups.automated]
+# Configuration to the Prometheus metrics store
+metricsProvider = { prometheusUrl = "http://localhost:9090/" }
+# (optional): by default one this is set to two hours
+timeToUse = '2hours'
+
+# An optional list of regular expression that checks tell PREvant which
+# applications won't be moved to backups.
+#
+# (optional): By default this will be equal to the defaultApp.
+permanentApps = [ "master" ]
+
+# This configuration option tells PREvant when there are the busy hours with a
+# UTC based cron expression. When this option is set, PREvant will not perform
+# any automated backups.
+# (optional): not set by default
+busyHours = { start = "0 0 8 * * Mon-Fri", end = "0 0 16 * * Mon-Fri" }
+```
+
+Once the application is moved to backups, PREvant will also monitor the list of
+backups and keeps them clean, by default deleting backups after two weeks.
+
+```toml
+[applications.backups]
+# Time how long backups are kept in the database. If the time exceeds, the
+# backup will be deleted. If you want to keep backups forever, use 'unlimited'
+#
+# (optional): default is 2weeks
+timeToRestore = '2weeks'
+```
+
 
 ## Container Options
 

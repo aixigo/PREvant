@@ -71,6 +71,7 @@ use kube::{
 };
 use kube::{Resource, ResourceExt};
 use log::{debug, error, warn};
+use regex::Regex;
 use secstr::SecUtf8;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -215,8 +216,9 @@ impl KubernetesInfrastructure {
     async fn create_namespace_if_necessary(
         &self,
         deployment_unit: &DeploymentUnit,
-    ) -> Result<(), KubernetesInfrastructureError> {
+    ) -> Result<V1Namespace, KubernetesInfrastructureError> {
         let app_name = deployment_unit.app_name();
+        let namespace = app_name.to_rfc1123_namespace_id();
 
         let api = Api::all(self.client().await?);
         match api
@@ -232,14 +234,8 @@ impl KubernetesInfrastructure {
             .await
         {
             Ok(result) => {
-                debug!(
-                    "Successfully created namespace {}",
-                    result
-                        .metadata
-                        .name
-                        .unwrap_or_else(|| String::from("<unknown>"))
-                );
-                Ok(())
+                debug!("Successfully created namespace {namespace} for {app_name}",);
+                Ok(result)
             }
             Err(KubeError::Api(ErrorResponse { code: 409, .. })) => {
                 debug!("Namespace {app_name} already exists.");
@@ -251,21 +247,22 @@ impl KubernetesInfrastructure {
                 );
                 if annotations.is_some() {
                     debug!("Patching namespace {app_name} with user defined parameters.");
-                    api.patch(
-                        &app_name.to_rfc1123_namespace_id(),
-                        &PatchParams::apply("PREvant"),
-                        &Patch::Merge(&V1Namespace {
-                            metadata: ObjectMeta {
-                                annotations,
+                    Ok(api
+                        .patch(
+                            &namespace,
+                            &PatchParams::apply("PREvant"),
+                            &Patch::Merge(&V1Namespace {
+                                metadata: ObjectMeta {
+                                    annotations,
+                                    ..Default::default()
+                                },
                                 ..Default::default()
-                            },
-                            ..Default::default()
-                        }),
-                    )
-                    .await?;
+                            }),
+                        )
+                        .await?)
+                } else {
+                    Ok(api.get(&namespace).await?)
                 }
-
-                Ok(())
             }
             Err(e) => {
                 error!("Cannot deploy namespace: {e}");
@@ -582,12 +579,63 @@ impl Infrastructure for KubernetesInfrastructure {
             .as_ref()
             .and_then(|namespace| self.parse_user_defined_parameters_from(namespace));
 
+        let created_at = namespace
+            .as_ref()
+            .and_then(|namespace| namespace.metadata.creation_timestamp.as_ref())
+            .map(|creation_timestamp| creation_timestamp.0);
+
         let owners = namespace
             .and_then(|mut namespace| namespace.annotations_mut().remove(OWNERS_LABEL))
             .and_then(|owners_payload| serde_json::from_str::<HashSet<Owner>>(&owners_payload).ok())
             .unwrap_or_else(HashSet::new);
 
-        Ok(Some(App::new(services, owners, udp)))
+        Ok(Some(App::new(services, owners, udp, created_at)))
+    }
+
+    async fn fetch_traefik_router_names(
+        &self,
+        app_names: Vec<AppName>,
+    ) -> Result<HashMap<AppName, Vec<Regex>>> {
+        let mut client = Some(self.client().await?);
+
+        let mut app_names_and_router_names = HashMap::new();
+        for app_name in app_names {
+            let api = Api::<IngressRoute>::namespaced(
+                client.take().unwrap(),
+                &app_name.to_rfc1123_namespace_id(),
+            );
+
+            let response = api
+                .list(&ListParams {
+                    // TODO: eventually PREvant should set labels to make sure to get only the ones
+                    // that are managed by PREvant.
+                    // label_selector: Some(format!("{APP_NAME_LABEL}={app_name}")),
+                    ..Default::default()
+                })
+                .await?;
+
+            let router_names = response
+                .into_iter()
+                .filter_map(|route| {
+                    Regex::new(&format!(
+                        "^{namespace}-{name}-[a-zA-Z0-9]+@kubernetescrd$",
+                        namespace = route.metadata.namespace?,
+                        name = route.metadata.name?
+                    ))
+                    .ok()
+                })
+                .collect::<Vec<_>>();
+
+            if router_names.is_empty() {
+                log::warn!("Cannot find router names for {app_name}");
+            } else {
+                app_names_and_router_names.insert(app_name, router_names);
+            }
+
+            client = Some(api.into_client());
+        }
+
+        Ok(app_names_and_router_names)
     }
 
     async fn fetch_app_as_backup_based_infrastructure_payload(
@@ -609,7 +657,7 @@ impl Infrastructure for KubernetesInfrastructure {
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<App> {
-        self.create_namespace_if_necessary(deployment_unit).await?;
+        let namespace = self.create_namespace_if_necessary(deployment_unit).await?;
 
         let client = self.client().await?;
 
@@ -675,10 +723,17 @@ impl Infrastructure for KubernetesInfrastructure {
             }
         }
 
+        let created_at = namespace
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|creation_timestamp| creation_timestamp.0);
+
         Ok(App::new(
             services,
             deployment_unit.owners().clone(),
             deployment_unit.user_defined_parameters().clone(),
+            created_at,
         ))
     }
 
@@ -1313,15 +1368,15 @@ mod tests {
             let config = k3s_instance.image().read_kube_config().unwrap();
 
             let config_file = tempdir.path().join("k3s-mapped.yaml");
-            let config = dbg!(config).replace(
+            let config = config.replace(
                 "server: https://127.0.0.1:6443",
                 &format!("server: https://127.0.0.1:{mapped_port}"),
             );
-            std::fs::write(&config_file, dbg!(config)).unwrap();
+            std::fs::write(&config_file, config).unwrap();
 
             let infra = KubernetesInfrastructure::new(PREvantConfig {
                 runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
-                    kube_config: Some(dbg!(config_file)),
+                    kube_config: Some(config_file),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1405,6 +1460,12 @@ mod tests {
             );
 
             let fetch_result = infra.fetch_apps().await.map_err(AppsError::from);
+            assert_eq!(
+                fetch_result
+                    .as_ref()
+                    .map(|apps| { apps.iter().filter_map(|(_, app)| app.created_at).count() }),
+                Ok(1)
+            );
             assert_eq!(
                 fetch_result
                     .and_then(move |mut apps| apps.remove(&app_name).ok_or_else(|| {

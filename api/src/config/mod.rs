@@ -24,6 +24,9 @@
  * =========================LICENSE_END==================================
  */
 
+pub use self::applications::{
+    ApplicationCleanUpPolicy, Applications, ReplicateApplicationCondition, RouterMetricsProvider,
+};
 pub use self::companion::BootstrappingContainer;
 pub use self::companion::DeploymentStrategy;
 pub use self::companion::Routing;
@@ -57,6 +60,7 @@ use std::str::FromStr;
 use toml::de::Error as TomlError;
 use url::Url;
 
+mod applications;
 mod companion;
 mod container;
 pub mod runtime;
@@ -241,40 +245,6 @@ pub struct Registry {
     username: Option<String>,
     password: Option<MaybeEnvInterpolated<SecUtf8>>,
     mirror: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Applications {
-    pub max: Option<usize>,
-    #[serde(default = "AppName::master")]
-    pub default_app: AppName,
-    #[serde(default)]
-    pub replication_condition: ReplicateApplicationCondition,
-    #[serde(default)]
-    pub open_api_examples: Option<PathBuf>,
-}
-
-impl Default for Applications {
-    fn default() -> Self {
-        Self {
-            max: None,
-            default_app: AppName::master(),
-            replication_condition: Default::default(),
-            open_api_examples: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-pub enum ReplicateApplicationCondition {
-    #[default]
-    #[serde(rename = "always-from-default-app")]
-    AlwaysFromDefaultApp,
-    #[serde(rename = "replicate-only-when-requested")]
-    ExplicitlyMentioned,
-    #[serde(rename = "never")]
-    Never,
 }
 
 impl Config {
@@ -1298,8 +1268,7 @@ mod tests {
         use sqlx::ConnectOptions;
 
         let (var_name, var_value) = std::env::vars()
-            .filter(|(_, v)| !v.contains("/") && !v.contains("\\n"))
-            .next()
+            .find(|(_, v)| !v.contains("/") && !v.contains("\\n"))
             .unwrap();
 
         let config = config_from_str!(&format!(
@@ -1322,20 +1291,5 @@ mod tests {
             config.database.map(|c| c.to_url_lossy()),
             Some(&options).map(|c| c.to_url_lossy())
         );
-    }
-
-    #[test]
-    fn parse_without_application() {
-        let config = config_from_str!("");
-
-        assert_eq!(
-            config.applications,
-            Applications {
-                max: None,
-                default_app: AppName::master(),
-                replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp,
-                open_api_examples: None,
-            }
-        )
     }
 }
