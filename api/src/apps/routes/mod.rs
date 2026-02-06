@@ -918,7 +918,6 @@ mod tests {
         use super::super::*;
         use crate::{
             apps::{AppProcessingQueue, Apps},
-            config_from_str,
             infrastructure::Dummy,
         };
         use assert_json_diff::assert_json_include;
@@ -1117,7 +1116,8 @@ mod tests {
                     }
                 ],
                 HashSet::new(),
-                None
+                None,
+                None,
             )))
             .unwrap()
         );
@@ -1170,7 +1170,8 @@ mod tests {
                     iss: IssuerUrl::new(String::from("https://openid.example.com")).unwrap(),
                     name: None,
                 }]),
-                None
+                None,
+                None,
             )))
             .unwrap()
         );

@@ -614,7 +614,7 @@ mod tests {
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
             AppName::master(),
-            App::new(vec![nginx_service.clone()], HashSet::new(), None),
+            App::new(vec![nginx_service.clone()], HashSet::new(), None, None),
         )]);
 
         let (cache, mut crawler) = super::new(Config::default());
@@ -652,7 +652,7 @@ mod tests {
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
             AppName::master(),
-            App::new(vec![kafka_rest_service.clone()], HashSet::new(), None),
+            App::new(vec![kafka_rest_service.clone()], HashSet::new(), None, None),
         )]);
 
         let (cache, mut crawler) = super::new(config_from_str!(
@@ -703,7 +703,7 @@ mod tests {
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
             AppName::master(),
-            App::new(vec![nginx_service.clone()], HashSet::new(), None),
+            App::new(vec![nginx_service.clone()], HashSet::new(), None, None),
         )]);
 
         let (cache, mut crawler) = super::new(Config::default());
@@ -744,7 +744,7 @@ mod tests {
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
             AppName::master(),
-            App::new(vec![nginx_service], HashSet::new(), None),
+            App::new(vec![nginx_service], HashSet::new(), None, None),
         )]);
 
         let (cache, mut crawler) = super::new(Config::default());
@@ -763,7 +763,7 @@ mod tests {
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
             AppName::master(),
-            App::new(vec![nginx_service.clone()], HashSet::new(), None),
+            App::new(vec![nginx_service.clone()], HashSet::new(), None, None),
         )]);
 
         crawler.crawl(forwarder, &apps, Utc::now()).await;

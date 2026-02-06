@@ -112,6 +112,31 @@ impl AppPostgresRepository {
         ))
     }
 
+    pub async fn fetch_backup_older_than(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<Vec<(AppName, DateTime<Utc>)>> {
+        let mut connection = self.pool.acquire().await?;
+
+        let result = sqlx::query_as::<_, (String, DateTime<Utc>)>(
+            r#"
+                SELECT app_name, created_at
+                FROM app_backup
+                WHERE created_at <= $1
+                "#,
+        )
+        .bind(older_than)
+        .fetch_all(&mut *connection)
+        .await?;
+
+        Ok(result
+            .into_iter()
+            .filter_map(|(app_name, created_at)| {
+                Some((AppName::from_str(&app_name).ok()?, created_at))
+            })
+            .collect())
+    }
+
     fn backup_updates(&self) -> (BackupPoller, Receiver<HashMap<AppName, App>>) {
         let (tx, rx) = tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new());
 
@@ -503,6 +528,7 @@ impl From<RawApp> for App {
             value
                 .user_defined_parameters
                 .map(|data| unsafe { UserDefinedParameters::without_validation(data) }),
+            None,
         )
     }
 }
@@ -585,6 +611,7 @@ mod tests {
                         }],
                         HashSet::new(),
                         None,
+                        None,
                     )),
                 )
             })
@@ -610,6 +637,7 @@ mod tests {
                     config: sc!("nginx"),
                 }],
                 HashSet::new(),
+                None,
                 None,
     )))]
     // simulate that app has been deleted via kubectl or another while the update was in the
@@ -650,6 +678,7 @@ mod tests {
                             config: sc!("nginx"),
                         }],
                         HashSet::new(),
+                        None,
                         None,
                     )),
                 )
@@ -718,6 +747,7 @@ mod tests {
                         }],
                         HashSet::new(),
                         None,
+                        None,
                     )),
                 )
             })
@@ -765,6 +795,7 @@ mod tests {
                     config: sc!("nginx").with_port(0),
                 }],
                 HashSet::new(),
+                None,
                 None,
             ))
         );
@@ -830,6 +861,7 @@ mod tests {
                                 config: sc!("nginx"),
                             }],
                             HashSet::new(),
+                            None,
                             None,
                         )),
                     )
@@ -900,6 +932,7 @@ mod tests {
                             }],
                             HashSet::new(),
                             None,
+                            None,
                         )),
                     )
                 })
@@ -926,6 +959,7 @@ mod tests {
                                 config: sc!("nginx"),
                             }],
                             HashSet::new(),
+                            None,
                             None,
                         )),
                     )
