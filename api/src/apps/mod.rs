@@ -23,6 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+mod clean_up;
 mod fairing;
 mod host_meta_cache;
 mod queue;
@@ -41,6 +42,7 @@ use crate::models::{App, AppName, ContainerType, LogChunk, Service, ServiceConfi
 use crate::registry::Registry;
 use crate::registry::RegistryError;
 use chrono::{DateTime, FixedOffset};
+pub use clean_up::AppCleanUp;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 pub use host_meta_cache::new as host_meta_crawling;
@@ -50,6 +52,7 @@ use log::error;
 use log::trace;
 pub use queue::AppProcessingQueue;
 pub use queue::AppTaskQueueProducer;
+use regex::Regex;
 pub use repository::AppRepository;
 pub use routes::{apps_routes, delete_app_sync, AppV1};
 use std::collections::{HashMap, HashSet};
@@ -121,6 +124,16 @@ impl Apps {
     /// corresponding list of `Service`s.
     pub async fn fetch_apps(&self) -> Result<HashMap<AppName, App>, AppsError> {
         Ok(self.infrastructure.fetch_apps().await?)
+    }
+
+    pub async fn fetch_traefik_router_names(
+        &self,
+        app_names: Vec<AppName>,
+    ) -> Result<HashMap<AppName, Vec<Regex>>, AppsError> {
+        Ok(self
+            .infrastructure
+            .fetch_traefik_router_names(app_names)
+            .await?)
     }
 
     pub async fn fetch_app_as_backup_based_infrastructure_payload(
@@ -1196,7 +1209,8 @@ Log msg 3 of service-a of app master
                     }
                 }],
                 HashSet::new(),
-                None
+                None,
+                None,
             )
         );
 

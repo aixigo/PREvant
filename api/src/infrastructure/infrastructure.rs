@@ -33,12 +33,20 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use dyn_clone::DynClone;
 use futures::stream::BoxStream;
+use regex::Regex;
 use std::collections::HashMap;
 
 #[async_trait]
 pub trait Infrastructure: Send + Sync + DynClone {
     /// Returns a `map` of `app-name` and the details of the deployed applications.
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>>;
+
+    async fn fetch_traefik_router_names(
+        &self,
+        _app_names: Vec<AppName>,
+    ) -> Result<HashMap<AppName, Vec<Regex>>> {
+        Ok(HashMap::new())
+    }
 
     async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>>;
 
