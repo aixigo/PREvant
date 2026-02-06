@@ -23,6 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
+mod clean_up;
 mod fairing;
 mod host_meta_cache;
 mod queue;
@@ -48,6 +49,7 @@ pub use host_meta_cache::HostMetaCache;
 use log::debug;
 use log::error;
 use log::trace;
+pub use clean_up::AppCleanUp;
 pub use queue::AppProcessingQueue;
 pub use queue::AppTaskQueueProducer;
 pub use repository::AppRepository;

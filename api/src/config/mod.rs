@@ -251,6 +251,8 @@ pub struct Applications {
     pub default_app: AppName,
     #[serde(default)]
     pub replication_condition: ReplicateApplicationCondition,
+    #[serde(default)]
+    pub clean_up_policy: Option<ApplicationCleanUpPolicy>,
 }
 
 impl Default for Applications {
@@ -259,6 +261,7 @@ impl Default for Applications {
             max: None,
             default_app: AppName::master(),
             replication_condition: Default::default(),
+            clean_up_policy: None,
         }
     }
 }
@@ -272,6 +275,18 @@ pub enum ReplicateApplicationCondition {
     ExplicitlyMentioned,
     #[serde(rename = "never")]
     Never,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationCleanUpPolicy {
+    pub metrics_provider: RouterMetricsProvider,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(untagged)]
+pub enum RouterMetricsProvider {
+    Prometheus { url: Url },
 }
 
 impl Config {
@@ -609,11 +624,15 @@ pub enum TraefikVersion {
 
 impl Display for TraefikVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "v{}", match self {
-            TraefikVersion::V1 => 1,
-            TraefikVersion::V2 => 2,
-            TraefikVersion::V3 => 3,
-        })
+        write!(
+            f,
+            "v{}",
+            match self {
+                TraefikVersion::V1 => 1,
+                TraefikVersion::V2 => 2,
+                TraefikVersion::V3 => 3,
+            }
+        )
     }
 }
 
@@ -1298,8 +1317,7 @@ mod tests {
         use sqlx::ConnectOptions;
 
         let (var_name, var_value) = std::env::vars()
-            .filter(|(_, v)| !v.contains("/") && !v.contains("\\n"))
-            .next()
+            .find(|(_, v)| !v.contains("/") && !v.contains("\\n"))
             .unwrap();
 
         let config = config_from_str!(&format!(
@@ -1333,8 +1351,33 @@ mod tests {
             Applications {
                 max: None,
                 default_app: AppName::master(),
-                replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp
+                replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp,
+                clean_up_policy: None,
             }
         )
+    }
+
+    #[test]
+    fn parse_prometheus_based_clean_up_policy() {
+        let config = config_from_str!(
+            r#"
+            [applications.cleanUpPolicy]
+            metricsProvider = { url = "http://localhost:9090/" }
+            "#
+        );
+
+        assert_eq!(
+            config.applications,
+            Applications {
+                max: None,
+                default_app: AppName::master(),
+                replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp,
+                clean_up_policy: Some(ApplicationCleanUpPolicy {
+                    metrics_provider: RouterMetricsProvider::Prometheus {
+                        url: Url::parse("http://localhost:9090/").unwrap()
+                    }
+                }),
+            }
+        );
     }
 }

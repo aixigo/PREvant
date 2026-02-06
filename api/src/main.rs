@@ -29,7 +29,7 @@ extern crate lazy_static;
 #[macro_use]
 extern crate serde_derive;
 
-use crate::apps::{AppRepository, Apps};
+use crate::apps::{AppCleanUp, AppRepository, Apps};
 use crate::config::{ApiAccessMode, Config, Runtime};
 use crate::db::DatabasePool;
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
@@ -151,7 +151,7 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
     // bundle remaining configs into one json object
     let config_json = serde_json::json!({
         "defaultAppName": config.applications.default_app,
-        "isAuthRequired": matches!(config.api_access.mode, ApiAccessMode::RequireAuth { .. }),
+        "isAuthRequired": matches!(config.api_access.mode, ApiAccessMode::RequireAuth),
     });
     data.insert("config", config_json.to_string());
 
@@ -234,6 +234,7 @@ async fn main() -> Result<(), StartUpError> {
         .attach(AppProcessingQueue::fairing())
         .attach(TicketsCaching::fairing())
         .attach(Apps::fairing(config, infrastructure))
+        .attach(AppCleanUp::fairing())
         .launch()
         .await?;
 
