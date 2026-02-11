@@ -252,7 +252,7 @@ pub struct Applications {
     pub default_app: AppName,
     #[serde(default)]
     pub replication_condition: ReplicateApplicationCondition,
-    #[serde(default)]
+    #[serde(default, rename = "backups")]
     pub back_up_policy: Option<ApplicationBackUpPolicy>,
 }
 
@@ -281,25 +281,61 @@ pub enum ReplicateApplicationCondition {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationBackUpPolicy {
-    #[serde(default = "two_weeks_to_retore")]
-    time_to_restore: Option<Duration>,
-    clean_up_policy: Option<ApplicationCleanUpPolicy>,
+    #[serde(
+        default = "two_weeks_to_retore",
+        deserialize_with = "unlimited_duration"
+    )]
+    pub time_to_restore: Option<Duration>,
+    #[serde(rename = "automated")]
+    pub clean_up_policy: Option<ApplicationCleanUpPolicy>,
 }
 
-fn two_weeks_to_retore() -> Option<Duration> {
-    None
+fn unlimited_duration<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = String::deserialize(deserializer)?;
+    if v == "unlimited" {
+        Ok(None)
+    } else {
+        Ok(Some(
+            humantime::parse_duration(&v).map_err(serde::de::Error::custom)?,
+        ))
+    }
+}
+
+const fn two_weeks_to_retore() -> Option<Duration> {
+    Some(Duration::from_hours(24 * 14))
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationCleanUpPolicy {
+    #[serde(
+        default = "two_hours_to_use",
+        deserialize_with = "deserialize_from_humantime"
+    )]
+    pub time_to_use: Duration,
     pub metrics_provider: RouterMetricsProvider,
+}
+
+fn deserialize_from_humantime<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = String::deserialize(deserializer)?;
+    humantime::parse_duration(&v).map_err(serde::de::Error::custom)
+}
+
+const fn two_hours_to_use() -> Duration {
+    Duration::from_hours(2)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(untagged)]
 pub enum RouterMetricsProvider {
-    Prometheus { url: Url },
+    #[serde(rename_all = "camelCase")]
+    Prometheus { prometheus_url: Url },
 }
 
 impl Config {
@@ -1371,11 +1407,41 @@ mod tests {
     }
 
     #[test]
-    fn parse_prometheus_based_clean_up_policy() {
+    fn parse_one_week_time_to_restore() {
         let config = config_from_str!(
             r#"
-            [applications.backUp.]
-            metricsProvider = { url = "http://localhost:9090/" }
+            [applications.backups]
+            timeToRestore = '1week'
+            "#
+        );
+
+        assert_eq!(
+            config.applications.back_up_policy.unwrap().time_to_restore,
+            Some(Duration::from_hours(24 * 7))
+        );
+    }
+
+    #[test]
+    fn parse_unlimited_time_to_restore() {
+        let config = config_from_str!(
+            r#"
+            [applications.backups]
+            timeToRestore = 'unlimited'
+            "#
+        );
+
+        assert_eq!(
+            config.applications.back_up_policy.unwrap().time_to_restore,
+            None
+        );
+    }
+
+    #[test]
+    fn parse_prometheus_based_backup() {
+        let config = config_from_str!(
+            r#"
+            [applications.backups.automated]
+            metricsProvider = { prometheusUrl  = "http://localhost:9090/" }
             "#
         );
 
@@ -1387,13 +1453,36 @@ mod tests {
                 replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp,
                 back_up_policy: Some(ApplicationBackUpPolicy {
                     clean_up_policy: Some(ApplicationCleanUpPolicy {
+                        time_to_use: Duration::from_hours(2),
                         metrics_provider: RouterMetricsProvider::Prometheus {
-                            url: Url::parse("http://localhost:9090/").unwrap()
+                            prometheus_url: Url::parse("http://localhost:9090/").unwrap()
                         }
                     }),
-                    time_to_restore: two_weeks_to_retore()
+                    time_to_restore: Some(Duration::from_hours(24 * 14)),
                 }),
             }
+        );
+    }
+
+    #[test]
+    fn parse_prometheus_based_backup_with_custom_time_to_use() {
+        let config = config_from_str!(
+            r#"
+            [applications.backups.automated]
+            timeToUse = '20min'
+            metricsProvider = { prometheusUrl = "http://localhost:9090/" }
+            "#
+        );
+
+        assert_eq!(
+            config
+                .applications
+                .back_up_policy
+                .unwrap()
+                .clean_up_policy
+                .unwrap()
+                .time_to_use,
+            Duration::from_mins(20)
         );
     }
 }

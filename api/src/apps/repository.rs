@@ -112,6 +112,31 @@ impl AppPostgresRepository {
         ))
     }
 
+    pub async fn fetch_backup_older_than(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<Vec<(AppName, DateTime<Utc>)>> {
+        let mut connection = self.pool.acquire().await?;
+
+        let result = sqlx::query_as::<_, (String, DateTime<Utc>)>(
+            r#"
+                SELECT app_name, created_at
+                FROM app_backup
+                WHERE created_at <= $1
+                "#,
+        )
+        .bind(older_than)
+        .fetch_all(&mut *connection)
+        .await?;
+
+        Ok(result
+            .into_iter()
+            .filter_map(|(app_name, created_at)| {
+                Some((AppName::from_str(&app_name).ok()?, created_at))
+            })
+            .collect())
+    }
+
     fn backup_updates(&self) -> (BackupPoller, Receiver<HashMap<AppName, App>>) {
         let (tx, rx) = tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new());
 

@@ -1,5 +1,5 @@
 use crate::{
-    apps::{AppTaskQueueProducer, Apps},
+    apps::{repository::AppPostgresRepository, AppTaskQueueProducer, Apps},
     config::{ApplicationCleanUpPolicy, Config},
     models::AppName,
 };
@@ -12,18 +12,14 @@ use rocket::{
 };
 use std::{
     collections::{BTreeMap, HashSet},
-    sync::Mutex,
+    time::Duration,
 };
 
-pub struct AppCleanUp {
-    clean_up_detector: Mutex<Option<CleanUpDetector>>,
-}
+pub struct AppCleanUp {}
 
 impl AppCleanUp {
     pub fn fairing() -> Self {
-        Self {
-            clean_up_detector: Mutex::new(None),
-        }
+        Self {}
     }
 }
 
@@ -38,52 +34,89 @@ impl Fairing for AppCleanUp {
 
     async fn on_ignite(&self, rocket: Rocket<Build>) -> rocket::fairing::Result {
         let Some(config) = rocket.state::<Config>() else {
+            log::error!("there must be a config");
             return Err(rocket);
         };
 
-        if let Some(clean_up_policy) = &config.applications.back_up_policy {
-            let Some(apps) = rocket.state::<Apps>() else {
-                log::error!("Apps must be available");
-                return Err(rocket);
-            };
-
-            let Some(queue) = rocket.state::<AppTaskQueueProducer>() else {
-                log::error!("Queue must be available");
-                return Err(rocket);
-            };
-
-            let mut clean_up_detector = self.clean_up_detector.lock().unwrap();
-            *clean_up_detector = Some(CleanUpDetector {
-                clean_up_policy: clean_up_policy.clone(),
-                apps: apps.clone(),
-                queue: queue.clone(),
-            });
+        if config.applications.back_up_policy.is_some() && config.database.is_none() {
+            log::error!("To use the automated backup feature a database connection is required");
+            return Err(rocket);
         }
 
         Ok(rocket)
     }
 
-    async fn on_liftoff(&self, _rocket: &Rocket<Orbit>) {
-        let mut clean_up_detector = self.clean_up_detector.lock().unwrap();
-        if let Some(clean_up_detector) = clean_up_detector.take() {
-            tokio::task::spawn(async move {
-                clean_up_detector
-                    .fetch_metrics_and_schedule_clean_up()
+    async fn on_liftoff(&self, rocket: &Rocket<Orbit>) {
+        let Some(config) = rocket.state::<Config>() else {
+            return;
+        };
+
+        let Some(apps) = rocket.state::<Apps>() else {
+            log::error!("Apps must be available");
+            return;
+        };
+
+        let Some(queue) = rocket.state::<AppTaskQueueProducer>() else {
+            log::error!("Queue must be available");
+            return;
+        };
+
+        let Some(repository) = rocket.state::<AppPostgresRepository>() else {
+            log::error!("Postgres database must be available");
+            return;
+        };
+
+        if let Some(time_to_restore) = config
+            .applications
+            .back_up_policy
+            .as_ref()
+            .and_then(|back_up_policy| back_up_policy.time_to_restore)
+        {
+            let backup_clean_up = AutomatedStaleBackUpDetector {
+                queue: queue.clone(),
+                repository: repository.clone(),
+                time_to_restore,
+            };
+            tokio::spawn(async move {
+                backup_clean_up
+                    .fetch_stale_backups_and_schedule_deletion()
                     .await
             });
         }
+
+        let Some(clean_up_policy) = config
+            .applications
+            .back_up_policy
+            .as_ref()
+            .and_then(|back_up_policy| back_up_policy.clean_up_policy.as_ref())
+        else {
+            return;
+        };
+
+        let clean_up_detector = AutomatedBackUpDetector {
+            clean_up_policy: clean_up_policy.clone(),
+            apps: apps.clone(),
+            queue: queue.clone(),
+        };
+        tokio::spawn(async move {
+            clean_up_detector
+                .fetch_metrics_and_schedule_clean_up()
+                .await
+        });
     }
 }
 
-struct CleanUpDetector {
+struct AutomatedBackUpDetector {
     clean_up_policy: ApplicationCleanUpPolicy,
     apps: Apps,
     queue: AppTaskQueueProducer,
 }
 
-impl CleanUpDetector {
+impl AutomatedBackUpDetector {
     async fn fetch_metrics_and_schedule_clean_up(&self) {
         loop {
+            // TODO: check working hours
+
             log::debug!("Checking for stale applications");
 
             match try_join!(
@@ -96,6 +129,7 @@ impl CleanUpDetector {
                 async { self.fetch_metrics().await }
             ) {
                 Ok((app_names, metrics)) => {
+                    // TODO: filter the application name that should be kept
                     let stale_applications = metrics.retain_stale_app_names(app_names);
 
                     for app_name in stale_applications {
@@ -137,12 +171,16 @@ impl CleanUpDetector {
 
     async fn fetch_metrics(&self) -> Result<PrometheusQueryResponse> {
         match &self.clean_up_policy.metrics_provider {
-            crate::config::RouterMetricsProvider::Prometheus { url } => {
+            crate::config::RouterMetricsProvider::Prometheus {
+                prometheus_url: url,
+            } => {
                 let mut query_url = url.join("/api/v1/query")?;
                 query_url.set_query(Some(
                     &format!(
-                        // TODO: make time interval configurable
-                        "query=max by (router) (increase(traefik_router_requests_total[5m]))&time={now}",
+                        "query=max by (router) (increase(traefik_router_requests_total[{d}]))&time={now}",
+                        d = humantime::format_duration(self.clean_up_policy.time_to_use).to_string()
+                            // 2h 37m must be converted into 2h37m for the Prometheus API
+                            .replace(" ", ""),
                         now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     ),
                 ));
@@ -275,6 +313,36 @@ impl<'de> serde::Deserialize<'de> for PrometheusQueryResponse {
             .ok_or_else(|| {
                 serde::de::Error::custom(format!("Found no data to deserialize in {value}"))
             })
+    }
+}
+
+struct AutomatedStaleBackUpDetector {
+    queue: AppTaskQueueProducer,
+    repository: AppPostgresRepository,
+    time_to_restore: Duration,
+}
+
+impl AutomatedStaleBackUpDetector {
+    async fn fetch_stale_backups_and_schedule_deletion(&self) {
+        loop {
+            let older_than = Utc::now() - self.time_to_restore;
+            log::debug!("Searching for stale backups older than {older_than}.");
+
+            match self.repository.fetch_backup_older_than(older_than).await {
+                Ok(apps) => {
+                    for (app_name, created_at) in apps {
+                        if let Err(err) = self.queue.enqueue_delete_task(app_name.clone()).await {
+                            log::error!("Cannot enqueue {app_name} (backup created at {created_at}) for deletion to clean up: {err}")
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::error!("Cannot fetch stale backups for clean up: {err}");
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_mins(10)).await;
+        }
     }
 }
 
