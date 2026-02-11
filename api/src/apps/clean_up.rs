@@ -41,7 +41,7 @@ impl Fairing for AppCleanUp {
             return Err(rocket);
         };
 
-        if let Some(clean_up_policy) = &config.applications.clean_up_policy {
+        if let Some(clean_up_policy) = &config.applications.back_up_policy {
             let Some(apps) = rocket.state::<Apps>() else {
                 log::error!("Apps must be available");
                 return Err(rocket);

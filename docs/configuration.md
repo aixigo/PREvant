@@ -77,6 +77,15 @@ defaultApp = "master"
 # Configures PREvant to always replicate, to replicate only when specified in
 # the deployment request or to never replicate.
 replicationCondition = "always-from-default-app" # | "replicate-only-when-requested" | "never"
+
+[applications.backUp]
+timeToRestore = '2weeks'
+
+[applications.backUp.automatic]
+timeToUse = '2hours'
+workingHours = [{ start = "", end = "" }]
+metricsProvider = { url = "http://localhost:9090/" }
+permanentApplications = [ "latest",  "preview-*" ]
 ```
 
 ## Container Options

@@ -54,6 +54,7 @@ use std::fmt::Display;
 use std::io::Error as IOError;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 use toml::de::Error as TomlError;
 use url::Url;
 
@@ -252,7 +253,7 @@ pub struct Applications {
     #[serde(default)]
     pub replication_condition: ReplicateApplicationCondition,
     #[serde(default)]
-    pub clean_up_policy: Option<ApplicationCleanUpPolicy>,
+    pub back_up_policy: Option<ApplicationBackUpPolicy>,
 }
 
 impl Default for Applications {
@@ -261,7 +262,7 @@ impl Default for Applications {
             max: None,
             default_app: AppName::master(),
             replication_condition: Default::default(),
-            clean_up_policy: None,
+            back_up_policy: None,
         }
     }
 }
@@ -275,6 +276,18 @@ pub enum ReplicateApplicationCondition {
     ExplicitlyMentioned,
     #[serde(rename = "never")]
     Never,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationBackUpPolicy {
+    #[serde(default = "two_weeks_to_retore")]
+    time_to_restore: Option<Duration>,
+    clean_up_policy: Option<ApplicationCleanUpPolicy>,
+}
+
+fn two_weeks_to_retore() -> Option<Duration> {
+    None
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -1352,7 +1365,7 @@ mod tests {
                 max: None,
                 default_app: AppName::master(),
                 replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp,
-                clean_up_policy: None,
+                back_up_policy: None,
             }
         )
     }
@@ -1361,7 +1374,7 @@ mod tests {
     fn parse_prometheus_based_clean_up_policy() {
         let config = config_from_str!(
             r#"
-            [applications.cleanUpPolicy]
+            [applications.backUp.]
             metricsProvider = { url = "http://localhost:9090/" }
             "#
         );
@@ -1372,10 +1385,13 @@ mod tests {
                 max: None,
                 default_app: AppName::master(),
                 replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp,
-                clean_up_policy: Some(ApplicationCleanUpPolicy {
-                    metrics_provider: RouterMetricsProvider::Prometheus {
-                        url: Url::parse("http://localhost:9090/").unwrap()
-                    }
+                back_up_policy: Some(ApplicationBackUpPolicy {
+                    clean_up_policy: Some(ApplicationCleanUpPolicy {
+                        metrics_provider: RouterMetricsProvider::Prometheus {
+                            url: Url::parse("http://localhost:9090/").unwrap()
+                        }
+                    }),
+                    time_to_restore: two_weeks_to_retore()
                 }),
             }
         );
