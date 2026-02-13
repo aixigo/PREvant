@@ -128,18 +128,13 @@ timeToUse = '2hours'
 # applications won't be moved to backups.
 #
 # (optional): By default this will be equal to the defaultApp.
-permanentApplications = [ "master" ]
+permanentApps = [ "master" ]
 
-# $$$$$$$$\  $$$$$$\  $$$$$$$\   $$$$$$\
-# \__$$  __|$$  __$$\ $$  __$$\ $$  __$$\
-#    $$ |   $$ /  $$ |$$ |  $$ |$$ /  $$ |
-#    $$ |   $$ |  $$ |$$ |  $$ |$$ |  $$ |
-#    $$ |   $$ |  $$ |$$ |  $$ |$$ |  $$ |
-#    $$ |   $$ |  $$ |$$ |  $$ |$$ |  $$ |
-#    $$ |    $$$$$$  |$$$$$$$  | $$$$$$  |
-#    \__|    \______/ \_______/  \______/
+# This configuration option tells PREvant when there are the busy hours with a
+# UTC based cron expression. When this option is set, PREvant will not perform
+# any automated backups.
 # (optional): not set by default
-workingHours = [{ start = "", end = "" }]
+busyHours = { start = "0 8 * * * Mon-Fri", end = "0 16 * * * Mon-Fri" }
 ```
 
 Once the application is moved to backups, PREvant will also monitor the list of

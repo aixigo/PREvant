@@ -41,5 +41,3 @@ services:
 
 volumes:
   prometheus_data:
-
-# time() - max by (entrypoint, code, router) (traefik_router_requests_total)

@@ -12,6 +12,7 @@ use rocket::{
 };
 use std::{
     collections::{BTreeMap, HashSet},
+    sync::atomic::AtomicBool,
     time::Duration,
 };
 
@@ -61,7 +62,7 @@ impl Fairing for AppCleanUp {
             return;
         };
 
-        let Some(repository) = rocket.state::<AppPostgresRepository>() else {
+        let Some(Some(repository)) = rocket.state::<Option<AppPostgresRepository>>() else {
             log::error!("Postgres database must be available");
             return;
         };
@@ -93,11 +94,10 @@ impl Fairing for AppCleanUp {
             return;
         };
 
-        let clean_up_detector = AutomatedBackUpDetector {
-            clean_up_policy: clean_up_policy.clone(),
-            apps: apps.clone(),
-            queue: queue.clone(),
-        };
+        log::info!("Automated backup is enabled.");
+
+        let clean_up_detector =
+            AutomatedBackUpDetector::new(clean_up_policy.clone(), apps.clone(), queue.clone());
         tokio::spawn(async move {
             clean_up_detector
                 .fetch_metrics_and_schedule_clean_up()
@@ -110,17 +110,33 @@ struct AutomatedBackUpDetector {
     clean_up_policy: ApplicationCleanUpPolicy,
     apps: Apps,
     queue: AppTaskQueueProducer,
+    ran: AtomicBool,
 }
 
 impl AutomatedBackUpDetector {
+    fn new(
+        clean_up_policy: ApplicationCleanUpPolicy,
+        apps: Apps,
+        queue: AppTaskQueueProducer,
+    ) -> Self {
+        Self {
+            clean_up_policy,
+            apps,
+            queue,
+            ran: AtomicBool::new(false),
+        }
+    }
+
     async fn fetch_metrics_and_schedule_clean_up(&self) {
         loop {
-            // TODO: check working hours
+            self.sleep().await;
 
             log::debug!("Checking for stale applications");
 
             match try_join!(
                 async {
+                    // TODO: use app_updates to get services too
+                    // also, make sure that self.apps.app_updates() returns a clone
                     self.apps
                         .fetch_app_names()
                         .await
@@ -147,6 +163,7 @@ impl AutomatedBackUpDetector {
                             continue;
                         };
 
+                        // TODO filter by creation time.
                         if let Err(err) = self
                             .queue
                             .enqueue_backup_task(app_name.clone(), infrastructure_payload)
@@ -165,7 +182,40 @@ impl AutomatedBackUpDetector {
                 }
             };
 
-            tokio::time::sleep(std::time::Duration::from_mins(10)).await;
+            self.ran.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    async fn sleep(&self) {
+        let duration_to_sleep = if let Some(busy_hours) = self.clean_up_policy.busy_hours.as_ref() {
+            let now = Utc::now();
+            if let Some((busy_hours_start, busy_hours_duration)) =
+                busy_hours.ending_of_busy_hours(now)
+            {
+                let busy_hours_end = busy_hours_start + busy_hours_duration;
+                let duration_to_sleep = (busy_hours_end - now)
+                    .to_std()
+                    .expect("This should be always greater zero");
+
+                if log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "Currently in the busy hours, so I'm waiting until {busy_hours_end} (for {duration}, started at {busy_hours_start}) before automatically backing up some applications.",
+                        duration = humantime::format_duration(duration_to_sleep)
+                    );
+                }
+
+                Some(duration_to_sleep)
+            } else {
+                None
+            }
+        } else if self.ran.load(std::sync::atomic::Ordering::Relaxed) {
+            Some(std::time::Duration::from_mins(10))
+        } else {
+            None
+        };
+
+        if let Some(duration_to_sleep) = duration_to_sleep {
+            tokio::time::sleep(duration_to_sleep).await;
         }
     }
 
