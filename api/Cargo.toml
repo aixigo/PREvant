@@ -76,5 +76,5 @@ rstest = "0.26"
 sha2 = "0.10"
 tempfile = "3.19"
 testcontainers = { version = "0.26", features = ["docker-compose"] }
-testcontainers-modules = { version = "0.14", features = ["postgres"] }
+testcontainers-modules = { version = "0.14", features = ["k3s", "postgres"] }
 

@@ -164,7 +164,7 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
 }
 
 fn create_infrastructure(config: &Config) -> Box<dyn Infrastructure> {
-    match config.runtime_config() {
+    match &config.runtime {
         Runtime::Docker => {
             log::info!("Using Docker backend");
             Box::new(Docker::new(config.clone()))

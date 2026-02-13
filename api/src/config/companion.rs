@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use url::Url;
 
 #[derive(Clone, Default, Deserialize)]
-pub(super) struct Companions {
+pub struct Companions {
     #[serde(default)]
     bootstrapping: Bootstrapping,
     #[serde(flatten)]
