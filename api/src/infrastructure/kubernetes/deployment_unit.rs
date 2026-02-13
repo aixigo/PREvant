@@ -1387,7 +1387,7 @@ where
 {
     if log::log_enabled!(log::Level::Trace) {
         trace!(
-            "Create or patch {} for  {app_name}",
+            "Create or patch {} for {app_name}",
             payload.meta().name.as_deref().unwrap_or_default()
         );
     }
@@ -1408,7 +1408,15 @@ where
                 }
             }
         }
-        Err(e) => Err(e.into()),
+        Err(e) => {
+            if log::log_enabled!(log::Level::Trace) {
+                trace!(
+                    "Cannot create {}: {e}",
+                    payload.meta().name.as_deref().unwrap_or_default()
+                );
+            }
+            Err(e.into())
+        }
     }
 }
 

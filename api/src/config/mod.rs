@@ -59,7 +59,7 @@ use url::Url;
 
 mod companion;
 mod container;
-mod runtime;
+pub mod runtime;
 mod secret;
 mod selectors;
 
@@ -204,7 +204,7 @@ pub enum JiraAuth {
 }
 
 #[derive(Clone, Deserialize)]
-struct Service {
+pub struct Service {
     secrets: Option<Vec<secret::Secret>>,
 }
 
@@ -213,21 +213,21 @@ pub struct Config {
     #[serde(default, rename = "baseUrl")]
     pub base_url: Option<Url>,
     #[serde(default)]
-    runtime: Runtime,
+    pub runtime: Runtime,
     #[serde(default)]
     pub applications: Applications,
-    containers: Option<ContainerConfig>,
-    jira: Option<JiraConfig>,
+    pub containers: Option<ContainerConfig>,
+    pub jira: Option<JiraConfig>,
     #[serde(default)]
     pub frontend: FrontendConfig,
     #[serde(default)]
-    companions: Companions,
-    services: Option<BTreeMap<String, Service>>,
-    hooks: Option<BTreeMap<String, PathBuf>>,
+    pub companions: Companions,
+    pub services: Option<BTreeMap<String, Service>>,
+    pub hooks: Option<BTreeMap<String, PathBuf>>,
     #[serde(default)]
-    registries: BTreeMap<String, Registry>,
+    pub registries: BTreeMap<String, Registry>,
     #[serde(default, rename = "staticHostMeta")]
-    static_host_meta: Vec<StaticHostMetaRaw>,
+    pub static_host_meta: Vec<StaticHostMetaRaw>,
     #[serde(default, rename = "apiAccess")]
     pub api_access: ApiAccess,
     #[serde(default, deserialize_with = "Config::deserialize_pg_options")]
@@ -237,7 +237,7 @@ pub struct Config {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct Registry {
+pub struct Registry {
     username: Option<String>,
     password: Option<MaybeEnvInterpolated<SecUtf8>>,
     mirror: Option<String>,
@@ -321,10 +321,6 @@ impl Config {
             .merge(Env::prefixed("PREVANT_").split("_"))
             .merge(cli)
             .extract::<Config>()
-    }
-
-    pub fn runtime_config(&self) -> &Runtime {
-        &self.runtime
     }
 
     pub fn container_config(&self) -> ContainerConfig {
@@ -420,10 +416,6 @@ impl Config {
             .map(|mirror| mirror.as_str())
     }
 
-    pub fn app_limit(&self) -> Option<usize> {
-        self.applications.max
-    }
-
     pub fn static_host_meta<'a, 'b: 'a>(
         &'b self,
         image: &Image,
@@ -478,7 +470,7 @@ impl Config {
 
 #[derive(Clone, Default, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct StaticHostMetaRaw {
+pub struct StaticHostMetaRaw {
     image_selector: ImageSelector,
     #[serde(default)]
     image_tag_as_version: bool,
@@ -613,11 +605,15 @@ pub enum TraefikVersion {
 
 impl Display for TraefikVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "v{}", match self {
-            TraefikVersion::V1 => 1,
-            TraefikVersion::V2 => 2,
-            TraefikVersion::V3 => 3,
-        })
+        write!(
+            f,
+            "v{}",
+            match self {
+                TraefikVersion::V1 => 1,
+                TraefikVersion::V2 => 2,
+                TraefikVersion::V3 => 3,
+            }
+        )
     }
 }
 
@@ -976,7 +972,7 @@ mod tests {
     fn should_parse_config_with_default_container_runtime() {
         let config = config_from_str!("");
 
-        assert_eq!(config.runtime_config(), &Runtime::Docker);
+        assert_eq!(&config.runtime, &Runtime::Docker);
     }
 
     #[test]
@@ -988,10 +984,7 @@ mod tests {
             .extract::<Config>()
             .unwrap();
 
-        assert_eq!(
-            config.runtime_config(),
-            &Runtime::Kubernetes(Default::default())
-        );
+        assert_eq!(&config.runtime, &Runtime::Kubernetes(Default::default()));
     }
 
     #[test]

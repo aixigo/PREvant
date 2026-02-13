@@ -403,10 +403,10 @@ pub fn namespace_annotations(
     user_defined_parameters: &Option<UserDefinedParameters>,
     owners: &HashSet<Owner>,
 ) -> Option<BTreeMap<String, String>> {
-    let annotations = match config.runtime_config() {
+    let annotations = match &config.runtime {
         crate::config::Runtime::Docker => None,
         crate::config::Runtime::Kubernetes(runtime) => {
-            let annotations = runtime.annotations().namespace();
+            let annotations = &runtime.annotations.namespace;
 
             if annotations.is_empty() {
                 None

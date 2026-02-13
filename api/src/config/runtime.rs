@@ -29,64 +29,36 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "type")]
+#[derive(Default)]
 pub enum Runtime {
+    #[default]
     Docker,
     Kubernetes(KubernetesRuntimeConfig),
-}
-
-impl Default for Runtime {
-    fn default() -> Self {
-        Self::Docker
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct KubernetesRuntimeConfig {
     #[serde(default)]
-    annotations: KubernetesAnnotationsConfig,
+    pub annotations: KubernetesAnnotationsConfig,
     #[serde(default)]
-    downward_api: KubernetesDownwardApiConfig,
+    pub downward_api: KubernetesDownwardApiConfig,
     #[serde(default)]
-    storage_config: KubernetesStorageConfig,
-}
-
-impl KubernetesRuntimeConfig {
-    pub fn downward_api(&self) -> &KubernetesDownwardApiConfig {
-        &self.downward_api
-    }
-
-    pub fn storage_config(&self) -> &KubernetesStorageConfig {
-        &self.storage_config
-    }
-
-    pub fn annotations(&self) -> &KubernetesAnnotationsConfig {
-        &self.annotations
-    }
+    pub storage_config: KubernetesStorageConfig,
+    #[serde(default)]
+    pub kube_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct KubernetesAnnotationsConfig {
     #[serde(default)]
-    namespace: BTreeMap<String, String>,
-}
-
-impl KubernetesAnnotationsConfig {
-    pub fn namespace(&self) -> &BTreeMap<String, String> {
-        &self.namespace
-    }
+    pub namespace: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct KubernetesDownwardApiConfig {
-    labels_path: PathBuf,
-}
-
-impl KubernetesDownwardApiConfig {
-    pub fn labels_path(&self) -> &PathBuf {
-        &self.labels_path
-    }
+    pub labels_path: PathBuf,
 }
 
 impl Default for KubernetesDownwardApiConfig {
@@ -101,19 +73,11 @@ impl Default for KubernetesDownwardApiConfig {
 #[serde(rename_all = "camelCase")]
 pub struct KubernetesStorageConfig {
     #[serde(default = "KubernetesStorageConfig::default_storage_size")]
-    storage_size: ByteSize,
-    storage_class: Option<String>,
+    pub storage_size: ByteSize,
+    pub storage_class: Option<String>,
 }
 
 impl KubernetesStorageConfig {
-    pub fn storage_size(&self) -> &ByteSize {
-        &self.storage_size
-    }
-
-    pub fn storage_class(&self) -> &Option<String> {
-        &self.storage_class
-    }
-
     fn default_storage_size() -> ByteSize {
         ByteSize::gb(2)
     }
@@ -187,8 +151,8 @@ mod tests {
         };
 
         assert_eq!(
-            config.downward_api.labels_path(),
-            &PathBuf::from("/run/podinfo/labels")
+            config.downward_api.labels_path,
+            PathBuf::from("/run/podinfo/labels")
         )
     }
 

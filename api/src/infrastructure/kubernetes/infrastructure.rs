@@ -62,6 +62,7 @@ use k8s_openapi::api::{
     core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
 };
 use kube::api::ObjectMeta;
+use kube::config::Kubeconfig;
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     client::Client,
@@ -71,6 +72,7 @@ use kube::{
 use kube::{Resource, ResourceExt};
 use log::{debug, error, warn};
 use secstr::SecUtf8;
+use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::{From, TryFrom};
 use std::str::FromStr;
@@ -82,6 +84,8 @@ pub struct KubernetesInfrastructure {
 
 #[derive(Debug, thiserror::Error)]
 pub enum KubernetesInfrastructureError {
+    #[error("Failed to create Kubernetes client: {err}")]
+    CannotInitializeClient { err: anyhow::Error },
     #[error("Unexpected Kubernetes interaction error: {err}")]
     UnexpectedError { err: anyhow::Error },
     #[error("Unknown service type label {unknown_label}")]
@@ -106,15 +110,51 @@ impl KubernetesInfrastructure {
     }
 
     async fn client(&self) -> Result<Client, KubernetesInfrastructureError> {
-        let configuration = Config::infer().await.map_err(|err| {
-            KubernetesInfrastructureError::UnexpectedError {
-                err: anyhow::Error::new(err)
-                    .context("Failed to read Kube configuration from cluster env"),
+        let configuration = match &self.config.runtime {
+            Runtime::Kubernetes(k8s_config) if k8s_config.kube_config.is_some() => {
+                let config_file = k8s_config.kube_config.as_ref().unwrap();
+                let config = tokio::fs::read_to_string(&config_file)
+                    .await
+                    .map_err(
+                        |err| KubernetesInfrastructureError::CannotInitializeClient {
+                            err: anyhow::Error::new(err).context(format!(
+                                "Failed to read Kube configuration from config file {config_file}",
+                                config_file = config_file.to_string_lossy(),
+                            )),
+                        },
+                    )?;
+                Config::from_custom_kubeconfig(
+                    Kubeconfig::deserialize(serde_norway::Deserializer::from_str(&config))
+                        .map_err(
+                            |err| KubernetesInfrastructureError::CannotInitializeClient {
+                                err: anyhow::Error::new(err).context(format!(
+                                    "Failed to deserialize Kube configuration from config file {config_file}",
+                                    config_file = config_file.to_string_lossy(),
+                                )),
+                            },
+                        )?,
+                    &Default::default(),
+                )
+                .await
+                .map_err(
+                    |err| KubernetesInfrastructureError::CannotInitializeClient {
+                        err: anyhow::Error::new(err).context(format!(
+                            "Failed to initialize Kube configuration from config file {config_file}",
+                            config_file = config_file.to_string_lossy(),
+                        )),
+                    },
+                )?
             }
-        })?;
+            _ => Config::infer().await.map_err(|err| {
+                KubernetesInfrastructureError::CannotInitializeClient {
+                    err: anyhow::Error::new(err)
+                        .context("Failed to read Kube configuration from cluster env"),
+                }
+            })?,
+        };
 
         Client::try_from(configuration).map_err(|err| {
-            KubernetesInfrastructureError::UnexpectedError {
+            KubernetesInfrastructureError::CannotInitializeClient {
                 err: anyhow::Error::new(err).context("Failed to create client"),
             }
         })
@@ -301,12 +341,12 @@ impl KubernetesInfrastructure {
     ) -> Result<Option<HashMap<&'a String, PersistentVolumeClaim>>, KubernetesInfrastructureError>
     {
         let client = self.client().await?;
-        let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {
+        let Runtime::Kubernetes(k8s_config) = &self.config.runtime else {
             return Ok(None);
         };
 
-        let storage_size = k8s_config.storage_config().storage_size();
-        let storage_class = match k8s_config.storage_config().storage_class() {
+        let storage_size = &k8s_config.storage_config.storage_size;
+        let storage_class = match &k8s_config.storage_config.storage_class {
             Some(sc) => sc.into(),
             None => self
                 .fetch_default_storage_class()
@@ -433,9 +473,27 @@ impl KubernetesInfrastructure {
 #[async_trait]
 impl Infrastructure for KubernetesInfrastructure {
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
-        let mut app_name_and_services = self
-            .fetch_app_names()
+        let client = self.client().await?;
+        let app_names = Api::<V1Namespace>::all(client)
+            .list(&ListParams {
+                label_selector: Some(APP_NAME_LABEL.to_string()),
+                ..Default::default()
+            })
             .await?
+            .iter()
+            .filter(|ns| {
+                ns.status
+                    .as_ref()
+                    .and_then(|status| status.phase.as_ref())
+                    .map(|phase| phase.as_str())
+                    != Some("Terminating")
+            })
+            .filter_map(|ns| {
+                AppName::from_str(ns.metadata.labels.as_ref()?.get(APP_NAME_LABEL)?).ok()
+            })
+            .collect::<HashSet<_>>();
+
+        let mut app_name_and_services = app_names
             .into_iter()
             .map(|app_name| async {
                 self.fetch_app(&app_name)
@@ -544,28 +602,6 @@ impl Infrastructure for KubernetesInfrastructure {
         }
 
         Ok(Some(unit.prepare_for_back_up().to_json_vec()))
-    }
-
-    async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
-        let client = self.client().await?;
-        Ok(Api::<V1Namespace>::all(client)
-            .list(&ListParams {
-                label_selector: Some(APP_NAME_LABEL.to_string()),
-                ..Default::default()
-            })
-            .await?
-            .iter()
-            .filter(|ns| {
-                ns.status
-                    .as_ref()
-                    .and_then(|status| status.phase.as_ref())
-                    .map(|phase| phase.as_str())
-                    != Some("Terminating")
-            })
-            .filter_map(|ns| {
-                AppName::from_str(ns.metadata.labels.as_ref()?.get(APP_NAME_LABEL)?).ok()
-            })
-            .collect::<HashSet<_>>())
     }
 
     async fn deploy_services(
@@ -778,11 +814,11 @@ impl Infrastructure for KubernetesInfrastructure {
     }
 
     async fn base_traefik_ingress_route(&self) -> Result<Option<TraefikIngressRoute>> {
-        let Runtime::Kubernetes(k8s_config) = self.config.runtime_config() else {
+        let Runtime::Kubernetes(k8s_config) = &self.config.runtime else {
             return Ok(None);
         };
 
-        let labels_path = k8s_config.downward_api().labels_path();
+        let labels_path = &k8s_config.downward_api.labels_path;
         let labels = match tokio::fs::read_to_string(labels_path).await {
             Ok(lables) => lables,
             Err(err) => {
@@ -1230,5 +1266,155 @@ mod tests {
                 deployment_name
             } if deployment_name == "master-nginx"
         ));
+    }
+
+    mod k3s {
+        use super::super::*;
+        use crate::{
+            apps::AppsError, config::runtime::KubernetesRuntimeConfig,
+            deployment::deployment_unit::DeploymentUnitBuilder, sc,
+        };
+        use tempfile::TempDir;
+        use testcontainers::{
+            core::{logs::consumer::logging_consumer::LoggingConsumer, WaitFor},
+            runners::AsyncRunner,
+            ContainerAsync, ImageExt,
+        };
+        use testcontainers_modules::k3s::{K3s, KUBE_SECURE_PORT};
+
+        async fn create_cluster_and_infra(
+        ) -> (ContainerAsync<K3s>, KubernetesInfrastructure, TempDir) {
+            let _ = env_logger::builder().is_test(true).try_init();
+
+            let tempdir = tempfile::tempdir().unwrap();
+            let config_mount = tempdir.path().to_path_buf();
+
+            let k3s_instance = K3s::default()
+                .with_conf_mount(&config_mount)
+                .with_privileged(true)
+                .with_ready_conditions(vec![WaitFor::message_on_stderr(
+                    r#""QuotaMonitor created object count evaluator" resource="ingressroutetcps.traefik.io""#,
+                )])
+                .with_startup_timeout(std::time::Duration::from_mins(2))
+                .with_log_consumer(
+                    LoggingConsumer::new()
+                        .with_stdout_level(log::Level::Trace)
+                        .with_stderr_level(log::Level::Trace),
+                )
+                .start()
+                .await
+                .unwrap();
+
+            let mapped_port = k3s_instance
+                .get_host_port_ipv4(KUBE_SECURE_PORT.as_u16())
+                .await
+                .unwrap();
+
+            let config = k3s_instance.image().read_kube_config().unwrap();
+
+            let config_file = tempdir.path().join("k3s-mapped.yaml");
+            let config = dbg!(config).replace(
+                "server: https://127.0.0.1:6443",
+                &format!("server: https://127.0.0.1:{mapped_port}"),
+            );
+            std::fs::write(&config_file, dbg!(config)).unwrap();
+
+            let infra = KubernetesInfrastructure::new(PREvantConfig {
+                runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
+                    kube_config: Some(dbg!(config_file)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+
+            (k3s_instance, infra, tempdir)
+        }
+
+        #[tokio::test]
+        async fn fetch_apps_without_backups() {
+            let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
+
+            let app_name = AppName::master();
+            let unit = DeploymentUnitBuilder::init(app_name.clone(), vec![sc!("http1", "nginx")])
+                .extend_with_config(&infra.config)
+                .extend_with_templating_only_service_configs(Vec::new())
+                .extend_with_image_infos(HashMap::new())
+                .without_owners()
+                .apply_templating(&None, None)
+                .unwrap()
+                .apply_hooks(&infra.config)
+                .await
+                .unwrap()
+                .build();
+
+            let deploy_result = infra
+                .deploy_services(&unit, &Default::default())
+                .await
+                .map_err(AppsError::from);
+            assert_eq!(
+                deploy_result.map(|app| app
+                    .into_services()
+                    .into_iter()
+                    .map(|s| s.config)
+                    .collect()),
+                Ok(vec![sc!("http1", "nginx")])
+            );
+
+            let backup_payload = infra
+                .fetch_app_as_backup_based_infrastructure_payload(&app_name)
+                .await
+                .unwrap()
+                .unwrap();
+            infra
+                .delete_infrastructure_objects_partially(&app_name, &backup_payload)
+                .await
+                .unwrap();
+
+            let fetch_result = infra.fetch_apps().await.map_err(AppsError::from);
+            assert_eq!(fetch_result, Ok(HashMap::new()));
+        }
+
+        #[tokio::test]
+        async fn fetch_apps() {
+            let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
+
+            let app_name = AppName::master();
+            let unit = DeploymentUnitBuilder::init(app_name.clone(), vec![sc!("http1", "nginx")])
+                .extend_with_config(&infra.config)
+                .extend_with_templating_only_service_configs(Vec::new())
+                .extend_with_image_infos(HashMap::new())
+                .without_owners()
+                .apply_templating(&None, None)
+                .unwrap()
+                .apply_hooks(&infra.config)
+                .await
+                .unwrap()
+                .build();
+
+            let deploy_result = infra
+                .deploy_services(&unit, &Default::default())
+                .await
+                .map_err(AppsError::from);
+            assert_eq!(
+                deploy_result.map(|app| app
+                    .into_services()
+                    .into_iter()
+                    .map(|s| s.config)
+                    .collect()),
+                Ok(vec![sc!("http1", "nginx")])
+            );
+
+            let fetch_result = infra.fetch_apps().await.map_err(AppsError::from);
+            assert_eq!(
+                fetch_result
+                    .and_then(move |mut apps| apps.remove(&app_name).ok_or_else(|| {
+                        AppsError::AppNotFound {
+                            app_name: app_name.clone(),
+                        }
+                    }))
+                    .map(|app| app.into_services().into_iter().map(|s| s.config).collect()),
+                Ok(vec![sc!("http1", "nginx")])
+            );
+        }
     }
 }
