@@ -33,12 +33,16 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use dyn_clone::DynClone;
 use futures::stream::BoxStream;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[async_trait]
 pub trait Infrastructure: Send + Sync + DynClone {
     /// Returns a `map` of `app-name` and the details of the deployed applications.
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>>;
+
+    async fn fetch_traefik_router_names(&self) -> Result<HashMap<AppName, Vec<String>>> {
+        Ok(HashMap::new())
+    }
 
     async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>>;
 
@@ -47,10 +51,6 @@ pub trait Infrastructure: Send + Sync + DynClone {
         app_name: &AppName,
     ) -> Result<Option<Vec<serde_json::Value>>> {
         anyhow::bail!("Cannot back up {app_name}: not yet implemented for the configured backend")
-    }
-
-    async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
-        Ok(self.fetch_apps().await?.into_keys().collect::<HashSet<_>>())
     }
 
     /// Deploys the services of the given set of `ServiceConfig`.

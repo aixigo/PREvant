@@ -433,9 +433,27 @@ impl KubernetesInfrastructure {
 #[async_trait]
 impl Infrastructure for KubernetesInfrastructure {
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
-        let mut app_name_and_services = self
-            .fetch_app_names()
+        let client = self.client().await?;
+        let app_names = Api::<V1Namespace>::all(client)
+            .list(&ListParams {
+                label_selector: Some(APP_NAME_LABEL.to_string()),
+                ..Default::default()
+            })
             .await?
+            .iter()
+            .filter(|ns| {
+                ns.status
+                    .as_ref()
+                    .and_then(|status| status.phase.as_ref())
+                    .map(|phase| phase.as_str())
+                    != Some("Terminating")
+            })
+            .filter_map(|ns| {
+                AppName::from_str(ns.metadata.labels.as_ref()?.get(APP_NAME_LABEL)?).ok()
+            })
+            .collect::<HashSet<_>>();
+
+        let mut app_name_and_services = app_names
             .into_iter()
             .map(|app_name| async {
                 self.fetch_app(&app_name)
@@ -532,6 +550,37 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(Some(App::new(services, owners, udp)))
     }
 
+    async fn fetch_traefik_router_names(&self) -> Result<HashMap<AppName, Vec<String>>> {
+        let mut client = Some(self.client().await?);
+
+        let mut app_names_and_router_names = HashMap::new();
+        for (app_name, _) in self.fetch_apps().await? {
+            let api = Api::<IngressRoute>::namespaced(
+                client.take().unwrap(),
+                &app_name.to_rfc1123_namespace_id(),
+            );
+
+            let response = api
+                .list(&ListParams {
+                    label_selector: Some(APP_NAME_LABEL.to_string()),
+                    ..Default::default()
+                })
+                .await?;
+
+            app_names_and_router_names.insert(
+                app_name,
+                response
+                    .into_iter()
+                    .filter_map(|route| route.metadata.name)
+                    .collect::<Vec<String>>(),
+            );
+
+            client = Some(api.into_client());
+        }
+
+        Ok(app_names_and_router_names)
+    }
+
     async fn fetch_app_as_backup_based_infrastructure_payload(
         &self,
         app_name: &AppName,
@@ -544,28 +593,6 @@ impl Infrastructure for KubernetesInfrastructure {
         }
 
         Ok(Some(unit.prepare_for_back_up().to_json_vec()))
-    }
-
-    async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
-        let client = self.client().await?;
-        Ok(Api::<V1Namespace>::all(client)
-            .list(&ListParams {
-                label_selector: Some(APP_NAME_LABEL.to_string()),
-                ..Default::default()
-            })
-            .await?
-            .iter()
-            .filter(|ns| {
-                ns.status
-                    .as_ref()
-                    .and_then(|status| status.phase.as_ref())
-                    .map(|phase| phase.as_str())
-                    != Some("Terminating")
-            })
-            .filter_map(|ns| {
-                AppName::from_str(ns.metadata.labels.as_ref()?.get(APP_NAME_LABEL)?).ok()
-            })
-            .collect::<HashSet<_>>())
     }
 
     async fn deploy_services(
