@@ -42,6 +42,7 @@ use crate::models::{App, AppName, ContainerType, LogChunk, Service, ServiceConfi
 use crate::registry::Registry;
 use crate::registry::RegistryError;
 use chrono::{DateTime, FixedOffset};
+pub use clean_up::AppCleanUp;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 pub use host_meta_cache::new as host_meta_crawling;
@@ -49,7 +50,6 @@ pub use host_meta_cache::HostMetaCache;
 use log::debug;
 use log::error;
 use log::trace;
-pub use clean_up::AppCleanUp;
 pub use queue::AppProcessingQueue;
 pub use queue::AppTaskQueueProducer;
 pub use repository::AppRepository;
@@ -123,6 +123,12 @@ impl Apps {
     /// corresponding list of `Service`s.
     pub async fn fetch_apps(&self) -> Result<HashMap<AppName, App>, AppsError> {
         Ok(self.infrastructure.fetch_apps().await?)
+    }
+
+    pub async fn fetch_traefik_router_names(
+        &self,
+    ) -> Result<HashMap<AppName, Vec<String>>, AppsError> {
+        Ok(self.infrastructure.fetch_traefik_router_names().await?)
     }
 
     pub async fn fetch_app_as_backup_based_infrastructure_payload(

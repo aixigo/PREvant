@@ -1,7 +1,6 @@
 use crate::{
     apps::{repository::AppPostgresRepository, AppTaskQueueProducer, Apps},
     config::{ApplicationCleanUpPolicy, Config},
-    models::AppName,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -10,11 +9,7 @@ use rocket::{
     fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
 };
-use std::{
-    collections::{BTreeMap, HashSet},
-    sync::atomic::AtomicBool,
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::atomic::AtomicBool, time::Duration};
 
 pub struct AppCleanUp {}
 
@@ -135,20 +130,27 @@ impl AutomatedBackUpDetector {
 
             match try_join!(
                 async {
-                    // TODO: use app_updates to get services too
-                    // also, make sure that self.apps.app_updates() returns a clone
                     self.apps
-                        .fetch_app_names()
+                        .fetch_traefik_router_names()
                         .await
                         .map_err(anyhow::Error::from)
                 },
-                async { self.fetch_metrics().await }
+                async { self.fetch_metrics().await },
             ) {
-                Ok((app_names, metrics)) => {
-                    // TODO: filter the application name that should be kept
-                    let stale_applications = metrics.retain_stale_app_names(app_names);
+                Ok((app_names_and_router_names, metrics)) => {
+                    // let apps = app_updates.borrow();
 
-                    for app_name in stale_applications {
+                    // TODO: filter the application name that should be kept
+                    for (app_name, router_names) in app_names_and_router_names {
+                        // TODO: make sure app is at least time_to_use old
+                        // if apps.get(&app_name).map(|app| app.created_at) - now {
+                        //
+                        // }
+
+                        if metrics.sum_access_metric(&router_names) > 0f64 {
+                            continue;
+                        }
+
                         log::debug!("{app_name} considered stale, will be backed up");
 
                         let Some(infrastructure_payload) = self
@@ -256,19 +258,14 @@ struct PrometheusQueryResponse {
 }
 
 impl PrometheusQueryResponse {
-    fn retain_stale_app_names(&self, mut app_names: HashSet<AppName>) -> HashSet<AppName> {
-        app_names.retain(|app_name| {
-            let mut sum: Option<f64> = None;
-
-            for (k, v) in &self.data {
-                if k.starts_with(app_name.as_str()) {
-                    sum = Some(sum.map(|n| n + *v).unwrap_or(*v));
-                }
+    fn sum_access_metric(&self, router_names: &[String]) -> f64 {
+        let mut sum = 0.0f64;
+        for router_name in router_names {
+            if let Some(v) = self.data.get(router_name) {
+                sum = sum + v;
             }
-
-            sum.is_some_and(|n| n.abs() <= f64::EPSILON)
-        });
-        app_names
+        }
+        sum
     }
 }
 
@@ -467,29 +464,29 @@ mod tests {
         )
     }
 
-    #[test]
-    fn retain_stale_app_names() {
-        let response = PrometheusQueryResponse {
-            data: BTreeMap::from([
-                (String::from("a-blog@docker"), 22.22),
-                (String::from("b-blog@docker"), 0.0),
-                (String::from("prevant@docker"), 11.11),
-            ]),
-        };
-
-        assert_eq!(
-            response.retain_stale_app_names(HashSet::from([
-                AppName::from_str("a").unwrap(),
-                AppName::from_str("b").unwrap(),
-            ])),
-            HashSet::from([AppName::from_str("b").unwrap()])
-        );
-
-        assert_eq!(
-            response.retain_stale_app_names(HashSet::from([AppName::from_str("c").unwrap(),])),
-            HashSet::new(),
-            // TODO: what if an application hasn't been accessed
-            "An application name that is not in the set shouldn't be considered stale if an application hasn't been started there are no metrics available"
-        );
-    }
+    // #[test]
+    // fn retain_stale_app_names() {
+    //     let response = PrometheusQueryResponse {
+    //         data: BTreeMap::from([
+    //             (String::from("a-blog@docker"), 22.22),
+    //             (String::from("b-blog@docker"), 0.0),
+    //             (String::from("prevant@docker"), 11.11),
+    //         ]),
+    //     };
+    //
+    //     assert_eq!(
+    //         response.retain_stale_app_names(HashSet::from([
+    //             AppName::from_str("a").unwrap(),
+    //             AppName::from_str("b").unwrap(),
+    //         ])),
+    //         HashSet::from([AppName::from_str("b").unwrap()])
+    //     );
+    //
+    //     assert_eq!(
+    //         response.retain_stale_app_names(HashSet::from([AppName::from_str("c").unwrap(),])),
+    //         HashSet::new(),
+    //         // TODO: what if an application hasn't been accessed
+    //         "An application name that is not in the set shouldn't be considered stale if an application hasn't been started there are no metrics available"
+    //     );
+    // }
 }

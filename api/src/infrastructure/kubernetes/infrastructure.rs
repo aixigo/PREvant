@@ -550,6 +550,37 @@ impl Infrastructure for KubernetesInfrastructure {
         Ok(Some(App::new(services, owners, udp)))
     }
 
+    async fn fetch_traefik_router_names(&self) -> Result<HashMap<AppName, Vec<String>>> {
+        let mut client = Some(self.client().await?);
+
+        let mut app_names_and_router_names = HashMap::new();
+        for (app_name, _) in self.fetch_apps().await? {
+            let api = Api::<IngressRoute>::namespaced(
+                client.take().unwrap(),
+                &app_name.to_rfc1123_namespace_id(),
+            );
+
+            let response = api
+                .list(&ListParams {
+                    label_selector: Some(APP_NAME_LABEL.to_string()),
+                    ..Default::default()
+                })
+                .await?;
+
+            app_names_and_router_names.insert(
+                app_name,
+                response
+                    .into_iter()
+                    .filter_map(|route| route.metadata.name)
+                    .collect::<Vec<String>>(),
+            );
+
+            client = Some(api.into_client());
+        }
+
+        Ok(app_names_and_router_names)
+    }
+
     async fn fetch_app_as_backup_based_infrastructure_payload(
         &self,
         app_name: &AppName,

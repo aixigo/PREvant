@@ -40,6 +40,10 @@ pub trait Infrastructure: Send + Sync + DynClone {
     /// Returns a `map` of `app-name` and the details of the deployed applications.
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>>;
 
+    async fn fetch_traefik_router_names(&self) -> Result<HashMap<AppName, Vec<String>>> {
+        Ok(HashMap::new())
+    }
+
     async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>>;
 
     async fn fetch_app_as_backup_based_infrastructure_payload(
