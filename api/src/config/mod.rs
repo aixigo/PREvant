@@ -420,10 +420,6 @@ impl Config {
             .map(|mirror| mirror.as_str())
     }
 
-    pub fn app_limit(&self) -> Option<usize> {
-        self.applications.max
-    }
-
     pub fn static_host_meta<'a, 'b: 'a>(
         &'b self,
         image: &Image,

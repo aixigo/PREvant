@@ -433,9 +433,27 @@ impl KubernetesInfrastructure {
 #[async_trait]
 impl Infrastructure for KubernetesInfrastructure {
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
-        let mut app_name_and_services = self
-            .fetch_app_names()
+        let client = self.client().await?;
+        let app_names = Api::<V1Namespace>::all(client)
+            .list(&ListParams {
+                label_selector: Some(APP_NAME_LABEL.to_string()),
+                ..Default::default()
+            })
             .await?
+            .iter()
+            .filter(|ns| {
+                ns.status
+                    .as_ref()
+                    .and_then(|status| status.phase.as_ref())
+                    .map(|phase| phase.as_str())
+                    != Some("Terminating")
+            })
+            .filter_map(|ns| {
+                AppName::from_str(ns.metadata.labels.as_ref()?.get(APP_NAME_LABEL)?).ok()
+            })
+            .collect::<HashSet<_>>();
+
+        let mut app_name_and_services = app_names
             .into_iter()
             .map(|app_name| async {
                 self.fetch_app(&app_name)
@@ -544,28 +562,6 @@ impl Infrastructure for KubernetesInfrastructure {
         }
 
         Ok(Some(unit.prepare_for_back_up().to_json_vec()))
-    }
-
-    async fn fetch_app_names(&self) -> Result<HashSet<AppName>> {
-        let client = self.client().await?;
-        Ok(Api::<V1Namespace>::all(client)
-            .list(&ListParams {
-                label_selector: Some(APP_NAME_LABEL.to_string()),
-                ..Default::default()
-            })
-            .await?
-            .iter()
-            .filter(|ns| {
-                ns.status
-                    .as_ref()
-                    .and_then(|status| status.phase.as_ref())
-                    .map(|phase| phase.as_str())
-                    != Some("Terminating")
-            })
-            .filter_map(|ns| {
-                AppName::from_str(ns.metadata.labels.as_ref()?.get(APP_NAME_LABEL)?).ok()
-            })
-            .collect::<HashSet<_>>())
     }
 
     async fn deploy_services(

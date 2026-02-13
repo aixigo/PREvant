@@ -54,6 +54,7 @@ pub use repository::AppRepository;
 pub use routes::{apps_routes, delete_app_sync, AppV1};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
 
@@ -61,14 +62,21 @@ pub struct Apps {
     config: Config,
     infrastructure: Box<dyn Infrastructure>,
     prevant_base_route: Option<TraefikIngressRoute>,
+    app_updates: Mutex<Option<Receiver<HashMap<AppName, App>>>>,
 }
 
 impl Clone for Apps {
     fn clone(&self) -> Self {
+        let app_updates = {
+            let guard = self.app_updates.lock().unwrap();
+            guard.clone()
+        };
+
         Self {
             config: self.config.clone(),
             infrastructure: dyn_clone::clone_box(&*self.infrastructure),
             prevant_base_route: self.prevant_base_route.clone(),
+            app_updates: Mutex::new(app_updates),
         }
     }
 }
@@ -79,6 +87,7 @@ impl Apps {
             config,
             infrastructure,
             prevant_base_route: None,
+            app_updates: Mutex::new(None),
         })
     }
 
@@ -108,10 +117,6 @@ impl Apps {
             }))
     }
 
-    pub async fn fetch_app_names(&self) -> Result<HashSet<AppName>, AppsError> {
-        Ok(self.infrastructure.fetch_app_names().await?)
-    }
-
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
     pub async fn fetch_apps(&self) -> Result<HashMap<AppName, App>, AppsError> {
@@ -129,8 +134,13 @@ impl Apps {
     }
 
     /// Provides a [`Receiver`](tokio::sync::watch::Receiver) that notifies about changes of the
-    /// list of running [`apps`](AppsService::fetch_apps).
+    /// list of running [`apps`](Apps::fetch_apps).
     pub async fn app_updates(&self) -> Receiver<HashMap<AppName, App>> {
+        let mut app_updates_rx = self.app_updates.lock().unwrap();
+        if let Some(app_updates) = app_updates_rx.as_ref() {
+            return app_updates.clone();
+        }
+
         let infrastructure = dyn_clone::clone_box(&*self.infrastructure);
         let (tx, rx) = tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new());
 
@@ -155,9 +165,13 @@ impl Apps {
                     }
                 }
 
+                // TODO: eventually this should be changed in such a way that this code will wait
+                // for events of the infrastructure (kubectl watch for example)
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
+
+        *app_updates_rx = Some(rx.clone());
 
         rx
     }
@@ -242,14 +256,23 @@ impl Apps {
             ),
         };
 
-        if let Some(app_limit) = self.config.app_limit() {
-            let apps = self.fetch_app_names().await?;
+        let app_updates = self.app_updates().await;
+        let mut running_apps = {
+            let apps = app_updates.borrow().clone();
+            if apps.is_empty() {
+                log::debug!("Fetching apps because it seems that app_updates did not receive an update yet.");
+                self.fetch_apps().await?
+            } else {
+                apps
+            }
+        };
 
-            if apps
+        if let Some(app_limit) = self.config.applications.max {
+            if running_apps
                 .iter()
                 // filtering the app_name that is send because otherwise clients wouldn't be able
                 // to update an existing application.
-                .filter(|existing_app_name| *existing_app_name != app_name)
+                .filter(|(existing_app_name, _)| *existing_app_name != app_name)
                 .count()
                 + 1
                 > app_limit
@@ -260,11 +283,7 @@ impl Apps {
 
         let mut configs = service_configs.to_vec();
 
-        let running_app = self
-            .infrastructure
-            .fetch_app(app_name)
-            .await?
-            .unwrap_or_else(App::empty);
+        let running_app = running_apps.remove(app_name).unwrap_or_else(App::empty);
 
         let mut user_defined_parameters = match (
             running_app.user_defined_parameters().clone(),
@@ -299,7 +318,7 @@ impl Apps {
                 .configs_and_user_defined_parameters_to_replicate(
                     service_configs,
                     &running_app,
-                    &replicate_from_app_name,
+                    replicate_from_app_name,
                 )
                 .await?;
             configs.extend(config_to_replicate);
@@ -586,14 +605,8 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &vec![sc!("service-a")],
-            vec![],
-            None,
-        )
-        .await?;
+        apps.create_or_update(&AppName::master(), None, &[sc!("service-a")], vec![], None)
+            .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
         assert_eq!(deployed_apps.len(), 1);
@@ -613,7 +626,7 @@ mod tests {
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
@@ -622,7 +635,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             None,
-            &vec![sc!("service-b")],
+            &[sc!("service-b")],
             vec![],
             None,
         )
@@ -654,7 +667,7 @@ mod tests {
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
@@ -663,7 +676,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             None,
-            &vec![sc!("service-c")],
+            &[sc!("service-c")],
             vec![],
             None,
         )
@@ -680,7 +693,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             Some(AppName::master()),
-            &vec![sc!("service-c")],
+            &[sc!("service-c")],
             vec![],
             None,
         )
@@ -713,7 +726,7 @@ mod tests {
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
@@ -722,7 +735,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             Some(AppName::master()),
-            &vec![sc!("service-c")],
+            &[sc!("service-c")],
             vec![],
             None,
         )
@@ -748,7 +761,7 @@ mod tests {
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
@@ -757,7 +770,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             None,
-            &vec![sc!("service-b")],
+            &[sc!("service-b")],
             vec![],
             None,
         )
@@ -766,7 +779,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("branch").unwrap(),
             None,
-            &vec![sc!("service-a")],
+            &[sc!("service-a")],
             vec![],
             None,
         )
@@ -799,14 +812,8 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &vec![sc!("mariadb")],
-            vec![],
-            None,
-        )
-        .await?;
+        apps.create_or_update(&AppName::master(), None, &[sc!("mariadb")], vec![], None)
+            .await?;
 
         let app = apps
             .infrastructure
@@ -849,7 +856,7 @@ mod tests {
         apps.create_or_update(
             &AppName::from_str("master-1x").unwrap(),
             None,
-            &vec![sc!("mariadb")],
+            &[sc!("mariadb")],
             vec![],
             None,
         )
@@ -884,7 +891,7 @@ mod tests {
         apps.create_or_update(
             &app_name,
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
@@ -988,7 +995,7 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        apps.create_or_update(&app_name, None, &vec![sc!("service-a")], vec![], None)
+        apps.create_or_update(&app_name, None, &[sc!("service-a")], vec![], None)
             .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
@@ -1136,30 +1143,12 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
         let app_name = AppName::master();
 
-        apps.create_or_update(
-            &app_name,
-            None,
-            &vec![crate::sc!("service-a")],
-            vec![],
-            None,
-        )
-        .await?;
-        apps.create_or_update(
-            &app_name,
-            None,
-            &vec![crate::sc!("service-b")],
-            vec![],
-            None,
-        )
-        .await?;
-        apps.create_or_update(
-            &app_name,
-            None,
-            &vec![crate::sc!("service-c")],
-            vec![],
-            None,
-        )
-        .await?;
+        apps.create_or_update(&app_name, None, &[crate::sc!("service-a")], vec![], None)
+            .await?;
+        apps.create_or_update(&app_name, None, &[crate::sc!("service-b")], vec![], None)
+            .await?;
+        apps.create_or_update(&app_name, None, &[crate::sc!("service-c")], vec![], None)
+            .await?;
 
         let mut apps = apps.infrastructure.fetch_apps().await?;
         let openid_config = apps
@@ -1187,7 +1176,7 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        apps.create_or_update(&app_name, None, &vec![sc!("service-a")], vec![], None)
+        apps.create_or_update(&app_name, None, &[sc!("service-a")], vec![], None)
             .await?;
         let deleted_services = apps.delete_app(&app_name).await?;
 
@@ -1309,7 +1298,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             app_name,
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
@@ -1339,7 +1328,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             app_name,
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
@@ -1382,7 +1371,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             app_name,
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
@@ -1432,7 +1421,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
@@ -1442,7 +1431,7 @@ Log msg 3 of service-a of app master
             .create_or_update(
                 &AppName::from_str("other").unwrap(),
                 None,
-                &vec![sc!("service-a"), sc!("service-b")],
+                &[sc!("service-a"), sc!("service-b")],
                 vec![],
                 None,
             )
@@ -1470,20 +1459,14 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-a"), sc!("service-b")],
+            &[sc!("service-a"), sc!("service-b")],
             vec![],
             None,
         )
         .await?;
 
         let result = apps
-            .create_or_update(
-                &AppName::master(),
-                None,
-                &vec![sc!("service-c")],
-                vec![],
-                None,
-            )
+            .create_or_update(&AppName::master(), None, &[sc!("service-c")], vec![], None)
             .await;
 
         assert!(matches!(
@@ -1515,7 +1498,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             &app_name,
             None,
-            &vec![sc!("web-service")],
+            &[sc!("web-service")],
             vec![],
             Some(serde_json::json!({
                 "name": "my-name"
@@ -1560,7 +1543,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             &app_name,
             None,
-            &vec![sc!("web-service")],
+            &[sc!("web-service")],
             vec![],
             Some(serde_json::json!({
                 "name": "my-name"
@@ -1597,7 +1580,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-a")],
+            &[sc!("service-a")],
             vec![Owner {
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
@@ -1609,7 +1592,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-b")],
+            &[sc!("service-b")],
             vec![Owner {
                 iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("github-user")),
@@ -1652,7 +1635,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-a")],
+            &[sc!("service-a")],
             vec![Owner {
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
@@ -1664,7 +1647,7 @@ Log msg 3 of service-a of app master
         apps.create_or_update(
             &AppName::master(),
             None,
-            &vec![sc!("service-b")],
+            &[sc!("service-b")],
             vec![Owner {
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
