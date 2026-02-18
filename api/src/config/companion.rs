@@ -97,6 +97,7 @@ pub enum DeploymentStrategy {
 #[serde(rename_all = "camelCase")]
 pub struct Routing {
     pub rule: Option<String>,
+    #[serde(default)]
     pub additional_middlewares: BTreeMap<String, Value>,
 }
 
@@ -375,6 +376,58 @@ mod tests {
             companion.deployment_strategy,
             DeploymentStrategy::RedeployAlways
         );
+    }
+
+    #[test]
+    fn parse_companion_with_router_rule() {
+        let companion = companion_from_str!(
+            r#"
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+
+            [routing]
+            rule = 'PathPrefix(`/{{application.name}}/adminer/sub-path`)'
+        "#
+        );
+
+        assert_eq!(
+            companion.routing,
+            Some(Routing {
+                rule: Some(String::from(
+                    "PathPrefix(`/{{application.name}}/adminer/sub-path`)"
+                )),
+                additional_middlewares: BTreeMap::new(),
+            })
+        )
+    }
+
+    #[test]
+    fn parse_companion_with_additional_middlewares() {
+        let companion = companion_from_str!(
+            r#"
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+
+            [routing.additionalMiddlewares]
+            stripPrefixes = { 'prefixes' = ['/{{application.name}}/'] }
+        "#
+        );
+
+        assert_eq!(
+            companion.routing,
+            Some(Routing {
+                rule: None,
+                additional_middlewares: BTreeMap::from([(
+                    String::from("stripPrefixes"),
+                    serde_value::to_value(serde_json::json!({
+                        "prefixes": [ "/{{application.name}}/" ]
+                    }))
+                    .unwrap()
+                )]),
+            })
+        )
     }
 
     #[test]
