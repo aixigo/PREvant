@@ -30,10 +30,14 @@
          <div class="card-header">
             <div class="d-flex justify-content-between">
                <h4 v-if="reviewApp.ticket !== undefined"
-                   class="ra-headline">
+                   class="ra-headline ra-app-title">
                   <a :href="reviewApp.ticket.link" target="_blank">{{ reviewApp.name }}</a>
+                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ml-2">Backed up</span>
                </h4>
-               <h4 v-else>{{ reviewApp.name }}</h4>
+               <h4 v-else class="ra-app-title">
+                  {{ reviewApp.name }}
+                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ml-2">Backed up</span>
+               </h4>
 
                <div class="dropdown menu">
                   <button class="btn bmd-btn-icon dropdown-toggle" type="button" :id="'menu' + reviewApp.name"
@@ -184,6 +188,14 @@
 }
 .owners span {
     margin: 0 0.2em;
+}
+.ra-app-title {
+   display: flex;
+   align-items: center;
+}
+.badge-backed-up {
+   background-color: #ef6c00;
+   color: #fff;
 }
 </style>
 

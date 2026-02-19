@@ -126,19 +126,11 @@ export function createStore(router, me, issuers) {
             return getters.reviewApps.filter(app => !ownedAppNames.has(app.name));
          },
 
-         deployedOwnedApps: (state, getters) => {
-            return getters.ownedApps.filter(hasStatus('deployed'));
-         },
-
          deployedOtherApps: (state, getters) => {
             return getters.otherApps.filter(hasStatus('deployed'));
          },
 
-         backedUpOwnedApps: (state, getters) => {
-            return getters.ownedApps.filter(hasStatus('backed-up'));
-         },
-
-         backedUpOtherApps: (state, getters) => {
+         appBackups: (state, getters) => {
             return getters.otherApps.filter(hasStatus('backed-up'));
          },
 
@@ -151,11 +143,6 @@ export function createStore(router, me, issuers) {
             return getters.deployedOtherApps
                .filter(app => state.tickets[app.name] === undefined);
          },
-
-         myBackups: (state, getters) => getters.backedUpOwnedApps,
-
-         appBackups: (state, getters) => getters.backedUpOtherApps,
-
 
          errors: state => {
             const errors = [];
