@@ -53,7 +53,7 @@
                      <button type="button" class="dropdown-item btn btn-primary" @click="duplicateApp()">
                         <font-awesome-icon icon="copy"/> &nbsp; Duplicate
                      </button>
-                     <button type="button" class="dropdown-item btn btn-primary" @click="openBackupDialog()">
+                     <button type="button" class="dropdown-item btn btn-primary" @click="openBackupDialog()" v-if="isBackupsEnabled">
                         <template v-if="reviewApp.status === 'backed-up'">
                            <font-awesome-icon icon="server"/> &nbsp; Redeploy
                         </template>
@@ -177,7 +177,7 @@
 
       <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name !== defaultAppName"/>
       <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
-      <backup-app-dialog ref="backupDlg" :app-name="reviewApp.name" :app-status="reviewApp.status"/>
+      <backup-app-dialog ref="backupDlg" :app-name="reviewApp.name" :app-status="reviewApp.status" v-if="isBackupsEnabled"/>
    </div>
 </template>
 
@@ -208,10 +208,11 @@
 
    export default {
       setup() {
-         const { defaultAppName } = useConfig();
+         const { defaultAppName, isBackupsEnabled } = useConfig();
 
          return {
-            defaultAppName
+            defaultAppName,
+            isBackupsEnabled
          };
       },
       data() {

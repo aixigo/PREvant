@@ -110,6 +110,7 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
     let config_json = serde_json::json!({
         "defaultAppName": config.applications.default_app,
         "isAuthRequired": matches!(config.api_access.mode, ApiAccessMode::RequireAuth { .. }),
+        "isBackupsEnabled": config.applications.back_up_policy.is_some(),
     });
     data.insert("config", config_json.to_string());
 
