@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant Frontend
  * %%
- * Copyright (C) 2018 - 2019 aixigo AG
+ * Copyright (C) 2018 - 2026 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,84 +25,41 @@
  */
 
 <template>
-   <dlg ref="dialog" :title="'Shutdown ' + appName" @opened="focusInput">
-      <template v-slot:body>
+   <ConfirmationDialog
+      ref="dialog"
+      :title="'Shutdown ' + appName"
+      :expected-value="appName"
+      confirm-label="Confirm"
+      auth-message="You need to be logged in to shutdown apps."
+      button-class="btn btn-outline-danger"
+      @confirm="deleteApp">
+      <template #description>
          <p>Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing in the app:</p>
-
-         <div class="form-group">
-            <input
-                  ref="confirmedAppNameInput"
-                  type="name"
-                  class="form-control"
-                  placeholder="Enter app name"
-                  v-model="confirmedAppName"
-                  :disabled="!hasWritePermissions"
-                  @keyup="keyPressed">
-         </div>
-
-         <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
-            You need to be logged in to shutdown apps.
-         </div>
       </template>
-      <template v-slot:footer>
-         <button
-               type="button"
-               class="btn btn-outline-danger"
-               @click="deleteApp()"
-               :disabled="!hasWritePermissions || confirmedAppName !== appName">
-            Confirm
-         </button>
-      </template>
-   </dlg>
+   </ConfirmationDialog>
 </template>
 
-<script>
-   import { useAuth } from '../composables/useAuth';
-   import Dialog from './Dialog.vue';
+<script setup>
+   import { useTemplateRef } from 'vue';
+   import { useStore } from 'vuex';
+   import ConfirmationDialog from './ConfirmationDialog.vue';
 
-   export default {
-      setup() {
-         const { hasWritePermissions } = useAuth();
+   defineProps({
+      appName: { type: String, required: true }
+   });
 
-         return {
-            hasWritePermissions
-         };
-      },
-      data() {
-         return {
-            confirmedAppName: ''
-         }
-      },
-      components: {
-         'dlg': Dialog
-      },
-      props: {
-         appName: {type: String}
-      },
-      methods: {
-         open() {
-            this.confirmedAppName = '';
-            this.$refs.dialog.open();
-         },
-         focusInput() {
-            const input = this.$refs.confirmedAppNameInput;
-            if (input && !input.disabled) {
-               input.focus();
-            }
-         },
-         keyPressed(e) {
-            if (e.keyCode === 13) {
-               this.deleteApp();
-            }
-         },
-         deleteApp() {
-            if (this.confirmedAppName !== this.appName) {
-               return;
-            }
+   const store = useStore();
+   const dialog = useTemplateRef('dialog');
 
-            this.$store.dispatch( 'deleteApp', { appName: this.confirmedAppName } );
-            this.$refs.dialog.close();
-         }
-      }
+   function open() {
+      dialog.value.open();
    }
+
+   function deleteApp(appName) {
+      store.dispatch('deleteApp', { appName });
+   }
+
+   defineExpose({
+      open
+   });
 </script>

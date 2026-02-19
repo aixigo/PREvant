@@ -25,53 +25,50 @@
  */
 
 <template>
-   <ConfirmationDialog
+   <InputDialog
       ref="dialog"
-      :title="dialogTitle"
-      :expected-value="appName"
-      :confirm-label="actionLabel"
-      auth-message="You need to be logged in to back up or redeploy apps."
-      @confirm="changeAppState">
-      <template #description>
-         <p>Do you really want to {{ actionLabel.toLowerCase() }} <b>{{ appName }}</b>? Confirm by typing in the app name:</p>
+      :title="title"
+      :description="description"
+      :expected-value="expectedValue"
+      :require-match="true"
+      :trim-input="trimInput"
+      :requires-write-permissions="requiresWritePermissions"
+      :confirm-label="confirmLabel"
+      :auth-message="authMessage"
+      :input-placeholder="inputPlaceholder"
+      :button-class="buttonClass"
+      @confirm="forwardConfirm">
+      <template v-if="$slots.description" #description>
+         <slot name="description"></slot>
       </template>
-   </ConfirmationDialog>
+   </InputDialog>
 </template>
 
 <script setup>
-   import { computed, useTemplateRef } from 'vue';
-   import { useStore } from 'vuex';
-   import ConfirmationDialog from './ConfirmationDialog.vue';
+   import { useTemplateRef } from 'vue';
+   import InputDialog from './InputDialog.vue';
 
-   const props = defineProps({
-      appName: { type: String, required: true },
-      appStatus: { type: String, required: true }
+   defineProps({
+      title: { type: String, required: true },
+      description: { type: String, default: '' },
+      expectedValue: { type: String, required: true },
+      trimInput: { type: Boolean, default: false },
+      requiresWritePermissions: { type: Boolean, default: true },
+      confirmLabel: { type: String, required: true },
+      authMessage: { type: String, default: undefined },
+      inputPlaceholder: { type: String, default: 'Enter app name' },
+      buttonClass: { type: String, default: 'btn btn-outline-primary' },
    });
 
-   const store = useStore();
+   const emit = defineEmits(['confirm']);
    const dialog = useTemplateRef('dialog');
-
-   const actionLabel = computed(() => {
-      return props.appStatus === 'backed-up' ? 'Redeploy' : 'Back up';
-   });
-
-   const targetStatus = computed(() => {
-      return props.appStatus === 'backed-up' ? 'deployed' : 'backed-up';
-   });
-
-   const dialogTitle = computed(() => {
-      return `${actionLabel.value} ${props.appName}`;
-   });
 
    function open() {
       dialog.value.open();
    }
 
-   function changeAppState() {
-      store.dispatch('changeAppState', {
-         appName: props.appName,
-         status: targetStatus.value
-      });
+   function forwardConfirm(value) {
+      emit('confirm', value);
    }
 
    defineExpose({
