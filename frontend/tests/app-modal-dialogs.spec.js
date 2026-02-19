@@ -37,7 +37,7 @@ test.describe("app modal dialogs", () => {
 
     test.afterEach(async ({ page }) => {
       // Close modal
-      await page.getByLabel("Close").click();
+      await closeActiveModal(page);
 
       await expect(page, "query parameter should be preserved").toHaveURL(
         new RegExp(`.*\\?appNameFilter=${FILTER_STRING}.*`)
@@ -108,7 +108,7 @@ test.describe("app modal dialogs", () => {
       ).toBeVisible();
 
       // Close the dialog
-      await page.getByLabel("Close").click();
+      await closeActiveModal(page);
 
       await expect(
         page,
@@ -117,3 +117,7 @@ test.describe("app modal dialogs", () => {
     });
   });
 });
+
+async function closeActiveModal(page) {
+  await page.locator(".modal.show button.close[aria-label='Close']").click();
+}
