@@ -113,38 +113,49 @@ export function createStore(router, me, issuers) {
             }
          },
 
-         myApps: (state, getters) => {
+         ownedApps: (state, getters) => {
             if (state.me === null) {
                return [];
             }
 
-            return getters.reviewApps
-               .filter(app => (app.owners ?? []).some(owner => owner.sub == state.me.sub && owner.iss == state.me.iss))
-               .filter(app => app.status === "deployed");
+            return getters.reviewApps.filter(isOwnedBy(state.me));
          },
 
-         notMyApps: (state, getters) => {
-            const myAppNames = new Set(getters.myApps.map(app => app.name));
+         otherApps: (state, getters) => {
+            const ownedAppNames = new Set(getters.ownedApps.map(app => app.name));
+            return getters.reviewApps.filter(app => !ownedAppNames.has(app.name));
+         },
 
-            return getters.reviewApps
-               .filter(app => !myAppNames.has(app.name))
-               .filter(app => app.status === "deployed");
+         deployedOwnedApps: (state, getters) => {
+            return getters.ownedApps.filter(hasStatus('deployed'));
+         },
+
+         deployedOtherApps: (state, getters) => {
+            return getters.otherApps.filter(hasStatus('deployed'));
+         },
+
+         backedUpOwnedApps: (state, getters) => {
+            return getters.ownedApps.filter(hasStatus('backed-up'));
+         },
+
+         backedUpOtherApps: (state, getters) => {
+            return getters.otherApps.filter(hasStatus('backed-up'));
          },
 
          appsWithTicket: (state, getters) => {
-            return getters.notMyApps
+            return getters.deployedOtherApps
                .filter(app => state.tickets[app.name] !== undefined);
          },
 
          appsWithoutTicket: (state, getters) => {
-            return getters.notMyApps
+            return getters.deployedOtherApps
                .filter(app => state.tickets[app.name] === undefined);
          },
 
-         appBackups: (state, getters) => {
-            return getters.reviewApps
-               .filter(app => app.status === "backed-up");
-         },
+         myBackups: (state, getters) => getters.backedUpOwnedApps,
+
+         appBackups: (state, getters) => getters.backedUpOtherApps,
+
 
          errors: state => {
             const errors = [];
@@ -499,4 +510,12 @@ function enrichError(error, statusSpecificOverrides = {}) {
     ...error,
     detail: error.detail ?? statusSpecificOverrides[error.status] ?? "Unknown Error",
   };
+}
+
+function hasStatus(status) {
+  return app => app.status === status;
+}
+
+function isOwnedBy(me) {
+  return app => (app.owners ?? []).some(owner => owner.sub == me.sub && owner.iss == me.iss);
 }

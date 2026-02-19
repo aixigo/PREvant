@@ -38,10 +38,10 @@
          No apps to review.
       </h1>
 
-      <h1 class="ra-container__title--preview" v-if="myApps.length > 0">My Previews</h1>
+      <h1 class="ra-container__title--preview" v-if="deployedOwnedApps.length > 0">My Previews</h1>
       <transition-group tag="div" name="list-complete" class="ra-container__apps--preview ra-apps ">
          <review-app-card
-            v-for="reviewApp in myApps"
+            v-for="reviewApp in deployedOwnedApps"
             :key="reviewApp.name"
             :review-app="reviewApp"
             :showOwners="issuers != null"
@@ -64,6 +64,17 @@
       <transition-group tag="div" name="list-complete" class="ra-container__apps--feature ra-apps">
          <review-app-card
             v-for="reviewApp in appsWithTicket"
+            :key="reviewApp.name"
+            :review-app="reviewApp"
+            :showOwners="issuers != null"
+            v-on:changeState="changeServiceState"
+            class="list-complete-item"/>
+      </transition-group>
+
+      <h1 class="ra-container__title--feature" v-if="myBackups.length > 0">My Backups</h1>
+      <transition-group tag="div" name="list-complete" class="ra-container__apps--feature ra-apps">
+         <review-app-card
+            v-for="reviewApp in myBackups"
             :key="reviewApp.name"
             :review-app="reviewApp"
             :showOwners="issuers != null"
@@ -129,7 +140,8 @@
             'appsWithTicket',
             'appsWithoutTicket',
             'appBackups',
-            'myApps',
+            'myBackups',
+            'deployedOwnedApps',
             'errors',
             'isFetchInProgress'
          ])
