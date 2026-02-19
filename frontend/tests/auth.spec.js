@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { PREVIEW_NAME, mockedApps } from "./fixtures/apps";
+import { PREVIEW_NAME, appsAsEventStream, mockedApps } from "./fixtures/apps";
 import { issuers, me } from "./fixtures/auth";
 import { injectGlobalOverride } from "./util/injectGlobalOverrides";
 import { interceptAppsApiCall } from "./util/interceptApiCalls";
+import { appActionButton, openAppMenu } from "./util/appActions";
 
 test.beforeEach(interceptAppsApiCall);
 
@@ -43,7 +44,10 @@ test.describe("when the user is logged in", () => {
 
 test.describe("when auth is not required", () => {
   test.beforeEach(async ({ page }) => {
-    await injectGlobalOverride(page, "config", { isAuthRequired: false });
+    await injectGlobalOverride(page, "config", {
+      isAuthRequired: false,
+      isBackupsEnabled: true,
+    });
     await page.goto("/");
   });
 
@@ -56,7 +60,10 @@ test.describe("when auth is not required", () => {
 
 test.describe("when auth is required", () => {
   test.beforeEach(async ({ page }) => {
-    await injectGlobalOverride(page, "config", { isAuthRequired: true });
+    await injectGlobalOverride(page, "config", {
+      isAuthRequired: true,
+      isBackupsEnabled: true,
+    });
   });
 
   test.describe("and the user is not logged in", () => {
@@ -90,7 +97,10 @@ test.describe("when auth is required", () => {
 
 test.describe("when auth is required and app is backed up", () => {
   test.beforeEach(async ({ page }) => {
-    await injectGlobalOverride(page, "config", { isAuthRequired: true });
+    await injectGlobalOverride(page, "config", {
+      isAuthRequired: true,
+      isBackupsEnabled: true,
+    });
     await injectGlobalOverride(page, "me", null);
 
     await page.route("**/api/apps", (route) => {
@@ -128,12 +138,8 @@ async function expectNoLoginButton({ page }) {
 }
 
 async function openDialogViaMenu({ page, action }) {
-  await page.click(
-    `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button[data-toggle="dropdown"]`
-  );
-  await page.click(
-    `div.card:has(.card-header:has-text("${PREVIEW_NAME}")) button:text("${action}")`
-  );
+  await openAppMenu({ page, appName: PREVIEW_NAME });
+  await appActionButton({ page, appName: PREVIEW_NAME, action }).click();
 
   const dialog = page
     .getByRole("dialog")
@@ -227,13 +233,4 @@ function getLoginRequiredText({ action }) {
     return "You need to be logged in to back up or redeploy apps.";
   }
   return `You need to be logged in to ${action} apps.`;
-}
-
-function appsAsEventStream(apps) {
-  return `
-data:${JSON.stringify(apps)}
-:
-
-
-`;
 }
