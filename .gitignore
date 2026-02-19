@@ -1,6 +1,7 @@
 dist/
 target/
 node_modules/
+.npm/
 test-results/
 playwright-report/
 reports/

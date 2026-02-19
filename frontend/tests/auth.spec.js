@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { PREVIEW_NAME } from "./fixtures/apps";
+import { PREVIEW_NAME, mockedApps } from "./fixtures/apps";
 import { issuers, me } from "./fixtures/auth";
 import { injectGlobalOverride } from "./util/injectGlobalOverrides";
 import { interceptAppsApiCall } from "./util/interceptApiCalls";
@@ -50,6 +50,8 @@ test.describe("when auth is not required", () => {
   test("should allow shutting down apps", shouldAllowShuttingDownApp);
 
   test("should allow duplicating apps", shouldAllowDuplicatingApp);
+
+  test("should allow backing up apps", shouldAllowBackingUpApp);
 });
 
 test.describe("when auth is required", () => {
@@ -67,6 +69,8 @@ test.describe("when auth is required", () => {
     test("should not allow shutting down apps", shouldNotAllowShuttingDownApp);
 
     test("should not allow duplicating apps", shouldNotAllowDuplicatingApp);
+
+    test("should not allow backing up apps", shouldNotAllowBackingUpApp);
   });
 
   test.describe("and the user is logged in", () => {
@@ -79,7 +83,34 @@ test.describe("when auth is required", () => {
     test("should allow shutting down apps", shouldAllowShuttingDownApp);
 
     test("should allow duplicating apps", shouldAllowDuplicatingApp);
+
+    test("should allow backing up apps", shouldAllowBackingUpApp);
   });
+});
+
+test.describe("when auth is required and app is backed up", () => {
+  test.beforeEach(async ({ page }) => {
+    await injectGlobalOverride(page, "config", { isAuthRequired: true });
+    await injectGlobalOverride(page, "me", null);
+
+    await page.route("**/api/apps", (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: "text/event-stream;charset=UTF-8",
+        body: appsAsEventStream({
+          ...mockedApps,
+          [PREVIEW_NAME]: {
+            ...mockedApps[PREVIEW_NAME],
+            status: "backed-up",
+          },
+        }),
+      });
+    });
+
+    await page.goto("/");
+  });
+
+  test("should not allow redeploying apps", shouldNotAllowRedeployingApp);
 });
 
 async function expectLoginButton({ page }) {
@@ -119,12 +150,16 @@ async function shouldAllowShuttingDownApp({ page }) {
   await shouldAllowActionOnApp({ page, action: "Shutdown" });
 }
 
+async function shouldAllowBackingUpApp({ page }) {
+  await shouldAllowActionOnApp({ page, action: "Back up" });
+}
+
 async function shouldAllowActionOnApp({ page, action }) {
   const dialog = await openDialogViaMenu({ page, action });
   const confirmButtonText = getConfirmButtonText({ action });
 
   await expect(
-    page.getByText(`You need to be logged in to ${action} apps.`),
+    page.getByText(getLoginRequiredText({ action })),
     "login required message is not shown"
   ).not.toBeVisible();
 
@@ -151,12 +186,20 @@ async function shouldNotAllowShuttingDownApp({ page }) {
   await shouldNotAllowActionOnApp({ page, action: "Shutdown" });
 }
 
+async function shouldNotAllowBackingUpApp({ page }) {
+  await shouldNotAllowActionOnApp({ page, action: "Back up" });
+}
+
+async function shouldNotAllowRedeployingApp({ page }) {
+  await shouldNotAllowActionOnApp({ page, action: "Redeploy" });
+}
+
 async function shouldNotAllowActionOnApp({ page, action }) {
   const dialog = await openDialogViaMenu({ page, action });
   const confirmButtonText = getConfirmButtonText({ action });
 
   await expect(
-    page.getByText(`You need to be logged in to ${action} apps.`),
+    page.getByText(getLoginRequiredText({ action })),
     "login required message is shown"
   ).toBeVisible();
 
@@ -170,5 +213,27 @@ async function shouldNotAllowActionOnApp({ page, action }) {
 }
 
 function getConfirmButtonText({ action }) {
-  return action === "Duplicate" ? "Duplicate" : "Confirm";
+  if (action === "Duplicate") {
+    return "Duplicate";
+  }
+  if (action === "Back up" || action === "Redeploy") {
+    return action;
+  }
+  return "Confirm";
+}
+
+function getLoginRequiredText({ action }) {
+  if (action === "Back up" || action === "Redeploy") {
+    return "You need to be logged in to back up or redeploy apps.";
+  }
+  return `You need to be logged in to ${action} apps.`;
+}
+
+function appsAsEventStream(apps) {
+  return `
+data:${JSON.stringify(apps)}
+:
+
+
+`;
 }

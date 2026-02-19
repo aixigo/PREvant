@@ -1,0 +1,116 @@
+/*-
+ * ========================LICENSE_START=================================
+ * PREvant Frontend
+ * %%
+ * Copyright (C) 2018 - 2026 aixigo AG
+ * %%
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ * =========================LICENSE_END==================================
+ */
+
+<template>
+   <dlg ref="dialog" :title="dialogTitle">
+      <template v-slot:body>
+         <p>Do you really want to {{ actionLabel.toLowerCase() }} <b>{{ appName }}</b>? Confirm by typing in the app name:</p>
+
+         <div class="form-group">
+            <input
+                  type="name"
+                  class="form-control"
+                  placeholder="Enter app name"
+                  v-model="confirmedAppName"
+                  :disabled="!hasWritePermissions"
+                  @keyup="keyPressed">
+         </div>
+
+         <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
+            You need to be logged in to back up or redeploy apps.
+         </div>
+      </template>
+      <template v-slot:footer>
+         <button
+               type="button"
+               class="btn btn-outline-primary"
+               @click="changeAppState()"
+               :disabled="!hasWritePermissions || confirmedAppName !== appName">
+            {{ actionLabel }}
+         </button>
+      </template>
+   </dlg>
+</template>
+
+<script>
+   import { useAuth } from '../composables/useAuth';
+   import Dialog from './Dialog.vue';
+
+   export default {
+      setup() {
+         const { hasWritePermissions } = useAuth();
+
+         return {
+            hasWritePermissions
+         };
+      },
+      data() {
+         return {
+            confirmedAppName: ''
+         }
+      },
+      components: {
+         'dlg': Dialog
+      },
+      props: {
+         appName: {type: String},
+         appStatus: {type: String}
+      },
+      computed: {
+         actionLabel() {
+            return this.appStatus === 'backed-up' ? 'Redeploy' : 'Back up';
+         },
+         targetStatus() {
+            return this.appStatus === 'backed-up' ? 'deployed' : 'backed-up';
+         },
+         dialogTitle() {
+            return `${this.actionLabel} ${this.appName}`;
+         }
+      },
+      methods: {
+         open() {
+            this.confirmedAppName = '';
+            this.$refs.dialog.open();
+         },
+         keyPressed(e) {
+            if (e.keyCode === 13) {
+               this.changeAppState();
+            }
+         },
+         changeAppState() {
+            if (this.confirmedAppName !== this.appName) {
+               return;
+            }
+
+            this.$store.dispatch('changeAppState', {
+               appName: this.confirmedAppName,
+               status: this.targetStatus
+            });
+            this.$refs.dialog.close();
+         }
+      }
+   }
+</script>

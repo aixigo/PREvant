@@ -49,6 +49,14 @@
                      <button type="button" class="dropdown-item btn btn-primary" @click="duplicateApp()">
                         <font-awesome-icon icon="copy"/> &nbsp; Duplicate
                      </button>
+                     <button type="button" class="dropdown-item btn btn-primary" @click="openBackupDialog()">
+                        <template v-if="reviewApp.status === 'backed-up'">
+                           <font-awesome-icon icon="server"/> &nbsp; Redeploy
+                        </template>
+                        <template v-else>
+                           <font-awesome-icon icon="download"/> &nbsp; Back up
+                        </template>
+                     </button>
                      <button type="button" class="dropdown-item btn btn-danger" @click="openDeleteDialog()"
                              v-if="reviewApp.name !== defaultAppName">
                         <font-awesome-icon icon="trash"/> &nbsp; Shutdown
@@ -165,6 +173,7 @@
 
       <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name !== defaultAppName"/>
       <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
+      <backup-app-dialog ref="backupDlg" :app-name="reviewApp.name" :app-status="reviewApp.status"/>
    </div>
 </template>
 
@@ -180,6 +189,7 @@
 
 <script>
    import moment from 'moment';
+   import BackupAppDialog from './BackupAppDialog.vue';
    import DuplicateAppDialog from './DuplicateAppDialog.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
    import { useConfig } from '../composables/useConfig';
@@ -198,6 +208,7 @@
          };
       },
       components: {
+         'backup-app-dialog': BackupAppDialog,
          'duplicate-app-dialog': DuplicateAppDialog,
          'shutdown-app-dialog': ShutdownAppDialog,
       },
@@ -240,6 +251,9 @@
       methods: {
          duplicateApp() {
             this.$refs.duplicateDlg.open();
+         },
+         openBackupDialog() {
+            this.$refs.backupDlg.open();
          },
          copyVersions() {
             const {versionDisplay} = this.$refs;

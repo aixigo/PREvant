@@ -218,6 +218,20 @@ export function createStore(router, me, issuers) {
             }
          },
 
+         updateAppState(state, { appName, appOrResponseError, status }) {
+            if (appOrResponseError.type) {
+               state.appsError = enrichAppStateError(appOrResponseError);
+               return;
+            }
+
+            if (appOrResponseError.status != null) {
+               state.apps[appName] = appOrResponseError;
+            } else if (state.apps[appName]) {
+               state.apps[appName].status = status;
+            }
+            state.appsError = null;
+         },
+
          storeTickets(state, ticketsResponse) {
             if (ticketsResponse.type) {
                state.tickets = {};
@@ -317,6 +331,27 @@ export function createStore(router, me, issuers) {
                if (response.status === 202) {
                   context.commit("updateServiceStatus", { appName, serviceName, serviceStatus: newStatus });
                }
+            });
+         },
+
+         changeAppState(context, { appName, status }) {
+            context.commit('startFetch', {});
+
+            fetchAndPoll(
+               `/api/apps/${appName}/states/`,
+               {
+                  method: 'PUT',
+                  headers: {
+                     'Content-Type': 'application/json',
+                     'Accept': 'application/json'
+                  },
+                  body: JSON.stringify({ status })
+               },
+               'cannot-change-app-state',
+               'Cannot change app state',
+            ).then(appOrResponseError => {
+               context.commit('updateAppState', { appName, appOrResponseError, status });
+               context.commit('endFetch');
             });
          },
 
@@ -446,6 +481,12 @@ function enrichDuplicationError(error) {
 function enrichDeletionError(error) {
   return enrichError(error, {
     403: "You need to be logged in to shutdown apps."
+  });
+}
+
+function enrichAppStateError(error) {
+  return enrichError(error, {
+    403: "You need to be logged in to back up or redeploy apps."
   });
 }
 
