@@ -25,12 +25,13 @@
  */
 
 <template>
-   <dlg ref="dialog" :title="dialogTitle">
+   <dlg ref="dialog" :title="dialogTitle" @opened="focusInput">
       <template v-slot:body>
          <p>Do you really want to {{ actionLabel.toLowerCase() }} <b>{{ appName }}</b>? Confirm by typing in the app name:</p>
 
          <div class="form-group">
             <input
+                  ref="confirmedAppNameInput"
                   type="name"
                   class="form-control"
                   placeholder="Enter app name"
@@ -94,6 +95,12 @@
          open() {
             this.confirmedAppName = '';
             this.$refs.dialog.open();
+         },
+         focusInput() {
+            const input = this.$refs.confirmedAppNameInput;
+            if (input && !input.disabled) {
+               input.focus();
+            }
          },
          keyPressed(e) {
             if (e.keyCode === 13) {

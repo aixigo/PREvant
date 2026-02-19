@@ -25,10 +25,11 @@
  */
 
 <template>
-   <dlg ref="dialog" :title="'Duplicate ' + duplicateFromAppName">
+   <dlg ref="dialog" :title="'Duplicate ' + duplicateFromAppName" @opened="focusInput">
       <template v-slot:body>
          <div class="form-group">
             <input
+                  ref="newAppNameInput"
                   type="name"
                   class="form-control"
                   placeholder="Enter app name"
@@ -79,6 +80,12 @@
          open() {
             this.newAppName = '';
             this.$refs.dialog.open();
+         },
+         focusInput() {
+            const input = this.$refs.newAppNameInput;
+            if (input && !input.disabled) {
+               input.focus();
+            }
          },
 
          keyPressed(e) {
