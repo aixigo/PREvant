@@ -1,10 +1,14 @@
 use crate::models::{AppName, Image};
 use regex::Regex;
 
-#[derive(Clone)]
-pub(super) struct AppSelector(Regex);
+#[derive(Clone, Debug)]
+pub struct AppSelector(Regex);
 
 impl AppSelector {
+    pub fn new(app_name: &AppName) -> Self {
+        Self(Regex::new(&format!("^{app_name}$")).unwrap())
+    }
+
     pub fn matches(&self, app_name: &AppName) -> bool {
         match self.0.captures(app_name) {
             None => false,
@@ -27,6 +31,13 @@ impl<'de> serde::Deserialize<'de> for AppSelector {
         serde_regex::deserialize(deserializer).map(Self)
     }
 }
+
+impl PartialEq for AppSelector {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
+}
+impl Eq for AppSelector {}
 
 #[derive(Clone, Debug)]
 pub(super) struct ImageSelector(Regex);
@@ -53,5 +64,17 @@ impl<'de> serde::Deserialize<'de> for ImageSelector {
         D: serde::Deserializer<'de>,
     {
         serde_regex::deserialize(deserializer).map(Self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_app_name() {
+        let selector = AppSelector::new(&AppName::master());
+
+        assert!(selector.matches(&AppName::master()));
     }
 }

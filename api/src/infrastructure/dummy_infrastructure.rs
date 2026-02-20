@@ -46,6 +46,7 @@ use std::time::Duration;
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
     services: Arc<Mutex<MultiMap<AppName, DeployableService>>>,
+    created_at: Arc<Mutex<HashMap<AppName, DateTime<Utc>>>>,
     user_defined_parameters: Arc<Mutex<HashMap<AppName, UserDefinedParameters>>>,
     owners: Arc<Mutex<MultiMap<AppName, Owner>>>,
 }
@@ -56,6 +57,7 @@ impl DummyInfrastructure {
         Self {
             delay: None,
             services: Arc::new(Mutex::new(MultiMap::new())),
+            created_at: Arc::new(Mutex::new(HashMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
             owners: Arc::new(Mutex::new(MultiMap::new())),
         }
@@ -65,6 +67,7 @@ impl DummyInfrastructure {
         Self {
             delay: Some(delay),
             services: Arc::new(Mutex::new(MultiMap::new())),
+            created_at: Arc::new(Mutex::new(HashMap::new())),
             user_defined_parameters: Arc::new(Mutex::new(HashMap::new())),
             owners: Arc::new(Mutex::new(MultiMap::new())),
         }
@@ -77,6 +80,38 @@ impl DummyInfrastructure {
             .iter_all()
             .flat_map(|(_, v)| v.iter().cloned())
             .collect::<Vec<_>>()
+    }
+
+    pub fn with_app(
+        self,
+        app_name: AppName,
+        services: Vec<ServiceConfig>,
+        created_at: DateTime<Utc>,
+    ) -> Self {
+        {
+            let mut self_services = self.services.lock().unwrap();
+
+            for config in services.into_iter() {
+                use crate::infrastructure::TraefikIngressRoute;
+
+                let service_name = config.service_name().clone();
+
+                self_services.insert(
+                    app_name.clone(),
+                    DeployableService::new(
+                        config,
+                        crate::deployment::deployment_unit::DeploymentStrategy::RedeployAlways,
+                        TraefikIngressRoute::with_defaults(&app_name, &service_name),
+                        Vec::new(),
+                    ),
+                );
+            }
+
+            let mut created_ats = self.created_at.lock().unwrap();
+            created_ats.insert(app_name.clone(), created_at);
+        }
+
+        self
     }
 }
 
@@ -125,7 +160,9 @@ impl Infrastructure for DummyInfrastructure {
                 .map(|owners| owners.iter().cloned().collect::<HashSet<Owner>>())
                 .unwrap_or_default();
 
-            apps.insert(app_name, App::new(services, owners, udp));
+            let created_at = self.created_at.lock().unwrap();
+            let created_at = created_at.get(&app_name).cloned();
+            apps.insert(app_name, App::new(services, owners, udp, created_at));
         }
 
         Ok(apps)
@@ -206,7 +243,14 @@ impl Infrastructure for DummyInfrastructure {
         let mut user_defined_parameters = self.user_defined_parameters.lock().unwrap();
         let user_defined_parameters = user_defined_parameters.remove(app_name);
 
-        Ok(App::new(services, owners, user_defined_parameters))
+        let mut created_at = self.created_at.lock().unwrap();
+
+        Ok(App::new(
+            services,
+            owners,
+            user_defined_parameters,
+            created_at.remove(app_name),
+        ))
     }
 
     async fn get_logs<'a>(

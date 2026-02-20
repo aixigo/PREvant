@@ -793,7 +793,9 @@ impl DockerInfrastructure {
             services.push(service);
         }
 
-        App::new(services, owners, None)
+        App::new(
+            services, owners, None, None, // TODO: make sure to collect the creation data
+        )
     }
 }
 
