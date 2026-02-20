@@ -33,7 +33,7 @@ use crate::apps::{AppRepository, Apps};
 use crate::config::{ApiAccessMode, Config, Runtime};
 use crate::db::DatabasePool;
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
-use crate::models::request_info::RequestInfo;
+use crate::openapi::api_documentation;
 use crate::tickets::TicketsCaching;
 use apps::AppProcessingQueue;
 use auth::Auth;
@@ -60,52 +60,10 @@ mod deployment;
 mod http_result;
 mod infrastructure;
 mod models;
+mod openapi;
 mod registry;
 mod tickets;
 mod webhooks;
-
-#[derive(rocket::Responder)]
-#[response(status = 200, content_type = "application/yaml")]
-struct OpenAPI(String);
-
-#[rocket::get("/")]
-fn openapi(request_info: RequestInfo, config: &State<Config>) -> HttpResult<OpenAPI> {
-    let openapi_path = Path::new("res").join("openapi.yml");
-
-    let mut handlebars = Handlebars::new();
-    handlebars
-        .register_template_file("openapi", openapi_path)
-        .map_err(|e| {
-            HttpApiError::from(
-                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                    .detail(e.to_string()),
-            )
-        })?;
-
-    let mut url = request_info.base_url().clone();
-    url.set_path("/api");
-
-    let mut data = BTreeMap::new();
-    data.insert("serverUrl", url.to_string());
-    if matches!(
-        config.applications.replication_condition,
-        config::ReplicateApplicationCondition::AlwaysFromDefaultApp
-    ) {
-        data.insert(
-            "defaultApplication",
-            config.applications.default_app.to_string(),
-        );
-    }
-
-    Ok(OpenAPI(handlebars.render("openapi", &data).map_err(
-        |e| {
-            HttpApiError::from(
-                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                    .detail(e.to_string()),
-            )
-        },
-    )?))
-}
 
 #[derive(rocket::Responder)]
 #[response(status = 200, content_type = "html")]
@@ -223,7 +181,7 @@ async fn main() -> Result<(), StartUpError> {
             "/",
             FileServer::new(Path::new("frontend"), Options::Index | Options::Missing),
         )
-        .mount("/openapi.yaml", routes![openapi])
+        .mount("/", routes![api_documentation])
         .mount("/api/apps", crate::apps::apps_routes())
         .mount("/api", crate::tickets::ticket_routes())
         .mount("/api", routes![webhooks::webhooks])

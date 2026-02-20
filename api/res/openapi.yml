@@ -104,55 +104,13 @@ paths:
                         An optional JSON value that will be validated according
                         to the [user defined template schema
                         configuration](https://github.com/aixigo/PREvant/blob/master/docs/user-defined-schema.md).
-            example: |
-               [{
-                  "serviceName": "db",
-                  "image": "mariadb",
-                  "env": {
-                     "MARIADB_ROOT_PASSWORD": {
-                        "value": "example",
-                        "replicate": true
-                     },
-                     "MARIADB_USER": {
-                        "value": "example-user",
-                        "replicate": true
-                     },
-                     "MARIADB_PASSWORD": {
-                        "value": "my_cool_secret",
-                        "replicate": true
-                     },
-                     "MARIADB_DATABASE": {
-                        "value": "example-database",
-                        "replicate": true
-                     }
-                  }
-               }, {
-                  "serviceName": "blog",
-                  "image": "wordpress",
-                  "env": {
-                     "WORDPRESS_DB_HOST": {
-                        "value": "db",
-                        "replicate": true
-                     },
-                     "WORDPRESS_DB_USER": {
-                        "value": "example-user",
-                        "replicate": true
-                     },
-                     "WORDPRESS_DB_PASSWORD": {
-                        "value": "my_cool_secret",
-                        "replicate": true
-                     },
-                     "WORDPRESS_DB_NAME": {
-                        "value": "example-database",
-                        "replicate": true
-                     },
-                     "WORDPRESS_CONFIG_EXTRA": {
-                        "value": "define('WP_HOME','http://localhost');\ndefine('WP_SITEURL','http://localhost/\{{application.name}}/blog');",
-                        "replicate": true,
-                        "templated": true
-                     }
-                  }
-               }]
+            examples:
+               {{#each examples}}
+               {{@key}}:
+                  {{#each this}}
+                  {{{this}}}
+                  {{~/each~}}
+               {{~/each}}
       responses:
         '200':
           description: ''

@@ -251,6 +251,8 @@ pub struct Applications {
     pub default_app: AppName,
     #[serde(default)]
     pub replication_condition: ReplicateApplicationCondition,
+    #[serde(default)]
+    pub open_api_examples: Option<PathBuf>,
 }
 
 impl Default for Applications {
@@ -259,6 +261,7 @@ impl Default for Applications {
             max: None,
             default_app: AppName::master(),
             replication_condition: Default::default(),
+            open_api_examples: None,
         }
     }
 }
@@ -1330,7 +1333,8 @@ mod tests {
             Applications {
                 max: None,
                 default_app: AppName::master(),
-                replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp
+                replication_condition: ReplicateApplicationCondition::AlwaysFromDefaultApp,
+                open_api_examples: None,
             }
         )
     }

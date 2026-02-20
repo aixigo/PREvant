@@ -77,6 +77,20 @@ defaultApp = "master"
 # Configures PREvant to always replicate, to replicate only when specified in
 # the deployment request or to never replicate.
 replicationCondition = "always-from-default-app" # | "replicate-only-when-requested" | "never"
+
+# Path to a YAML file that provides a set of example creation payloads to help people
+# to deploy applications. For example,
+#
+# The format of the file must look as defined here:
+# https://swagger.io/docs/specification/v3_0/adding-examples/#examples-for-xml-and-html-data
+#
+# wordpress:
+#    summary: A simple example how one can deploy a Wordpress blog.
+#    value: …
+# nextcloud:
+#    summary: A simple example how one can deploy a Nextcloud instance.
+#    value: …
+openApiExamples = "/path/to/examples.yaml"
 ```
 
 ## Container Options
