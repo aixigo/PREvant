@@ -78,13 +78,13 @@
 
    flex-grow: 0;
    flex-shrink: 0;
+}
 
-   &:hover {
-      cursor: pointer;
+.ra-container__expandable .ra-container__type:hover {
+   cursor: pointer;
 
-      .ra-icons {
-         opacity: 1;
-      }
+   .ra-icons {
+      opacity: 1;
    }
 }
 

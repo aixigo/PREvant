@@ -87,7 +87,10 @@
             <div v-for="container in reviewApp.containers"
                  :key="container.name"
                  class="ra-container"
-                 :class="{ 'ra-container__paused': container.status !== 'running' }">
+                 :class="{ 
+                  'ra-container__paused': !isRunning( container ),
+                  'ra-container__expandable': isExpandable( container ) 
+                 }">
 
                <div class="ra-container__type"
                     :class="{ 'is-expanded': isExpanded( container ) }"
@@ -107,7 +110,7 @@
 
                <div class="ra-container__infos">
                   <h5>
-                     <a v-if="container.url" :href='container.url' target="_blank">{{ container.name }}</a>
+                     <a v-if="container.url && isRunning( container )" :href='container.url' target="_blank">{{ container.name }}</a>
                      <span v-else>{{ container.name }}</span>
 
                      <button type="button" class="btn btn-dark ra-container__change-status" @click="changeState($event, container.name)" v-if="reviewApp.status == 'deployed'">
@@ -125,7 +128,7 @@
                      <div class="ra-build-infos">
                         <router-link v-if="container.openApiUrl" :to="{ name: 'open-api-ui', params: {  url: container.openApiUrl }, meta: { title: container.name }}">Open API Documentation</router-link>
                         <router-link v-if="container.asyncApiUrl" :to="{ name: 'async-api-ui', params: { url: container.asyncApiUrl }, meta: { title: container.name }}">Async API Documentation</router-link>
-                        <router-link :to="{ name: 'logs', params: {  app: reviewApp.name, service: container.name }}">Logs</router-link>
+                        <router-link v-if="isRunning(container)" :to="{ name: 'logs', params: {  app: reviewApp.name, service: container.name }}">Logs</router-link>
                      </div>
 
                      <div v-if="container.version && container.version.dateModified" class="ra-build-infos">
@@ -197,6 +200,14 @@
    background-color: #ef6c00;
    color: #fff;
 }
+
+.ra-icon--expander {
+   visibility: hidden;
+}
+
+.ra-container__expandable .ra-icon--expander{
+   visibility: visible;
+}
 </style>
 
 <script>
@@ -234,9 +245,8 @@
             const {containers} = newValue;
 
             if (containers && containers.length) {
-               containers.forEach(({name, version, openApiUrl}) => {
-                  const expanded = version != null || openApiUrl != null;
-                  this.expandedContainers[name] = expanded;
+               containers.forEach((container) => {
+                  this.expandedContainers[container.name] = this.isExpandable(container);
                });
             }
          }
@@ -300,11 +310,25 @@
             return 'badge-secondary';
          },
          toggleContainer(container) {
+            if (!this.isExpandable(container)) {
+               return;
+            }
             this.expandedContainers[container.name] = !this.isExpanded(container);
+         },
+         isExpandable(container) {
+            return (
+               container.version != null ||
+               container.openApiUrl != null ||
+               container.asyncApiUrl != null ||
+               this.isRunning(container)
+            );
+         },
+         isRunning(container) {
+            return container.status !== 'paused' && this.reviewApp.status !== 'backed-up';
          },
          isExpanded(container) {
             if (this.expandedContainers[container.name] == undefined) {
-               return container.openApiUrl != null || container.asyncApiUrl != null;
+               return this.isExpandable(container);
             }
 
             return this.expandedContainers[container.name] == true;
