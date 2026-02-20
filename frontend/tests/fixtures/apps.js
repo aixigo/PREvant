@@ -1,11 +1,11 @@
-import { OPEN_API_URL, ASYNC_API_URL } from './urls'
+import { OPEN_API_URL, ASYNC_API_URL } from "./urls";
 
 export const DEFAULT_PREVIEW_NAME = "master";
 export const PREVIEW_NAME = "my-preview";
 export const SERVICE_NAME = "whoami";
 export const mockedApps = {
   [PREVIEW_NAME]: {
-    status: 'deployed',
+    status: "deployed",
     services: [
       {
         name: SERVICE_NAME,
@@ -19,10 +19,14 @@ export const mockedApps = {
   },
 };
 
-// We need to use this format because the apps are fetched using event streams
-export const mockedAppsAsEventStream = `
-data:${JSON.stringify(mockedApps)}
+export function appsAsEventStream(apps) {
+  // We need to use this format because the apps are fetched using event streams
+  return `
+data:${JSON.stringify(apps)}
 :
 
 
 `; // The empty lines at the end are important. Do not delete them!
+}
+
+export const mockedAppsAsEventStream = appsAsEventStream(mockedApps);

@@ -30,10 +30,14 @@
          <div class="card-header">
             <div class="d-flex justify-content-between">
                <h4 v-if="reviewApp.ticket !== undefined"
-                   class="ra-headline">
+                   class="ra-headline ra-app-title">
                   <a :href="reviewApp.ticket.link" target="_blank">{{ reviewApp.name }}</a>
+                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ml-2">Backed up</span>
                </h4>
-               <h4 v-else>{{ reviewApp.name }}</h4>
+               <h4 v-else class="ra-app-title">
+                  {{ reviewApp.name }}
+                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ml-2">Backed up</span>
+               </h4>
 
                <div class="dropdown menu">
                   <button class="btn bmd-btn-icon dropdown-toggle" type="button" :id="'menu' + reviewApp.name"
@@ -48,6 +52,14 @@
                      </button>
                      <button type="button" class="dropdown-item btn btn-primary" @click="duplicateApp()">
                         <font-awesome-icon icon="copy"/> &nbsp; Duplicate
+                     </button>
+                     <button type="button" class="dropdown-item btn btn-primary" @click="openBackupDialog()" v-if="isBackupsEnabled">
+                        <template v-if="reviewApp.status === 'backed-up'">
+                           <font-awesome-icon icon="server"/> &nbsp; Redeploy
+                        </template>
+                        <template v-else>
+                           <font-awesome-icon icon="download"/> &nbsp; Back up
+                        </template>
                      </button>
                      <button type="button" class="dropdown-item btn btn-danger" @click="openDeleteDialog()"
                              v-if="reviewApp.name !== defaultAppName">
@@ -75,7 +87,10 @@
             <div v-for="container in reviewApp.containers"
                  :key="container.name"
                  class="ra-container"
-                 :class="{ 'ra-container__paused': container.status !== 'running' }">
+                 :class="{ 
+                  'ra-container__paused': !isRunning( container ),
+                  'ra-container__expandable': isExpandable( container ) 
+                 }">
 
                <div class="ra-container__type"
                     :class="{ 'is-expanded': isExpanded( container ) }"
@@ -95,7 +110,7 @@
 
                <div class="ra-container__infos">
                   <h5>
-                     <a v-if="container.url" :href='container.url' target="_blank">{{ container.name }}</a>
+                     <a v-if="container.url && isRunning( container )" :href='container.url' target="_blank">{{ container.name }}</a>
                      <span v-else>{{ container.name }}</span>
 
                      <button type="button" class="btn btn-dark ra-container__change-status" @click="changeState($event, container.name)" v-if="reviewApp.status == 'deployed'">
@@ -113,7 +128,7 @@
                      <div class="ra-build-infos">
                         <router-link v-if="container.openApiUrl" :to="{ name: 'open-api-ui', params: {  url: container.openApiUrl }, meta: { title: container.name }}">Open API Documentation</router-link>
                         <router-link v-if="container.asyncApiUrl" :to="{ name: 'async-api-ui', params: { url: container.asyncApiUrl }, meta: { title: container.name }}">Async API Documentation</router-link>
-                        <router-link :to="{ name: 'logs', params: {  app: reviewApp.name, service: container.name }}">Logs</router-link>
+                        <router-link v-if="isRunning(container)" :to="{ name: 'logs', params: {  app: reviewApp.name, service: container.name }}">Logs</router-link>
                      </div>
 
                      <div v-if="container.version && container.version.dateModified" class="ra-build-infos">
@@ -165,6 +180,7 @@
 
       <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name !== defaultAppName"/>
       <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
+      <backup-app-dialog ref="backupDlg" :app-name="reviewApp.name" :app-status="reviewApp.status" v-if="isBackupsEnabled"/>
    </div>
 </template>
 
@@ -176,20 +192,38 @@
 .owners span {
     margin: 0 0.2em;
 }
+.ra-app-title {
+   display: flex;
+   align-items: center;
+}
+.badge-backed-up {
+   background-color: #ef6c00;
+   color: #fff;
+}
+
+.ra-icon--expander {
+   visibility: hidden;
+}
+
+.ra-container__expandable .ra-icon--expander{
+   visibility: visible;
+}
 </style>
 
 <script>
    import moment from 'moment';
+   import BackupAppDialog from './BackupAppDialog.vue';
    import DuplicateAppDialog from './DuplicateAppDialog.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
    import { useConfig } from '../composables/useConfig';
 
    export default {
       setup() {
-         const { defaultAppName } = useConfig();
+         const { defaultAppName, isBackupsEnabled } = useConfig();
 
          return {
-            defaultAppName
+            defaultAppName,
+            isBackupsEnabled
          };
       },
       data() {
@@ -198,6 +232,7 @@
          };
       },
       components: {
+         'backup-app-dialog': BackupAppDialog,
          'duplicate-app-dialog': DuplicateAppDialog,
          'shutdown-app-dialog': ShutdownAppDialog,
       },
@@ -210,9 +245,8 @@
             const {containers} = newValue;
 
             if (containers && containers.length) {
-               containers.forEach(({name, version, openApiUrl}) => {
-                  const expanded = version != null || openApiUrl != null;
-                  this.expandedContainers[name] = expanded;
+               containers.forEach((container) => {
+                  this.expandedContainers[container.name] = this.isExpandable(container);
                });
             }
          }
@@ -240,6 +274,9 @@
       methods: {
          duplicateApp() {
             this.$refs.duplicateDlg.open();
+         },
+         openBackupDialog() {
+            this.$refs.backupDlg.open();
          },
          copyVersions() {
             const {versionDisplay} = this.$refs;
@@ -273,11 +310,25 @@
             return 'badge-secondary';
          },
          toggleContainer(container) {
+            if (!this.isExpandable(container)) {
+               return;
+            }
             this.expandedContainers[container.name] = !this.isExpanded(container);
+         },
+         isExpandable(container) {
+            return (
+               container.version != null ||
+               container.openApiUrl != null ||
+               container.asyncApiUrl != null ||
+               this.isRunning(container)
+            );
+         },
+         isRunning(container) {
+            return container.status !== 'paused' && this.reviewApp.status !== 'backed-up';
          },
          isExpanded(container) {
             if (this.expandedContainers[container.name] == undefined) {
-               return container.openApiUrl != null || container.asyncApiUrl != null;
+               return this.isExpandable(container);
             }
 
             return this.expandedContainers[container.name] == true;

@@ -27,36 +27,51 @@
 <template>
    <ConfirmationDialog
       ref="dialog"
-      :title="'Shutdown ' + appName"
+      :title="dialogTitle"
       :expected-value="appName"
-      confirm-label="Confirm"
-      auth-message="You need to be logged in to shutdown apps."
-      button-class="btn btn-outline-danger"
-      @confirm="deleteApp">
+      :confirm-label="actionLabel"
+      auth-message="You need to be logged in to back up or redeploy apps."
+      @confirm="changeAppState">
       <template #description>
-         <p>Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing in the app:</p>
+         <p>Do you really want to {{ actionLabel.toLowerCase() }} <b>{{ appName }}</b>? Confirm by typing in the app name:</p>
       </template>
    </ConfirmationDialog>
 </template>
 
 <script setup>
-   import { useTemplateRef } from 'vue';
+   import { computed, useTemplateRef } from 'vue';
    import { useStore } from 'vuex';
    import ConfirmationDialog from './ConfirmationDialog.vue';
 
-   defineProps({
-      appName: { type: String, required: true }
+   const props = defineProps({
+      appName: { type: String, required: true },
+      appStatus: { type: String, required: true }
    });
 
    const store = useStore();
    const dialog = useTemplateRef('dialog');
 
+   const actionLabel = computed(() => {
+      return props.appStatus === 'backed-up' ? 'Redeploy' : 'Back up';
+   });
+
+   const targetStatus = computed(() => {
+      return props.appStatus === 'backed-up' ? 'deployed' : 'backed-up';
+   });
+
+   const dialogTitle = computed(() => {
+      return `${actionLabel.value} ${props.appName}`;
+   });
+
    function open() {
       dialog.value.open();
    }
 
-   function deleteApp(appName) {
-      store.dispatch('deleteApp', { appName });
+   function changeAppState() {
+      store.dispatch('changeAppState', {
+         appName: props.appName,
+         status: targetStatus.value
+      });
    }
 
    defineExpose({

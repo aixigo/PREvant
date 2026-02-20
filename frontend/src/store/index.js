@@ -113,37 +113,35 @@ export function createStore(router, me, issuers) {
             }
          },
 
-         myApps: (state, getters) => {
+         ownedApps: (state, getters) => {
             if (state.me === null) {
                return [];
             }
 
-            return getters.reviewApps
-               .filter(app => (app.owners ?? []).some(owner => owner.sub == state.me.sub && owner.iss == state.me.iss))
-               .filter(app => app.status === "deployed");
+            return getters.reviewApps.filter(isOwnedBy(state.me));
          },
 
-         notMyApps: (state, getters) => {
-            const myAppNames = new Set(getters.myApps.map(app => app.name));
+         otherApps: (state, getters) => {
+            const ownedAppNames = new Set(getters.ownedApps.map(app => app.name));
+            return getters.reviewApps.filter(app => !ownedAppNames.has(app.name));
+         },
 
-            return getters.reviewApps
-               .filter(app => !myAppNames.has(app.name))
-               .filter(app => app.status === "deployed");
+         deployedOtherApps: (state, getters) => {
+            return getters.otherApps.filter(hasStatus('deployed'));
+         },
+
+         appBackups: (state, getters) => {
+            return getters.otherApps.filter(hasStatus('backed-up'));
          },
 
          appsWithTicket: (state, getters) => {
-            return getters.notMyApps
+            return getters.deployedOtherApps
                .filter(app => state.tickets[app.name] !== undefined);
          },
 
          appsWithoutTicket: (state, getters) => {
-            return getters.notMyApps
+            return getters.deployedOtherApps
                .filter(app => state.tickets[app.name] === undefined);
-         },
-
-         appBackups: (state, getters) => {
-            return getters.reviewApps
-               .filter(app => app.status === "backed-up");
          },
 
          errors: state => {
@@ -216,6 +214,20 @@ export function createStore(router, me, issuers) {
                state.apps[appName] = newAppOrResponseError;
                state.appsError = null;
             }
+         },
+
+         updateAppState(state, { appName, appOrResponseError, status }) {
+            if (appOrResponseError.type) {
+               state.appsError = enrichAppStateError(appOrResponseError);
+               return;
+            }
+
+            if (appOrResponseError.status != null) {
+               state.apps[appName] = appOrResponseError;
+            } else if (state.apps[appName]) {
+               state.apps[appName].status = status;
+            }
+            state.appsError = null;
          },
 
          storeTickets(state, ticketsResponse) {
@@ -317,6 +329,27 @@ export function createStore(router, me, issuers) {
                if (response.status === 202) {
                   context.commit("updateServiceStatus", { appName, serviceName, serviceStatus: newStatus });
                }
+            });
+         },
+
+         changeAppState(context, { appName, status }) {
+            context.commit('startFetch', {});
+
+            fetchAndPoll(
+               `/api/apps/${appName}/states/`,
+               {
+                  method: 'PUT',
+                  headers: {
+                     'Content-Type': 'application/json',
+                     'Accept': 'application/json'
+                  },
+                  body: JSON.stringify({ status })
+               },
+               'cannot-change-app-state',
+               'Cannot change app state',
+            ).then(appOrResponseError => {
+               context.commit('updateAppState', { appName, appOrResponseError, status });
+               context.commit('endFetch');
             });
          },
 
@@ -449,6 +482,12 @@ function enrichDeletionError(error) {
   });
 }
 
+function enrichAppStateError(error) {
+  return enrichError(error, {
+    403: "You need to be logged in to back up or redeploy apps."
+  });
+}
+
 /**
  * Takes a problem/json error object and enriches it with status code
  * depenend detail if not present already
@@ -458,4 +497,12 @@ function enrichError(error, statusSpecificOverrides = {}) {
     ...error,
     detail: error.detail ?? statusSpecificOverrides[error.status] ?? "Unknown Error",
   };
+}
+
+function hasStatus(status) {
+  return app => app.status === status;
+}
+
+function isOwnedBy(me) {
+  return app => (app.owners ?? []).some(owner => owner.sub == me.sub && owner.iss == me.iss);
 }
