@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant Frontend
  * %%
- * Copyright (C) 2018 - 2019 aixigo AG
+ * Copyright (C) 2018 - 2026 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,75 +25,39 @@
  */
 
 <template>
-   <dlg ref="dialog" :title="'Duplicate ' + duplicateFromAppName">
-      <template v-slot:body>
-         <div class="form-group">
-            <input
-                  type="name"
-                  class="form-control"
-                  placeholder="Enter app name"
-                  v-model.trim="newAppName"
-                  :disabled="!hasWritePermissions"
-                  @keyup="keyPressed">
-         </div>
-         <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
-            You need to be logged in to duplicate apps.
-         </div>
-      </template>
-      <template v-slot:footer>
-         <button
-               type="button"
-               class="btn btn-outline-primary"
-               :disabled="!hasWritePermissions || newAppName.length === 0"
-               @click="duplicateApp()">
-            Duplicate
-         </button>
-      </template>
-   </dlg>
+   <InputDialog
+      ref="dialog"
+      :title="'Duplicate ' + duplicateFromAppName"
+      confirm-label="Duplicate"
+      auth-message="You need to be logged in to duplicate apps."
+      :trim-input="true"
+      @confirm="duplicateApp" />
 </template>
 
-<script>
-   import { useAuth } from '../composables/useAuth';
-   import Dialog from './Dialog.vue';
+<script setup>
+   import { useTemplateRef } from 'vue';
+   import { useStore } from 'vuex';
+   import InputDialog from './InputDialog.vue';
 
-   export default {
-      setup() {
-         const { hasWritePermissions } = useAuth();
+   const props = defineProps({
+      duplicateFromAppName: { type: String, required: true }
+   });
 
-         return {
-            hasWritePermissions
-         };
-      },
-      data() {
-         return {
-            newAppName: ''
-         };
-      },
-      components: {
-         'dlg': Dialog
-      },
-      props: {
-         duplicateFromAppName: {type: String}
-      },
-      methods: {
-         open() {
-            this.newAppName = '';
-            this.$refs.dialog.open();
-         },
+   const store = useStore();
+   const dialog = useTemplateRef('dialog');
 
-         keyPressed(e) {
-            if (e.keyCode === 13) {
-               this.duplicateApp();
-            }
-         },
-
-         duplicateApp() {
-            this.$store.dispatch( 'duplicateApp', {
-               appToDuplicate: this.duplicateFromAppName,
-               newAppName: this.newAppName
-            } );
-            this.$refs.dialog.close();
-         }
-      }
+   function open() {
+      dialog.value.open();
    }
+
+   function duplicateApp(newAppName) {
+      store.dispatch('duplicateApp', {
+         appToDuplicate: props.duplicateFromAppName,
+         newAppName
+      });
+   }
+
+   defineExpose({
+      open
+   });
 </script>

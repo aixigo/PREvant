@@ -25,38 +25,50 @@
  */
 
 <template>
-   <ConfirmationDialog
+   <InputDialog
       ref="dialog"
-      :title="'Shutdown ' + appName"
-      :expected-value="appName"
-      confirm-label="Confirm"
-      auth-message="You need to be logged in to shutdown apps."
-      button-class="btn btn-outline-danger"
-      @confirm="deleteApp">
-      <template #description>
-         <p>Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing in the app:</p>
+      :title="title"
+      :description="description"
+      :expected-value="expectedValue"
+      :require-match="true"
+      :trim-input="trimInput"
+      :requires-write-permissions="requiresWritePermissions"
+      :confirm-label="confirmLabel"
+      :auth-message="authMessage"
+      :input-placeholder="inputPlaceholder"
+      :button-class="buttonClass"
+      @confirm="forwardConfirm">
+      <template v-if="$slots.description" #description>
+         <slot name="description"></slot>
       </template>
-   </ConfirmationDialog>
+   </InputDialog>
 </template>
 
 <script setup>
    import { useTemplateRef } from 'vue';
-   import { useStore } from 'vuex';
-   import ConfirmationDialog from './ConfirmationDialog.vue';
+   import InputDialog from './InputDialog.vue';
 
    defineProps({
-      appName: { type: String, required: true }
+      title: { type: String, required: true },
+      description: { type: String, default: '' },
+      expectedValue: { type: String, required: true },
+      trimInput: { type: Boolean, default: false },
+      requiresWritePermissions: { type: Boolean, default: true },
+      confirmLabel: { type: String, required: true },
+      authMessage: { type: String, default: undefined },
+      inputPlaceholder: { type: String, default: 'Enter app name' },
+      buttonClass: { type: String, default: 'btn btn-outline-primary' },
    });
 
-   const store = useStore();
+   const emit = defineEmits(['confirm']);
    const dialog = useTemplateRef('dialog');
 
    function open() {
       dialog.value.open();
    }
 
-   function deleteApp(appName) {
-      store.dispatch('deleteApp', { appName });
+   function forwardConfirm(value) {
+      emit('confirm', value);
    }
 
    defineExpose({

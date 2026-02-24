@@ -76,10 +76,18 @@
    import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
    import Dialog from '../components/Dialog.vue';
    import moment from 'moment';
+   import { useCloseNavigation } from '../composables/useCloseNavigation';
 
    let requestUri;
 
    export default {
+      setup() {
+         const { navigateOnClose } = useCloseNavigation();
+
+         return {
+            navigateOnClose
+         };
+      },
       data() {
          return {
             itemSize: 24,
@@ -170,7 +178,7 @@
             if (this.eventSource) {
                this.eventSource.close();
             }
-            this.$router.push(this.$router.options.history.state.back ?? "/");
+            this.navigateOnClose();
          },
 
          scrollBottom() {

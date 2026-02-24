@@ -15,12 +15,13 @@
 
 <script setup>
 import { onMounted, useTemplateRef } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 import AsyncApiStandalone from "@asyncapi/react-component/browser/standalone";
 import Dialog from "../components/Dialog.vue";
+import { useCloseNavigation } from "../composables/useCloseNavigation";
 
 const route = useRoute();
-const router = useRouter();
+const { navigateOnClose } = useCloseNavigation();
 
 const dialog = useTemplateRef("dialog");
 const asyncapi = useTemplateRef("asyncapi");
@@ -38,6 +39,6 @@ onMounted(() => {
 });
 
 function handleClose() {
-  router.push(router.options.history.state.back ?? "/");
+  navigateOnClose();
 }
 </script>

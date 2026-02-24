@@ -66,6 +66,9 @@
          large: {type: Boolean, default: false}
       },
       mounted() {
+         $(this.$refs.dialog).on('shown.bs.modal', () => {
+            this.$emit('opened');
+         })
          $(this.$refs.dialog).on('hide.bs.modal', () => {
             this.$emit('close');
          })

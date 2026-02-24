@@ -110,6 +110,9 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
     let config_json = serde_json::json!({
         "defaultAppName": config.applications.default_app,
         "isAuthRequired": matches!(config.api_access.mode, ApiAccessMode::RequireAuth { .. }),
+        "isBackupsEnabled": config.database.is_some()
+            // TODO this condition can be removed once the Docker backend supports Docker compose types, see #146 
+            && matches!(config.runtime, Runtime::Kubernetes(..)),
     });
     data.insert("config", config_json.to_string());
 

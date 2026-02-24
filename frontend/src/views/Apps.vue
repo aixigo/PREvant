@@ -38,10 +38,10 @@
          No apps to review.
       </h1>
 
-      <h1 class="ra-container__title--preview" v-if="myApps.length > 0">My Previews</h1>
+      <h1 class="ra-container__title--preview" v-if="ownedApps.length > 0">My Previews</h1>
       <transition-group tag="div" name="list-complete" class="ra-container__apps--preview ra-apps ">
          <review-app-card
-            v-for="reviewApp in myApps"
+            v-for="reviewApp in ownedApps"
             :key="reviewApp.name"
             :review-app="reviewApp"
             :showOwners="issuers != null"
@@ -129,7 +129,7 @@
             'appsWithTicket',
             'appsWithoutTicket',
             'appBackups',
-            'myApps',
+            'ownedApps',
             'errors',
             'isFetchInProgress'
          ])

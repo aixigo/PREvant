@@ -27,12 +27,13 @@
 
 <script setup>
 import { onMounted, useTemplateRef } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 import SwaggerUI from "swagger-ui";
 import Dialog from "../components/Dialog.vue";
+import { useCloseNavigation } from "../composables/useCloseNavigation";
 
 const route = useRoute();
-const router = useRouter();
+const { navigateOnClose } = useCloseNavigation();
 
 const dialog = useTemplateRef("dialog");
 const openapi = useTemplateRef("openapi");
@@ -47,6 +48,6 @@ onMounted(() => {
 });
 
 function handleClose() {
-  router.push(router.options.history.state.back ?? "/");
+  navigateOnClose();
 }
 </script>
