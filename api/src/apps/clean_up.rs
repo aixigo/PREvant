@@ -637,14 +637,26 @@ mod tests {
             .single()
             .unwrap();
         let sleep_duration = detector.next_sleep_duration(datetime);
-        assert_eq!(sleep_duration, None);
+        assert_eq!(
+            sleep_duration, None,
+            "do not wait due to time is outside of busy hours"
+        );
 
         let datetime = Utc
             .with_ymd_and_hms(2026, 2, 20, 15, 6, 0)
             .single()
             .unwrap();
+
+        let ending_of_busy_hours = Utc
+            .with_ymd_and_hms(2026, 2, 20, 16, 0, 0)
+            .single()
+            .unwrap();
         let sleep_duration = detector.next_sleep_duration(datetime);
-        assert_eq!(sleep_duration, Some(Duration::from_mins(1)));
+        assert_eq!(
+            sleep_duration,
+            Some((ending_of_busy_hours - datetime).to_std().unwrap()),
+            "wait until the end of busy hours"
+        );
     }
 
     #[test]

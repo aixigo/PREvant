@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[cfg(test)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DummyInfrastructure {
     delay: Option<Duration>,
     services: Arc<Mutex<MultiMap<AppName, DeployableService>>>,
@@ -211,7 +211,7 @@ impl Infrastructure for DummyInfrastructure {
         Ok(self.fetch_apps().await?.remove(app_name).unwrap())
     }
 
-    async fn stop_services(&self, app_name: &AppName) -> Result<App> {
+    async fn stop_services(&self, app_name: &AppName) -> Result<Option<App>> {
         self.delay_if_configured().await;
 
         let mut services = self.services.lock().unwrap();
@@ -231,7 +231,7 @@ impl Infrastructure for DummyInfrastructure {
                     },
                 })
                 .collect::<Vec<_>>(),
-            None => return Ok(App::empty()),
+            None => Vec::new(),
         };
 
         let mut owners = self.owners.lock().unwrap();
@@ -245,12 +245,12 @@ impl Infrastructure for DummyInfrastructure {
 
         let mut created_at = self.created_at.lock().unwrap();
 
-        Ok(App::new(
+        Ok(Some(App::new(
             services,
             owners,
             user_defined_parameters,
             created_at.remove(app_name),
-        ))
+        )))
     }
 
     async fn get_logs<'a>(

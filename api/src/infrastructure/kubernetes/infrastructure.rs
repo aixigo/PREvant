@@ -571,10 +571,6 @@ impl Infrastructure for KubernetesInfrastructure {
             services.push(service);
         }
 
-        if services.is_empty() {
-            return Ok(None);
-        }
-
         let udp = namespace
             .as_ref()
             .and_then(|namespace| self.parse_user_defined_parameters_from(namespace));
@@ -737,9 +733,9 @@ impl Infrastructure for KubernetesInfrastructure {
         ))
     }
 
-    async fn stop_services(&self, app_name: &AppName) -> Result<App> {
-        let Some(services) = self.fetch_app(app_name).await? else {
-            return Ok(App::empty());
+    async fn stop_services(&self, app_name: &AppName) -> Result<Option<App>> {
+        let Some(app) = self.fetch_app(app_name).await? else {
+            return Ok(None);
         };
 
         Api::<V1Namespace>::all(self.client().await?)
@@ -749,7 +745,7 @@ impl Infrastructure for KubernetesInfrastructure {
             )
             .await?;
 
-        Ok(services)
+        Ok(Some(app))
     }
 
     async fn delete_infrastructure_objects_partially(
@@ -767,10 +763,10 @@ impl Infrastructure for KubernetesInfrastructure {
         &self,
         app_name: &AppName,
         infrastructure_payload: &[serde_json::Value],
-    ) -> Result<App> {
+    ) -> Result<Option<App>> {
         let unit = K8sDeploymentUnit::parse_from_json(app_name, infrastructure_payload)?;
         unit.deploy(self.client().await?, app_name).await?;
-        Ok(self.fetch_app(app_name).await?.unwrap_or_else(App::empty))
+        self.fetch_app(app_name).await
     }
 
     async fn get_logs<'a>(
@@ -1386,7 +1382,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn fetch_apps_without_backups() {
+        async fn fetch_apps_including_backups() {
             let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
 
             let app_name = AppName::master();
@@ -1426,7 +1422,22 @@ mod tests {
                 .unwrap();
 
             let fetch_result = infra.fetch_apps().await.map_err(AppsError::from);
-            assert_eq!(fetch_result, Ok(HashMap::new()));
+            assert_eq!(
+                fetch_result
+                    .as_ref()
+                    .map(|apps| { apps.iter().filter_map(|(_, app)| app.created_at).count() }),
+                Ok(1)
+            );
+            assert_eq!(
+                fetch_result
+                    .and_then(move |mut apps| apps.remove(&app_name).ok_or_else(|| {
+                        AppsError::AppNotFound {
+                            app_name: app_name.clone(),
+                        }
+                    }))
+                    .map(|app| app.into_services().into_iter().map(|s| s.config).collect()),
+                Ok(vec![]),
+            );
         }
 
         #[tokio::test]

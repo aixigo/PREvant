@@ -200,7 +200,12 @@ impl<'r> FromRequest<'r> for AcceptingPlainText {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{apps::HostMetaCache, config::Config, infrastructure::Dummy, sc};
+    use crate::{
+        apps::{CreateOrUpdateParams, HostMetaCache},
+        config::Config,
+        infrastructure::Dummy,
+        sc,
+    };
     use rocket::{
         http::{hyper::header::CONTENT_TYPE, Accept, Header},
         local::asynchronous::Client,
@@ -213,13 +218,11 @@ mod test {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(Default::default(), infrastructure).unwrap();
         let _result = apps
-            .create_or_update(
-                &AppName::master(),
-                None,
-                &vec![sc!("service-a")],
-                vec![],
-                None,
-            )
+            .create_or_update(CreateOrUpdateParams {
+                app_name: AppName::master(),
+                service_configs: vec![sc!("service-a")],
+                ..Default::default()
+            })
             .await?;
 
         let rocket = rocket::build()
