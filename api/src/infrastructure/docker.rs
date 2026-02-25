@@ -464,7 +464,7 @@ impl DockerInfrastructure {
                             if !applied_middle_wares.is_empty() {
                                 applied_middle_wares += ", ";
                             }
-                            applied_middle_wares += &middleware_name;
+                            applied_middle_wares += middleware_name;
                             labels.insert(
                                 format!(
                                     "traefik.http.middlewares.{middleware_name}.{}",
@@ -881,13 +881,13 @@ impl Infrastructure for DockerInfrastructure {
     }
 
     /// Deletes all services for the given `app_name`.
-    async fn stop_services(&self, app_name: &AppName) -> Result<App> {
+    async fn stop_services(&self, app_name: &AppName) -> Result<Option<App>> {
         let Some(container_details) = self
             .get_container_details(Some(app_name), None)
             .await?
             .remove(app_name)
         else {
-            return Ok(App::empty());
+            return Ok(None);
         };
 
         let docker = Docker::connect_with_socket_defaults()?;
@@ -949,7 +949,7 @@ impl Infrastructure for DockerInfrastructure {
         self.delete_network(app_name).await?;
         self.delete_volume_mount(app_name).await?;
 
-        Ok(Self::to_app(responses))
+        Ok(Some(Self::to_app(responses)))
     }
 
     async fn get_logs<'a>(

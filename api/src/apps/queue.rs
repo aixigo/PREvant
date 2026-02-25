@@ -1,5 +1,5 @@
 use crate::apps::repository::AppPostgresRepository;
-use crate::apps::{Apps, AppsError};
+use crate::apps::{Apps, AppsError, CreateOrUpdateParams};
 use crate::models::{
     App, AppName, AppStatusChangeId, AppTask, MergedAppTask, Owner, ServiceConfig,
 };
@@ -9,6 +9,7 @@ use rocket::{
     fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
 };
+use std::collections::HashSet;
 use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify},
@@ -238,7 +239,7 @@ impl AppTaskQueueConsumer {
         }
 
         self.db
-            .execute_tasks(async |tasks| {
+            .execute_tasks(async |tasks, backed_up_apps| {
                 let merged = AppTask::merge_tasks(tasks);
 
                 if log::log_enabled!(log::Level::Debug) {
@@ -279,6 +280,9 @@ impl AppTaskQueueConsumer {
                         apps
                             .restore_app_partially(app_name, infrastructure_payload_to_restore)
                             .await
+                            .and_then(|app| app.ok_or_else(|| AppsError::AppNotFound {
+                                app_name: app_name.clone()
+                            }))
                     },
                     AppTask::CreateOrUpdate {
                         app_name,
@@ -293,14 +297,14 @@ impl AppTaskQueueConsumer {
                         }
 
                         apps
-                            .create_or_update(
-                                app_name,
-                                replicate_from.clone(),
-                                service_configs,
-                                owners.clone(),
-                                user_defined_parameters.clone(),
-                            )
-                            .await
+                            .create_or_update(CreateOrUpdateParams {
+                                app_name: app_name.clone(),
+                                replicate_from: replicate_from.clone(),
+                                service_configs: service_configs.clone(),
+                                owners: owners.clone(),
+                                user_defined_parameters: user_defined_parameters.clone(),
+                                backed_up_apps,
+                            }).await
                     }
                     AppTask::Delete { app_name, .. } => {
                         if log::log_enabled!(log::Level::Debug) {
@@ -389,7 +393,7 @@ impl AppTaskQueueDB {
 
     async fn execute_tasks<F, Fut>(&self, executor: F) -> Result<()>
     where
-        F: FnOnce(Vec<AppTask>) -> Fut,
+        F: FnOnce(Vec<AppTask>, HashSet<AppName>) -> Fut,
         Fut: Future<Output = (MergedAppTask, std::result::Result<App, AppsError>)>,
     {
         match self {
@@ -437,7 +441,7 @@ impl AppTaskQueueDB {
                     return Ok(());
                 }
 
-                let (merged, result) = executor(tasks).await;
+                let (merged, result) = executor(tasks, HashSet::new()).await;
                 let done_timestamp = Utc::now();
 
                 let mut queue = mutex.lock().await;
@@ -537,7 +541,7 @@ mod tests {
 
         async fn execute_tasks<F, Fut>(&self, executor: F) -> Result<()>
         where
-            F: FnOnce(Vec<AppTask>) -> Fut,
+            F: FnOnce(Vec<AppTask>, HashSet<AppName>) -> Fut,
             Fut: Future<Output = (MergedAppTask, std::result::Result<App, AppsError>)>,
         {
             match self {
@@ -632,7 +636,9 @@ mod tests {
         let queue = queue.await;
 
         let result = queue
-            .execute_tasks(async |_tasks| unreachable!("Empty queue shouldn't trigger this code"))
+            .execute_tasks(async |_tasks, _| {
+                unreachable!("Empty queue shouldn't trigger this code")
+            })
             .await;
 
         assert!(result.is_ok())
@@ -659,7 +665,7 @@ mod tests {
             .unwrap();
 
         queue
-            .execute_tasks(async |tasks| simulate_result(tasks))
+            .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
 
@@ -699,7 +705,7 @@ mod tests {
             .unwrap();
 
         queue
-            .execute_tasks(async |tasks| simulate_result(tasks))
+            .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
 
@@ -744,7 +750,7 @@ mod tests {
             .unwrap();
 
         queue
-            .execute_tasks(async |tasks| simulate_result(tasks))
+            .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
 
@@ -786,11 +792,11 @@ mod tests {
             .unwrap();
 
         queue
-            .execute_tasks(async |tasks| simulate_result(tasks))
+            .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
         queue
-            .execute_tasks(async |tasks| simulate_result(tasks))
+            .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
 
@@ -835,7 +841,7 @@ mod tests {
             .unwrap();
 
         queue
-            .execute_tasks(async |tasks| simulate_result(tasks))
+            .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
 

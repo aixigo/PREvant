@@ -58,11 +58,31 @@ pub(super) async fn apps_v1(
     apps: &State<Apps>,
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
+    app_repository: &State<Option<AppPostgresRepository>>,
 ) -> HttpResult<Json<AppsV1>> {
-    // We don't fetch app backups here because the deprecated API wouldn't have an option to
+    let (apps, app_backups) = futures::try_join!(
+        async { apps.fetch_apps().await.map_err(HttpApiError::from) },
+        async {
+            match &**app_repository {
+                Some(app_repository) => app_repository.fetch_backed_up_apps().await.map_err(|e| {
+                    HttpApiError::from(
+                        HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                            .detail(e.to_string()),
+                    )
+                }),
+                None => Ok(HashMap::new()),
+            }
+        }
+    )?;
+
+    // We filter the apps by the backups here because the deprecated API wouldn't have an option to
     // show the outside what kind of application the consumer received. Seeing the backed up
     // applications on the receivers' ends would be a semantic breaking change.
-    let apps = apps.fetch_apps().await?;
+    let apps = apps
+        .into_iter()
+        .filter(|(app_name, _)| !app_backups.contains_key(app_name))
+        .collect::<HashMap<_, _>>();
+
     Ok(Json(AppsV1(
         host_meta_cache.assign_host_meta_data(apps, &request_info),
     )))
@@ -427,7 +447,7 @@ mod tests {
     mod url_rendering {
         use super::apps_v1;
         use crate::apps::repository::{AppPostgresRepository, BackupUpdateReceiver};
-        use crate::apps::{AppProcessingQueue, Apps, HostMetaCache};
+        use crate::apps::{AppProcessingQueue, Apps, CreateOrUpdateParams, HostMetaCache};
         use crate::config::Config;
         use crate::infrastructure::Dummy;
         use crate::models::{App, AppName};
@@ -446,7 +466,11 @@ mod tests {
             let infrastructure = Box::new(Dummy::new());
             let apps = Apps::new(Default::default(), infrastructure).unwrap();
             let _result = apps
-                .create_or_update(&AppName::master(), None, &[sc!("service-a")], vec![], None)
+                .create_or_update(CreateOrUpdateParams {
+                    app_name: AppName::master(),
+                    service_configs: vec![sc!("service-a")],
+                    ..Default::default()
+                })
                 .await?;
 
             let rocket = rocket::build()

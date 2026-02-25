@@ -84,6 +84,28 @@ impl Clone for Apps {
     }
 }
 
+struct CreateOrUpdateParams {
+    app_name: AppName,
+    replicate_from: Option<AppName>,
+    service_configs: Vec<ServiceConfig>,
+    owners: Vec<Owner>,
+    user_defined_parameters: Option<serde_json::Value>,
+    backed_up_apps: HashSet<AppName>,
+}
+
+impl Default for CreateOrUpdateParams {
+    fn default() -> Self {
+        Self {
+            app_name: AppName::master(),
+            replicate_from: Default::default(),
+            service_configs: Default::default(),
+            owners: Default::default(),
+            user_defined_parameters: Default::default(),
+            backed_up_apps: Default::default(),
+        }
+    }
+}
+
 impl Apps {
     pub fn new(config: Config, infrastructure: Box<dyn Infrastructure>) -> Result<Apps, AppsError> {
         Ok(Apps {
@@ -192,12 +214,13 @@ impl Apps {
     async fn configs_and_user_defined_parameters_to_replicate(
         &self,
         services_to_deploy: &[ServiceConfig],
-        running_app: &App,
+        running_app: &Option<App>,
         replicate_from_app_name: &AppName,
     ) -> Result<(Vec<ServiceConfig>, Option<UserDefinedParameters>), AppsError> {
         let running_instances_names = running_app
-            .services()
+            .as_ref()
             .iter()
+            .flat_map(|running_app| running_app.services())
             .filter(|c| c.container_type() == &ContainerType::Instance)
             .map(|c| c.service_name())
             .collect::<HashSet<&String>>();
@@ -207,13 +230,12 @@ impl Apps {
             .map(|c| c.service_name())
             .collect::<HashSet<&String>>();
 
-        let app = self
+        let (services, user_defined_parameters) = self
             .infrastructure
             .fetch_app(replicate_from_app_name)
             .await?
-            .unwrap_or_else(App::empty);
-
-        let (services, user_defined_parameters) = app.into_services_and_user_defined_parameters();
+            .map(|app| app.into_services_and_user_defined_parameters())
+            .unwrap_or_else(|| (Vec::new(), None));
 
         Ok((
             services
@@ -246,14 +268,16 @@ impl Apps {
     ///
     /// # Arguments
     /// * `replicate_from` - The application name that is used as a template.
-    async fn create_or_update(
-        &self,
-        app_name: &AppName,
-        replicate_from: Option<AppName>,
-        service_configs: &[ServiceConfig],
-        owners: Vec<Owner>,
-        user_defined_parameters: Option<serde_json::Value>,
-    ) -> Result<App, AppsError> {
+    async fn create_or_update(&self, params: CreateOrUpdateParams) -> Result<App, AppsError> {
+        let CreateOrUpdateParams {
+            app_name,
+            replicate_from,
+            service_configs,
+            owners,
+            user_defined_parameters,
+            backed_up_apps,
+        } = params;
+
         let user_defined_parameters = match (
             self.config.user_defined_schema_validator(),
             user_defined_parameters,
@@ -283,9 +307,10 @@ impl Apps {
         if let Some(app_limit) = self.config.applications.max {
             if running_apps
                 .iter()
+                .filter(|(existing_app_name, _)| !backed_up_apps.contains(existing_app_name))
                 // filtering the app_name that is send because otherwise clients wouldn't be able
                 // to update an existing application.
-                .filter(|(existing_app_name, _)| *existing_app_name != app_name)
+                .filter(|(existing_app_name, _)| **existing_app_name != app_name)
                 .count()
                 + 1
                 > app_limit
@@ -296,10 +321,12 @@ impl Apps {
 
         let mut configs = service_configs.to_vec();
 
-        let running_app = running_apps.remove(app_name).unwrap_or_else(App::empty);
+        let running_app = running_apps.remove(&app_name);
 
         let mut user_defined_parameters = match (
-            running_app.user_defined_parameters().clone(),
+            running_app
+                .as_ref()
+                .and_then(|app| app.user_defined_parameters().clone()),
             user_defined_parameters,
         ) {
             (None, None) => None,
@@ -322,14 +349,14 @@ impl Apps {
                 Some(replicate_from_app_name),
                 ReplicateApplicationCondition::AlwaysFromDefaultApp
                 | ReplicateApplicationCondition::ExplicitlyMentioned,
-            ) if replicate_from_app_name != app_name => Some(replicate_from_app_name),
+            ) if *replicate_from_app_name != app_name => Some(replicate_from_app_name),
             _ => None,
         };
 
         if let Some(replicate_from_app_name) = replicate_from_app_name {
             let (config_to_replicate, replication_user_defined_parameters) = self
                 .configs_and_user_defined_parameters_to_replicate(
-                    service_configs,
+                    &service_configs,
                     &running_app,
                     replicate_from_app_name,
                 )
@@ -351,7 +378,9 @@ impl Apps {
             };
         }
 
-        let (services, mut existing_owners) = running_app.into_services_and_owners();
+        let (services, mut existing_owners) = running_app
+            .map(|app| app.into_services_and_owners())
+            .unwrap_or_else(|| (Vec::new(), HashSet::new()));
         existing_owners.extend(owners);
         let configs_for_templating = services
             .into_iter()
@@ -413,7 +442,7 @@ impl Apps {
         &self,
         app_name: &AppName,
         infrastructure_payload: &[serde_json::Value],
-    ) -> Result<App, AppsError> {
+    ) -> Result<Option<App>, AppsError> {
         Ok(self
             .infrastructure
             .restore_infrastructure_objects_partially(app_name, infrastructure_payload)
@@ -424,12 +453,11 @@ impl Apps {
     async fn delete_app(&self, app_name: &AppName) -> Result<App, AppsError> {
         let app = self.infrastructure.stop_services(app_name).await?;
 
-        if app.is_empty() {
-            Err(AppsError::AppNotFound {
+        match app {
+            None => Err(AppsError::AppNotFound {
                 app_name: app_name.clone(),
-            })
-        } else {
-            Ok(app)
+            }),
+            Some(app) => Ok(app),
         }
     }
 
@@ -618,8 +646,12 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(&AppName::master(), None, &[sc!("service-a")], vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-a")],
+            ..Default::default()
+        })
+        .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
         assert_eq!(deployed_apps.len(), 1);
@@ -636,22 +668,18 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
-        apps.create_or_update(
-            &AppName::from_str("branch").unwrap(),
-            None,
-            &[sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("branch").unwrap(),
+            service_configs: vec![sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
@@ -677,22 +705,18 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
-        apps.create_or_update(
-            &AppName::from_str("branch").unwrap(),
-            None,
-            &[sc!("service-c")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("branch").unwrap(),
+            service_configs: vec![sc!("service-c")],
+            ..Default::default()
+        })
         .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
@@ -703,13 +727,12 @@ mod tests {
         assert_eq!(app.services().len(), 1);
         assert_contains_service!(app.services(), "service-c", ContainerType::Instance);
 
-        apps.create_or_update(
-            &AppName::from_str("branch").unwrap(),
-            Some(AppName::master()),
-            &[sc!("service-c")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("branch").unwrap(),
+            replicate_from: Some(AppName::master()),
+            service_configs: vec![sc!("service-c")],
+            ..Default::default()
+        })
         .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
@@ -736,22 +759,19 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
-        apps.create_or_update(
-            &AppName::from_str("branch").unwrap(),
-            Some(AppName::master()),
-            &[sc!("service-c")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("branch").unwrap(),
+            replicate_from: Some(AppName::master()),
+            service_configs: vec![sc!("service-c")],
+            ..Default::default()
+        })
         .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
@@ -771,31 +791,25 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
-        apps.create_or_update(
-            &AppName::from_str("branch").unwrap(),
-            None,
-            &[sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("branch").unwrap(),
+            service_configs: vec![sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
-        apps.create_or_update(
-            &AppName::from_str("branch").unwrap(),
-            None,
-            &[sc!("service-a")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("branch").unwrap(),
+            service_configs: vec![sc!("service-a")],
+            ..Default::default()
+        })
         .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
@@ -825,8 +839,12 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(&AppName::master(), None, &[sc!("mariadb")], vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("mariadb")],
+            ..Default::default()
+        })
+        .await?;
 
         let app = apps
             .infrastructure
@@ -866,13 +884,11 @@ mod tests {
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::from_str("master-1x").unwrap(),
-            None,
-            &[sc!("mariadb")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("master-1x").unwrap(),
+            service_configs: vec![sc!("mariadb")],
+            ..Default::default()
+        })
         .await?;
 
         let app = apps
@@ -901,13 +917,11 @@ mod tests {
 
         let app_name = AppName::master();
 
-        apps.create_or_update(
-            &app_name,
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
         let log_chunk = apps
@@ -945,8 +959,12 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::from_str("master").unwrap();
         let services = vec![sc!("service-a"), sc!("service-b")];
-        apps.create_or_update(&app_name, None, &services, vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: services.clone(),
+            ..Default::default()
+        })
+        .await?;
         for service in services {
             let mut log_stream = apps
                 .stream_logs(&app_name, service.service_name(), &None, &None)
@@ -1008,8 +1026,12 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        apps.create_or_update(&app_name, None, &[sc!("service-a")], vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![sc!("service-a")],
+            ..Default::default()
+        })
+        .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
         let app = deployed_apps.get(&app_name).unwrap();
@@ -1046,8 +1068,12 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("openid"), sc!("db")];
-        apps.create_or_update(&app_name, None, &configs, vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: configs.clone(),
+            ..Default::default()
+        })
+        .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
         let deployed_app = deployed_apps.get(&app_name).unwrap();
@@ -1099,8 +1125,12 @@ Log msg 3 of service-a of app master
             files = ()
         )];
 
-        apps.create_or_update(&app_name, None, &configs, vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: configs,
+            ..Default::default()
+        })
+        .await?;
 
         let deployed_apps = apps.fetch_apps().await?;
 
@@ -1141,7 +1171,7 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn should_include_running_instance_in_templating() -> Result<(), AppsError> {
+    async fn include_running_instance_in_templating() -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -1156,12 +1186,24 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
         let app_name = AppName::master();
 
-        apps.create_or_update(&app_name, None, &[crate::sc!("service-a")], vec![], None)
-            .await?;
-        apps.create_or_update(&app_name, None, &[crate::sc!("service-b")], vec![], None)
-            .await?;
-        apps.create_or_update(&app_name, None, &[crate::sc!("service-c")], vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![crate::sc!("service-a")],
+            ..Default::default()
+        })
+        .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![crate::sc!("service-b")],
+            ..Default::default()
+        })
+        .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![crate::sc!("service-c")],
+            ..Default::default()
+        })
+        .await?;
 
         let mut apps = apps.infrastructure.fetch_apps().await?;
         let openid_config = apps
@@ -1189,8 +1231,12 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        apps.create_or_update(&app_name, None, &[sc!("service-a")], vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![sc!("service-a")],
+            ..Default::default()
+        })
+        .await?;
         let deleted_services = apps.delete_app(&app_name).await?;
 
         assert_eq!(
@@ -1243,8 +1289,12 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         let configs = vec![sc!("db1"), sc!("db2")];
-        apps.create_or_update(&app_name, None, &configs, vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: configs,
+            ..Default::default()
+        })
+        .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
         let db_config1: Vec<ServiceConfig> = apps
@@ -1309,13 +1359,11 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            app_name,
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
         let deployed_services = apps.fetch_apps().await?;
@@ -1339,13 +1387,11 @@ Log msg 3 of service-a of app master
         ));
 
         let app_name = &AppName::master();
-        apps.create_or_update(
-            app_name,
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
         let services = apps
@@ -1382,13 +1428,11 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(Config::default(), infrastructure)?;
 
         let app_name = &AppName::master();
-        apps.create_or_update(
-            app_name,
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
         let services = apps
@@ -1432,29 +1476,56 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
         let result = apps
-            .create_or_update(
-                &AppName::from_str("other").unwrap(),
-                None,
-                &[sc!("service-a"), sc!("service-b")],
-                vec![],
-                None,
-            )
+            .create_or_update(CreateOrUpdateParams {
+                app_name: AppName::from_str("other").unwrap(),
+                service_configs: vec![sc!("service-a"), sc!("service-b")],
+                ..Default::default()
+            })
             .await;
 
-        assert!(matches!(
-            result,
-            Err(AppsError::AppLimitExceeded { limit: 1 })
-        ));
+        assert_eq!(result, Err(AppsError::AppLimitExceeded { limit: 1 }));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_app_when_exceeding_application_number_but_some_apps_are_in_backup(
+    ) -> Result<(), AppsError> {
+        let config = config_from_str!(
+            r#"
+            [applications]
+            max = 1
+            "#
+        );
+        let infrastructure = Box::new(Dummy::new());
+        let apps = Apps::new(config, infrastructure)?;
+
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("backed-up").unwrap(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
+        .await?;
+
+        let result = apps
+            .create_or_update(CreateOrUpdateParams {
+                app_name: AppName::master(),
+                service_configs: vec![sc!("service-a"), sc!("service-b")],
+                // This line pretends that the application created above is not in backup.
+                backed_up_apps: HashSet::from([AppName::from_str("backed-up").unwrap()]),
+                ..Default::default()
+            })
+            .await;
+
+        assert!(result.is_ok());
 
         Ok(())
     }
@@ -1470,17 +1541,19 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-a"), sc!("service-b")],
-            vec![],
-            None,
-        )
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            ..Default::default()
+        })
         .await?;
 
         let result = apps
-            .create_or_update(&AppName::master(), None, &[sc!("service-c")], vec![], None)
+            .create_or_update(CreateOrUpdateParams {
+                app_name: AppName::master(),
+                service_configs: vec![sc!("service-c")],
+                ..Default::default()
+            })
             .await;
 
         assert!(matches!(
@@ -1509,15 +1582,14 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        apps.create_or_update(
-            &app_name,
-            None,
-            &[sc!("web-service")],
-            vec![],
-            Some(serde_json::json!({
-                "name": "my-name"
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name.clone(),
+            service_configs: vec![sc!("web-service")],
+            user_defined_parameters: Some(serde_json::json!({
+                 "name": "my-name"
             })),
-        )
+            ..Default::default()
+        })
         .await?;
 
         let companion_config: Vec<ServiceConfig> = apps
@@ -1554,20 +1626,22 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        apps.create_or_update(
-            &app_name,
-            None,
-            &[sc!("web-service")],
-            vec![],
-            Some(serde_json::json!({
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: app_name,
+            service_configs: vec![sc!("web-service")],
+            user_defined_parameters: Some(serde_json::json!({
                 "name": "my-name"
             })),
-        )
+            ..Default::default()
+        })
         .await?;
 
         let replicated_app_name = AppName::from_str("replica").unwrap();
-        apps.create_or_update(&replicated_app_name, None, &[], vec![], None)
-            .await?;
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: replicated_app_name.clone(),
+            ..Default::default()
+        })
+        .await?;
 
         let companion_config: Vec<ServiceConfig> = apps
             .infrastructure
@@ -1591,29 +1665,27 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-a")],
-            vec![Owner {
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-a")],
+            owners: vec![Owner {
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
                 name: None,
             }],
-            None,
-        )
+            ..Default::default()
+        })
         .await?;
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-b")],
-            vec![Owner {
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-b")],
+            owners: vec![Owner {
                 iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("github-user")),
                 name: None,
             }],
-            None,
-        )
+            ..Default::default()
+        })
         .await?;
 
         let mut deployed_apps = apps.fetch_apps().await?;
@@ -1646,29 +1718,27 @@ Log msg 3 of service-a of app master
         let infrastructure = Box::new(Dummy::new());
         let apps = Apps::new(config, infrastructure)?;
 
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-a")],
-            vec![Owner {
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-a")],
+            owners: vec![Owner {
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
                 name: None,
             }],
-            None,
-        )
+            ..Default::default()
+        })
         .await?;
-        apps.create_or_update(
-            &AppName::master(),
-            None,
-            &[sc!("service-b")],
-            vec![Owner {
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::master(),
+            service_configs: vec![sc!("service-b")],
+            owners: vec![Owner {
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
                 name: None,
             }],
-            None,
-        )
+            ..Default::default()
+        })
         .await?;
 
         let mut deployed_apps = apps.fetch_apps().await?;

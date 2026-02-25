@@ -150,6 +150,7 @@ impl From<handlebars::RenderError> for DeploymentTemplatingError {
     }
 }
 
+#[derive(Debug)]
 pub struct DeploymentUnit {
     app_name: AppName,
     services: Vec<DeployableService>,

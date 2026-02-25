@@ -99,10 +99,6 @@ impl App {
         user_defined_payload: Option<UserDefinedParameters>,
         created_at: Option<DateTime<Utc>>,
     ) -> Self {
-        if services.is_empty() {
-            return Self::empty();
-        }
-
         let mut services = services;
         services.sort_by(|service1, service2| {
             service1
@@ -116,15 +112,6 @@ impl App {
             owners: Owner::normalize(owners),
             user_defined_parameters: user_defined_payload,
             created_at,
-        }
-    }
-
-    pub fn empty() -> Self {
-        Self {
-            services: Vec::new(),
-            owners: HashSet::new(),
-            user_defined_parameters: None,
-            created_at: None,
         }
     }
 
@@ -158,10 +145,6 @@ impl App {
 
     pub fn owners(&self) -> &HashSet<Owner> {
         &self.owners
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.services.is_empty()
     }
 }
 

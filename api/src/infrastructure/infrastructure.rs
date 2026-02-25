@@ -75,13 +75,13 @@ pub trait Infrastructure: Send + Sync + DynClone {
     ///
     /// The implementation must ensure that it returns the services that have been
     /// stopped.
-    async fn stop_services(&self, app_name: &AppName) -> Result<App>;
+    async fn stop_services(&self, app_name: &AppName) -> Result<Option<App>>;
 
     async fn restore_infrastructure_objects_partially(
         &self,
         app_name: &AppName,
         infrastructure: &[serde_json::Value],
-    ) -> Result<App> {
+    ) -> Result<Option<App>> {
         anyhow::bail!("Cannot restore {app_name}: not yet implemented for the configured backend to restore {infrastructure:?}")
     }
 
