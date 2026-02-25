@@ -44,7 +44,7 @@ import OpenApiUI from './views/OpenApiUI.vue';
 import LogsDialog from './views/LogsDialog.vue';
 
 import {library} from '@fortawesome/fontawesome-svg-core';
-import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose, faDownload} from '@fortawesome/free-solid-svg-icons';
+import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose, faDownload, faExclamation} from '@fortawesome/free-solid-svg-icons';
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome';
 import { createStore } from './store';
 
@@ -57,12 +57,13 @@ library.add(faSpinner);
 library.add(faTerminal);
 library.add(faTrash);
 library.add(faWindowClose);
+library.add(faExclamation);
 
 export const router = createRouter({
    history: createWebHashHistory(),
    // It is currently not possible to use lazy loading for routes because of bootstrap v4 and jquery
    routes: [
-      { path: '/', component: Apps, query: { appNameFilter: { type: String } } },
+      { path: '/:heading?', component: Apps, query: { appNameFilter: { type: String } } },
       { path: '/open-api-ui/:url', name: 'open-api-ui', component: OpenApiUI },
       { path: '/async-api-ui/:url', name: 'async-api-ui', component: AsyncApiUI },
       { path: '/logs/:app/:service', name: 'logs', component: LogsDialog }
