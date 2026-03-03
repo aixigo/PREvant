@@ -1,10 +1,38 @@
-use crate::config::TraefikVersion;
-use crate::models::{AppName, Image};
+//! Provides [value objects](https://en.wikipedia.org/wiki/Value_object) that allow to
+//! model HTTP routing options for the reverse proxy Treafik. See [HTTP
+//! router](https://doc.traefik.io/traefik/reference/routing-configuration/http/routing/router/).
+
+use crate::{AppName, Image};
 use pest::Parser;
+use serde::Deserialize;
 use serde_value::Value;
 use std::collections::{BTreeMap, VecDeque};
 use std::{fmt::Display, str::FromStr};
 use url::Url;
+
+#[derive(Clone, Copy, Deserialize, Debug, Eq, PartialEq)]
+pub enum TraefikVersion {
+    #[serde(rename = "v1")]
+    V1,
+    #[serde(rename = "v2")]
+    V2,
+    #[serde(rename = "v3")]
+    V3,
+}
+
+impl Display for TraefikVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "v{}",
+            match self {
+                TraefikVersion::V1 => 1,
+                TraefikVersion::V2 => 2,
+                TraefikVersion::V3 => 3,
+            }
+        )
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraefikIngressRoute {
@@ -17,7 +45,9 @@ pub struct TraefikIngressRoute {
 pub enum TraefikIngressRouteMergeError {
     #[error("The ingress route merging is limited to one route each")]
     TooManyRoutes,
-    #[error("Cannot merge {rule_1} with {rule_2} because there is currently no known way of implementing this merge logic.")]
+    #[error(
+        "Cannot merge {rule_1} with {rule_2} because there is currently no known way of implementing this merge logic."
+    )]
     PathRegexpNotMergable {
         rule_1: TraefikRouterRule,
         rule_2: TraefikRouterRule,
@@ -37,7 +67,6 @@ impl TraefikIngressRoute {
         &self.tls
     }
 
-    #[cfg(test)]
     pub fn empty() -> Self {
         Self {
             entry_points: Vec::new(),
@@ -301,7 +330,6 @@ impl TraefikRouterRule {
         format!("/{}/", base.path().trim_matches('/'))
     }
 
-    #[cfg(test)]
     pub fn host_rule(domains: Vec<String>) -> Self {
         Self {
             matches: vec![Matcher::Host { domains }],
@@ -394,7 +422,7 @@ impl TraefikRouterRule {
                     return Err(TraefikIngressRouteMergeError::PathRegexpNotMergable {
                         rule_1: self.clone(),
                         rule_2: other,
-                    })
+                    });
                 }
             }
         }
@@ -563,7 +591,9 @@ impl FromStr for TraefikRouterRule {
                         .map(|pair| pair.as_str().to_string())
                         .next()
                     else {
-                        unreachable!("regexp value should be always available once the grammar has been validated.")
+                        unreachable!(
+                            "regexp value should be always available once the grammar has been validated."
+                        )
                     };
 
                     rule.matches.push(Matcher::PathRegexp { regexp });
@@ -1334,7 +1364,7 @@ mod test {
     }
 
     mod parse_traefik_version {
-        use crate::{config::TraefikVersion, models::Image};
+        use super::super::*;
         use rstest::rstest;
         use std::str::FromStr;
 

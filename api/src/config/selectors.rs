@@ -1,4 +1,4 @@
-use crate::models::{AppName, Image};
+use domain::{AppName, Image};
 use regex::Regex;
 
 #[derive(Clone, Debug)]

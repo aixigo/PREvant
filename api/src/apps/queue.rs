@@ -1,13 +1,16 @@
 use crate::apps::repository::AppPostgresRepository;
 use crate::apps::{Apps, AppsError, CreateOrUpdateParams};
-use crate::models::{
-    App, AppName, AppStatusChangeId, AppTask, MergedAppTask, Owner, ServiceConfig,
-};
+use crate::models::{AppStatusChangeId, AppTask, MergedAppTask};
 use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
+use domain::{
+    AppName, Owner,
+    app_blueprints::{ServiceConfig, UserDefinedParameters},
+    app_instance::App,
+};
 use rocket::{
-    fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
+    fairing::{Fairing, Info, Kind},
 };
 use std::collections::HashSet;
 use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
@@ -106,7 +109,7 @@ impl AppTaskQueueProducer {
         replicate_from: Option<AppName>,
         service_configs: Vec<ServiceConfig>,
         owner: Option<Owner>,
-        user_defined_parameters: Option<serde_json::Value>,
+        user_defined_parameters: Option<UserDefinedParameters>,
     ) -> Result<AppStatusChangeId> {
         let status_id = AppStatusChangeId::new();
         self.db
@@ -116,7 +119,7 @@ impl AppTaskQueueProducer {
                 replicate_from,
                 service_configs,
                 owners: owner.into_iter().collect(),
-                user_defined_parameters,
+                user_defined_parameters: user_defined_parameters.map(|udp| udp.into_value()),
             })
             .await?;
 
@@ -302,7 +305,11 @@ impl AppTaskQueueConsumer {
                                 replicate_from: replicate_from.clone(),
                                 service_configs: service_configs.clone(),
                                 owners: owners.clone(),
-                                user_defined_parameters: user_defined_parameters.clone(),
+                                user_defined_parameters: user_defined_parameters.as_ref().map(|udp| unsafe {
+                                    // SAFETY: the data has been validated before storing int the
+                                    // queue, so it is safe to skip validation here.
+                                    UserDefinedParameters::without_validation(udp.clone())
+                                }),
                                 backed_up_apps,
                             }).await
                     }
@@ -418,7 +425,10 @@ impl AppTaskQueueDB {
                                 Some(task.app_name())
                             }
                             (AppTaskStatus::InProcess, None) => {
-                                log::warn!("Trying to find tasks to be process but there is currently {} in process", task.app_name());
+                                log::warn!(
+                                    "Trying to find tasks to be process but there is currently {} in process",
+                                    task.app_name()
+                                );
                                 tasks.clear();
                                 break;
                             }
@@ -492,12 +502,12 @@ impl AppTaskQueueDB {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::DatabasePool, models::AppName, sc};
+    use crate::db::DatabasePool;
     use rstest::rstest;
     use std::collections::HashSet;
     use testcontainers_modules::{
         postgres::{self},
-        testcontainers::{runners::AsyncRunner, ContainerAsync},
+        testcontainers::{ContainerAsync, runners::AsyncRunner},
     };
 
     enum TestQueue {
@@ -572,13 +582,11 @@ mod tests {
         (
             AppTask::merge_tasks(tasks),
             Ok(App::new(
-                vec![crate::models::Service {
+                vec![domain::app_instance::Service {
                     id: String::from("nginx-1234"),
-                    state: crate::models::State {
-                        status: crate::models::ServiceStatus::Paused,
-                        started_at: None,
-                    },
-                    config: sc!("nginx"),
+                    status: domain::app_instance::ServiceStatus::Paused,
+                    blueprint_config: domain::blueprint_service!("nginx"),
+                    service_type: domain::app_instance::ContainerType::Instance,
                 }],
                 HashSet::new(),
                 None,

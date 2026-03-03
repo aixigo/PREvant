@@ -26,11 +26,14 @@
 
 use crate::config::Config;
 use crate::infrastructure::HttpForwarder;
-use crate::models::{
-    App, AppName, AppWithHostMeta, RequestInfo, Service, ServiceStatus, ServiceWithHostMeta,
-    WebHostMeta,
-};
+use crate::models::RequestInfo;
 use chrono::{DateTime, Utc};
+use domain::{
+    app_instance::{
+        App, AppWithHostMeta, Service, ServiceStatus, ServiceWithHostMeta, WebHostMeta,
+    },
+    AppName,
+};
 use evmap::{ReadHandleFactory, WriteHandle};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -96,9 +99,11 @@ impl HostMetaCache {
     ) -> AppWithHostMeta {
         let reader = self.reader_factory.handle();
 
-        let mut services_with_host_meta = Vec::with_capacity(app.services().len());
+        let mut services_with_host_meta = Vec::with_capacity(app.services.len());
 
-        let (services, owners) = app.into_services_and_owners();
+        let App {
+            services, owners, ..
+        } = app;
         for service in services.into_iter() {
             let service_id = service.id.clone();
             let key = Key {
@@ -132,9 +137,11 @@ impl HostMetaCache {
         let reader = self.reader_factory.handle();
 
         for (app_name, app) in apps.into_iter() {
-            let mut services_with_host_meta = Vec::with_capacity(app.services().len());
+            let mut services_with_host_meta = Vec::with_capacity(app.services.len());
 
-            let (services, owners) = app.into_services_and_owners();
+            let App {
+                services, owners, ..
+            } = app;
             for service in services.into_iter() {
                 let service_id = service.id.clone();
                 let key = Key {
@@ -250,13 +257,13 @@ impl HostMetaCrawler {
     fn static_web_host_config(&self, apps: &HashMap<AppName, App>) -> HashMap<Key, WebHostMeta> {
         apps.iter()
             .flat_map(|(app_name, app)| {
-                app.services().iter().map(move |service| (app_name, service))
+                app.services.iter().map(move |service| (app_name, service))
             })
             .filter_map(|(app_name, service)| {
                 let service_name = service.service_name();
                 let static_host_meta = match self
                     .config
-                    .static_host_meta(service.config.image())
+                    .static_host_meta(&service.blueprint_config.image)
                     .transpose()?
                 {
                     Ok(static_host_meta) => static_host_meta,
@@ -272,7 +279,7 @@ impl HostMetaCrawler {
                 let mut version = None;
 
                 if static_host_meta.image_tag_as_version {
-                    version = service.config.image().tag();
+                    version = service.blueprint_config.image.tag();
                 }
                 if static_host_meta.open_api_spec.is_some() {
                     open_api_spec_url = Some(
@@ -316,7 +323,7 @@ impl HostMetaCrawler {
         let running_services_without_host_meta = apps
             .iter()
             .flat_map(|(app_name, app)| {
-                app.services()
+                app.services
                     .iter()
                     // avoid cloning when https://github.com/havarnov/multimap/issues/24 has been implemented
                     .map(move |service| {
@@ -328,7 +335,7 @@ impl HostMetaCrawler {
                     })
             })
             .filter(|(key, _)| !static_web_host_config.contains_key(key))
-            .filter(|(_, service)| *service.status() == ServiceStatus::Running)
+            .filter(|(_, service)| matches!(service.status, ServiceStatus::Running { .. }))
             .filter(|(key, _service)| !self.writer.contains_key(key))
             // group the services by application so that not all services will be hit with an HTTP
             // in one go, rather the crawling is chunked by app name. In this form the
@@ -416,7 +423,7 @@ impl HostMetaCrawler {
             .flat_map(|(key, values)| values.into_iter().map(move |v| (key.clone(), v)))
             .filter(|(key, value)| {
                 let service = match apps.get(&key.app_name) {
-                    Some(app) => app.services().iter().find(|s| s.id() == &key.service_id),
+                    Some(app) => app.services.iter().find(|s| s.id() == &key.service_id),
                     None => {
                         return true;
                     }
@@ -581,8 +588,9 @@ impl HostMetaCrawler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config_from_str, models::State};
+    use crate::config_from_str;
     use anyhow::Result;
+    use domain::{app_instance::ContainerType, blueprint_service};
     use url::Url;
 
     #[derive(Clone)]
@@ -605,11 +613,11 @@ mod tests {
         let base_url = Url::parse("https://example.com").unwrap();
         let nginx_service = Service {
             id: String::from("nginx"),
-            state: State {
-                status: ServiceStatus::Running,
-                started_at: Some(Utc::now()),
+            status: ServiceStatus::Running {
+                started_at: Utc::now(),
             },
-            config: crate::sc!("nginx", "nginx:latest"),
+            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+            service_type: ContainerType::Instance,
         };
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
@@ -643,11 +651,11 @@ mod tests {
         let base_url = Url::parse("https://example.com").unwrap();
         let kafka_rest_service = Service {
             id: String::from("kafka-rest"),
-            state: State {
-                status: ServiceStatus::Running,
-                started_at: Some(Utc::now()),
+            status: ServiceStatus::Running {
+                started_at: Utc::now(),
             },
-            config: crate::sc!("kafka-rest", "confluentinc/cp-kafka-rest"),
+            blueprint_config: blueprint_service!("kafka-rest", "confluentinc/cp-kafka-rest"),
+            service_type: ContainerType::Instance,
         };
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
@@ -693,11 +701,9 @@ mod tests {
         let base_url = Url::parse("https://example.com").unwrap();
         let nginx_service = Service {
             id: String::from("nginx"),
-            state: State {
-                status: ServiceStatus::Paused,
-                started_at: None,
-            },
-            config: crate::sc!("nginx", "nginx:latest"),
+            status: ServiceStatus::Paused,
+            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+            service_type: ContainerType::Instance,
         };
 
         let forwarder = Box::new(DummyHttpForwarder {});
@@ -734,11 +740,11 @@ mod tests {
         // populate the host meta cache first
         let nginx_service = Service {
             id: String::from("nginx"),
-            state: State {
-                status: ServiceStatus::Running,
-                started_at: Some(Utc::now()),
+            status: ServiceStatus::Running {
+                started_at: Utc::now(),
             },
-            config: crate::sc!("nginx", "nginx:latest"),
+            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+            service_type: ContainerType::Instance,
         };
 
         let forwarder = Box::new(DummyHttpForwarder {});
@@ -753,11 +759,9 @@ mod tests {
         // recrawl data for paused nginx
         let nginx_service = Service {
             id: String::from("nginx"),
-            state: State {
-                status: ServiceStatus::Paused,
-                started_at: None,
-            },
-            config: crate::sc!("nginx", "nginx:latest"),
+            status: ServiceStatus::Paused,
+            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+            service_type: ContainerType::Instance,
         };
 
         let forwarder = Box::new(DummyHttpForwarder {});

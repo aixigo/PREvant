@@ -1,6 +1,7 @@
-use crate::models::{
-    user_defined_parameters::UserDefinedParameters, AppName, AppStatusChangeId, Owner,
-    ServiceConfig,
+use crate::models::AppStatusChangeId;
+use domain::{
+    app_blueprints::{ServiceConfig, UserDefinedParameters},
+    AppName, Owner,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -23,6 +24,8 @@ pub enum AppTask {
         replicate_from: Option<AppName>,
         service_configs: Vec<ServiceConfig>,
         owners: Vec<Owner>,
+        // TODO: we should use Option<UserDefinedParameters> here but that requires a custom
+        // deserializer.
         user_defined_parameters: Option<serde_json::Value>,
     },
     Delete {
@@ -133,23 +136,23 @@ impl AppTask {
             ) => {
                 let mut configs = service_configs
                     .into_iter()
-                    .map(|sc| (sc.service_name().clone(), sc))
+                    .map(|sc| (sc.service_name.clone(), sc))
                     .collect::<HashMap<_, _>>();
 
                 for sc in o_service_configs.into_iter() {
-                    match configs.get_mut(sc.service_name()) {
+                    match configs.get_mut(&sc.service_name) {
                         Some(existing_sc) => {
                             *existing_sc = sc.merge_with(existing_sc.clone());
                         }
                         None => {
-                            configs.insert(sc.service_name().clone(), sc);
+                            configs.insert(sc.service_name.clone(), sc);
                         }
                     }
                 }
 
                 let mut service_configs = configs.into_values().collect::<Vec<_>>();
                 service_configs
-                    .sort_unstable_by(|sc1, sc2| sc1.service_name().cmp(sc2.service_name()));
+                    .sort_unstable_by(|sc1, sc2| sc1.service_name.cmp(&sc2.service_name));
 
                 let mut owners = Owner::normalize(HashSet::from_iter(
                     owners.into_iter().chain(o_owners.into_iter()),
@@ -390,7 +393,7 @@ impl AppTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sc;
+    use domain::blueprint_service;
     use openidconnect::{IssuerUrl, SubjectIdentifier};
 
     #[test]
@@ -427,7 +430,7 @@ mod tests {
             status_id: status_id_2,
             app_name: AppName::master(),
             replicate_from: None,
-            service_configs: vec![sc!("nginx")],
+            service_configs: vec![blueprint_service!("nginx")],
             owners: Vec::new(),
             user_defined_parameters: None,
         };
@@ -440,7 +443,7 @@ mod tests {
                 status_id: status_id_2,
                 app_name: AppName::master(),
                 replicate_from: None,
-                service_configs: vec![sc!("nginx")],
+                service_configs: vec![blueprint_service!("nginx")],
                 owners: Vec::new(),
                 user_defined_parameters: None,
             }),
@@ -453,7 +456,7 @@ mod tests {
             status_id: AppStatusChangeId::new(),
             app_name: AppName::master(),
             replicate_from: None,
-            service_configs: vec![sc!("nginx")],
+            service_configs: vec![blueprint_service!("nginx")],
             owners: Vec::new(),
             user_defined_parameters: None,
         };
@@ -480,7 +483,9 @@ mod tests {
             status_id: AppStatusChangeId::new(),
             app_name: AppName::master(),
             replicate_from: None,
-            service_configs: vec![sc!("nginx", "nginx", env = ("NGINX_HOST" => "local.host"))],
+            service_configs: vec![
+                blueprint_service!("nginx", "nginx", env = ("NGINX_HOST" => "local.host")),
+            ],
             owners: vec![Owner {
                 sub: SubjectIdentifier::new(String::from("github")),
                 iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
@@ -497,8 +502,8 @@ mod tests {
             app_name: AppName::master(),
             replicate_from: None,
             service_configs: vec![
-                sc!("httpd"),
-                sc!("nginx", "nginx", env = ("NGINX_HOST" => "my.host")),
+                blueprint_service!("httpd"),
+                blueprint_service!("nginx", "nginx", env = ("NGINX_HOST" => "my.host")),
             ],
             owners: vec![Owner {
                 sub: SubjectIdentifier::new(String::from("gitlab")),
@@ -520,8 +525,8 @@ mod tests {
                 app_name: AppName::master(),
                 replicate_from: None,
                 service_configs: vec![
-                    sc!("httpd"),
-                    sc!("nginx", "nginx", env = ("NGINX_HOST" => "my.host")),
+                    blueprint_service!("httpd"),
+                    blueprint_service!("nginx", "nginx", env = ("NGINX_HOST" => "my.host")),
                 ],
                 owners: vec![
                     Owner {
@@ -620,7 +625,7 @@ mod tests {
             status_id: status_id_2,
             app_name: AppName::master(),
             replicate_from: None,
-            service_configs: vec![sc!("nginx")],
+            service_configs: vec![blueprint_service!("nginx")],
             owners: Vec::new(),
             user_defined_parameters: None,
         };
@@ -633,7 +638,7 @@ mod tests {
                 status_id: status_id_2,
                 app_name: AppName::master(),
                 replicate_from: None,
-                service_configs: vec![sc!("nginx")],
+                service_configs: vec![blueprint_service!("nginx")],
                 owners: Vec::new(),
                 user_defined_parameters: None,
             }),
@@ -786,7 +791,7 @@ mod tests {
             status_id: status_id_2,
             app_name: AppName::master(),
             replicate_from: None,
-            service_configs: vec![sc!("nginx")],
+            service_configs: vec![blueprint_service!("nginx")],
             owners: Vec::new(),
             user_defined_parameters: None,
         };
@@ -810,7 +815,7 @@ mod tests {
             status_id: status_id_1,
             app_name: AppName::master(),
             replicate_from: None,
-            service_configs: vec![sc!("nginx")],
+            service_configs: vec![blueprint_service!("nginx")],
             owners: Vec::new(),
             user_defined_parameters: None,
         };
@@ -843,7 +848,7 @@ mod tests {
             status_id: status_id_1,
             app_name: AppName::master(),
             replicate_from: None,
-            service_configs: vec![sc!("nginx")],
+            service_configs: vec![blueprint_service!("nginx")],
             owners: Vec::new(),
             user_defined_parameters: None,
         };
@@ -929,6 +934,7 @@ mod tests {
 
     mod merge_tasks {
         use super::super::*;
+        use domain::blueprint_service;
 
         #[test]
         #[should_panic]
@@ -989,7 +995,7 @@ mod tests {
                 status_id: status_id_3,
                 app_name: AppName::master(),
                 replicate_from: None,
-                service_configs: vec![crate::sc!("nginx")],
+                service_configs: vec![blueprint_service!("nginx")],
                 owners: vec![],
                 user_defined_parameters: None,
             };

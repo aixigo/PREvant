@@ -2,7 +2,10 @@ This file provides some hints and examples how to develop PREvant.
 
 # Backend Development
 
-You can build PREvant's backend API with [`cargo`](https://doc.rust-lang.org/cargo/) in the sub directory `/api`. For example, `cargo run` build and starts the backend so that it will be available at `http://localhost:8000`.
+You can build PREvant's backend API with
+[`cargo`](https://doc.rust-lang.org/cargo/). For example, `cargo run --bin
+prevant` builds and starts the backend so that it will be available at
+`http://localhost:8000`.
 
 When you than interact with the REST API to deploy service, it is worthwhile to have a look into the [Traefik dashboard](https://doc.traefik.io/traefik/operations/dashboard/#the-dashboard) to double check if PREvant exposes the services as expected.
 
@@ -23,7 +26,7 @@ For developing against a local Kubernetes cluster you can use [k3d].
 2. Start PREvant with Kubernetes (it will infer the cluster configuration by searching for kube-config file or in-cluster environment variables)
 
    ```bash
-   cargo run -- --runtime-type Kubernetes
+   cargo run --bin prevant -- --runtime-type Kubernetes
    ```
 
 3. Deploy some containers and observe the result [here](http://localhost/master/whoami/):
@@ -172,7 +175,7 @@ aixigo/prevant .`) and then choose testing via
 
 ```sh
 export RUST_LOG="info,testcontainers=debug"
-cargo test --manifest-path api-tests/Cargo.toml --test docker -- --test-threads=1 --nocapture
+cargo test --package prevant-api-tests --test docker -- --test-threads=1 --nocapture
 ```
 
 ## K3s for Kubernetes Backend

@@ -28,31 +28,31 @@ use super::super::{
     STORAGE_TYPE_LABEL,
 };
 use crate::config::{Config, ContainerConfig};
-use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
-use crate::infrastructure::{
-    TraefikIngressRoute, TraefikRouterRule, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
-};
-use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, Owner, ServiceConfig};
-use base64::{engine::general_purpose, Engine};
+use crate::infrastructure::{OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL};
+use base64::{Engine, engine::general_purpose};
 use bytesize::ByteSize;
 use chrono::Utc;
-use k8s_openapi::api::apps::v1::DeploymentSpec;
-use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvVar, KeyToPath, PersistentVolumeClaim, PersistentVolumeClaimSpec,
-    PersistentVolumeClaimVolumeSource, PodSpec, PodTemplateSpec, ResourceRequirements,
-    SecretVolumeSource, Volume, VolumeMount, VolumeResourceRequirements,
+use domain::{
+    AppName, Owner,
+    app_blueprints::UserDefinedParameters,
+    app_deployment::{DeployableService, DeploymentStrategy},
+    traefik::{TraefikIngressRoute, TraefikRouterRule},
 };
+use k8s_openapi::ByteString;
 use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::api::{
-    apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
-    core::v1::Secret as V1Secret, core::v1::Service as V1Service,
+    apps::v1::{Deployment as V1Deployment, DeploymentSpec},
+    core::v1::{
+        Container, ContainerPort, EnvVar, KeyToPath, Namespace as V1Namespace,
+        PersistentVolumeClaim, PersistentVolumeClaimSpec, PersistentVolumeClaimVolumeSource,
+        PodSpec, PodTemplateSpec, ResourceRequirements, Secret as V1Secret, SecretVolumeSource,
+        Service as V1Service, Volume, VolumeMount, VolumeResourceRequirements,
+    },
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
-use k8s_openapi::ByteString;
-use kube::core::ObjectMeta;
 use kube::CustomResource;
+use kube::core::ObjectMeta;
 use multimap::MultiMap;
 use schemars::JsonSchema;
 use secstr::SecUtf8;
@@ -439,13 +439,6 @@ pub fn namespace_annotations(
     }
 }
 
-impl AppName {
-    /// See https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#dns-label-names
-    pub fn to_rfc1123_namespace_id(&self) -> String {
-        self.to_string().to_lowercase()
-    }
-}
-
 /// Creates a JSON payload suitable for [Kubernetes'
 /// Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 pub fn deployment_payload(
@@ -454,7 +447,7 @@ pub fn deployment_payload(
     container_config: &ContainerConfig,
     persistent_volume_map: &Option<HashMap<&String, PersistentVolumeClaim>>,
 ) -> V1Deployment {
-    let env = service.env().map(|env| {
+    let env = service.blueprint_service.env.as_ref().map(|env| {
         env.iter()
             .map(|env| EnvVar {
                 name: env.key().to_string(),
@@ -465,18 +458,26 @@ pub fn deployment_payload(
     });
 
     let annotations = if let Some(replicated_env) = service
-        .env()
+        .blueprint_service
+        .env
+        .as_ref()
         .and_then(super::super::replicated_environment_variable_to_json)
     {
         BTreeMap::from([
-            (IMAGE_LABEL.to_string(), service.image().to_string()),
+            (
+                IMAGE_LABEL.to_string(),
+                service.blueprint_service.image.to_string(),
+            ),
             (REPLICATED_ENV_LABEL.to_string(), replicated_env.to_string()),
         ])
     } else {
-        BTreeMap::from([(IMAGE_LABEL.to_string(), service.image().to_string())])
+        BTreeMap::from([(
+            IMAGE_LABEL.to_string(),
+            service.blueprint_service.image.to_string(),
+        )])
     };
 
-    let volume_mounts = service.files().map(|files| {
+    let volume_mounts = service.blueprint_service.files.as_ref().map(|files| {
         let parent_paths = files
             .iter()
             .filter_map(|(path, _)| path.parent())
@@ -503,7 +504,7 @@ pub fn deployment_payload(
         None => volume_mounts,
     };
 
-    let volumes = service.files().map(|files| {
+    let volumes = service.blueprint_service.files.as_ref().map(|files| {
         let files = files
             .iter()
             .filter_map(|(path, _)| path.parent().map(|parent| (parent, path)))
@@ -528,8 +529,7 @@ pub fn deployment_payload(
                     secret: Some(SecretVolumeSource {
                         secret_name: Some(format!(
                             "{}-{}-secret",
-                            app_name,
-                            service.service_name()
+                            app_name, service.blueprint_service.service_name
                         )),
                         items: Some(items),
                         ..Default::default()
@@ -569,11 +569,11 @@ pub fn deployment_payload(
         (APP_NAME_LABEL.to_string(), app_name.to_string()),
         (
             SERVICE_NAME_LABEL.to_string(),
-            service.service_name().to_string(),
+            service.blueprint_service.service_name.to_string(),
         ),
         (
             CONTAINER_TYPE_LABEL.to_string(),
-            service.container_type().to_string(),
+            service.service_type.to_string(),
         ),
     ]);
 
@@ -582,7 +582,7 @@ pub fn deployment_payload(
             name: Some(format!(
                 "{}-{}-deployment",
                 app_name.to_rfc1123_namespace_id(),
-                service.service_name()
+                service.blueprint_service.service_name
             )),
             namespace: Some(app_name.to_rfc1123_namespace_id()),
             labels: Some(labels.clone()),
@@ -598,19 +598,19 @@ pub fn deployment_payload(
             template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
                     labels: Some(labels),
-                    annotations: Some(deployment_annotations(service.strategy())),
+                    annotations: Some(deployment_annotations(&service.strategy)),
                     ..Default::default()
                 }),
                 spec: Some(PodSpec {
                     volumes,
                     containers: vec![Container {
-                        name: service.service_name().to_string(),
-                        image: Some(service.image().to_string()),
+                        name: service.blueprint_service.service_name.to_string(),
+                        image: Some(service.blueprint_service.image.to_string()),
                         image_pull_policy: Some(String::from("Always")),
                         env,
                         volume_mounts,
                         ports: Some(vec![ContainerPort {
-                            container_port: service.port() as i32,
+                            container_port: service.port as i32,
                             ..Default::default()
                         }]),
                         resources,
@@ -633,11 +633,11 @@ pub fn deployment_payload(
 /// [`DeploymentStrategy::RedeployAlways`] has been initiated.
 fn deployment_annotations(strategy: &DeploymentStrategy) -> BTreeMap<String, String> {
     match strategy {
-        DeploymentStrategy::RedeployOnImageUpdate(image_id) => {
+        DeploymentStrategy::OnImageUpdate(image_id) => {
             BTreeMap::from([(String::from("imageHash"), image_id.clone())])
         }
-        DeploymentStrategy::RedeployNever => BTreeMap::new(),
-        DeploymentStrategy::RedeployAlways => {
+        DeploymentStrategy::Never => BTreeMap::new(),
+        DeploymentStrategy::Always => {
             BTreeMap::from([(String::from("date"), Utc::now().to_rfc3339())])
         }
     }
@@ -646,7 +646,7 @@ fn deployment_annotations(strategy: &DeploymentStrategy) -> BTreeMap<String, Str
 /// Creates a JSON payload suitable for [Kubernetes' Secrets](https://kubernetes.io/docs/concepts/configuration/secret/)
 pub fn secrets_payload(
     app_name: &AppName,
-    service_config: &ServiceConfig,
+    service: &DeployableService,
     files: &BTreeMap<PathBuf, SecUtf8>,
 ) -> V1Secret {
     let secrets = files
@@ -663,11 +663,11 @@ pub fn secrets_payload(
       "apiVersion": "v1",
       "kind": "Secret",
       "metadata": {
-        "name": format!("{}-{}-secret", app_name.to_rfc1123_namespace_id(), service_config.service_name()),
+        "name": format!("{}-{}-secret", app_name.to_rfc1123_namespace_id(), service.blueprint_service.service_name),
         "namespace": app_name.to_rfc1123_namespace_id(),
          APP_NAME_LABEL: app_name,
-         SERVICE_NAME_LABEL: service_config.service_name(),
-         CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
+         SERVICE_NAME_LABEL: service.blueprint_service.service_name,
+         CONTAINER_TYPE_LABEL: service.service_type.to_string()
       },
       "type": "Opaque",
       "data": secrets
@@ -728,29 +728,29 @@ pub fn image_pull_secret_payload(
 }
 
 /// Creates a JSON payload suitable for [Kubernetes' Services](https://kubernetes.io/docs/concepts/services-networking/service/)
-pub fn service_payload(app_name: &AppName, service_config: &ServiceConfig) -> V1Service {
+pub fn service_payload(app_name: &AppName, service_config: &DeployableService) -> V1Service {
     serde_json::from_value(serde_json::json!({
       "apiVersion": "v1",
       "kind": "Service",
       "namespace": app_name.to_rfc1123_namespace_id(),
       "metadata": {
-        "name": service_config.service_name(),
+        "name": service_config.blueprint_service.service_name,
         APP_NAME_LABEL: app_name,
-        SERVICE_NAME_LABEL: service_config.service_name(),
-        CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
+        SERVICE_NAME_LABEL: service_config.blueprint_service.service_name,
+        CONTAINER_TYPE_LABEL: service_config.service_type.to_string()
       },
       "spec": {
         "ports": [
           {
-            "name": service_config.service_name(),
-            "targetPort": service_config.port(),
-            "port": service_config.port()
+            "name": service_config.blueprint_service.service_name,
+            "targetPort": service_config.port,
+            "port": service_config.port
           }
         ],
         "selector": {
           APP_NAME_LABEL: app_name,
-          SERVICE_NAME_LABEL: service_config.service_name(),
-          CONTAINER_TYPE_LABEL: service_config.container_type().to_string()
+          SERVICE_NAME_LABEL: service_config.blueprint_service.service_name,
+          CONTAINER_TYPE_LABEL: service_config.service_type.to_string()
         }
       }
     }))
@@ -762,7 +762,7 @@ pub fn service_payload(app_name: &AppName, service_config: &ServiceConfig) -> V1
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
 /// for more information.
 pub fn ingress_route_payload(app_name: &AppName, service: &DeployableService) -> IngressRoute {
-    let route = service.ingress_route();
+    let route = &service.ingress_route;
 
     let rules = route
         .routes()
@@ -785,8 +785,8 @@ pub fn ingress_route_payload(app_name: &AppName, service: &DeployableService) ->
                 middlewares: Some(middlewares),
                 services: vec![TraefikRuleService {
                     kind: Some(String::from("Service")),
-                    name: service.service_name().to_string(),
-                    port: Some(service.port()),
+                    name: service.blueprint_service.service_name.to_string(),
+                    port: Some(service.port),
                 }],
             }
         })
@@ -797,18 +797,18 @@ pub fn ingress_route_payload(app_name: &AppName, service: &DeployableService) ->
             name: Some(format!(
                 "{}-{}-ingress-route",
                 app_name.to_rfc1123_namespace_id(),
-                service.service_name()
+                service.blueprint_service.service_name
             )),
             namespace: Some(app_name.to_rfc1123_namespace_id()),
             annotations: Some(BTreeMap::from([
                 (APP_NAME_LABEL.to_string(), app_name.to_string()),
                 (
                     SERVICE_NAME_LABEL.to_string(),
-                    service.service_name().to_string(),
+                    service.blueprint_service.service_name.to_string(),
                 ),
                 (
                     CONTAINER_TYPE_LABEL.to_string(),
-                    service.container_type().to_string(),
+                    service.service_type.to_string(),
                 ),
                 (
                     String::from("traefik.ingress.kubernetes.io/router.entrypoints"),
@@ -913,13 +913,13 @@ pub fn persistent_volume_claim_payload(
             generate_name: Some(format!(
                 "{}-{}-pvc-",
                 app_name.to_rfc1123_namespace_id(),
-                service.service_name()
+                service.blueprint_service.service_name
             )),
             labels: Some(BTreeMap::from([
                 (APP_NAME_LABEL.to_owned(), app_name.to_string()),
                 (
                     SERVICE_NAME_LABEL.to_owned(),
-                    service.service_name().to_owned(),
+                    service.blueprint_service.service_name.clone(),
                 ),
                 (
                     STORAGE_TYPE_LABEL.to_owned(),
@@ -951,25 +951,23 @@ pub fn persistent_volume_claim_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::{TraefikIngressRoute, TraefikRouterRule};
-    use crate::models::{AppName, Environment, EnvironmentVariable};
-    use crate::sc;
+    use domain::{
+        app_blueprints::EnvironmentVariable, app_deployment::AppDeploymentBuilder,
+        blueprint_service,
+    };
     use std::str::FromStr;
 
     #[test]
     fn should_create_deployment_payload() {
-        let config = sc!("db", "mariadb:10.3.17");
+        let config = blueprint_service!("db", "mariadb:10.3.17");
+
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
 
         let payload = deployment_payload(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
-                    "master", "db",
-                ])),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &None,
         );
@@ -1032,22 +1030,17 @@ mod tests {
 
     #[test]
     fn should_create_deployment_with_environment_variable() {
-        let mut config = sc!("db", "mariadb:10.3.17");
-        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
-            String::from("MYSQL_ROOT_PASSWORD"),
-            SecUtf8::from("example"),
-        )])));
+        let config = blueprint_service!("db", "mariadb:10.3.17", env = (
+                "MYSQL_ROOT_PASSWORD" => "example"
+        ));
+
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
 
         let payload = deployment_payload(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
-                    "master", "db",
-                ])),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &None,
         );
@@ -1111,24 +1104,19 @@ mod tests {
 
     #[test]
     fn should_create_deployment_with_replicated_environment_variable() {
-        let mut config = sc!("db", "mariadb:10.3.17");
-        config.set_env(Some(Environment::new(vec![
-            EnvironmentVariable::with_replicated(
-                String::from("MYSQL_ROOT_PASSWORD"),
-                SecUtf8::from("example"),
-            ),
-        ])));
+        let mut config = blueprint_service!("db", "mariadb:10.3.17");
+        config.add_env(EnvironmentVariable::with_replicated(
+            String::from("MYSQL_ROOT_PASSWORD"),
+            SecUtf8::from("example"),
+        ));
+
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
 
         let payload = deployment_payload(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
-                    "master", "db",
-                ])),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &None,
         );
@@ -1199,18 +1187,16 @@ mod tests {
 
     #[test]
     fn should_create_deployment_payload_with_app_name_that_is_not_compliant_to_rfc1123() {
-        let config = sc!("db", "mariadb:10.3.17");
+        let config = blueprint_service!("db", "mariadb:10.3.17");
+
+        let deployment_unit =
+            AppDeploymentBuilder::init(AppName::from_str("MY-APP").unwrap(), vec![config], None)
+                .finish()
+                .unwrap();
 
         let payload = deployment_payload(
-            &AppName::from_str("MY-APP").unwrap(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
-                    "master", "db",
-                ])),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &None,
         );
@@ -1273,17 +1259,15 @@ mod tests {
 
     #[test]
     fn should_create_ingress_route() {
-        let app_name = AppName::master();
-        let mut config = sc!("db", "mariadb:10.3.17");
-        let port = 1234;
-        config.set_port(port);
-        let config = DeployableService::new(
-            config,
-            DeploymentStrategy::RedeployAlways,
-            TraefikIngressRoute::with_defaults(&app_name, "db"),
-            Vec::new(),
-        );
-        let payload = ingress_route_payload(&app_name, &config);
+        let config = blueprint_service!("db", "mariadb:10.3.17");
+
+        let mut deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
+        deployment_unit.services[0].port = 1234;
+
+        let payload =
+            ingress_route_payload(&deployment_unit.app_name, &deployment_unit.services[0]);
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -1302,7 +1286,7 @@ mod tests {
                     "services": [
                       {
                         "name": "db",
-                        "port": port,
+                        "port": 1234,
                       }
                     ],
                     "middlewares": [
@@ -1319,17 +1303,16 @@ mod tests {
 
     #[test]
     fn should_create_ingress_route_with_app_name_that_is_not_compliant_to_rfc1123() {
-        let app_name = AppName::from_str("MY-APP").unwrap();
-        let mut config = sc!("db", "mariadb:10.3.17");
-        let port = 1234;
-        config.set_port(port);
-        let config = DeployableService::new(
-            config,
-            DeploymentStrategy::RedeployAlways,
-            TraefikIngressRoute::with_defaults(&app_name, "db"),
-            Vec::new(),
-        );
-        let payload = ingress_route_payload(&app_name, &config);
+        let config = blueprint_service!("db", "mariadb:10.3.17");
+
+        let mut deployment_unit =
+            AppDeploymentBuilder::init(AppName::from_str("MY-APP").unwrap(), vec![config], None)
+                .finish()
+                .unwrap();
+        deployment_unit.services[0].port = 1234;
+
+        let payload =
+            ingress_route_payload(&deployment_unit.app_name, &deployment_unit.services[0]);
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -1348,7 +1331,7 @@ mod tests {
                     "services": [
                       {
                         "name": "db",
-                        "port": port,
+                        "port": 1234,
                       }
                     ],
                     "middlewares": [
@@ -1423,47 +1406,46 @@ mod tests {
 
     #[test]
     fn should_create_deployment_payload_with_persistent_volume_claim() {
-        let config = sc!("db", "mariadb:10.3.17");
+        let config = blueprint_service!("db", "mariadb:10.3.17");
 
-        let persistent_volume_claim = PersistentVolumeClaim {
-            metadata: ObjectMeta {
-                name: Some(String::from("master-db-pvc-abc")),
-                namespace: Some(String::from("master")),
-                labels: Some(BTreeMap::from([
-                    (APP_NAME_LABEL.to_owned(), "master".to_owned()),
-                    (SERVICE_NAME_LABEL.to_owned(), "db".to_owned()),
-                    (STORAGE_TYPE_LABEL.to_owned(), "data".to_owned()),
-                ])),
-                ..Default::default()
-            },
-            spec: Some(PersistentVolumeClaimSpec {
-                storage_class_name: Some("local-path".to_owned()),
-                access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
-                resources: Some(VolumeResourceRequirements {
-                    requests: Some(BTreeMap::from_iter(vec![(
-                        "storage".to_owned(),
-                        Quantity("2Gi".to_owned()),
-                    )])),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let mut deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
+        deployment_unit.services[0]
+            .declared_volumes
+            .push(String::from("/var/lib/data"));
+
         let payload = deployment_payload(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
-                    "master", "db",
-                ])),
-                vec![String::from("/var/lib/data")],
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &Some(HashMap::from([(
                 &String::from("/var/lib/data"),
-                persistent_volume_claim,
+                PersistentVolumeClaim {
+                    metadata: ObjectMeta {
+                        name: Some(String::from("master-db-pvc-abc")),
+                        namespace: Some(String::from("master")),
+                        labels: Some(BTreeMap::from([
+                            (APP_NAME_LABEL.to_owned(), "master".to_owned()),
+                            (SERVICE_NAME_LABEL.to_owned(), "db".to_owned()),
+                            (STORAGE_TYPE_LABEL.to_owned(), "data".to_owned()),
+                        ])),
+                        ..Default::default()
+                    },
+                    spec: Some(PersistentVolumeClaimSpec {
+                        storage_class_name: Some("local-path".to_owned()),
+                        access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
+                        resources: Some(VolumeResourceRequirements {
+                            requests: Some(BTreeMap::from_iter(vec![(
+                                "storage".to_owned(),
+                                Quantity("2Gi".to_owned()),
+                            )])),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
             )])),
         );
 
@@ -1537,27 +1519,20 @@ mod tests {
 
     #[test]
     fn should_create_deployment_for_config_containing_file_data() {
-        let mut config = sc!("db", "mariadb:10.3.17");
-        config.set_files(Some(BTreeMap::from([(
-            PathBuf::from("/etc/mysql/my.cnf"),
-            SecUtf8::from_str(
+        let config = blueprint_service!("db", "mariadb:10.3.17", env = (), files = (
+            "/etc/mysql/my.cnf" =>
                 r"[client-server]
                   socket=/tmp/mysql.sock
-                  port=3306",
-            )
-            .unwrap(),
-        )])));
+                  port=3306"
+        ));
+
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
 
         let payload = deployment_payload(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_rule(TraefikRouterRule::path_prefix_rule(&[
-                    "master", "db",
-                ])),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &None,
         );
@@ -1744,8 +1719,8 @@ mod tests {
 
     mod convert_k8s_ingress_to_traefik_ingress {
         use super::super::*;
-        use crate::infrastructure::TraefikMiddleware;
         use assert_json_diff::assert_json_include;
+        use domain::traefik::TraefikMiddleware;
         use k8s_openapi::api::{core::v1::ServicePort, networking::v1::*};
 
         #[test]

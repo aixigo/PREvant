@@ -24,20 +24,15 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::config::{Config, ContainerConfig, TraefikVersion};
-use crate::deployment::deployment_unit::{DeployableService, DeploymentStrategy};
-use crate::deployment::DeploymentUnit;
+use crate::config::{Config, ContainerConfig};
 use crate::infrastructure::{
-    HttpForwarder, Infrastructure, APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL,
+    APP_NAME_LABEL, CONTAINER_TYPE_LABEL, HttpForwarder, IMAGE_LABEL, Infrastructure,
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
-};
-use crate::models::{
-    App, AppName, ContainerType, Environment, Image, Owner, Service, ServiceConfig, ServiceError,
-    ServiceStatus, State, WebHostMeta,
 };
 use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
+use bollard::Docker;
 use bollard::auth::DockerCredentials;
 use bollard::container::LogOutput;
 use bollard::errors::Error as BollardError;
@@ -56,11 +51,20 @@ use bollard::service::{
     CreateImageInfo, EndpointSettings, HostConfig, RestartPolicy, RestartPolicyNameEnum,
     VolumeListResponse,
 };
-use bollard::Docker;
 use chrono::{DateTime, FixedOffset, Utc};
-use futures::stream::BoxStream;
-use futures::stream::FuturesUnordered;
-use futures::{StreamExt, TryStreamExt};
+use domain::{
+    AppName, Image, Owner,
+    app_blueprints::{DesiredServiceStatus, Environment, ServiceConfig},
+    app_deployment::{DeployableService, DeploymentStrategy, DeploymentUnit},
+    app_instance::{
+        App, ContainerType, ContainerTypeParseError, Service, ServiceStatus, WebHostMeta,
+    },
+    traefik::TraefikVersion,
+};
+use futures::{
+    StreamExt, TryStreamExt,
+    stream::{BoxStream, FuturesUnordered},
+};
 use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info, trace, warn};
@@ -186,7 +190,9 @@ impl DockerInfrastructure {
             }
         }
 
-        log::warn!("PREvant is configured with {compose_project_name} but there is no traefik container with a matching environment variable.");
+        log::warn!(
+            "PREvant is configured with {compose_project_name} but there is no traefik container with a matching environment variable."
+        );
 
         Ok(None)
     }
@@ -291,11 +297,12 @@ impl DockerInfrastructure {
         traefik_version: TraefikVersion,
     ) -> Result<ContainerInspectResponse, DockerInfrastructureError> {
         let docker = Docker::connect_with_socket_defaults()?;
-        let service_name = service.service_name();
-        let service_image = service.image();
+        let service_name = &service.blueprint_service.service_name;
+        let service_image = &service.blueprint_service.image;
 
         if let Image::Named { .. } = service_image {
-            self.pull_image(app_name, service).await?;
+            self.pull_image(app_name, &service.blueprint_service)
+                .await?;
         }
         let mut image_to_delete = None;
         if let Some(ref container_info) = Self::get_app_container(app_name, service_name).await? {
@@ -309,21 +316,22 @@ impl DockerInfrastructure {
                 )
                 .await?;
 
-            match service.strategy() {
-                DeploymentStrategy::RedeployOnImageUpdate(image_id)
+            match &service.strategy {
+                DeploymentStrategy::OnImageUpdate(image_id)
                     if container_details.image.as_ref() == Some(image_id) =>
                 {
-                    debug!("Container {container_info:?} of review app {app_name:?} is still running with the desired image id {image_id}");
+                    debug!(
+                        "Container {container_info:?} of review app {app_name:?} is still running with the desired image id {image_id}"
+                    );
                     return Ok(container_details);
                 }
-                DeploymentStrategy::RedeployNever => {
+                DeploymentStrategy::Never => {
                     debug!(
                         "Container {container_info:?} of review app {app_name:?} already deployed."
                     );
                     return Ok(container_details);
                 }
-                DeploymentStrategy::RedeployAlways
-                | DeploymentStrategy::RedeployOnImageUpdate(_) => {}
+                DeploymentStrategy::Always | DeploymentStrategy::OnImageUpdate(_) => {}
             };
 
             info!("Removing container {container_info:?} of review app {app_name:?}");
@@ -357,7 +365,7 @@ impl DockerInfrastructure {
 
         info!(
             "Creating new review app container for {app_name}: service={service_name} with image={service_image} ({})",
-            service.container_type(),
+            service.service_type,
         );
 
         let host_config_binds =
@@ -378,7 +386,8 @@ impl DockerInfrastructure {
         let container_id = container_info.id.clone();
 
         debug!("Created container: {container_id}");
-        self.copy_file_data(&container_info, service).await?;
+        self.copy_file_data(&container_info, &service.blueprint_service)
+            .await?;
 
         docker
             .start_container(&container_id, None::<StartContainerOptions>)
@@ -429,7 +438,7 @@ impl DockerInfrastructure {
         owners: &HashSet<Owner>,
         traefik_version: TraefikVersion,
     ) -> bollard::models::ContainerCreateBody {
-        let env = service.env().map(|env| {
+        let env = service.blueprint_service.env.as_ref().map(|env| {
             env.iter()
                 .map(|v| format!("{}={}", v.key(), v.value().unsecure()))
                 .collect::<Vec<String>>()
@@ -442,15 +451,15 @@ impl DockerInfrastructure {
                 let traefik_frontend = format!(
                     "PathPrefixStrip: /{app_name}/{service_name}/; PathPrefix:/{app_name}/{service_name}/;",
                     app_name = app_name,
-                    service_name = service.service_name()
+                    service_name = service.blueprint_service.service_name,
                 );
                 labels.insert("traefik.frontend.rule".to_string(), traefik_frontend);
             }
             TraefikVersion::V2 | TraefikVersion::V3 => {
-                if let Some(route) = service.ingress_route().routes().iter().next() {
+                if let Some(route) = service.ingress_route.routes().iter().next() {
                     let router_name = format!(
                         "{app_name}-{service_name}",
-                        service_name = service.service_name()
+                        service_name = &service.blueprint_service.service_name
                     );
                     labels.insert(
                         format!("traefik.http.routers.{router_name}.rule",),
@@ -488,20 +497,16 @@ impl DockerInfrastructure {
             }
         };
 
-        if let Some(config_labels) = service.labels() {
-            for (k, v) in config_labels {
-                labels.insert(k.to_string(), v.to_string());
-            }
-        }
+        labels.extend(service.labels.iter().map(|(k, v)| (k.clone(), v.clone())));
 
         labels.insert(APP_NAME_LABEL.to_string(), app_name.to_string());
         labels.insert(
             SERVICE_NAME_LABEL.to_string(),
-            service.service_name().to_string(),
+            service.blueprint_service.service_name.to_string(),
         );
-        let container_type = service.container_type().to_string();
+        let container_type = service.service_type.to_string();
         labels.insert(CONTAINER_TYPE_LABEL.to_string(), container_type);
-        let image_name = service.image().to_string();
+        let image_name = service.blueprint_service.image.to_string();
         labels.insert(IMAGE_LABEL.to_string(), image_name);
 
         if !owners.is_empty() {
@@ -512,7 +517,9 @@ impl DockerInfrastructure {
         }
 
         let replicated_env = service
-            .env()
+            .blueprint_service
+            .env
+            .as_ref()
             .and_then(super::replicated_environment_variable_to_json)
             .map(|value| value.to_string());
 
@@ -525,7 +532,7 @@ impl DockerInfrastructure {
             .map(|mem| mem.as_u64() as i64);
 
         bollard::models::ContainerCreateBody {
-            image: Some(service.image().to_string()),
+            image: Some(service.blueprint_service.image.to_string()),
             env,
             labels: Some(labels),
             host_config: Some(HostConfig {
@@ -547,14 +554,14 @@ impl DockerInfrastructure {
         container_info: &ContainerCreateResponse,
         service_config: &ServiceConfig,
     ) -> Result<(), BollardError> {
-        let files = match service_config.files() {
+        let files = match service_config.files.as_ref() {
             None => return Ok(()),
             Some(files) => files.clone(),
         };
 
         debug!(
             "Copy data to container: {container_info:?} (service = {})",
-            service_config.service_name()
+            &service_config.service_name
         );
 
         let docker = Docker::connect_with_socket_defaults()?;
@@ -614,7 +621,7 @@ impl DockerInfrastructure {
         labels.insert(APP_NAME_LABEL.to_string(), app_name.to_string());
         labels.insert(
             SERVICE_NAME_LABEL.to_string(),
-            service.service_name().clone(),
+            service.blueprint_service.service_name.clone(),
         );
 
         docker
@@ -633,7 +640,7 @@ impl DockerInfrastructure {
     ) -> Result<Vec<String>, BollardError> {
         let mut host_binds = Vec::new();
 
-        if service.declared_volumes().is_empty() {
+        if service.declared_volumes.is_empty() {
             return Ok(host_binds);
         }
 
@@ -641,9 +648,10 @@ impl DockerInfrastructure {
             .volumes
             .as_ref()
             .and_then(|volume| {
-                volume
-                    .iter()
-                    .find(|vol| vol.labels.get(SERVICE_NAME_LABEL) == Some(service.service_name()))
+                volume.iter().find(|vol| {
+                    vol.labels.get(SERVICE_NAME_LABEL)
+                        == Some(&service.blueprint_service.service_name)
+                })
             })
             .map(|info| info.name.clone());
 
@@ -652,7 +660,7 @@ impl DockerInfrastructure {
             None => Self::create_docker_volume(app_name, service).await?,
         };
 
-        for declared_volume in service.declared_volumes() {
+        for declared_volume in &service.declared_volumes {
             host_binds.push(format!("{volume_name}:{declared_volume}"));
         }
 
@@ -664,17 +672,19 @@ impl DockerInfrastructure {
         app_name: &AppName,
         config: &ServiceConfig,
     ) -> Result<(), BollardError> {
-        let image = config.image();
-
         info!(
             "Pulling {image} for {service_name} of app {app_name}",
-            service_name = config.service_name()
+            image = &config.image,
+            service_name = &config.service_name,
         );
 
-        let pull_results = pull(image, &self.config).await?;
+        let pull_results = pull(&config.image, &self.config).await?;
 
         for pull_result in pull_results {
-            debug!("{pull_result:?}");
+            trace!(
+                "Pull for {app_name}/{service_name} {pull_result:?}",
+                service_name = &config.service_name
+            );
         }
 
         Ok(())
@@ -751,7 +761,7 @@ impl DockerInfrastructure {
                         None => {
                             return Err(DockerInfrastructureError::MissingAppNameLabel {
                                 container_id: details.id.unwrap_or_default(),
-                            })
+                            });
                         }
                     },
                 };
@@ -778,11 +788,11 @@ impl DockerInfrastructure {
                     .and_then(|labels| labels.remove(OWNERS_LABEL))
                     .and_then(|owners| serde_json::from_str::<HashSet<Owner>>(&owners).ok())
                 {
-                    owners.extend(parsed_owners.into_iter());
+                    owners.extend(parsed_owners);
                 }
             }
 
-            let service = match Service::try_from(details) {
+            let service = match container_inspect_response_to_service(details) {
                 Ok(service) => service,
                 Err(e) => {
                     debug!("Container does not provide required data: {e:?}");
@@ -829,8 +839,8 @@ impl Infrastructure for DockerInfrastructure {
         deployment_unit: &DeploymentUnit,
         container_config: &ContainerConfig,
     ) -> Result<App> {
-        let app_name = deployment_unit.app_name();
-        let services = deployment_unit.services();
+        let app_name = &deployment_unit.app_name;
+        let services = &deployment_unit.services;
         let network_id = self.create_or_get_network_id(app_name).await?;
 
         let traefik_container = self.traefik_container().await?;
@@ -865,7 +875,7 @@ impl Infrastructure for DockerInfrastructure {
                     service,
                     container_config,
                     &existing_volumes,
-                    deployment_unit.owners(),
+                    &deployment_unit.owners,
                     traefik_version,
                 )
             })
@@ -1020,7 +1030,7 @@ impl Infrastructure for DockerInfrastructure {
         &self,
         app_name: &AppName,
         service_name: &str,
-        status: ServiceStatus,
+        status: DesiredServiceStatus,
     ) -> Result<Option<Service>> {
         match Self::get_app_container(app_name, service_name).await? {
             Some(container) => {
@@ -1062,7 +1072,7 @@ impl Infrastructure for DockerInfrastructure {
                 }
 
                 match status {
-                    ServiceStatus::Running => {
+                    DesiredServiceStatus::Running => {
                         if !details
                             .state
                             .as_ref()
@@ -1081,7 +1091,7 @@ impl Infrastructure for DockerInfrastructure {
                             );
                         }
                     }
-                    ServiceStatus::Paused => {
+                    DesiredServiceStatus::Paused => {
                         if details
                             .state
                             .as_ref()
@@ -1102,7 +1112,7 @@ impl Infrastructure for DockerInfrastructure {
                     }
                 }
 
-                Ok(Some(Service::try_from(details)?))
+                Ok(Some(container_inspect_response_to_service(details)?))
             }
             None => Ok(None),
         }
@@ -1256,91 +1266,92 @@ fn find_port(
     }
 }
 
-impl TryFrom<ContainerInspectResponse> for Service {
-    type Error = DockerInfrastructureError;
+fn container_inspect_response_to_service(
+    container_details: ContainerInspectResponse,
+) -> Result<Service, DockerInfrastructureError> {
+    let mut labels = container_details.config.and_then(|config| config.labels);
+    let container_id = container_details
+        .id
+        .expect("id is mandatory for a docker container");
 
-    fn try_from(
-        container_details: ContainerInspectResponse,
-    ) -> Result<Service, DockerInfrastructureError> {
-        let mut labels = container_details.config.and_then(|config| config.labels);
-        let container_id = container_details
-            .id
-            .expect("id is mandatory for a docker container");
+    let service_name = match labels
+        .as_mut()
+        .and_then(|labels| labels.remove(SERVICE_NAME_LABEL))
+    {
+        Some(name) => name,
+        None => {
+            return Err(DockerInfrastructureError::MissingServiceNameLabel { container_id });
+        }
+    };
 
-        let service_name = match labels
-            .as_mut()
-            .and_then(|labels| labels.remove(SERVICE_NAME_LABEL))
-        {
-            Some(name) => name,
-            None => {
-                return Err(DockerInfrastructureError::MissingServiceNameLabel { container_id });
+    let image = match labels
+        .as_mut()
+        .and_then(|labels| labels.remove(IMAGE_LABEL))
+    {
+        Some(image_label) => Image::from_str(&image_label).map_err(|err| {
+            DockerInfrastructureError::UnexpectedImageFormat {
+                img: image_label,
+                err: anyhow::Error::new(err),
             }
-        };
-
-        let image = match labels
-            .as_mut()
-            .and_then(|labels| labels.remove(IMAGE_LABEL))
-        {
-            Some(image_label) => Image::from_str(&image_label).map_err(|err| {
+        }),
+        None => {
+            let Some(image) = container_details.image else {
+                return Err(DockerInfrastructureError::InvalidContainerImage { container_id });
+            };
+            Image::from_str(&image).map_err(|err| {
                 DockerInfrastructureError::UnexpectedImageFormat {
-                    img: image_label,
+                    img: image,
                     err: anyhow::Error::new(err),
                 }
-            }),
-            None => {
-                let Some(image) = container_details.image else {
-                    return Err(DockerInfrastructureError::InvalidContainerImage { container_id });
-                };
-                Image::from_str(&image).map_err(|err| {
-                    DockerInfrastructureError::UnexpectedImageFormat {
-                        img: image,
-                        err: anyhow::Error::new(err),
-                    }
-                })
+            })
+        }
+    }?;
+    let mut config = ServiceConfig::new(service_name.clone(), image);
+
+    let service_type = labels
+        .as_mut()
+        .and_then(|labels| labels.remove(CONTAINER_TYPE_LABEL))
+        .map(|lb| ContainerType::from_str(&lb))
+        .unwrap_or_else(|| Ok(ContainerType::default()))?;
+
+    if let Some(replicated_env) = labels
+        .as_mut()
+        .and_then(|labels| labels.remove(REPLICATED_ENV_LABEL))
+    {
+        let env = serde_json::from_str::<Environment>(&replicated_env).map_err(|err| {
+            DockerInfrastructureError::UnexpectedError {
+                err: anyhow::Error::new(err),
             }
-        }?;
-        let mut config = ServiceConfig::new(service_name.clone(), image);
-
-        if let Some(lb) = labels
-            .as_mut()
-            .and_then(|labels| labels.remove(CONTAINER_TYPE_LABEL))
-        {
-            config.set_container_type(lb.parse::<ContainerType>()?);
-        }
-
-        if let Some(replicated_env) = labels
-            .as_mut()
-            .and_then(|labels| labels.remove(REPLICATED_ENV_LABEL))
-        {
-            let env = serde_json::from_str::<Environment>(&replicated_env).map_err(|err| {
-                DockerInfrastructureError::UnexpectedError {
-                    err: anyhow::Error::new(err),
-                }
-            })?;
-            config.set_env(Some(env));
-        }
-
-        let Some(state) = container_details.state else {
-            return Err(DockerInfrastructureError::InvalidContainerState { container_id });
-        };
-
-        let started_at = state
-            .started_at
-            .as_deref()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(DateTime::<Utc>::from);
-
-        let status = match state.status.unwrap_or(ContainerStateStatusEnum::PAUSED) {
-            ContainerStateStatusEnum::RUNNING => ServiceStatus::Running,
-            _ => ServiceStatus::Paused,
-        };
-
-        Ok(Service {
-            id: container_id,
-            config,
-            state: State { status, started_at },
-        })
+        })?;
+        config.env = Some(env);
     }
+
+    let Some(state) = container_details.state else {
+        return Err(DockerInfrastructureError::InvalidContainerState { container_id });
+    };
+
+    let status = match state.status.unwrap_or(ContainerStateStatusEnum::PAUSED) {
+        ContainerStateStatusEnum::RUNNING => {
+            match state
+                .started_at
+                .as_deref()
+                .map(DateTime::parse_from_rfc3339)
+            {
+                Some(Ok(started_at)) => ServiceStatus::Running {
+                    started_at: DateTime::<Utc>::from(started_at),
+                },
+                _ => ServiceStatus::Paused,
+            }
+        }
+        _ => ServiceStatus::Paused,
+    };
+
+    Ok(Service {
+        id: container_id,
+        blueprint_config: config,
+        status,
+        service_type,
+    })
 }
 
 impl From<BollardError> for DockerInfrastructureError {
@@ -1362,17 +1373,14 @@ impl From<BollardError> for DockerInfrastructureError {
     }
 }
 
-impl From<ServiceError> for DockerInfrastructureError {
-    fn from(err: ServiceError) -> Self {
+impl From<ContainerTypeParseError> for DockerInfrastructureError {
+    fn from(err: ContainerTypeParseError) -> Self {
         match err {
-            ServiceError::InvalidServiceType { label } => {
+            ContainerTypeParseError::Unknow { label } => {
                 DockerInfrastructureError::UnknownServiceType {
                     unknown_label: label,
                 }
             }
-            err => DockerInfrastructureError::UnexpectedError {
-                err: anyhow::Error::new(err),
-            },
         }
     }
 }
@@ -1380,12 +1388,12 @@ impl From<ServiceError> for DockerInfrastructureError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::TraefikIngressRoute;
-    use crate::models::{Environment, EnvironmentVariable};
-    use crate::sc;
     use bollard::models::ContainerState;
     use bollard::models::ContainerStateStatusEnum;
     use bollard::models::NetworkSettings;
+    use domain::app_blueprints::EnvironmentVariable;
+    use domain::app_deployment::AppDeploymentBuilder;
+    use domain::blueprint_service;
     use secstr::SecUtf8;
 
     macro_rules! container_details {
@@ -1491,16 +1499,15 @@ mod tests {
 
     #[test]
     fn should_create_container_options() {
-        let config = sc!("db", "mariadb:10.3.17");
+        let config = blueprint_service!("db", "mariadb:10.3.17");
+
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
 
         let options = DockerInfrastructure::create_container_options(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &Vec::new(),
             &HashSet::new(),
@@ -1531,20 +1538,21 @@ mod tests {
 
     #[test]
     fn should_create_container_options_with_environment_variable() {
-        let mut config = sc!("db", "mariadb:10.3.17");
-        config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
-            String::from("MYSQL_ROOT_PASSWORD"),
-            SecUtf8::from("example"),
-        )])));
+        let config = blueprint_service!(
+            "db",
+            "mariadb:10.3.17",
+            env = (
+                "MYSQL_ROOT_PASSWORD" => "example"
+            )
+        );
+
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
 
         let options = DockerInfrastructure::create_container_options(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &Vec::new(),
             &HashSet::new(),
@@ -1578,22 +1586,19 @@ mod tests {
 
     #[test]
     fn should_create_container_options_with_replicated_environment_variable() {
-        let mut config = sc!("db", "mariadb:10.3.17");
-        config.set_env(Some(Environment::new(vec![
-            EnvironmentVariable::with_replicated(
-                String::from("MYSQL_ROOT_PASSWORD"),
-                SecUtf8::from("example"),
-            ),
-        ])));
+        let mut config = blueprint_service!("db", "mariadb:10.3.17");
+        config.add_env(EnvironmentVariable::with_replicated(
+            String::from("MYSQL_ROOT_PASSWORD"),
+            SecUtf8::from("example"),
+        ));
+
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
 
         let options = DockerInfrastructure::create_container_options(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &Vec::new(),
             &HashSet::new(),
@@ -1619,12 +1624,12 @@ mod tests {
                 "com.aixigo.preview.servant.container-type": "instance",
                 "com.aixigo.preview.servant.image": "docker.io/library/mariadb:10.3.17",
                 "com.aixigo.preview.servant.replicated-env": serde_json::json!({
-                        "MYSQL_ROOT_PASSWORD": {
+                    "MYSQL_ROOT_PASSWORD": {
                         "value": "example",
                         "templated": false,
                         "replicate": true,
-                        }
-                    }).to_string(),
+                    }
+                }).to_string(),
                 "com.aixigo.preview.servant.service-name": "db",
                 "traefik.frontend.rule": "PathPrefixStrip: /master/db/; PathPrefix:/master/db/;"
               }
@@ -1642,12 +1647,12 @@ mod tests {
             None,
         );
 
-        let service = Service::try_from(details).unwrap();
+        let service = container_inspect_response_to_service(details).unwrap();
 
-        assert_eq!(service.id(), "some-random-id");
-        assert_eq!(service.config.service_name(), "nginx");
+        assert_eq!(service.id, "some-random-id");
+        assert_eq!(service.blueprint_config.service_name, "nginx");
         assert_eq!(
-            &service.config.image().to_string(),
+            &service.blueprint_config.image.to_string(),
             "docker.io/library/nginx:latest"
         );
     }
@@ -1662,7 +1667,7 @@ mod tests {
             None,
         );
 
-        let error = Service::try_from(details).unwrap_err();
+        let error = container_inspect_response_to_service(details).unwrap_err();
         assert!(matches!(
             error,
             DockerInfrastructureError::UnexpectedImageFormat {
@@ -1683,12 +1688,12 @@ mod tests {
             None,
         );
 
-        let service = Service::try_from(details).unwrap();
+        let service = container_inspect_response_to_service(details).unwrap();
 
         assert_eq!(service.id(), "some-random-id");
-        assert_eq!(service.config.service_name(), "nginx");
+        assert_eq!(service.blueprint_config.service_name, "nginx");
         assert_eq!(
-            service.config.image().to_string(),
+            service.blueprint_config.image.to_string(),
             "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913"
         );
     }
@@ -1704,10 +1709,10 @@ mod tests {
             String::from(REPLICATED_ENV_LABEL) => serde_json::json!({ "MYSQL_ROOT_PASSWORD": { "value": "example" } }).to_string()
         );
 
-        let service = Service::try_from(details).unwrap();
+        let service = container_inspect_response_to_service(details).unwrap();
 
         assert_eq!(
-            service.config.env().unwrap().get(0).unwrap(),
+            service.blueprint_config.env.unwrap().iter().next().unwrap(),
             &EnvironmentVariable::with_replicated(
                 String::from("MYSQL_ROOT_PASSWORD"),
                 SecUtf8::from("example")
@@ -1717,16 +1722,15 @@ mod tests {
 
     #[test]
     fn should_create_container_options_with_host_config_binds() {
-        let config = sc!("db", "mariadb:10.3.17");
+        let config = blueprint_service!("db", "mariadb:10.3.17");
+
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
 
         let options = DockerInfrastructure::create_container_options(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &[String::from("test-volume:/var/lib/mysql")],
             &HashSet::new(),
@@ -1759,16 +1763,15 @@ mod tests {
 
     #[test]
     fn create_container_options_with_traefik_v2_rule() {
-        let config = sc!("db", "mariadb:10.3.17");
+        let config = blueprint_service!("db", "mariadb:10.3.17");
+
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+            .finish()
+            .unwrap();
 
         let options = DockerInfrastructure::create_container_options(
-            &AppName::master(),
-            &DeployableService::new(
-                config,
-                DeploymentStrategy::RedeployAlways,
-                TraefikIngressRoute::with_defaults(&AppName::master(), "db"),
-                Vec::new(),
-            ),
+            &deployment_unit.app_name,
+            &deployment_unit.services[0],
             &ContainerConfig::default(),
             &[],
             &HashSet::new(),

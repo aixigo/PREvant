@@ -23,10 +23,10 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use crate::models::ServiceError;
 use regex::Regex;
 use serde::ser::{Serialize, Serializer};
 use serde::{Deserialize, Deserializer};
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::str::FromStr;
@@ -178,9 +178,15 @@ impl Image {
     }
 }
 
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum ImageParseError {
+    #[error("Invalid image: {invalid_reference}")]
+    InvalidReference { invalid_reference: String },
+}
+
 /// Parse a docker image string and returns an image
 impl FromStr for Image {
-    type Err = ServiceError;
+    type Err = ImageParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut regex = Regex::new(r"^(sha256:)?(?P<id>[a-fA-F0-9]+)$").unwrap();
@@ -197,8 +203,8 @@ impl FromStr for Image {
         let captures = match regex.captures(s) {
             Some(captures) => captures,
             None => {
-                return Err(ServiceError::InvalidImageString {
-                    invalid_string: s.to_string(),
+                return Err(ImageParseError::InvalidReference {
+                    invalid_reference: s.to_string(),
                 });
             }
         };
@@ -224,8 +230,8 @@ impl FromStr for Image {
         // the parsing code had to take into account that Docker forgets about images names if
         // there are multiple applications available with moving image tags.
         if let Err(_err) = oci_client::Reference::from_str(&named.to_string()) {
-            return Err(ServiceError::InvalidImageString {
-                invalid_string: s.to_string(),
+            return Err(ImageParseError::InvalidReference {
+                invalid_reference: s.to_string(),
             });
         }
 
@@ -296,13 +302,134 @@ impl Serialize for Image {
     }
 }
 
+#[derive(Debug)]
+pub struct ImageInfo {
+    pub blob: Option<ImageBlob>,
+    pub digest: String,
+}
+
+impl ImageInfo {
+    #[cfg(test)]
+    pub fn with_image_digest(digest: String) -> Self {
+        Self {
+            blob: Some(ImageBlob {
+                config: ImageConfig {
+                    exposed_ports: None,
+                    declared_volumes: None,
+                },
+            }),
+            digest,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_exposed_port(port: u16) -> Self {
+        use sha2::Digest;
+
+        Self {
+            blob: Some(ImageBlob {
+                config: ImageConfig {
+                    exposed_ports: Some(HashMap::from([(
+                        format!("{port}/tcp"),
+                        serde_json::json!({}),
+                    )])),
+                    declared_volumes: None,
+                },
+            }),
+            digest: String::from_utf8_lossy(&sha2::Sha256::digest([1, 2, 3]).to_ascii_lowercase())
+                .to_ascii_lowercase(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_declared_volumes(declared_volumes: Vec<String>) -> Self {
+        use sha2::Digest;
+
+        Self {
+            blob: Some(ImageBlob {
+                config: ImageConfig {
+                    exposed_ports: None,
+                    declared_volumes: Some(
+                        declared_volumes
+                            .into_iter()
+                            .map(|path| (path, serde_json::json!({})))
+                            .collect::<HashMap<_, _>>(),
+                    ),
+                },
+            }),
+            digest: String::from_utf8_lossy(&sha2::Sha256::digest([1, 2, 3]).to_ascii_lowercase())
+                .to_ascii_lowercase(),
+        }
+    }
+
+    pub fn exposed_port(&self) -> Option<u16> {
+        self.blob.as_ref()?.exposed_port()
+    }
+
+    pub fn declared_volumes(&self) -> Vec<&String> {
+        match self.blob.as_ref() {
+            Some(info) => info.declared_volumes(),
+            None => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageBlob {
+    pub config: ImageConfig,
+}
+
+impl ImageBlob {
+    pub fn exposed_port(&self) -> Option<u16> {
+        self.config.exposed_port()
+    }
+
+    pub fn declared_volumes(&self) -> Vec<&String> {
+        self.config.declared_volumes()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageConfig {
+    #[serde(rename = "ExposedPorts")]
+    exposed_ports: Option<HashMap<String, serde_json::Value>>,
+    #[serde(rename = "Volumes")]
+    declared_volumes: Option<HashMap<String, serde_json::Value>>,
+}
+
+impl ImageConfig {
+    fn exposed_port(&self) -> Option<u16> {
+        let regex = Regex::new(r"^(?P<port>\d+)/(tcp|udp)$").unwrap();
+
+        let ports = match &self.exposed_ports {
+            Some(ports) => ports,
+            None => return None,
+        };
+
+        ports
+            .keys()
+            .filter_map(|port| regex.captures(port))
+            .filter_map(|captures| captures.name("port"))
+            .filter_map(|port| u16::from_str(port.as_str()).ok())
+            .min()
+    }
+
+    fn declared_volumes(&self) -> Vec<&String> {
+        let volumes = match &self.declared_volumes {
+            Some(volumes) => volumes,
+            None => return Vec::new(),
+        };
+        volumes.keys().collect::<Vec<&String>>()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{collections::HashMap, str::FromStr};
 
     #[test]
-    fn should_parse_image_id_with_sha_prefix() {
+    fn parse_image_id_with_sha_prefix() {
         let image = Image::from_str(
             "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913",
         )
@@ -317,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn should_convert_to_string_for_named() {
+    fn convert_to_string_for_named() {
         let image = Image::from_str("zammad/zammad-docker-compose").unwrap();
 
         assert_eq!(
@@ -327,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn should_convert_to_string_for_digest() {
+    fn convert_to_string_for_digest() {
         let image = Image::from_str(
             "sha256:9895c9b90b58c9490471b877f6bb6a90e6bdc154da7fbb526a0322ea242fc913",
         )
@@ -340,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn should_parse_image_id() {
+    fn parse_image_id() {
         let image = Image::from_str("9895c9b90b58").unwrap();
 
         assert_eq!(&image.to_string(), "9895c9b90b58");
@@ -349,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn should_parse_image_with_repo_and_user() {
+    fn parse_image_with_repo_and_user() {
         let image = Image::from_str("zammad/zammad-docker-compose").unwrap();
 
         assert_eq!(&image.name().unwrap(), "zammad/zammad-docker-compose");
@@ -357,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn should_parse_image_with_version() {
+    fn parse_image_with_version() {
         let image = Image::from_str("mariadb:10.3").unwrap();
 
         assert_eq!(&image.name().unwrap(), "library/mariadb");
@@ -366,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn should_parse_image_with_latest_version() {
+    fn parse_image_with_latest_version() {
         let image = Image::from_str("nginx:latest").unwrap();
 
         assert_eq!(&image.name().unwrap(), "library/nginx");
@@ -375,14 +502,14 @@ mod tests {
     }
 
     #[test]
-    fn should_parse_image_with_all_information() {
+    fn parse_image_with_all_information() {
         let image = Image::from_str("docker.io/library/nginx:latest").unwrap();
 
         assert_eq!(&image.to_string(), "docker.io/library/nginx:latest");
     }
 
     #[test]
-    fn should_parse_image_from_localhost() {
+    fn parse_image_from_localhost() {
         let image = Image::from_str("localhost:5000/library/nginx:latest").unwrap();
 
         assert_eq!(&image.to_string(), "localhost:5000/library/nginx:latest");
@@ -390,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn should_compare_images() {
+    fn compare_images() {
         let image_full = Image::from_str("docker.io/library/nginx:latest").unwrap();
         let image_partially = Image::from_str("docker.io/library/nginx").unwrap();
         let image_short = Image::from_str("nginx").unwrap();
@@ -406,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn should_hash_images() {
+    fn hash_images() {
         let image_full = Image::from_str("docker.io/library/nginx:latest").unwrap();
         let image_partially = Image::from_str("docker.io/library/nginx").unwrap();
         let image_short = Image::from_str("nginx").unwrap();
@@ -418,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn should_parse_image_with_multilevel_user() {
+    fn parse_image_with_multilevel_user() {
         let image =
             Image::from_str("registry.gitlab.com/some-group/zammad/zammad-docker-compose").unwrap();
 
@@ -434,15 +561,102 @@ mod tests {
     fn fail() {
         assert_eq!(
             Image::from_str("postgres_"),
-            Err(ServiceError::InvalidImageString {
-                invalid_string: String::from("postgres_")
+            Err(ImageParseError::InvalidReference {
+                invalid_reference: String::from("postgres_")
             })
         );
         assert_eq!(
             Image::from_str("private-registry.example.com/_/postgres"),
-            Err(ServiceError::InvalidImageString {
-                invalid_string: String::from("private-registry.example.com/_/postgres")
+            Err(ImageParseError::InvalidReference {
+                invalid_reference: String::from("private-registry.example.com/_/postgres")
             })
         );
+    }
+
+    #[test]
+    fn return_exposed_port() {
+        let blob = serde_json::from_str::<ImageBlob>(
+            r#"{
+                "config": {
+                    "Hostname": "837a64dcc771",
+                    "Domainname": "",
+                    "User": "",
+                    "AttachStdin": false,
+                    "AttachStdout": false,
+                    "AttachStderr": false,
+                    "ExposedPorts": {
+                      "8080/tcp": {},
+                      "9080/udp": {}
+                    }
+                } }"#,
+        )
+        .unwrap();
+
+        assert_eq!(blob.exposed_port(), Some(8080u16));
+    }
+
+    #[test]
+    fn return_exposed_port_without_ports() {
+        let blob = serde_json::from_str::<ImageBlob>(
+            r#"{
+                "config": {
+                    "Hostname": "837a64dcc771",
+                    "Domainname": "",
+                    "User": "",
+                    "AttachStdin": false,
+                    "AttachStdout": false,
+                    "AttachStderr": false
+                } }"#,
+        )
+        .unwrap();
+
+        assert_eq!(blob.exposed_port(), None);
+    }
+
+    #[test]
+    fn return_declared_volumes() {
+        let blob = serde_json::from_str::<ImageBlob>(
+            r#"{
+                "config": {
+                    "Hostname": "837a64dcc771",
+                    "Domainname": "",
+                    "User": "",
+                    "AttachStdin": false,
+                    "AttachStdout": false,
+                    "AttachStderr": false,
+                    "ExposedPorts": {
+                      "8080/tcp": {},
+                      "9080/udp": {}
+                    },
+                    "Volumes": {
+                       "var/lib/data" :{}
+                    }
+                } }"#,
+        )
+        .unwrap();
+
+        assert_eq!(blob.declared_volumes(), vec!["var/lib/data"]);
+    }
+
+    #[test]
+    fn return_none_if_no_declared_volumes() {
+        let blob = serde_json::from_str::<ImageBlob>(
+            r#"{
+                "config": {
+                    "Hostname": "837a64dcc771",
+                    "Domainname": "",
+                    "User": "",
+                    "AttachStdin": false,
+                    "AttachStdout": false,
+                    "AttachStderr": false,
+                    "ExposedPorts": {
+                      "8080/tcp": {},
+                      "9080/udp": {}
+                    }
+                } }"#,
+        )
+        .unwrap();
+
+        assert!(blob.declared_volumes().is_empty());
     }
 }

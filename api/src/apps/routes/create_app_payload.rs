@@ -1,16 +1,17 @@
-use crate::models::ServiceConfig;
+use crate::config::Config;
+use domain::app_blueprints::{ServiceConfig, UserDefinedParameters};
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
 use rocket::{
+    Data, Request,
     data::{FromData, Outcome},
     http::Status,
     serde::json::Json,
-    Data, Request,
 };
 
 pub struct CreateAppPayload {
     pub services: Vec<ServiceConfig>,
-    pub user_defined_parameters: Option<serde_json::Value>,
+    pub user_defined_parameters: Option<UserDefinedParameters>,
 }
 
 #[rocket::async_trait]
@@ -66,7 +67,7 @@ impl<'r> FromData<'r> for CreateAppPayload {
                                 Status::BadRequest,
                                 HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST)
                                     .detail(String::from("expected an JSON array for services")),
-                            ))
+                            ));
                         }
                     },
                     None => Vec::new(),
@@ -78,8 +79,38 @@ impl<'r> FromData<'r> for CreateAppPayload {
                     Status::BadRequest,
                     HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST)
                         .detail(String::from("expected an JSON object or an JSON array")),
-                ))
+                ));
             }
+        };
+
+        let Some(config) = req.rocket().state::<Config>() else {
+            return Outcome::Error((
+                Status::InternalServerError,
+                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR),
+            ));
+        };
+
+        let user_defined_parameters = match (
+            config.user_defined_schema_validator(),
+            user_defined_parameters,
+        ) {
+            (None, _) => None,
+            (Some(validator), value) => Some(
+                match UserDefinedParameters::new(
+                    value.unwrap_or_else(|| serde_json::json!({})),
+                    &validator,
+                ) {
+                    Ok(udp) => udp,
+                    Err(e) => return Outcome::Error((
+                        Status::BadRequest,
+                        HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST).detail(
+                            format!(
+                                "User defined payload does not match to the configured value: {e}"
+                            ),
+                        ),
+                    )),
+                },
+            ),
         };
 
         Outcome::Success(Self {
@@ -91,9 +122,8 @@ impl<'r> FromData<'r> for CreateAppPayload {
 
 #[cfg(test)]
 mod tests {
-    use crate::http_result::HttpApiError;
-
     use super::*;
+    use crate::http_result::HttpApiError;
     use assert_json_diff::assert_json_include;
     use rocket::{http::ContentType, local::asynchronous::Client};
     use serde_json::json;
@@ -101,19 +131,27 @@ mod tests {
     #[rocket::post("/", data = "<data>")]
     fn test_route(
         data: Result<CreateAppPayload, HttpApiProblem>,
-    ) -> Result<&'static str, HttpApiError> {
-        data.map(|_| "dummy").map_err(HttpApiError::from)
+    ) -> Result<serde_json::Value, HttpApiError> {
+        data.map(|data| {
+            serde_json::json!({
+                "services": serde_json::to_value(data.services).unwrap(),
+                "userDefined": serde_json::to_value(data.user_defined_parameters).unwrap(),
+            })
+        })
+        .map_err(HttpApiError::from)
     }
 
-    async fn create_client() -> Client {
-        let rocket = rocket::build().mount("/", rocket::routes![test_route]);
+    async fn create_client(config: &str) -> Client {
+        let rocket = rocket::build()
+            .manage(toml::from_str::<Config>(config).unwrap())
+            .mount("/", rocket::routes![test_route]);
 
         Client::tracked(rocket).await.expect("valid rocket")
     }
 
     #[tokio::test]
     async fn unexpected_text_payload() {
-        let client = create_client().await;
+        let client = create_client("").await;
 
         let response = client
             .post("/")
@@ -134,7 +172,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_payload_at_root() {
-        let client = create_client().await;
+        let client = create_client("").await;
 
         let response = client
             .post("/")
@@ -155,7 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_payload_for_services_attribute() {
-        let client = create_client().await;
+        let client = create_client("").await;
 
         let response = client
             .post("/")
@@ -176,7 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_image_payload_variant_within_service_list() {
-        let client = create_client().await;
+        let client = create_client("").await;
 
         let response = client
             .post("/")
@@ -203,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_image_payload_variant_within_service_attribute() {
-        let client = create_client().await;
+        let client = create_client("").await;
 
         let response = client
             .post("/")
@@ -226,6 +264,120 @@ mod tests {
             expected: json!({
                 "status": 400,
                 "detail": "Invalid image: private-registry.example.com/_/postgres"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn echo_valid_request_data() {
+        let client = create_client("").await;
+
+        let response = client
+            .post("/")
+            .body(
+                json!({
+                    "services": [{
+                        "serviceName": "db",
+                        "image": "postgres"
+                    }]
+                })
+                .to_string(),
+            )
+            .header(ContentType::JSON)
+            .dispatch()
+            .await;
+
+        let body = response.into_string().await.unwrap();
+        assert_json_include!(
+            actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            expected: json!({
+                "services": [{
+                    "serviceName": "db",
+                    "image": "docker.io/library/postgres:latest"
+                }]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn echo_valid_request_data_with_user_defined_data() {
+        let client = create_client(
+            r#"
+            [companions.templating.userDefinedSchema]
+            type = "object"
+            properties = { name = { type = "string" } }
+            "#,
+        )
+        .await;
+
+        let response = client
+            .post("/")
+            .body(
+                json!({
+                    "services": [{
+                        "serviceName": "db",
+                        "image": "postgres"
+                    }],
+                    "userDefined": {
+                        "name": "johndoe"
+                    }
+                })
+                .to_string(),
+            )
+            .header(ContentType::JSON)
+            .dispatch()
+            .await;
+
+        let body = response.into_string().await.unwrap();
+        assert_json_include!(
+            actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            expected: json!({
+                "services": [{
+                    "serviceName": "db",
+                    "image": "docker.io/library/postgres:latest"
+                }],
+                "userDefined": {
+                    "name": "johndoe"
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_user_defined_data() {
+        let client = create_client(
+            r#"
+            [companions.templating.userDefinedSchema]
+            type = "object"
+            properties = { name = { type = "string" } }
+            "#,
+        )
+        .await;
+
+        let response = client
+            .post("/")
+            .body(
+                json!({
+                    "services": [{
+                        "serviceName": "db",
+                        "image": "postgres"
+                    }],
+                    "userDefined": {
+                        "name": 1
+                    }
+                })
+                .to_string(),
+            )
+            .header(ContentType::JSON)
+            .dispatch()
+            .await;
+
+        let body = response.into_string().await.unwrap();
+        assert_json_include!(
+            actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            expected: json!({
+                "status": 400,
+                "detail": "User defined payload does not match to the configured value: Provided data ({\"name\":1}) does not match schema: 1 is not of type \"string\""
             })
         );
     }

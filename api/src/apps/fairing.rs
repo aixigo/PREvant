@@ -1,9 +1,5 @@
-use crate::{
-    apps::Apps,
-    config::Config,
-    infrastructure::{Infrastructure, TraefikIngressRoute},
-    models::{App, AppName},
-};
+use crate::{apps::Apps, config::Config, infrastructure::Infrastructure};
+use domain::{app_instance::App, traefik::TraefikIngressRoute, AppName};
 use rocket::{
     fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,

@@ -24,29 +24,32 @@
  * =========================LICENSE_END==================================
  */
 
-use super::queue::AppTaskQueueProducer;
-use crate::apps::repository::AppPostgresRepository;
-use crate::apps::{Apps, AppsError, HostMetaCache};
+use crate::apps::{
+    AppTaskQueueProducer, Apps, AppsError, HostMetaCache, hooks::Hooks,
+    repository::AppPostgresRepository,
+};
 use crate::auth::UserValidatedByAccessMode;
 use crate::config::Config;
-use crate::deployment::hooks::Hooks;
 use crate::http_result::{HttpApiError, HttpResult};
-use crate::models::{
-    App, AppName, AppNameError, AppStatus, AppStatusChangeId, AppStatusChangeIdError,
-    AppWithHostMeta, Owner, RequestInfo, Service, ServiceStatus, ServiceWithHostMeta,
-};
+use crate::models::{AppStatusChangeId, AppStatusChangeIdError, RequestInfo};
 use create_app_payload::CreateAppPayload;
+use domain::app_blueprints::DesiredServiceStatus;
+use domain::{
+    AppName, Owner,
+    app_instance::{App, AppStatus, AppWithHostMeta, Service, ServiceStatus, ServiceWithHostMeta},
+};
 use http_api_problem::{HttpApiProblem, StatusCode};
 use log::error;
 use regex::Regex;
 use rocket::http::Status;
-use rocket::request::{FromRequest, Outcome, Request};
+use rocket::request::{FromParam, FromRequest, Outcome, Request};
 use rocket::response::{Responder, Response};
 use rocket::serde::json::Json;
 use rocket::{FromForm, State};
-use serde::ser::{Serialize, SerializeSeq};
 use serde::Serializer;
+use serde::ser::{Serialize, SerializeSeq};
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::time::Duration;
 
 mod create_app_payload;
@@ -81,9 +84,9 @@ impl Serialize for AppV1 {
     where
         S: Serializer,
     {
-        let mut seq = serializer.serialize_seq(Some(self.0.services().len()))?;
+        let mut seq = serializer.serialize_seq(Some(self.0.services.len()))?;
 
-        for service in self.0.services() {
+        for service in self.0.services.iter() {
             seq.serialize_element(service)?;
         }
 
@@ -105,7 +108,7 @@ impl Serialize for AppV2 {
         #[serde(untagged)]
         enum Service<'a> {
             ServiceWithHostMeta(&'a ServiceWithHostMeta),
-            ServiceWithoutStatus(Box<crate::models::Service>),
+            ServiceWithoutStatus(Box<domain::app_instance::Service>),
         }
         #[derive(Serialize)]
         struct App<'a> {
@@ -127,15 +130,15 @@ impl Serialize for AppV2 {
             },
             AppV2::BackedUp(app) => App {
                 services: app
-                    .services()
+                    .services
                     .iter()
                     .map(|s| {
                         let mut s = s.clone();
-                        s.state.status = ServiceStatus::Paused;
+                        s.status = ServiceStatus::Paused;
                         Service::ServiceWithoutStatus(Box::new(s))
                     })
                     .collect(),
-                owners: app.owners(),
+                owners: &app.owners,
                 status: AppStatus::BackedUp,
             },
         };
@@ -150,12 +153,12 @@ impl Serialize for AppV2 {
     rank = 1
 )]
 async fn status_change_v1(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
     app_queue: &State<AppTaskQueueProducer>,
     options: WaitForQueueOptions,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
-    let app_name = app_name?;
+    let app_name = app_name?.0;
     let status_id = status_id?;
 
     try_wait_for_task(app_queue, app_name, status_id, options, AppV1).await
@@ -167,14 +170,14 @@ async fn status_change_v1(
     rank = 2
 )]
 async fn status_change_v2(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     status_id: Result<AppStatusChangeId, AppStatusChangeIdError>,
     app_queue: &State<AppTaskQueueProducer>,
     options: WaitForQueueOptions,
     host_meta_cache: &State<HostMetaCache>,
     request_info: RequestInfo,
 ) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
-    let app_name = app_name?;
+    let app_name = app_name?.0;
     let status_id = status_id?;
 
     try_wait_for_task(app_queue, app_name.clone(), status_id, options, |app| {
@@ -215,26 +218,26 @@ where
 
 #[rocket::delete("/<app_name>", rank = 1)]
 pub async fn delete_app_v1(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     app_queue: &State<AppTaskQueueProducer>,
     options: WaitForQueueOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
-    let app_name = app_name?;
+    let app_name = app_name?.0;
 
     delete_app(app_name, app_queue, options, user, AppV1).await
 }
 
 #[rocket::delete("/<app_name>", format = "application/vnd.prevant.v2+json", rank = 2)]
 pub async fn delete_app_v2(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     app_queue: &State<AppTaskQueueProducer>,
     options: WaitForQueueOptions,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
     host_meta_cache: &State<HostMetaCache>,
     request_info: RequestInfo,
 ) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
-    let app_name = app_name?;
+    let app_name = app_name?.0;
 
     delete_app(app_name.clone(), app_queue, options, user, |app| {
         AppV2::Deployed(host_meta_cache.assign_host_meta_data_for_app(
@@ -247,7 +250,7 @@ pub async fn delete_app_v2(
 }
 
 pub async fn delete_app_sync(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     app_queue: &State<AppTaskQueueProducer>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<Json<AppV1>> {
@@ -276,7 +279,7 @@ where
     // TODO: authorization hook to verify e.g. if a user is member of a GitLab group
     let user = user.map_err(HttpApiError::from)?;
 
-    let replicate_from = create_app_form.replicate_from().clone();
+    let replicate_from = create_app_form.replicate_from().cloned();
 
     let owner = hooks
         .apply_id_token_claims_to_owner_hook(user.user)
@@ -310,7 +313,7 @@ where
     rank = 1
 )]
 pub async fn create_app_v1(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     app_queue: &State<AppTaskQueueProducer>,
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
@@ -318,7 +321,7 @@ pub async fn create_app_v1(
     hooks: Hooks<'_>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
 ) -> HttpResult<AsyncCompletion<Json<AppV1>>> {
-    let app_name = app_name?;
+    let app_name = app_name?.0;
 
     create_app(
         app_name,
@@ -340,7 +343,7 @@ pub async fn create_app_v1(
     rank = 2
 )]
 pub async fn create_app_v2(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     app_queue: &State<AppTaskQueueProducer>,
     create_app_form: CreateAppOptions,
     payload: Result<CreateAppPayload, HttpApiProblem>,
@@ -350,7 +353,7 @@ pub async fn create_app_v2(
     host_meta_cache: &State<HostMetaCache>,
     request_info: RequestInfo,
 ) -> HttpResult<AsyncCompletion<Json<AppV2>>> {
-    let app_name = app_name?;
+    let app_name = app_name?.0;
 
     create_app(
         app_name.clone(),
@@ -378,7 +381,7 @@ pub struct AppStatesInput {
 
 #[rocket::put("/<app_name>/states", format = "application/json", data = "<payload>")]
 pub async fn change_app_status(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     apps: &State<Apps>,
     app_queue: &State<AppTaskQueueProducer>,
     app_repository: &State<Option<AppPostgresRepository>>,
@@ -399,7 +402,7 @@ pub async fn change_app_status(
         );
     };
 
-    let app_name = app_name?;
+    let app_name = app_name?.0;
 
     let status_id = match payload.status {
         AppStatus::Deployed => {
@@ -474,13 +477,13 @@ pub async fn change_app_status(
     data = "<status_data>"
 )]
 async fn change_status(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     service_name: String,
     apps: &State<Apps>,
     status_data: Json<ServiceStatusData>,
 ) -> HttpResult<ServiceStatusResponse> {
-    let app_name = app_name?;
-    let status = status_data.status.clone();
+    let app_name = app_name?.0;
+    let status = status_data.0.status;
 
     let service = apps.change_status(&app_name, &service_name, status).await?;
 
@@ -515,21 +518,41 @@ where
     }
 }
 
+pub struct AppNameFromParam(AppName);
+impl<'r> FromParam<'r> for AppNameFromParam {
+    type Error = HttpApiProblem;
+
+    fn from_param(param: &'r str) -> Result<Self, Self::Error> {
+        Ok(AppNameFromParam(AppName::from_str(param).map_err(|e| {
+            HttpApiProblem::with_title_and_type(StatusCode::BAD_REQUEST).detail(e.to_string())
+        })?))
+    }
+}
+
+#[rocket::async_trait]
+impl<'r> rocket::form::FromFormField<'r> for AppNameFromParam {
+    fn from_value(field: rocket::form::ValueField<'r>) -> rocket::form::Result<'r, Self> {
+        Ok(AppNameFromParam(AppName::from_str(field.value).map_err(
+            |err| rocket::form::Error::validation(err.to_string()),
+        )?))
+    }
+}
+
 #[derive(FromForm)]
 pub struct CreateAppOptions {
     #[field(name = "replicateFrom")]
-    replicate_from: Option<AppName>,
+    replicate_from: Option<AppNameFromParam>,
 }
 
 impl CreateAppOptions {
-    fn replicate_from(&self) -> &Option<AppName> {
-        &self.replicate_from
+    fn replicate_from(&self) -> Option<&AppName> {
+        self.replicate_from.as_ref().map(|rf| &rf.0)
     }
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct ServiceStatusData {
-    status: ServiceStatus,
+    status: DesiredServiceStatus,
 }
 
 pub struct ServiceStatusResponse {
@@ -654,12 +677,13 @@ impl<'r> FromRequest<'r> for Hooks<'r> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        apps::routes::{AppV1, AppV2},
-        models::{App, Owner, Service, ServiceStatus},
-    };
+    use crate::apps::routes::{AppV1, AppV2};
     use assert_json_diff::assert_json_eq;
     use chrono::Utc;
+    use domain::{
+        Owner,
+        app_instance::{App, Service, ServiceStatus},
+    };
     use openidconnect::{IssuerUrl, SubjectIdentifier};
     use std::collections::HashSet;
 
@@ -1100,19 +1124,19 @@ mod tests {
                 vec![
                     Service {
                         id: String::from("some id"),
-                        state: crate::models::State {
-                            status: ServiceStatus::Running,
-                            started_at: Some(Utc::now()),
+                        status: ServiceStatus::Running {
+                            started_at: Utc::now(),
                         },
-                        config: crate::sc!("postgres", "postgres:latest")
+                        blueprint_config: domain::blueprint_service!("postgres", "postgres:latest"),
+                        service_type: domain::app_instance::ContainerType::Instance
                     },
                     Service {
                         id: String::from("some id"),
-                        state: crate::models::State {
-                            status: ServiceStatus::Running,
-                            started_at: Some(Utc::now()),
+                        status: ServiceStatus::Running {
+                            started_at: Utc::now(),
                         },
-                        config: crate::sc!("mariadb", "mariadb:latest")
+                        blueprint_config: domain::blueprint_service!("mariadb", "mariadb:latest"),
+                        service_type: domain::app_instance::ContainerType::Instance
                     }
                 ],
                 HashSet::new(),
@@ -1150,19 +1174,19 @@ mod tests {
                 vec![
                     Service {
                         id: String::from("some id"),
-                        state: crate::models::State {
-                            status: ServiceStatus::Running,
-                            started_at: Some(Utc::now()),
+                        status: ServiceStatus::Running {
+                            started_at: Utc::now(),
                         },
-                        config: crate::sc!("postgres", "postgres:latest")
+                        blueprint_config: domain::blueprint_service!("postgres", "postgres:latest"),
+                        service_type: domain::app_instance::ContainerType::Instance
                     },
                     Service {
                         id: String::from("some id"),
-                        state: crate::models::State {
-                            status: ServiceStatus::Running,
-                            started_at: Some(Utc::now()),
+                        status: ServiceStatus::Running {
+                            started_at: Utc::now(),
                         },
-                        config: crate::sc!("mariadb", "mariadb:latest")
+                        blueprint_config: domain::blueprint_service!("mariadb", "mariadb:latest"),
+                        service_type: domain::app_instance::ContainerType::Instance
                     }
                 ],
                 HashSet::from([Owner {

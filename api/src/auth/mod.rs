@@ -1,8 +1,6 @@
-use crate::{
-    config::{ApiAccessMode, Config},
-    infrastructure::TraefikIngressRoute,
-};
+use crate::config::{ApiAccessMode, Config};
 use anyhow::Context;
+use domain::traefik::TraefikIngressRoute;
 use futures::{stream::FuturesUnordered, StreamExt as _};
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;

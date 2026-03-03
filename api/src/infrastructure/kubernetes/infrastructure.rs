@@ -29,29 +29,31 @@ use super::super::{
 };
 use super::deployment_unit::K8sDeploymentUnit;
 use super::payloads::{
-    deployment_payload, image_pull_secret_payload, ingress_route_payload, middleware_payload,
-    namespace_payload, persistent_volume_claim_payload, secrets_payload, service_payload,
-    IngressRoute, Middleware,
+    IngressRoute, Middleware, deployment_payload, image_pull_secret_payload, ingress_route_payload,
+    middleware_payload, namespace_payload, persistent_volume_claim_payload, secrets_payload,
+    service_payload,
 };
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
-use crate::deployment::deployment_unit::{DeployableService, DeploymentUnit};
-use crate::infrastructure::kubernetes::payloads::namespace_annotations;
-use crate::infrastructure::traefik::{TraefikIngressRoute, TraefikMiddleware};
 use crate::infrastructure::{
-    HttpForwarder, Infrastructure, TraefikRouterRule, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
-};
-use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{
-    App, AppName, ContainerType, Environment, Image, Owner, Service, ServiceConfig, ServiceError,
-    ServiceStatus, State, WebHostMeta,
+    HttpForwarder, Infrastructure, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
+    kubernetes::payloads::namespace_annotations,
 };
 use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
+use domain::app_blueprints::Environment;
+use domain::app_instance::ContainerType;
+use domain::{
+    AppName, Image, Owner,
+    app_blueprints::{DesiredServiceStatus, ServiceConfig, UserDefinedParameters},
+    app_deployment::{DeployableService, DeploymentUnit},
+    app_instance::{App, ContainerTypeParseError, Service, ServiceStatus, WebHostMeta},
+    traefik::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule},
+};
+use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use futures::stream::{self, BoxStream};
-use futures::StreamExt;
 use futures::{AsyncBufReadExt, TryStreamExt};
 use http_body_util::{BodyExt, Empty};
 use hyper_util::rt::TokioIo;
@@ -63,13 +65,13 @@ use k8s_openapi::api::{
 };
 use kube::api::ObjectMeta;
 use kube::config::Kubeconfig;
+use kube::{Resource, ResourceExt};
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     client::Client,
     config::Config,
     error::{Error as KubeError, ErrorResponse},
 };
-use kube::{Resource, ResourceExt};
 use log::{debug, error, warn};
 use regex::Regex;
 use secstr::SecUtf8;
@@ -217,7 +219,7 @@ impl KubernetesInfrastructure {
         &self,
         deployment_unit: &DeploymentUnit,
     ) -> Result<V1Namespace, KubernetesInfrastructureError> {
-        let app_name = deployment_unit.app_name();
+        let app_name = &deployment_unit.app_name;
         let namespace = app_name.to_rfc1123_namespace_id();
 
         let api = Api::all(self.client().await?);
@@ -227,8 +229,8 @@ impl KubernetesInfrastructure {
                 &namespace_payload(
                     app_name,
                     &self.config,
-                    deployment_unit.user_defined_parameters(),
-                    deployment_unit.owners(),
+                    &deployment_unit.user_defined_parameters,
+                    &deployment_unit.owners,
                 ),
             )
             .await
@@ -242,8 +244,8 @@ impl KubernetesInfrastructure {
 
                 let annotations = namespace_annotations(
                     &self.config,
-                    deployment_unit.user_defined_parameters(),
-                    deployment_unit.owners(),
+                    &deployment_unit.user_defined_parameters,
+                    &deployment_unit.owners,
                 );
                 if annotations.is_some() {
                     debug!("Patching namespace {app_name} with user defined parameters.");
@@ -311,7 +313,9 @@ impl KubernetesInfrastructure {
         KubernetesInfrastructureError,
     > {
         let secret = deployable_service
-            .files()
+            .blueprint_service
+            .files
+            .as_ref()
             .map(|files| secrets_payload(app_name, deployable_service, files));
 
         let service = service_payload(app_name, deployable_service);
@@ -326,7 +330,7 @@ impl KubernetesInfrastructure {
         );
 
         let ingress_route = ingress_route_payload(app_name, deployable_service);
-        let middlewares = middleware_payload(app_name, deployable_service.ingress_route());
+        let middlewares = middleware_payload(app_name, &deployable_service.ingress_route);
 
         Ok((secret, service, deployment, ingress_route, middlewares))
     }
@@ -357,14 +361,14 @@ impl KubernetesInfrastructure {
         let existing_pvc: Api<PersistentVolumeClaim> =
             Api::namespaced(client.clone(), &app_name.to_rfc1123_namespace_id());
 
-        for declared_volume in service.declared_volumes() {
+        for declared_volume in &service.declared_volumes {
             let pvc_list_params = ListParams {
                 label_selector: Some(format!(
                     "{}={},{}={},{}={}",
                     APP_NAME_LABEL,
                     app_name,
                     SERVICE_NAME_LABEL,
-                    service.service_name(),
+                    service.blueprint_service.service_name,
                     STORAGE_TYPE_LABEL,
                     declared_volume.split('/').next_back().unwrap_or("default")
                 )),
@@ -447,7 +451,7 @@ impl KubernetesInfrastructure {
             .as_ref()
             .and_then(|annotations| annotations.get(USER_DEFINED_PARAMETERS_LABEL))?;
 
-        let data = serde_json::from_str(udp)
+        let data = serde_json::from_str::<serde_json::Value>(udp)
             .inspect_err(|e| {
                 warn!(
                     "Cannot parse user defined parameters {}: {e}",
@@ -560,7 +564,7 @@ impl Infrastructure for KubernetesInfrastructure {
                 }
             };
 
-            let service = match Service::try_from((deployment, pod)) {
+            let service = match kubernetes_object_to_service(deployment, pod) {
                 Ok(service) => service,
                 Err(e) => {
                     debug!("Deployment does not provide required data: {e:?}");
@@ -657,14 +661,14 @@ impl Infrastructure for KubernetesInfrastructure {
 
         let client = self.client().await?;
 
-        let app_name = deployment_unit.app_name();
+        let app_name = &deployment_unit.app_name;
         let bootstrapping_containers = self.config.companion_bootstrapping_containers(
             app_name,
-            &deployment_unit.app_base_route().to_url(),
+            &deployment_unit.route.to_url(),
             Some(serde_json::json!({
                 "namespace": app_name.to_rfc1123_namespace_id()
             })),
-            deployment_unit.user_defined_parameters(),
+            &deployment_unit.user_defined_parameters,
         )?;
 
         let bootstrap_image_pull_secret = self.image_pull_secret(
@@ -680,14 +684,14 @@ impl Infrastructure for KubernetesInfrastructure {
         .await?;
 
         let deployment_unit_service_names = deployment_unit
-            .services()
+            .services
             .iter()
-            .map(|s| s.service_name())
+            .map(|s| &s.blueprint_service.service_name)
             .collect::<HashSet<_>>();
 
         if let Some(app) = self.fetch_app(app_name).await? {
             k8s_deployment_unit.filter_by_instances_and_replicas(
-                app.services()
+                app.services
                     .iter()
                     // We must exclude the services that are provided by the deployment_unit
                     // because without that filter a second update of the service would create an
@@ -697,7 +701,7 @@ impl Infrastructure for KubernetesInfrastructure {
             );
         }
 
-        for deployable_service in deployment_unit.services() {
+        for deployable_service in &deployment_unit.services {
             let (secret, service, deployment, ingress_route, middlewares) = self
                 .create_payloads(app_name, deployable_service, container_config)
                 .await?;
@@ -714,7 +718,7 @@ impl Infrastructure for KubernetesInfrastructure {
         let deployments = k8s_deployment_unit.deploy(client, app_name).await?;
         let mut services = Vec::with_capacity(deployments.len());
         for deployment in deployments.into_iter() {
-            if let Ok(service) = Service::try_from((deployment, None)) {
+            if let Ok(service) = kubernetes_object_to_service(deployment, None) {
                 services.push(service);
             }
         }
@@ -727,8 +731,8 @@ impl Infrastructure for KubernetesInfrastructure {
 
         Ok(App::new(
             services,
-            deployment_unit.owners().clone(),
-            deployment_unit.user_defined_parameters().clone(),
+            deployment_unit.owners.clone(),
+            deployment_unit.user_defined_parameters.clone(),
             created_at,
         ))
     }
@@ -826,7 +830,7 @@ impl Infrastructure for KubernetesInfrastructure {
         &self,
         app_name: &AppName,
         service_name: &str,
-        status: ServiceStatus,
+        status: DesiredServiceStatus,
     ) -> Result<Option<Service>> {
         let Some((mut deployment, pod)) =
             self.get_deployment_and_pod(app_name, service_name).await?
@@ -834,8 +838,13 @@ impl Infrastructure for KubernetesInfrastructure {
             return Ok(None);
         };
 
-        let service = Service::try_from((deployment.clone(), pod))?;
-        if service.status() == &status {
+        let service = kubernetes_object_to_service(deployment.clone(), pod)?;
+
+        if matches!(
+            (&service.status, &status),
+            (ServiceStatus::Running { .. }, DesiredServiceStatus::Running)
+                | (ServiceStatus::Paused, DesiredServiceStatus::Paused)
+        ) {
             return Ok(None);
         }
 
@@ -844,8 +853,8 @@ impl Infrastructure for KubernetesInfrastructure {
         };
 
         spec.replicas = Some(match status {
-            ServiceStatus::Running => 1,
-            ServiceStatus::Paused => 0,
+            DesiredServiceStatus::Running => 1,
+            DesiredServiceStatus::Paused => 0,
         });
 
         Api::<V1Deployment>::namespaced(self.client().await?, &app_name.to_rfc1123_namespace_id())
@@ -1044,96 +1053,101 @@ impl HttpForwarder for K8sHttpForwarder {
     }
 }
 
-impl TryFrom<(V1Deployment, Option<V1Pod>)> for Service {
-    type Error = KubernetesInfrastructureError;
+fn kubernetes_object_to_service(
+    deployment: V1Deployment,
+    pod: Option<V1Pod>,
+) -> Result<Service, KubernetesInfrastructureError> {
+    let service_config = kubernetes_deployement_to_service_config(&deployment)?;
 
-    fn try_from(deployment_and_pod: (V1Deployment, Option<V1Pod>)) -> Result<Self, Self::Error> {
-        let service_config = ServiceConfig::try_from(&deployment_and_pod.0)?;
+    let name = deployment
+        .metadata
+        .name
+        .ok_or(KubernetesInfrastructureError::DeploymentWithoutName)?;
 
-        let name = deployment_and_pod
-            .0
-            .metadata
-            .name
-            .ok_or(KubernetesInfrastructureError::DeploymentWithoutName)?;
-
-        let status = deployment_and_pod
-            .0
-            .spec
+    let started_at = pod.and_then(|pod| {
+        pod.status
             .as_ref()
-            .map(|spec| match spec.replicas {
-                None => ServiceStatus::Paused,
-                Some(replicas) if replicas <= 0 => ServiceStatus::Paused,
-                _ => ServiceStatus::Running,
-            })
-            .unwrap_or(ServiceStatus::Paused);
+            .and_then(|s| s.start_time.as_ref())
+            .map(|t| t.0)
+    });
 
-        let started_at = deployment_and_pod.1.and_then(|pod| {
-            pod.status
-                .as_ref()
-                .and_then(|s| s.start_time.as_ref())
-                .map(|t| t.0)
-        });
-
-        Ok(Service {
-            id: name,
-            config: service_config,
-            state: State { status, started_at },
+    let status = deployment
+        .spec
+        .as_ref()
+        .map(|spec| match spec.replicas {
+            None => ServiceStatus::Paused,
+            Some(replicas) if replicas <= 0 || started_at.is_none() => ServiceStatus::Paused,
+            _ => ServiceStatus::Running {
+                started_at: started_at.unwrap(),
+            },
         })
-    }
+        .unwrap_or(ServiceStatus::Paused);
+
+    let service_type = if let Some(lb) = deployment
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(CONTAINER_TYPE_LABEL))
+    {
+        lb.parse::<ContainerType>()?
+    } else {
+        ContainerType::Instance
+    };
+
+    Ok(Service {
+        id: name,
+        blueprint_config: service_config,
+        status,
+        service_type,
+    })
 }
 
-impl TryFrom<&V1Deployment> for ServiceConfig {
-    type Error = KubernetesInfrastructureError;
+fn kubernetes_deployement_to_service_config(
+    deployment: &V1Deployment,
+) -> Result<ServiceConfig, KubernetesInfrastructureError> {
+    let deployment_name = deployment
+        .metadata
+        .name
+        .as_ref()
+        .ok_or_else(|| KubernetesInfrastructureError::DeploymentWithoutName)?;
 
-    fn try_from(deployment: &V1Deployment) -> Result<Self, Self::Error> {
-        let deployment_name = deployment
-            .metadata
-            .name
-            .as_ref()
-            .ok_or_else(|| KubernetesInfrastructureError::DeploymentWithoutName)?;
+    if let (Some(labels), Some(annotations)) = (
+        &deployment.metadata.labels,
+        &deployment.metadata.annotations,
+    ) {
+        let service_name = labels.get(SERVICE_NAME_LABEL).unwrap_or(deployment_name);
 
-        if let (Some(labels), Some(annotations)) = (
-            &deployment.metadata.labels,
-            &deployment.metadata.annotations,
-        ) {
-            let service_name = labels.get(SERVICE_NAME_LABEL).unwrap_or(deployment_name);
-
-            let image = match annotations
-                .get(IMAGE_LABEL)
+        let image = match annotations
+            .get(IMAGE_LABEL)
+            .and_then(|image| Image::from_str(image).ok())
+        {
+            Some(img) => img,
+            None => deployment
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.template.spec.as_ref())
+                .and_then(|pod_spec| pod_spec.containers.first())
+                .and_then(|container| container.image.as_ref())
                 .and_then(|image| Image::from_str(image).ok())
-            {
-                Some(img) => img,
-                None => deployment
-                    .spec
-                    .as_ref()
-                    .and_then(|spec| spec.template.spec.as_ref())
-                    .and_then(|pod_spec| pod_spec.containers.first())
-                    .and_then(|container| container.image.as_ref())
-                    .and_then(|image| Image::from_str(image).ok())
-                    .ok_or_else(|| KubernetesInfrastructureError::MissingImageLabel {
-                        deployment_name: deployment_name.clone(),
-                    })?,
-            };
+                .ok_or_else(|| KubernetesInfrastructureError::MissingImageLabel {
+                    deployment_name: deployment_name.clone(),
+                })?,
+        };
 
-            let mut config = ServiceConfig::new(service_name.clone(), image);
+        let mut config = ServiceConfig::new(service_name.clone(), image);
 
-            if let Some(replicated_env) = annotations.get(REPLICATED_ENV_LABEL) {
-                let env = serde_json::from_str::<Environment>(replicated_env).map_err(|err| {
-                    KubernetesInfrastructureError::UnexpectedError {
-                        err: anyhow::Error::new(err),
-                    }
-                })?;
-                config.set_env(Some(env));
-            }
-
-            if let Some(lb) = labels.get(CONTAINER_TYPE_LABEL) {
-                config.set_container_type(lb.parse::<ContainerType>()?);
-            }
-
-            Ok(config)
-        } else {
-            Err(KubernetesInfrastructureError::MissingDeploymentAnnotations)
+        if let Some(replicated_env) = annotations.get(REPLICATED_ENV_LABEL) {
+            let env = serde_json::from_str::<Environment>(replicated_env).map_err(|err| {
+                KubernetesInfrastructureError::UnexpectedError {
+                    err: anyhow::Error::new(err),
+                }
+            })?;
+            config.env = Some(env);
         }
+
+        Ok(config)
+    } else {
+        Err(KubernetesInfrastructureError::MissingDeploymentAnnotations)
     }
 }
 
@@ -1145,17 +1159,14 @@ impl From<KubeError> for KubernetesInfrastructureError {
     }
 }
 
-impl From<ServiceError> for KubernetesInfrastructureError {
-    fn from(err: ServiceError) -> Self {
+impl From<ContainerTypeParseError> for KubernetesInfrastructureError {
+    fn from(err: ContainerTypeParseError) -> Self {
         match err {
-            ServiceError::InvalidServiceType { label } => {
+            ContainerTypeParseError::Unknow { label } => {
                 KubernetesInfrastructureError::UnknownServiceType {
                     unknown_label: label,
                 }
             }
-            err => KubernetesInfrastructureError::UnexpectedError {
-                err: anyhow::Error::new(err),
-            },
         }
     }
 }
@@ -1163,7 +1174,7 @@ impl From<ServiceError> for KubernetesInfrastructureError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::EnvironmentVariable;
+    use domain::app_blueprints::EnvironmentVariable;
     use k8s_openapi::api::apps::v1::DeploymentSpec;
     use kube::api::ObjectMeta;
 
@@ -1211,7 +1222,7 @@ mod tests {
             None,
         );
 
-        let service = Service::try_from((deployment, None)).unwrap();
+        let service = kubernetes_object_to_service(deployment, None).unwrap();
 
         assert_eq!(service.service_name(), &String::from("nginx"));
     }
@@ -1227,10 +1238,10 @@ mod tests {
             REPLICATED_ENV_LABEL => serde_json::json!({ "MYSQL_ROOT_PASSWORD": { "value": "example" } }).to_string()
         );
 
-        let service = Service::try_from((deployment, None)).unwrap();
+        let service = kubernetes_object_to_service(deployment, None).unwrap();
 
         assert_eq!(
-            service.config.env().unwrap().get(0).unwrap(),
+            service.blueprint_config.env.unwrap().iter().next().unwrap(),
             &EnvironmentVariable::with_replicated(
                 String::from("MYSQL_ROOT_PASSWORD"),
                 SecUtf8::from("example")
@@ -1248,9 +1259,9 @@ mod tests {
             None,
         );
 
-        let service = Service::try_from((deployment, None)).unwrap();
+        let service = kubernetes_object_to_service(deployment, None).unwrap();
 
-        assert_eq!(service.container_type(), &ContainerType::Instance);
+        assert_eq!(service.service_type, ContainerType::Instance);
     }
 
     #[test]
@@ -1263,9 +1274,9 @@ mod tests {
             Some(String::from("replica")),
         );
 
-        let service = Service::try_from((deployment, None)).unwrap();
+        let service = kubernetes_object_to_service(deployment, None).unwrap();
 
-        assert_eq!(service.container_type(), &ContainerType::Replica);
+        assert_eq!(service.service_type, ContainerType::Replica);
     }
 
     #[test]
@@ -1278,7 +1289,7 @@ mod tests {
             None,
         );
 
-        let service = Service::try_from((deployment, None)).unwrap();
+        let service = kubernetes_object_to_service(deployment, None).unwrap();
         assert_eq!(service.service_name(), "master-nginx");
     }
 
@@ -1292,7 +1303,7 @@ mod tests {
             Some(String::from("abc")),
         );
 
-        let err = Service::try_from((deployment, None)).unwrap_err();
+        let err = kubernetes_object_to_service(deployment, None).unwrap_err();
         assert!(
             matches!(err, KubernetesInfrastructureError::UnknownServiceType {
                     unknown_label
@@ -1311,7 +1322,7 @@ mod tests {
             None,
         );
 
-        let err = Service::try_from((deployment, None)).unwrap_err();
+        let err = kubernetes_object_to_service(deployment, None).unwrap_err();
         assert!(matches!(err,
             KubernetesInfrastructureError::MissingImageLabel {
                 deployment_name
@@ -1321,20 +1332,18 @@ mod tests {
 
     mod k3s {
         use super::super::*;
-        use crate::{
-            apps::AppsError, config::runtime::KubernetesRuntimeConfig,
-            deployment::deployment_unit::DeploymentUnitBuilder, sc,
-        };
+        use crate::{apps::AppsError, config::runtime::KubernetesRuntimeConfig};
+        use domain::{app_deployment::AppDeploymentBuilder, blueprint_service};
         use tempfile::TempDir;
         use testcontainers::{
-            core::{logs::consumer::logging_consumer::LoggingConsumer, WaitFor},
-            runners::AsyncRunner,
             ContainerAsync, ImageExt,
+            core::{WaitFor, logs::consumer::logging_consumer::LoggingConsumer},
+            runners::AsyncRunner,
         };
         use testcontainers_modules::k3s::{K3s, KUBE_SECURE_PORT};
 
-        async fn create_cluster_and_infra(
-        ) -> (ContainerAsync<K3s>, KubernetesInfrastructure, TempDir) {
+        async fn create_cluster_and_infra()
+        -> (ContainerAsync<K3s>, KubernetesInfrastructure, TempDir) {
             let _ = env_logger::builder().is_test(true).try_init();
 
             let tempdir = tempfile::tempdir().unwrap();
@@ -1383,20 +1392,18 @@ mod tests {
 
         #[tokio::test]
         async fn fetch_apps_including_backups() {
+            let _ = env_logger::builder().is_test(true).try_init();
+
             let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
 
             let app_name = AppName::master();
-            let unit = DeploymentUnitBuilder::init(app_name.clone(), vec![sc!("http1", "nginx")])
-                .extend_with_config(&infra.config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)
-                .unwrap()
-                .apply_hooks(&infra.config)
-                .await
-                .unwrap()
-                .build();
+            let unit = AppDeploymentBuilder::init(
+                app_name.clone(),
+                vec![blueprint_service!("http1", "nginx")],
+                None,
+            )
+            .finish()
+            .unwrap();
 
             let deploy_result = infra
                 .deploy_services(&unit, &Default::default())
@@ -1404,11 +1411,11 @@ mod tests {
                 .map_err(AppsError::from);
             assert_eq!(
                 deploy_result.map(|app| app
-                    .into_services()
+                    .services
                     .into_iter()
-                    .map(|s| s.config)
+                    .map(|s| s.blueprint_config)
                     .collect()),
-                Ok(vec![sc!("http1", "nginx")])
+                Ok(vec![blueprint_service!("http1", "nginx")])
             );
 
             let backup_payload = infra
@@ -1425,7 +1432,7 @@ mod tests {
             assert_eq!(
                 fetch_result
                     .as_ref()
-                    .map(|apps| { apps.iter().filter_map(|(_, app)| app.created_at).count() }),
+                    .map(|apps| { apps.values().filter_map(|app| app.created_at).count() }),
                 Ok(1)
             );
             assert_eq!(
@@ -1435,27 +1442,25 @@ mod tests {
                             app_name: app_name.clone(),
                         }
                     }))
-                    .map(|app| app.into_services().into_iter().map(|s| s.config).collect()),
+                    .map(|app| app.services),
                 Ok(vec![]),
             );
         }
 
         #[tokio::test]
-        async fn fetch_apps() {
+        async fn fetch_regular_apps() {
+            let _ = env_logger::builder().is_test(true).try_init();
+
             let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
 
             let app_name = AppName::master();
-            let unit = DeploymentUnitBuilder::init(app_name.clone(), vec![sc!("http1", "nginx")])
-                .extend_with_config(&infra.config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)
-                .unwrap()
-                .apply_hooks(&infra.config)
-                .await
-                .unwrap()
-                .build();
+            let unit = AppDeploymentBuilder::init(
+                app_name.clone(),
+                vec![blueprint_service!("http1", "nginx")],
+                None,
+            )
+            .finish()
+            .unwrap();
 
             let deploy_result = infra
                 .deploy_services(&unit, &Default::default())
@@ -1463,18 +1468,18 @@ mod tests {
                 .map_err(AppsError::from);
             assert_eq!(
                 deploy_result.map(|app| app
-                    .into_services()
+                    .services
                     .into_iter()
-                    .map(|s| s.config)
+                    .map(|s| s.blueprint_config)
                     .collect()),
-                Ok(vec![sc!("http1", "nginx")])
+                Ok(vec![blueprint_service!("http1", "nginx")])
             );
 
             let fetch_result = infra.fetch_apps().await.map_err(AppsError::from);
             assert_eq!(
                 fetch_result
                     .as_ref()
-                    .map(|apps| { apps.iter().filter_map(|(_, app)| app.created_at).count() }),
+                    .map(|apps| { apps.values().filter_map(|app| app.created_at).count() }),
                 Ok(1)
             );
             assert_eq!(
@@ -1484,8 +1489,12 @@ mod tests {
                             app_name: app_name.clone(),
                         }
                     }))
-                    .map(|app| app.into_services().into_iter().map(|s| s.config).collect()),
-                Ok(vec![sc!("http1", "nginx")])
+                    .map(|app| app
+                        .services
+                        .into_iter()
+                        .map(|s| s.blueprint_config)
+                        .collect()),
+                Ok(vec![blueprint_service!("http1", "nginx")])
             );
         }
     }

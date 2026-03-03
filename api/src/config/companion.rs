@@ -24,13 +24,19 @@
  * =========================LICENSE_END==================================
  */
 use crate::config::AppSelector;
-use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::{AppName, ContainerType, Environment, Image, ServiceConfig};
+use domain::{
+    AppName, Image,
+    app_blueprints::{Environment, ServiceConfig, UserDefinedParameters},
+    app_deployment::{
+        StaticCompanion, StaticCompanionDeploymentStrategy, StaticCompanionStorageStrategy,
+    },
+    app_instance::ContainerType,
+};
 use handlebars::{Handlebars, RenderError, RenderErrorReason};
 use jsonschema::Validator;
 use secstr::SecUtf8;
 use serde_value::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::path::PathBuf;
 use url::Url;
@@ -48,14 +54,15 @@ pub struct Companions {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Companion {
-    service_name: String,
+    service_name: Option<String>,
     #[serde(rename = "type")]
     companion_type: CompanionType,
     image: Image,
     #[serde(default)]
     deployment_strategy: DeploymentStrategy,
     env: Option<Environment>,
-    labels: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    labels: HashMap<String, String>,
     #[serde(alias = "volumes", alias = "files", default)]
     files: Option<BTreeMap<PathBuf, SecUtf8>>,
     #[serde(default = "AppSelector::default")]
@@ -73,22 +80,24 @@ pub(super) enum CompanionType {
     Service,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Default)]
 pub enum StorageStrategy {
     #[serde(rename = "none")]
+    #[default]
     NoMountVolumes,
     #[serde(rename = "mount-declared-image-volumes")]
     MountDeclaredImageVolumes,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Default)]
 pub enum DeploymentStrategy {
     #[serde(rename = "redeploy-always")]
-    RedeployAlways,
+    #[default]
+    Always,
     #[serde(rename = "redeploy-on-image-update")]
-    RedeployOnImageUpdate,
+    OnImageUpdate,
     #[serde(rename = "redeploy-never")]
-    RedeployNever,
+    Never,
 }
 
 /// Helper that configures the service routing for Traefik (see
@@ -175,26 +184,75 @@ impl<'de> serde::Deserialize<'de> for Templating {
 }
 
 impl Companions {
-    pub(super) fn companion_configs<P>(
-        &self,
-        app_name: &AppName,
-        predicate: P,
-    ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)>
-    where
-        P: Fn(&Companion) -> bool,
-    {
+    pub fn to_static_companions(&self, app_name: &AppName) -> Vec<StaticCompanion> {
         self.companions
             .iter()
             .filter(|(_, companion)| companion.matches_app_name(app_name))
-            .filter(|(_, companion)| predicate(companion))
-            .map(|(_, companion)| {
-                (
-                    ServiceConfig::from(companion.clone()),
-                    companion.deployment_strategy().clone(),
-                    companion.storage_strategy().clone(),
-                )
-            })
+            .map(|(companion_name, companion)| Self::create_companion(companion_name, companion))
             .collect()
+    }
+
+    fn create_companion(companion_name: &str, companion: &Companion) -> StaticCompanion {
+        let blueprint_config = ServiceConfig {
+            service_name: companion
+                .service_name
+                .as_deref()
+                .unwrap_or(companion_name)
+                .to_string(),
+            image: companion.image.clone(),
+            env: companion.env.as_ref().and_then(|env| {
+                if env.iter().count() == 0 {
+                    return None;
+                }
+
+                Some(Environment::new(
+                    env.iter()
+                        .map(|variable| variable.clone().with_templated(true))
+                        .collect(),
+                ))
+            }),
+            files: companion.files.clone(),
+        };
+
+        let rule_template = companion.routing.as_ref().and_then(|r| r.rule.clone());
+        let middleware_templates = companion
+            .routing
+            .as_ref()
+            .map(|r| r.additional_middlewares.clone());
+
+        let deployment_strategy = match companion.deployment_strategy {
+            DeploymentStrategy::Always => StaticCompanionDeploymentStrategy::Always,
+            DeploymentStrategy::OnImageUpdate => StaticCompanionDeploymentStrategy::OnImageUpdate,
+            DeploymentStrategy::Never => StaticCompanionDeploymentStrategy::Never,
+        };
+
+        let storage_strategy = match companion.storage_strategy {
+            StorageStrategy::NoMountVolumes => StaticCompanionStorageStrategy::NoMountVolumes,
+            StorageStrategy::MountDeclaredImageVolumes => {
+                StaticCompanionStorageStrategy::MountDeclaredImageVolumes
+            }
+        };
+
+        let labels = companion.labels.clone();
+
+        match companion.companion_type {
+            CompanionType::Application => StaticCompanion::ApplicationCompanion {
+                blueprint_config,
+                labels,
+                deployment_strategy,
+                rule_template,
+                middleware_templates,
+                storage_strategy,
+            },
+            CompanionType::Service => StaticCompanion::ServiceCompanion {
+                blueprint_config,
+                labels,
+                deployment_strategy,
+                rule_template,
+                middleware_templates,
+                storage_strategy,
+            },
+        }
     }
 
     pub(super) fn user_defined_schema_validator(&self) -> Option<Validator> {
@@ -269,50 +327,8 @@ impl Companions {
 }
 
 impl Companion {
-    pub fn companion_type(&self) -> &CompanionType {
-        &self.companion_type
-    }
-
     pub fn matches_app_name(&self, app_name: &AppName) -> bool {
         self.app_selector.matches(app_name)
-    }
-
-    pub fn deployment_strategy(&self) -> &DeploymentStrategy {
-        &self.deployment_strategy
-    }
-
-    pub fn storage_strategy(&self) -> &StorageStrategy {
-        &self.storage_strategy
-    }
-}
-
-// TODO: this From implementation and companion_configs provides a circular dependency between
-// config and ServiceConfig
-impl From<Companion> for ServiceConfig {
-    fn from(companion: Companion) -> ServiceConfig {
-        let mut config =
-            ServiceConfig::new(companion.service_name.clone(), companion.image.clone());
-
-        config.set_env(companion.env.clone().map(|env| {
-            Environment::new(
-                env.iter()
-                    .map(|variable| variable.clone().with_templated(true))
-                    .collect(),
-            )
-        }));
-        config.set_labels(companion.labels.clone());
-
-        if let Some(files) = &companion.files {
-            config.set_files(Some(files.clone()));
-        }
-
-        if let Some(routing) = &companion.routing {
-            config.set_routing(routing.clone());
-        }
-
-        config.set_container_type(companion.companion_type.into());
-
-        config
     }
 }
 
@@ -325,24 +341,14 @@ impl From<CompanionType> for ContainerType {
     }
 }
 
-impl Default for DeploymentStrategy {
-    fn default() -> Self {
-        Self::RedeployAlways
-    }
-}
-
-impl Default for StorageStrategy {
-    fn default() -> Self {
-        Self::NoMountVolumes
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use jsonschema::Validator;
-
     use super::*;
-    use std::str::FromStr;
+    use crate::config_from_str;
+    use domain::blueprint_service;
+    use jsonschema::Validator;
+    use pretty_assertions::assert_eq;
+    use std::{collections::HashMap, str::FromStr};
 
     macro_rules! companion_from_str {
         ( $config_str:expr_2021 ) => {
@@ -357,7 +363,197 @@ mod tests {
     }
 
     #[test]
-    fn should_parse_companion_with_required_fields() {
+    fn to_static_companions() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+            env = [ 'KEY=VALUE' ]
+
+            [companions.nginx]
+            serviceName = '{{service-name}}-nginx'
+            type = 'service'
+            image = 'nginx:latest'
+            env = [ 'KEY=VALUE' ]
+            "#
+        );
+
+        let companion_configs = config.companions.to_static_companions(&AppName::master());
+
+        assert_eq!(
+            companion_configs,
+            vec![
+                StaticCompanion::service_companion(blueprint_service!(
+                    "{{service-name}}-nginx",
+                    "nginx:latest",
+                    templated_env = ("KEY" => "VALUE")
+                )),
+                StaticCompanion::app_companion(blueprint_service!(
+                    "openid",
+                    "private.example.com/library/openid:latest",
+                    templated_env = ("KEY" => "VALUE")
+                )),
+            ]
+        );
+    }
+
+    #[test]
+    fn to_static_companions_with_deployment_strategy() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'service'
+            image = 'private.example.com/library/openid:latest'
+            deploymentStrategy = 'redeploy-on-image-update'
+            "#
+        );
+
+        let companion_configs = config.companions.to_static_companions(&AppName::master());
+
+        assert_eq!(
+            companion_configs,
+            vec![
+                StaticCompanion::service_companion(blueprint_service!(
+                    "openid",
+                    "private.example.com/library/openid:latest"
+                ))
+                .with_deployment_strategy(StaticCompanionDeploymentStrategy::OnImageUpdate)
+            ]
+        );
+    }
+
+    #[test]
+    fn to_static_companions_with_files() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:11-alpine'
+
+            [companions.openid.volumes]
+            '/tmp/test-1.json' = '{}'
+            '/tmp/test-2.json' = '{}'
+            "#
+        );
+
+        let companion_configs = config.companions.to_static_companions(&AppName::master());
+
+        assert_eq!(
+            companion_configs,
+            vec![StaticCompanion::app_companion(blueprint_service!(
+                "openid",
+                "private.example.com/library/openid:11-alpine",
+                files = (
+                    "/tmp/test-1.json" => "{}",
+                    "/tmp/test-2.json" => "{}"
+                )
+            ))]
+        );
+    }
+
+    #[test]
+    fn to_static_companions_with_with_labels() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:11-alpine'
+
+            [companions.openid.labels]
+            'com.example.foo' = 'bar'
+            "#
+        );
+
+        let companion_configs = config.companions.to_static_companions(&AppName::master());
+
+        assert_eq!(
+            companion_configs,
+            vec![
+                StaticCompanion::app_companion(blueprint_service!(
+                    "openid",
+                    "private.example.com/library/openid:11-alpine"
+                ))
+                .with_labels(HashMap::from([(
+                    String::from("com.example.foo"),
+                    String::from("bar")
+                )]))
+            ]
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::without_service_name_override(
+        r#"
+            [companions.openid]
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+            env = [ 'KEY=VALUE' ]
+            appSelector = "master"
+        "#
+    )]
+    #[case::with_service_name_override(
+        r#"
+            [companions.openid_some_key]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:latest'
+            env = [ 'KEY=VALUE' ]
+            appSelector = "master"
+        "#
+    )]
+    fn to_static_companions_with_app_name_selection(#[case] config: &str) {
+        let config = config_from_str!(config);
+
+        let companion_configs = config.companions.to_static_companions(&AppName::master());
+
+        assert_eq!(
+            companion_configs,
+            vec![StaticCompanion::app_companion(blueprint_service!(
+                "openid",
+                "private.example.com/library/openid:latest",
+                env = ("KEY" => "VALUE")
+            ))]
+        );
+        assert_eq!(
+            config
+                .companions
+                .to_static_companions(&AppName::from_str("other").unwrap()),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn to_static_companions_with_storage_strategy() {
+        let config = config_from_str!(
+            r#"
+            [companions.openid]
+            serviceName = 'openid'
+            type = 'application'
+            image = 'private.example.com/library/openid:11-alpine'
+            storageStrategy = 'mount-declared-image-volumes'
+            "#
+        );
+
+        let companion_configs = config.companions.to_static_companions(&AppName::master());
+
+        assert_eq!(
+            companion_configs,
+            vec![
+                StaticCompanion::app_companion(blueprint_service!(
+                    "openid",
+                    "private.example.com/library/openid:11-alpine"
+                ))
+                .with_storage_strategy(StaticCompanionStorageStrategy::MountDeclaredImageVolumes),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_companion_with_required_fields_and_optionanl_fields() {
         let companion = companion_from_str!(
             r#"
             serviceName = 'openid'
@@ -366,16 +562,13 @@ mod tests {
         "#
         );
 
-        assert_eq!(&companion.service_name, "openid");
+        assert_eq!(companion.service_name, Some(String::from("openid")));
         assert_eq!(companion.companion_type, CompanionType::Application);
         assert_eq!(
             companion.image,
             Image::from_str("private.example.com/library/openid:latest").unwrap()
         );
-        assert_eq!(
-            companion.deployment_strategy,
-            DeploymentStrategy::RedeployAlways
-        );
+        assert_eq!(companion.deployment_strategy, DeploymentStrategy::Always);
     }
 
     #[test]

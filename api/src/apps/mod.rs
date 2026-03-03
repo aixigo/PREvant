@@ -25,36 +25,34 @@
  */
 mod clean_up;
 mod fairing;
+mod hooks;
 mod host_meta_cache;
 mod queue;
 mod repository;
 mod routes;
 
-use crate::config::ReplicateApplicationCondition;
-use crate::config::{Config, ConfigError};
-use crate::deployment::deployment_unit::DeploymentTemplatingError;
-use crate::deployment::deployment_unit::DeploymentUnitBuilder;
-use crate::deployment::hooks::HooksError;
-use crate::infrastructure::{HttpForwarder, Infrastructure, TraefikIngressRoute};
-use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::Owner;
-use crate::models::{App, AppName, ContainerType, LogChunk, Service, ServiceConfig, ServiceStatus};
-use crate::registry::Registry;
-use crate::registry::RegistryError;
+use crate::config::{Config, ConfigError, ReplicateApplicationCondition};
+use crate::infrastructure::{HttpForwarder, Infrastructure};
+use crate::models::LogChunk;
+use crate::registry::{Registry, RegistryError};
 use chrono::{DateTime, FixedOffset};
 pub use clean_up::AppCleanUp;
-use futures::stream::BoxStream;
+use domain::app_deployment::BuildDeploymentUintBuildError;
+use domain::{
+    AppName, Owner,
+    app_blueprints::{DesiredServiceStatus, ServiceConfig, UserDefinedParameters},
+    app_deployment::{AppDeploymentBuilder, ResolveApps},
+    app_instance::{App, Service},
+    traefik::TraefikIngressRoute,
+};
 use futures::StreamExt;
-pub use host_meta_cache::new as host_meta_crawling;
-pub use host_meta_cache::HostMetaCache;
-use log::debug;
-use log::error;
-use log::trace;
-pub use queue::AppProcessingQueue;
-pub use queue::AppTaskQueueProducer;
+use futures::stream::BoxStream;
+pub use host_meta_cache::{HostMetaCache, new as host_meta_crawling};
+use log::{debug, error};
+pub use queue::{AppProcessingQueue, AppTaskQueueProducer};
 use regex::Regex;
 pub use repository::AppRepository;
-pub use routes::{apps_routes, delete_app_sync, AppV1};
+pub use routes::{AppNameFromParam, AppV1, apps_routes, delete_app_sync};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::sync::Mutex;
@@ -89,7 +87,7 @@ struct CreateOrUpdateParams {
     replicate_from: Option<AppName>,
     service_configs: Vec<ServiceConfig>,
     owners: Vec<Owner>,
-    user_defined_parameters: Option<serde_json::Value>,
+    user_defined_parameters: Option<UserDefinedParameters>,
     backed_up_apps: HashSet<AppName>,
 }
 
@@ -135,8 +133,7 @@ impl Apps {
             .fetch_app(app_name)
             .await?
             .and_then(|app| {
-                let services = app.into_services();
-                services
+                app.services
                     .into_iter()
                     .find(|service| service.service_name() == service_name)
             }))
@@ -211,54 +208,6 @@ impl Apps {
         rx
     }
 
-    async fn configs_and_user_defined_parameters_to_replicate(
-        &self,
-        services_to_deploy: &[ServiceConfig],
-        running_app: &Option<App>,
-        replicate_from_app_name: &AppName,
-    ) -> Result<(Vec<ServiceConfig>, Option<UserDefinedParameters>), AppsError> {
-        let running_instances_names = running_app
-            .as_ref()
-            .iter()
-            .flat_map(|running_app| running_app.services())
-            .filter(|c| c.container_type() == &ContainerType::Instance)
-            .map(|c| c.service_name())
-            .collect::<HashSet<&String>>();
-
-        let service_names = services_to_deploy
-            .iter()
-            .map(|c| c.service_name())
-            .collect::<HashSet<&String>>();
-
-        let (services, user_defined_parameters) = self
-            .infrastructure
-            .fetch_app(replicate_from_app_name)
-            .await?
-            .map(|app| app.into_services_and_user_defined_parameters())
-            .unwrap_or_else(|| (Vec::new(), None));
-
-        Ok((
-            services
-                .into_iter()
-                .map(|service| service.config)
-                .filter(|config| {
-                    matches!(
-                        config.container_type(),
-                        ContainerType::Instance | ContainerType::Replica
-                    )
-                })
-                .filter(|config| !service_names.contains(config.service_name()))
-                .filter(|config| !running_instances_names.contains(config.service_name()))
-                .map(|config| {
-                    let mut replicated_config = config;
-                    replicated_config.set_container_type(ContainerType::Replica);
-                    replicated_config
-                })
-                .collect::<Vec<ServiceConfig>>(),
-            user_defined_parameters,
-        ))
-    }
-
     /// Creates or updates an app to review with the given service configurations.
     ///
     /// The list of given services will be extended with:
@@ -272,32 +221,23 @@ impl Apps {
         let CreateOrUpdateParams {
             app_name,
             replicate_from,
-            service_configs,
+            mut service_configs,
             owners,
             user_defined_parameters,
             backed_up_apps,
         } = params;
 
-        let user_defined_parameters = match (
-            self.config.user_defined_schema_validator(),
-            user_defined_parameters,
-        ) {
-            (None, _) => None,
-            (Some(validator), None) => Some(
-                UserDefinedParameters::new(serde_json::json!({}), &validator)
-                    .map_err(|e| AppsError::InvalidUserDefinedParameters { err: e.to_string() })?,
-            ),
-            (Some(validator), Some(value)) => Some(
-                UserDefinedParameters::new(value, &validator)
-                    .map_err(|e| AppsError::InvalidUserDefinedParameters { err: e.to_string() })?,
-            ),
-        };
+        for service_config in service_configs.iter_mut() {
+            self.config.add_secrets_to(service_config, &app_name);
+        }
 
         let app_updates = self.app_updates().await;
-        let mut running_apps = {
+        let running_apps = {
             let apps = app_updates.borrow().clone();
             if apps.is_empty() {
-                log::debug!("Fetching apps because it seems that app_updates did not receive an update yet.");
+                log::debug!(
+                    "Fetching apps because it seems that app_updates did not receive an update yet."
+                );
                 self.fetch_apps().await?
             } else {
                 apps
@@ -319,116 +259,44 @@ impl Apps {
             }
         }
 
-        let mut configs = service_configs.to_vec();
-
-        let running_app = running_apps.remove(&app_name);
-
-        let mut user_defined_parameters = match (
-            running_app
-                .as_ref()
-                .and_then(|app| app.user_defined_parameters().clone()),
-            user_defined_parameters,
-        ) {
-            (None, None) => None,
-            (None, Some(user_defined_parameters)) => Some(user_defined_parameters),
-            (Some(active_user_defined_parameters), None) => Some(active_user_defined_parameters),
-            (Some(active_user_defined_parameters), Some(user_defined_parameters)) => {
-                Some(active_user_defined_parameters.merge(user_defined_parameters))
-            }
-        };
-
-        let replicate_from_app_name = match (
-            replicate_from.as_ref(),
+        let app_to_replicate_from = match (
+            replicate_from,
             &self.config.applications.replication_condition,
         ) {
             (None, ReplicateApplicationCondition::AlwaysFromDefaultApp) => {
-                Some(&self.config.applications.default_app)
+                Some(self.config.applications.default_app.clone())
             }
             (None, ReplicateApplicationCondition::ExplicitlyMentioned) => None,
             (
                 Some(replicate_from_app_name),
                 ReplicateApplicationCondition::AlwaysFromDefaultApp
                 | ReplicateApplicationCondition::ExplicitlyMentioned,
-            ) if *replicate_from_app_name != app_name => Some(replicate_from_app_name),
+            ) if replicate_from_app_name != app_name => Some(replicate_from_app_name),
             _ => None,
         };
 
-        if let Some(replicate_from_app_name) = replicate_from_app_name {
-            let (config_to_replicate, replication_user_defined_parameters) = self
-                .configs_and_user_defined_parameters_to_replicate(
-                    &service_configs,
-                    &running_app,
-                    replicate_from_app_name,
-                )
-                .await?;
-            configs.extend(config_to_replicate);
+        let mut deployment_unit =
+            AppDeploymentBuilder::init(app_name.clone(), service_configs, user_defined_parameters)
+                .with_app_to_replicate_from(app_to_replicate_from)
+                .with_owners(owners)
+                .with_static_companions(self.config.companions.to_static_companions(&app_name))
+                .resolve_apps::<AppsError, _>(InfrastructureAppResolver {
+                    infrastructure: dyn_clone::clone_box(&*self.infrastructure),
+                })
+                .await?
+                .resolve_image_manifests(async |images| {
+                    Registry::new(&self.config)
+                        .resolve_image_infos(&images)
+                        .await
+                })
+                .await?
+                .resolve_base_route::<AppsError, _>(async || Ok(self.prevant_base_route.clone()))
+                .await?
+                .finish()?;
 
-            user_defined_parameters = match (
-                replication_user_defined_parameters,
-                user_defined_parameters.take(),
-            ) {
-                (None, None) => None,
-                (None, Some(user_defined_parameters)) => Some(user_defined_parameters),
-                (Some(active_user_defined_parameters), None) => {
-                    Some(active_user_defined_parameters)
-                }
-                (Some(active_user_defined_parameters), Some(user_defined_parameters)) => {
-                    Some(active_user_defined_parameters.merge(user_defined_parameters))
-                }
-            };
-        }
-
-        let (services, mut existing_owners) = running_app
-            .map(|app| app.into_services_and_owners())
-            .unwrap_or_else(|| (Vec::new(), HashSet::new()));
-        existing_owners.extend(owners);
-        let configs_for_templating = services
-            .into_iter()
-            .filter(|service| service.container_type() == &ContainerType::Instance)
-            .filter(|service| {
-                !service_configs
-                    .iter()
-                    .any(|c| c.service_name() == service.service_name())
-            })
-            .map(|service| service.config)
-            .collect::<Vec<_>>();
-
-        let deployment_unit_builder = DeploymentUnitBuilder::init(app_name.clone(), configs)
-            .extend_with_config(&self.config)
-            .extend_with_templating_only_service_configs(configs_for_templating);
-
-        let images = deployment_unit_builder.images();
-        let image_infos = Registry::new(&self.config)
-            .resolve_image_infos(&images)
+        deployment_unit.services = hooks::Hooks::new(&self.config)
+            .apply_deployment_hook(&app_name, deployment_unit.services)
             .await?;
-
-        let deployment_unit_builder = deployment_unit_builder
-            .extend_with_image_infos(image_infos)
-            .with_owners(existing_owners)
-            .apply_templating(
-                &self.prevant_base_route.as_ref().and_then(|r| r.to_url()),
-                user_defined_parameters,
-            )?
-            .apply_hooks(&self.config)
-            .await?;
-
-        let deployment_unit =
-            if let Some(base_traefik_ingress_route) = self.prevant_base_route.as_ref() {
-                trace!(
-                    "The base URL for {app_name} is: {:?}",
-                    base_traefik_ingress_route
-                        .to_url()
-                        .map(|url| url.to_string())
-                );
-                deployment_unit_builder
-                    .apply_base_traefik_ingress_route(base_traefik_ingress_route.clone())
-                    .map_err(|e| AppsError::BaseRouteNotMergeable {
-                        error: e.to_string(),
-                    })?
-                    .build()
-            } else {
-                deployment_unit_builder.build()
-            };
 
         let apps = self
             .infrastructure
@@ -517,7 +385,7 @@ impl Apps {
         &self,
         app_name: &AppName,
         service_name: &str,
-        status: ServiceStatus,
+        status: DesiredServiceStatus,
     ) -> Result<Option<Service>, AppsError> {
         Ok(self
             .infrastructure
@@ -548,9 +416,56 @@ pub enum AppsError {
     #[error("Unable to resolve information about image: {error}")]
     UnableToResolveImage { error: RegistryError },
     #[error("Cannot apply hook {err}")]
-    UnapplicableHook { err: HooksError },
+    UnapplicableHook { err: hooks::HooksError },
     #[error("User defined payload does not match to the configured value: {err}")]
     InvalidUserDefinedParameters { err: String },
+}
+
+#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize, PartialEq)]
+pub enum DeploymentTemplatingError {
+    #[error("Failed to parse traefik rule ({raw_rule}): {err}")]
+    FailedToParseTraefikRule { raw_rule: String, err: String },
+    #[error("Failed to render template: {err}")]
+    TemplateRenderingError { err: String },
+}
+
+impl From<BuildDeploymentUintBuildError> for AppsError {
+    fn from(value: BuildDeploymentUintBuildError) -> Self {
+        match value {
+            BuildDeploymentUintBuildError::FailedTemplatingForServiceCompanions(render_error)
+            | BuildDeploymentUintBuildError::FailedTemplatingForApplicationCompanions(
+                render_error,
+            )
+            | BuildDeploymentUintBuildError::FailedTemplatingForService(render_error) => {
+                Self::TemplatingIssue {
+                    error: DeploymentTemplatingError::TemplateRenderingError {
+                        err: render_error.to_string(),
+                    },
+                }
+            }
+            BuildDeploymentUintBuildError::TraefikRuleParsingFromTemplatedStaticCompanionRule {
+                rule,
+                err,
+            } => Self::TemplatingIssue {
+                error: DeploymentTemplatingError::FailedToParseTraefikRule {
+                    raw_rule: rule,
+                    err,
+                },
+            },
+            BuildDeploymentUintBuildError::TraefikIngressRouteMergeError(
+                traefik_ingress_route_merge_error,
+            ) => Self::BaseRouteNotMergeable {
+                error: traefik_ingress_route_merge_error.to_string(),
+            },
+        }
+    }
+}
+impl From<domain::app_deployment::ResolveAppsError<AppsError>> for AppsError {
+    fn from(value: domain::app_deployment::ResolveAppsError<AppsError>) -> Self {
+        Self::InfrastructureError {
+            error: value.to_string(),
+        }
+    }
 }
 
 impl From<ConfigError> for AppsError {
@@ -569,31 +484,40 @@ impl From<anyhow::Error> for AppsError {
     }
 }
 
-impl From<DeploymentTemplatingError> for AppsError {
-    fn from(error: DeploymentTemplatingError) -> Self {
-        Self::TemplatingIssue { error }
-    }
-}
-
 impl From<RegistryError> for AppsError {
     fn from(error: RegistryError) -> Self {
         Self::UnableToResolveImage { error }
     }
 }
 
-impl From<HooksError> for AppsError {
-    fn from(err: HooksError) -> Self {
+impl From<hooks::HooksError> for AppsError {
+    fn from(err: hooks::HooksError) -> Self {
         Self::UnapplicableHook { err }
+    }
+}
+
+struct InfrastructureAppResolver {
+    infrastructure: Box<dyn Infrastructure>,
+}
+
+#[async_trait::async_trait]
+impl ResolveApps for InfrastructureAppResolver {
+    type Error = AppsError;
+
+    async fn fetch_app(&self, app_name: AppName) -> Result<Option<App>, Self::Error> {
+        Ok(self.infrastructure.fetch_app(&app_name).await?)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::{Dummy, TraefikIngressRoute, TraefikRouterRule};
-    use crate::models::{EnvironmentVariable, Owner, State};
-    use crate::sc;
+    use crate::infrastructure::Dummy;
     use chrono::Utc;
+    use domain::app_blueprints::EnvironmentVariable;
+    use domain::app_instance::{ContainerType, ServiceStatus};
+    use domain::blueprint_service;
+    use domain::traefik::{TraefikIngressRoute, TraefikRouterRule};
     use futures::StreamExt;
     use openidconnect::{IssuerUrl, SubjectIdentifier};
     use secstr::SecUtf8;
@@ -615,7 +539,7 @@ mod tests {
                 $services
                     .iter()
                     .find(|s| s.service_name() == $service_name
-                        && s.container_type() == &$container_type)
+                        && s.service_type == $container_type)
                     .is_some(),
                 "services should contain {:?} with type {:?}",
                 $service_name,
@@ -648,7 +572,7 @@ mod tests {
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-a")],
+            service_configs: vec![blueprint_service!("service-a")],
             ..Default::default()
         })
         .await?;
@@ -656,8 +580,8 @@ mod tests {
         let deployed_apps = apps.fetch_apps().await?;
         assert_eq!(deployed_apps.len(), 1);
         let app = deployed_apps.get(&AppName::master()).unwrap();
-        assert_eq!(app.services().len(), 1);
-        assert_contains_service!(app.services(), "service-a", ContainerType::Instance);
+        assert_eq!(app.services.len(), 1);
+        assert_contains_service!(app.services, "service-a", ContainerType::Instance);
 
         Ok(())
     }
@@ -670,14 +594,17 @@ mod tests {
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::from_str("branch").unwrap(),
-            service_configs: vec![sc!("service-b")],
+            service_configs: vec![blueprint_service!("service-b")],
             ..Default::default()
         })
         .await?;
@@ -687,9 +614,9 @@ mod tests {
         let app = deployed_apps
             .get(&AppName::from_str("branch").unwrap())
             .unwrap();
-        assert_eq!(app.services().len(), 2);
-        assert_contains_service!(app.services(), "service-b", ContainerType::Instance);
-        assert_contains_service!(app.services(), "service-a", ContainerType::Replica);
+        assert_eq!(app.services.len(), 2);
+        assert_contains_service!(app.services, "service-b", ContainerType::Instance);
+        assert_contains_service!(app.services, "service-a", ContainerType::Replica);
 
         Ok(())
     }
@@ -707,14 +634,17 @@ mod tests {
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::from_str("branch").unwrap(),
-            service_configs: vec![sc!("service-c")],
+            service_configs: vec![blueprint_service!("service-c")],
             ..Default::default()
         })
         .await?;
@@ -724,13 +654,13 @@ mod tests {
         let app = deployed_apps
             .get(&AppName::from_str("branch").unwrap())
             .unwrap();
-        assert_eq!(app.services().len(), 1);
-        assert_contains_service!(app.services(), "service-c", ContainerType::Instance);
+        assert_eq!(app.services.len(), 1);
+        assert_contains_service!(app.services, "service-c", ContainerType::Instance);
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::from_str("branch").unwrap(),
             replicate_from: Some(AppName::master()),
-            service_configs: vec![sc!("service-c")],
+            service_configs: vec![blueprint_service!("service-c")],
             ..Default::default()
         })
         .await?;
@@ -740,10 +670,10 @@ mod tests {
         let app = deployed_apps
             .get(&AppName::from_str("branch").unwrap())
             .unwrap();
-        assert_eq!(app.services().len(), 3);
-        assert_contains_service!(app.services(), "service-a", ContainerType::Replica);
-        assert_contains_service!(app.services(), "service-b", ContainerType::Replica);
-        assert_contains_service!(app.services(), "service-c", ContainerType::Instance);
+        assert_eq!(app.services.len(), 3);
+        assert_contains_service!(app.services, "service-a", ContainerType::Replica);
+        assert_contains_service!(app.services, "service-b", ContainerType::Replica);
+        assert_contains_service!(app.services, "service-c", ContainerType::Instance);
 
         Ok(())
     }
@@ -761,7 +691,10 @@ mod tests {
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
@@ -769,7 +702,7 @@ mod tests {
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::from_str("branch").unwrap(),
             replicate_from: Some(AppName::master()),
-            service_configs: vec![sc!("service-c")],
+            service_configs: vec![blueprint_service!("service-c")],
             ..Default::default()
         })
         .await?;
@@ -779,8 +712,8 @@ mod tests {
         let app = deployed_apps
             .get(&AppName::from_str("branch").unwrap())
             .unwrap();
-        assert_eq!(app.services().len(), 1);
-        assert_contains_service!(app.services(), "service-c", ContainerType::Instance);
+        assert_eq!(app.services.len(), 1);
+        assert_contains_service!(app.services, "service-c", ContainerType::Instance);
 
         Ok(())
     }
@@ -793,21 +726,17 @@ mod tests {
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::from_str("branch").unwrap(),
-            service_configs: vec![sc!("service-b")],
-            ..Default::default()
-        })
-        .await?;
-
-        apps.create_or_update(CreateOrUpdateParams {
-            app_name: AppName::from_str("branch").unwrap(),
-            service_configs: vec![sc!("service-a")],
+            service_configs: vec![blueprint_service!("service-b")],
             ..Default::default()
         })
         .await?;
@@ -817,9 +746,23 @@ mod tests {
         let app = deployed_apps
             .get(&AppName::from_str("branch").unwrap())
             .unwrap();
-        assert_eq!(app.services().len(), 2);
-        assert_contains_service!(app.services(), "service-a", ContainerType::Instance);
-        assert_contains_service!(app.services(), "service-b", ContainerType::Instance);
+        assert_eq!(app.services.len(), 2);
+
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("branch").unwrap(),
+            service_configs: vec![blueprint_service!("service-a")],
+            ..Default::default()
+        })
+        .await?;
+
+        let deployed_apps = apps.fetch_apps().await?;
+
+        let app = deployed_apps
+            .get(&AppName::from_str("branch").unwrap())
+            .unwrap();
+        assert_eq!(app.services.len(), 2);
+        assert_contains_service!(app.services, "service-a", ContainerType::Instance);
+        assert_contains_service!(app.services, "service-b", ContainerType::Instance);
 
         Ok(())
     }
@@ -833,7 +776,7 @@ mod tests {
             name = "user"
             data = "SGVsbG8="
             appSelector = "master"
-        "#
+            "#
         );
 
         let infrastructure = Box::new(Dummy::new());
@@ -841,7 +784,7 @@ mod tests {
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("mariadb")],
+            service_configs: vec![blueprint_service!("mariadb")],
             ..Default::default()
         })
         .await?;
@@ -851,15 +794,15 @@ mod tests {
             .fetch_app(&AppName::master())
             .await?
             .unwrap();
-        assert_eq!(app.services().iter().count(), 1);
+        assert_eq!(app.services.len(), 1);
 
-        let config = app
-            .into_services()
+        let config: ServiceConfig = app
+            .services
             .into_iter()
             .next()
-            .map(|s| s.config)
+            .map(|s| s.blueprint_config)
             .unwrap();
-        let files = config.files().unwrap();
+        let files = config.files.unwrap();
         assert_eq!(
             files.get(&PathBuf::from("/run/secrets/user")).unwrap(),
             &SecUtf8::from("Hello")
@@ -869,8 +812,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_create_app_for_master_without_secrets_because_of_none_matching_app_selector(
-    ) -> Result<(), AppsError> {
+    async fn should_create_app_for_master_without_secrets_because_of_none_matching_app_selector()
+    -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [services.mariadb]
@@ -886,7 +829,7 @@ mod tests {
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::from_str("master-1x").unwrap(),
-            service_configs: vec![sc!("mariadb")],
+            service_configs: vec![blueprint_service!("mariadb")],
             ..Default::default()
         })
         .await?;
@@ -896,15 +839,15 @@ mod tests {
             .fetch_app(&AppName::from_str("master-1x").unwrap())
             .await?
             .unwrap();
-        assert_eq!(app.services().len(), 1);
+        assert_eq!(app.services.len(), 1);
 
-        let config = app
-            .into_services()
+        let config: ServiceConfig = app
+            .services
             .into_iter()
             .next()
-            .map(|s| s.config)
+            .map(|s| s.blueprint_config)
             .unwrap();
-        assert_eq!(config.files(), None);
+        assert_eq!(config.files, None);
 
         Ok(())
     }
@@ -919,7 +862,10 @@ mod tests {
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
@@ -958,7 +904,10 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::from_str("master").unwrap();
-        let services = vec![sc!("service-a"), sc!("service-b")];
+        let services = vec![
+            blueprint_service!("service-a"),
+            blueprint_service!("service-b"),
+        ];
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
             service_configs: services.clone(),
@@ -967,17 +916,14 @@ Log msg 3 of service-a of app master
         .await?;
         for service in services {
             let mut log_stream = apps
-                .stream_logs(&app_name, service.service_name(), &None, &None)
+                .stream_logs(&app_name, &service.service_name, &None, &None)
                 .await;
 
             assert_eq!(
                 log_stream.next().await.unwrap().unwrap(),
                 (
                     DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z").unwrap(),
-                    format!(
-                        "Log msg 1 of {} of app {app_name}\n",
-                        service.service_name()
-                    )
+                    format!("Log msg 1 of {} of app {app_name}\n", service.service_name)
                 )
             );
 
@@ -985,10 +931,7 @@ Log msg 3 of service-a of app master
                 log_stream.next().await.unwrap().unwrap(),
                 (
                     DateTime::parse_from_rfc3339("2019-07-18T07:30:00.000000000Z").unwrap(),
-                    format!(
-                        "Log msg 2 of {} of app {app_name}\n",
-                        service.service_name()
-                    )
+                    format!("Log msg 2 of {} of app {app_name}\n", service.service_name)
                 )
             );
 
@@ -996,10 +939,7 @@ Log msg 3 of service-a of app master
                 log_stream.next().await.unwrap().unwrap(),
                 (
                     DateTime::parse_from_rfc3339("2019-07-18T07:35:00.000000000Z").unwrap(),
-                    format!(
-                        "Log msg 3 of {} of app {app_name}\n",
-                        service.service_name()
-                    )
+                    format!("Log msg 3 of {} of app {app_name}\n", service.service_name)
                 )
             );
         }
@@ -1028,28 +968,24 @@ Log msg 3 of service-a of app master
         let app_name = AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![sc!("service-a")],
+            service_configs: vec![blueprint_service!("service-a")],
             ..Default::default()
         })
         .await?;
         let deployed_apps = apps.fetch_apps().await?;
 
         let app = deployed_apps.get(&app_name).unwrap();
-        assert_eq!(app.services().len(), 3);
-        assert_contains_service!(
-            app.services(),
-            "openid",
-            ContainerType::ApplicationCompanion
-        );
-        assert_contains_service!(app.services(), "db", ContainerType::ServiceCompanion);
-        assert_contains_service!(app.services(), "service-a", ContainerType::Instance);
+        assert_eq!(app.services.len(), 3);
+        assert_contains_service!(app.services, "openid", ContainerType::ApplicationCompanion);
+        assert_contains_service!(app.services, "db", ContainerType::ServiceCompanion);
+        assert_contains_service!(app.services, "service-a", ContainerType::Instance);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn should_filter_companions_if_services_to_deploy_contain_same_service_name(
-    ) -> Result<(), AppsError> {
+    async fn should_filter_companions_if_services_to_deploy_contain_same_service_name()
+    -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -1067,7 +1003,10 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        let configs = vec![sc!("openid"), sc!("db")];
+        let configs = vec![
+            blueprint_service!("openid", "keycloak/keycloak:20.0"),
+            blueprint_service!("db", "mariadb"),
+        ];
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
             service_configs: configs.clone(),
@@ -1077,29 +1016,29 @@ Log msg 3 of service-a of app master
         let deployed_apps = apps.fetch_apps().await?;
 
         let deployed_app = deployed_apps.get(&app_name).unwrap();
-        assert_eq!(deployed_app.services().len(), 2);
-        assert_contains_service!(deployed_app.services(), "openid", ContainerType::Instance);
-        assert_contains_service!(deployed_app.services(), "db", ContainerType::Instance);
+        assert_eq!(deployed_app.services.len(), 2);
+        assert_contains_service!(deployed_app.services, "openid", ContainerType::Instance);
+        assert_contains_service!(deployed_app.services, "db", ContainerType::Instance);
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
             .fetch_app(&app_name)
             .await?
-            .map(|app| app.into_services())
+            .map(|app| app.services)
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "openid")
-            .map(|service| service.config)
+            .map(|service| service.blueprint_config)
             .collect();
         assert_eq!(openid_configs.len(), 1);
-        assert_eq!(openid_configs[0].image(), configs[0].image());
+        assert_eq!(openid_configs[0].image, configs[0].image);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn should_merge_with_companion_config_if_services_to_deploy_contain_same_service_name(
-    ) -> Result<(), AppsError> {
+    async fn should_merge_with_companion_config_if_services_to_deploy_contain_same_service_name()
+    -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [companions.openid]
@@ -1118,11 +1057,10 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
 
-        let configs = vec![crate::sc!(
+        let configs = vec![blueprint_service!(
             "openid",
-            labels = (),
-            env = ("VAR_1" => "efg"),
-            files = ()
+            "keycloak/keycloak:23.0",
+            env = ("VAR_1" => "efg")
         )];
 
         apps.create_or_update(CreateOrUpdateParams {
@@ -1135,23 +1073,23 @@ Log msg 3 of service-a of app master
         let deployed_apps = apps.fetch_apps().await?;
 
         let deployed_app = deployed_apps.get(&app_name).unwrap();
-        assert_eq!(deployed_app.services().len(), 1);
-        assert_contains_service!(deployed_app.services(), "openid", ContainerType::Instance);
+        assert_eq!(deployed_app.services.len(), 1);
+        assert_contains_service!(deployed_app.services, "openid", ContainerType::Instance);
 
         let openid_configs: Vec<ServiceConfig> = apps
             .infrastructure
             .fetch_app(&app_name)
             .await?
-            .map(|app| app.into_services())
+            .map(|app| app.services)
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "openid")
-            .map(|service| service.config)
+            .map(|service| service.blueprint_config)
             .collect();
         assert_eq!(openid_configs.len(), 1);
 
         use secstr::SecUtf8;
-        let openid_env = openid_configs[0].env().unwrap();
+        let openid_env = openid_configs[0].env.as_ref().unwrap();
         assert_eq!(
             openid_env.variable("VAR_1"),
             Some(&EnvironmentVariable::new(
@@ -1188,33 +1126,33 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![crate::sc!("service-a")],
+            service_configs: vec![blueprint_service!("service-a")],
             ..Default::default()
         })
         .await?;
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![crate::sc!("service-b")],
+            service_configs: vec![blueprint_service!("service-b")],
             ..Default::default()
         })
         .await?;
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![crate::sc!("service-c")],
+            service_configs: vec![blueprint_service!("service-c")],
             ..Default::default()
         })
         .await?;
 
         let mut apps = apps.infrastructure.fetch_apps().await?;
-        let openid_config = apps
+        let openid_config: ServiceConfig = apps
             .remove(&AppName::master())
             .unwrap()
-            .into_services()
+            .services
             .into_iter()
             .find(|service| service.service_name() == "openid")
-            .map(|service| service.config)
+            .map(|service| service.blueprint_config)
             .unwrap();
-        let openid_env = openid_config.env().unwrap().get(0).unwrap();
+        let openid_env = openid_config.env.as_ref().unwrap().iter().next().unwrap();
 
         assert_eq!(
             openid_env.value().unsecure(),
@@ -1233,7 +1171,7 @@ Log msg 3 of service-a of app master
         let app_name = AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![sc!("service-a")],
+            service_configs: vec![blueprint_service!("service-a")],
             ..Default::default()
         })
         .await?;
@@ -1244,15 +1182,13 @@ Log msg 3 of service-a of app master
             App::new(
                 vec![Service {
                     id: "service-a".to_string(),
-                    config: crate::sc!("service-a"),
-                    state: State {
-                        status: ServiceStatus::Running,
-                        started_at: Some(
-                            DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
-                                .unwrap()
-                                .with_timezone(&Utc)
-                        ),
-                    }
+                    blueprint_config: domain::blueprint_service!("service-a"),
+                    status: ServiceStatus::Running {
+                        started_at: DateTime::parse_from_rfc3339("2019-07-18T07:25:00.000000000Z")
+                            .unwrap()
+                            .with_timezone(&Utc),
+                    },
+                    service_type: ContainerType::Instance
                 }],
                 HashSet::new(),
                 None,
@@ -1288,7 +1224,7 @@ Log msg 3 of service-a of app master
         let apps = Apps::new(config, infrastructure)?;
 
         let app_name = AppName::master();
-        let configs = vec![sc!("db1"), sc!("db2")];
+        let configs = vec![blueprint_service!("db1"), blueprint_service!("db2")];
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
             service_configs: configs,
@@ -1301,30 +1237,31 @@ Log msg 3 of service-a of app master
             .infrastructure
             .fetch_app(&app_name)
             .await?
-            .map(|app| app.into_services())
+            .map(|app| app.services)
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db1")
-            .map(|service| service.config)
+            .map(|service| service.blueprint_config)
             .collect();
 
         let db_config2: Vec<ServiceConfig> = apps
             .infrastructure
             .fetch_app(&app_name)
             .await?
-            .map(|app| app.into_services())
+            .map(|app| app.services)
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db2")
-            .map(|service| service.config)
+            .map(|service| service.blueprint_config)
             .collect();
 
         let app = deployed_apps.get(&app_name).unwrap();
 
-        assert_eq!(app.services().len(), 2);
+        assert_eq!(app.services.len(), 2);
         assert_eq!(
             db_config1[0]
-                .files()
+                .files
+                .as_ref()
                 .expect("Empty Map")
                 .get(&PathBuf::from("/etc/mysql1/my.cnf"))
                 .expect("Invalid entry in Map"),
@@ -1333,7 +1270,8 @@ Log msg 3 of service-a of app master
 
         assert_eq!(
             db_config2[0]
-                .files()
+                .files
+                .as_ref()
                 .expect("Empty Map")
                 .get(&PathBuf::from("/etc/mysql2/my.cnf"))
                 .expect("Invalid entry in Map"),
@@ -1361,15 +1299,18 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
 
         let deployed_services = apps.fetch_apps().await?;
         let service_names = deployed_services
-            .iter()
-            .flat_map(|(_, app)| app.services().iter().map(|s| s.service_name().as_str()))
+            .values()
+            .flat_map(|app| app.services.iter().map(|s| s.service_name().as_str()))
             .collect::<Vec<&str>>();
 
         assert_eq!(service_names, vec!["service-a"]);
@@ -1389,7 +1330,10 @@ Log msg 3 of service-a of app master
         let app_name = &AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
@@ -1404,7 +1348,7 @@ Log msg 3 of service-a of app master
         assert!(iters_equal_anyorder(
             services
                 .iter()
-                .flat_map(|s| s.ingress_route().routes().iter())
+                .flat_map(|s| s.ingress_route.routes().iter())
                 .map(|route| route.rule()),
             [
                 TraefikRouterRule::from_str(
@@ -1430,7 +1374,10 @@ Log msg 3 of service-a of app master
         let app_name = &AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
@@ -1445,7 +1392,7 @@ Log msg 3 of service-a of app master
         assert!(iters_equal_anyorder(
             services
                 .iter()
-                .flat_map(|s| s.ingress_route().routes().iter())
+                .flat_map(|s| s.ingress_route.routes().iter())
                 .map(|route| route.rule()),
             [
                 TraefikRouterRule::path_prefix_rule(["/master/service-a"]),
@@ -1478,7 +1425,10 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
@@ -1486,7 +1436,10 @@ Log msg 3 of service-a of app master
         let result = apps
             .create_or_update(CreateOrUpdateParams {
                 app_name: AppName::from_str("other").unwrap(),
-                service_configs: vec![sc!("service-a"), sc!("service-b")],
+                service_configs: vec![
+                    blueprint_service!("service-a"),
+                    blueprint_service!("service-b"),
+                ],
                 ..Default::default()
             })
             .await;
@@ -1497,8 +1450,8 @@ Log msg 3 of service-a of app master
     }
 
     #[tokio::test]
-    async fn create_app_when_exceeding_application_number_but_some_apps_are_in_backup(
-    ) -> Result<(), AppsError> {
+    async fn create_app_when_exceeding_application_number_but_some_apps_are_in_backup()
+    -> Result<(), AppsError> {
         let config = config_from_str!(
             r#"
             [applications]
@@ -1510,7 +1463,10 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::from_str("backed-up").unwrap(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
@@ -1518,7 +1474,10 @@ Log msg 3 of service-a of app master
         let result = apps
             .create_or_update(CreateOrUpdateParams {
                 app_name: AppName::master(),
-                service_configs: vec![sc!("service-a"), sc!("service-b")],
+                service_configs: vec![
+                    blueprint_service!("service-a"),
+                    blueprint_service!("service-b"),
+                ],
                 // This line pretends that the application created above is not in backup.
                 backed_up_apps: HashSet::from([AppName::from_str("backed-up").unwrap()]),
                 ..Default::default()
@@ -1543,7 +1502,10 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-a"), sc!("service-b")],
+            service_configs: vec![
+                blueprint_service!("service-a"),
+                blueprint_service!("service-b"),
+            ],
             ..Default::default()
         })
         .await?;
@@ -1551,14 +1513,14 @@ Log msg 3 of service-a of app master
         let result = apps
             .create_or_update(CreateOrUpdateParams {
                 app_name: AppName::master(),
-                service_configs: vec![sc!("service-c")],
+                service_configs: vec![blueprint_service!("service-c")],
                 ..Default::default()
             })
             .await;
 
         assert!(matches!(
             result,
-            Ok(app) if app.services().len() == 3
+            Ok(app) if app.services.len() == 3
         ));
 
         Ok(())
@@ -1584,10 +1546,12 @@ Log msg 3 of service-a of app master
         let app_name = AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
-            service_configs: vec![sc!("web-service")],
-            user_defined_parameters: Some(serde_json::json!({
-                 "name": "my-name"
-            })),
+            service_configs: vec![blueprint_service!("web-service")],
+            user_defined_parameters: Some(unsafe {
+                UserDefinedParameters::without_validation(serde_json::json!({
+                     "name": "my-name"
+                }))
+            }),
             ..Default::default()
         })
         .await?;
@@ -1596,14 +1560,14 @@ Log msg 3 of service-a of app master
             .infrastructure
             .fetch_app(&app_name)
             .await?
-            .map(|app| app.into_services())
+            .map(|app| app.services)
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db1-my-name")
-            .map(|service| service.config)
+            .map(|service| service.blueprint_config)
             .collect();
 
-        assert_eq!(companion_config[0].service_name(), "db1-my-name");
+        assert_eq!(companion_config[0].service_name, "db1-my-name");
 
         Ok(())
     }
@@ -1627,11 +1591,13 @@ Log msg 3 of service-a of app master
 
         let app_name = AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
-            app_name: app_name,
-            service_configs: vec![sc!("web-service")],
-            user_defined_parameters: Some(serde_json::json!({
-                "name": "my-name"
-            })),
+            app_name,
+            service_configs: vec![blueprint_service!("web-service")],
+            user_defined_parameters: Some(unsafe {
+                UserDefinedParameters::without_validation(serde_json::json!({
+                    "name": "my-name"
+                }))
+            }),
             ..Default::default()
         })
         .await?;
@@ -1647,14 +1613,14 @@ Log msg 3 of service-a of app master
             .infrastructure
             .fetch_app(&replicated_app_name)
             .await?
-            .map(|app| app.into_services())
+            .map(|app| app.services)
             .unwrap()
             .into_iter()
             .filter(|service| service.service_name() == "db1-my-name")
-            .map(|service| service.config)
+            .map(|service| service.blueprint_config)
             .collect();
 
-        assert_eq!(companion_config[0].service_name(), "db1-my-name");
+        assert_eq!(companion_config[0].service_name, "db1-my-name");
 
         Ok(())
     }
@@ -1667,7 +1633,7 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-a")],
+            service_configs: vec![blueprint_service!("service-a")],
             owners: vec![Owner {
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
@@ -1678,7 +1644,7 @@ Log msg 3 of service-a of app master
         .await?;
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-b")],
+            service_configs: vec![blueprint_service!("service-b")],
             owners: vec![Owner {
                 iss: IssuerUrl::new(String::from("https://github.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("github-user")),
@@ -1692,9 +1658,8 @@ Log msg 3 of service-a of app master
         assert_eq!(deployed_apps.len(), 1);
         let app = deployed_apps.remove(&AppName::master()).unwrap();
 
-        let (_, owners) = app.into_services_and_owners();
         assert_eq!(
-            owners,
+            app.owners,
             HashSet::from([
                 Owner {
                     sub: SubjectIdentifier::new(String::from("gitlab-user")),
@@ -1720,7 +1685,7 @@ Log msg 3 of service-a of app master
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-a")],
+            service_configs: vec![blueprint_service!("service-a")],
             owners: vec![Owner {
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
@@ -1731,7 +1696,7 @@ Log msg 3 of service-a of app master
         .await?;
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
-            service_configs: vec![sc!("service-b")],
+            service_configs: vec![blueprint_service!("service-b")],
             owners: vec![Owner {
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
@@ -1745,9 +1710,8 @@ Log msg 3 of service-a of app master
         assert_eq!(deployed_apps.len(), 1);
         let app = deployed_apps.remove(&AppName::master()).unwrap();
 
-        let (_, owners) = app.into_services_and_owners();
         assert_eq!(
-            owners,
+            app.owners,
             HashSet::from([Owner {
                 sub: SubjectIdentifier::new(String::from("gitlab-user")),
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),

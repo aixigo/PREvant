@@ -5,7 +5,11 @@ use crate::{
         Apps, HostMetaCache,
     },
     http_result::{HttpApiError, HttpResult},
-    models::{App, AppName, AppWithHostMeta, RequestInfo},
+    models::RequestInfo,
+};
+use domain::{
+    app_instance::{App, AppWithHostMeta},
+    AppName,
 };
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
@@ -232,9 +236,12 @@ pub(super) async fn stream_apps_v2(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Owner, Service, ServiceStatus, ServiceWithHostMeta, WebHostMeta};
     use assert_json_diff::assert_json_eq;
     use chrono::Utc;
+    use domain::{
+        app_instance::{Service, ServiceStatus, ServiceWithHostMeta, WebHostMeta},
+        Owner,
+    };
     use std::{collections::HashSet, str::FromStr};
     use url::Url;
 
@@ -270,11 +277,14 @@ mod tests {
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::State {
-                                    status: ServiceStatus::Running,
-                                    started_at: Some(Utc::now()),
+                                status: ServiceStatus::Running {
+                                    started_at: Utc::now(),
                                 },
-                                config: crate::sc!("postgres", "postgres:latest")
+                                blueprint_config: domain::blueprint_service!(
+                                    "postgres",
+                                    "postgres:latest"
+                                ),
+                                service_type: domain::app_instance::ContainerType::Instance
                             },
                             WebHostMeta::invalid(),
                             base_url.clone(),
@@ -283,11 +293,14 @@ mod tests {
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::State {
-                                    status: ServiceStatus::Running,
-                                    started_at: Some(Utc::now()),
+                                status: ServiceStatus::Running {
+                                    started_at: Utc::now(),
                                 },
-                                config: crate::sc!("mariadb", "mariadb:latest")
+                                blueprint_config: domain::blueprint_service!(
+                                    "mariadb",
+                                    "mariadb:latest"
+                                ),
+                                service_type: domain::app_instance::ContainerType::Instance
                             },
                             WebHostMeta::with_version(String::from("1.2.3")),
                             base_url,
@@ -336,11 +349,14 @@ mod tests {
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::State {
-                                    status: ServiceStatus::Running,
-                                    started_at: Some(Utc::now()),
+                                status: ServiceStatus::Running {
+                                    started_at: Utc::now(),
                                 },
-                                config: crate::sc!("postgres", "postgres:latest")
+                                blueprint_config: domain::blueprint_service!(
+                                    "postgres",
+                                    "postgres:latest"
+                                ),
+                                service_type: domain::app_instance::ContainerType::Instance,
                             },
                             WebHostMeta::invalid(),
                             base_url.clone(),
@@ -349,11 +365,14 @@ mod tests {
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::State {
-                                    status: ServiceStatus::Running,
-                                    started_at: Some(Utc::now()),
+                                status: ServiceStatus::Running {
+                                    started_at: Utc::now(),
                                 },
-                                config: crate::sc!("mariadb", "mariadb:latest")
+                                blueprint_config: domain::blueprint_service!(
+                                    "mariadb",
+                                    "mariadb:latest"
+                                ),
+                                service_type: domain::app_instance::ContainerType::Instance,
                             },
                             WebHostMeta::with_version(String::from("1.2.3")),
                             base_url,
@@ -406,11 +425,14 @@ mod tests {
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::State {
-                                    status: ServiceStatus::Running,
-                                    started_at: Some(Utc::now()),
+                                status: ServiceStatus::Running {
+                                    started_at: Utc::now(),
                                 },
-                                config: crate::sc!("postgres", "postgres:latest")
+                                blueprint_config: domain::blueprint_service!(
+                                    "postgres",
+                                    "postgres:latest"
+                                ),
+                                service_type: domain::app_instance::ContainerType::Instance,
                             },
                             WebHostMeta::invalid(),
                             base_url.clone(),
@@ -419,11 +441,14 @@ mod tests {
                         ServiceWithHostMeta::from_service_and_web_host_meta(
                             Service {
                                 id: String::from("some id"),
-                                state: crate::models::State {
-                                    status: ServiceStatus::Running,
-                                    started_at: Some(Utc::now()),
+                                status: ServiceStatus::Running {
+                                    started_at: Utc::now(),
                                 },
-                                config: crate::sc!("mariadb", "mariadb:latest")
+                                blueprint_config: domain::blueprint_service!(
+                                    "mariadb",
+                                    "mariadb:latest"
+                                ),
+                                service_type: domain::app_instance::ContainerType::Instance,
                             },
                             WebHostMeta::with_version(String::from("1.2.3")),
                             base_url,
@@ -450,15 +475,14 @@ mod tests {
         use crate::apps::{AppProcessingQueue, Apps, CreateOrUpdateParams, HostMetaCache};
         use crate::config::Config;
         use crate::infrastructure::Dummy;
-        use crate::models::{App, AppName};
-        use crate::sc;
         use assert_json_diff::assert_json_include;
+        use domain::app_instance::App;
+        use domain::{AppName, blueprint_service};
         use rocket::http::ContentType;
         use rocket::local::asynchronous::Client;
         use serde_json::json;
         use serde_json::Value;
         use std::collections::HashMap;
-        use std::convert::From;
 
         async fn set_up_rocket_with_dummy_infrastructure_and_a_running_app(
             host_meta_cache: HostMetaCache,
@@ -468,7 +492,7 @@ mod tests {
             let _result = apps
                 .create_or_update(CreateOrUpdateParams {
                     app_name: AppName::master(),
-                    service_configs: vec![sc!("service-a")],
+                    service_configs: vec![blueprint_service!("service-a")],
                     ..Default::default()
                 })
                 .await?;

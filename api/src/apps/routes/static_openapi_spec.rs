@@ -1,8 +1,8 @@
 use crate::{
-    apps::{Apps, HostMetaCache},
+    apps::{routes::AppNameFromParam, Apps, HostMetaCache},
     config::Config,
     http_result::HttpResult,
-    models::{AppName, AppNameError, RequestInfo},
+    models::RequestInfo,
 };
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
@@ -13,12 +13,12 @@ use serde_norway::Value;
 pub(super) async fn static_open_api_spec(
     apps: &State<Apps>,
     config: &State<Config>,
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     service_name: &str,
     request_info: RequestInfo,
     host_meta_cache: HostMetaCache,
 ) -> HttpResult<String> {
-    let app_name = app_name?;
+    let app_name = app_name?.0;
 
     let Some(service) = apps.fetch_service_of_app(&app_name, service_name).await? else {
         return Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into());
@@ -26,7 +26,7 @@ pub(super) async fn static_open_api_spec(
 
     let Some(static_host_config) =
         config
-            .static_host_meta(service.config.image())
+            .static_host_meta(&service.blueprint_config.image)
             .map_err(|e| {
                 HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
                     .detail(e.to_string())

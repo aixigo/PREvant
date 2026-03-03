@@ -28,17 +28,12 @@ pub use self::applications::{
     ApplicationCleanUpPolicy, Applications, ReplicateApplicationCondition, RouterMetricsProvider,
 };
 pub use self::companion::BootstrappingContainer;
-pub use self::companion::DeploymentStrategy;
-pub use self::companion::Routing;
-pub use self::companion::StorageStrategy;
-use self::companion::{Companion, CompanionType, Companions};
+pub use self::companion::Companions;
 pub use self::container::ContainerConfig;
 pub use self::runtime::Runtime;
-use crate::models::user_defined_parameters::UserDefinedParameters;
-use crate::models::AppName;
-use crate::models::Image;
-use crate::models::ServiceConfig;
 use clap::Parser;
+use domain::app_blueprints::ServiceConfig;
+use domain::{AppName, Image, app_blueprints::UserDefinedParameters, traefik::TraefikVersion};
 use figment::providers::{Env, Format, Toml};
 use figment::value::{Dict, Map, Tag, Value};
 use figment::{Metadata, Profile};
@@ -311,24 +306,6 @@ impl Config {
         self.companions.user_defined_schema_validator()
     }
 
-    pub fn service_companion_configs(
-        &self,
-        app_name: &AppName,
-    ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)> {
-        self.companion_configs(app_name, |companion| {
-            companion.companion_type() == &CompanionType::Service
-        })
-    }
-
-    pub fn application_companion_configs(
-        &self,
-        app_name: &AppName,
-    ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)> {
-        self.companion_configs(app_name, |companion| {
-            companion.companion_type() == &CompanionType::Application
-        })
-    }
-
     pub fn companion_bootstrapping_containers<S>(
         &self,
         app_name: &AppName,
@@ -347,20 +324,9 @@ impl Config {
         )
     }
 
-    fn companion_configs<P>(
-        &self,
-        app_name: &AppName,
-        predicate: P,
-    ) -> Vec<(ServiceConfig, DeploymentStrategy, StorageStrategy)>
-    where
-        P: Fn(&Companion) -> bool,
-    {
-        self.companions.companion_configs(app_name, predicate)
-    }
-
     pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &AppName) {
         if let Some(services) = &self.services {
-            if let Some(service) = services.get(service_config.service_name()) {
+            if let Some(service) = services.get(&service_config.service_name) {
                 service.add_secrets_to(service_config, app_name);
             }
         }
@@ -566,30 +532,6 @@ impl Service {
     }
 }
 
-#[derive(Clone, Copy, Deserialize, Debug, Eq, PartialEq)]
-pub enum TraefikVersion {
-    #[serde(rename = "v1")]
-    V1,
-    #[serde(rename = "v2")]
-    V2,
-    #[serde(rename = "v3")]
-    V3,
-}
-
-impl Display for TraefikVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "v{}",
-            match self {
-                TraefikVersion::V1 => 1,
-                TraefikVersion::V2 => 2,
-                TraefikVersion::V3 => 3,
-            }
-        )
-    }
-}
-
 #[derive(Clone, Default, Deserialize)]
 pub struct TraefikConfig {
     pub version: Option<TraefikVersion>,
@@ -630,204 +572,9 @@ macro_rules! config_from_str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ContainerType, Image};
+    use domain::blueprint_service;
     use sqlx::postgres::PgConnectOptions;
     use std::str::FromStr;
-
-    macro_rules! service_config {
-        ( $name:expr_2021 ) => {{
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update($name);
-            let img_hash = &format!("sha256:{:x}", hasher.finalize());
-
-            ServiceConfig::new(String::from($name), Image::from_str(&img_hash).unwrap())
-        }};
-    }
-
-    #[test]
-    fn should_return_application_companions_as_service_configs() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'application'
-            image = 'private.example.com/library/openid:latest'
-            env = [ 'KEY=VALUE' ]
-
-            [companions.nginx]
-            serviceName = '{{service-name}}-nginx'
-            type = 'service'
-            image = 'nginx:latest'
-            env = [ 'KEY=VALUE' ]
-            "#
-        );
-
-        let companion_configs = config.application_companion_configs(&AppName::master());
-
-        assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _, _)| {
-            assert_eq!(config.service_name(), "openid");
-            assert_eq!(
-                &config.image().to_string(),
-                "private.example.com/library/openid:latest"
-            );
-            assert_eq!(
-                config.container_type(),
-                &ContainerType::ApplicationCompanion
-            );
-            assert_eq!(config.labels(), None);
-        });
-    }
-
-    #[test]
-    fn should_return_service_companions_as_service_configs() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'application'
-            image = 'private.example.com/library/openid:latest'
-            env = [ 'KEY=VALUE' ]
-
-            [companions.nginx]
-            serviceName = '{{service-name}}-nginx'
-            type = 'service'
-            image = 'nginx:latest'
-            env = [ 'KEY=VALUE' ]
-            "#
-        );
-
-        let companion_configs = config.service_companion_configs(&AppName::master());
-
-        assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _, _)| {
-            assert_eq!(config.service_name(), "{{service-name}}-nginx");
-            assert_eq!(
-                &config.image().to_string(),
-                "docker.io/library/nginx:latest"
-            );
-            assert_eq!(config.container_type(), &ContainerType::ServiceCompanion);
-            assert_eq!(config.labels(), None);
-        });
-    }
-
-    #[test]
-    fn should_return_service_companions_with_deployment_strategy() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'service'
-            image = 'private.example.com/library/openid:latest'
-            deploymentStrategy = 'redeploy-on-image-update'
-            "#
-        );
-
-        let companion_configs = config.service_companion_configs(&AppName::master());
-
-        assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(_, strategy, _)| {
-            assert_eq!(strategy, &DeploymentStrategy::RedeployOnImageUpdate);
-        });
-    }
-    #[test]
-    fn should_return_application_companions_as_service_configs_with_volumes() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'application'
-            image = 'private.example.com/library/openid:11-alpine'
-            env = [ 'KEY=VALUE' ]
-
-            [companions.openid.volumes]
-            '/tmp/test-1.json' = '{}'
-            '/tmp/test-2.json' = '{}'
-            "#
-        );
-
-        let companion_configs = config.application_companion_configs(&AppName::master());
-
-        assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _, _)| {
-            assert_eq!(config.files().unwrap().len(), 2);
-        });
-    }
-
-    #[test]
-    fn should_return_application_companions_as_service_configs_with_labels() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'application'
-            image = 'private.example.com/library/openid:11-alpine'
-
-            [companions.openid.labels]
-            'com.example.foo' = 'bar'
-            "#
-        );
-
-        let companion_configs = config.application_companion_configs(&AppName::master());
-
-        assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _, _)| {
-            for (k, v) in config.labels().unwrap().iter() {
-                assert_eq!(k, "com.example.foo");
-                assert_eq!(v, "bar");
-            }
-        });
-    }
-
-    #[test]
-    fn should_return_application_companions_with_specific_app_selector() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'application'
-            image = 'private.example.com/library/openid:latest'
-            env = [ 'KEY=VALUE' ]
-            appSelector = "master"
-            "#
-        );
-
-        let companion_configs = config.application_companion_configs(&AppName::master());
-
-        assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _, _)| {
-            assert_eq!(config.service_name(), "openid");
-            assert_eq!(
-                &config.image().to_string(),
-                "private.example.com/library/openid:latest"
-            );
-            assert_eq!(
-                config.container_type(),
-                &ContainerType::ApplicationCompanion
-            );
-            assert_eq!(config.labels(), None);
-        });
-    }
-
-    #[test]
-    fn should_not_return_application_companions_with_specific_app_selector() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'application'
-            image = 'private.example.com/library/openid:latest'
-            env = [ 'KEY=VALUE' ]
-            appSelector = "master"
-            "#
-        );
-
-        let companion_configs =
-            config.application_companion_configs(&AppName::from_str("random-name").unwrap());
-
-        assert_eq!(companion_configs.len(), 0);
-    }
 
     #[test]
     fn should_set_service_secrets_with_default_app_selector() {
@@ -840,10 +587,11 @@ mod tests {
             "#
         );
 
-        let mut service_config = service_config!("mariadb");
+        let mut service_config = blueprint_service!("mariadb");
         config.add_secrets_to(&mut service_config, &AppName::master());
         let secret_file_content = service_config
-            .files()
+            .files
+            .as_ref()
             .expect("File content is missing")
             .get(&PathBuf::from("/run/secrets/user"))
             .expect("No file for /run/secrets/user");
@@ -862,11 +610,12 @@ mod tests {
             "#
         );
 
-        let mut service_config = service_config!("mariadb");
+        let mut service_config = blueprint_service!("mariadb");
         config.add_secrets_to(&mut service_config, &AppName::master());
 
         let secret_file_content = service_config
-            .files()
+            .files
+            .as_ref()
             .expect("File content is missing")
             .get(&PathBuf::from("/run/secrets/user"))
             .expect("No file for /run/secrets/user");
@@ -885,14 +634,15 @@ mod tests {
             "#
         );
 
-        let mut service_config = service_config!("mariadb");
+        let mut service_config = blueprint_service!("mariadb");
         config.add_secrets_to(
             &mut service_config,
             &AppName::from_str("master-1x").unwrap(),
         );
 
         let secret_file_content = service_config
-            .files()
+            .files
+            .as_ref()
             .expect("File content is missing")
             .get(&PathBuf::from("/run/secrets/user"))
             .expect("No file for /run/secrets/user");
@@ -911,13 +661,13 @@ mod tests {
             "#
         );
 
-        let mut service_config = service_config!("mariadb");
+        let mut service_config = blueprint_service!("mariadb");
         config.add_secrets_to(
             &mut service_config,
             &AppName::from_str("random-app-name").unwrap(),
         );
 
-        assert!(service_config.files().is_none());
+        assert!(service_config.files.is_none());
     }
 
     #[test]
@@ -932,13 +682,13 @@ mod tests {
             "#
         );
 
-        let mut service_config = service_config!("mariadb");
+        let mut service_config = blueprint_service!("mariadb");
         config.add_secrets_to(
             &mut service_config,
             &AppName::from_str("master-1x").unwrap(),
         );
 
-        assert_eq!(service_config.files(), None);
+        assert_eq!(service_config.files, None);
     }
 
     #[test]
@@ -1006,56 +756,6 @@ mod tests {
             );
             Ok(())
         })
-    }
-
-    #[test]
-    fn should_return_application_companions_as_service_configs_with_volumes_as_files() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'application'
-            image = 'private.example.com/library/openid:11-alpine'
-            env = [ 'KEY=VALUE' ]
-
-            [companions.openid.files]
-            '/tmp/test-1.json' = '{}'
-            '/tmp/test-2.json' = '{}'
-            "#
-        );
-
-        let companion_configs = config.application_companion_configs(&AppName::master());
-
-        assert_eq!(companion_configs.len(), 1);
-        companion_configs.iter().for_each(|(config, _, _)| {
-            assert_eq!(config.files().unwrap().len(), 2);
-        });
-    }
-
-    #[test]
-    fn should_return_service_companions_with_storage_strategy() {
-        let config = config_from_str!(
-            r#"
-            [companions.openid]
-            serviceName = 'openid'
-            type = 'application'
-            image = 'private.example.com/library/openid:11-alpine'
-            env = [ 'KEY=VALUE' ]
-            storageStrategy = 'mount-declared-image-volumes'
-            "#
-        );
-
-        let companion_configs = config.application_companion_configs(&AppName::master());
-
-        assert_eq!(companion_configs.len(), 1);
-        companion_configs
-            .iter()
-            .for_each(|(_, _, storage_strategy)| {
-                assert_eq!(
-                    storage_strategy,
-                    &StorageStrategy::MountDeclaredImageVolumes
-                );
-            });
     }
 
     #[test]

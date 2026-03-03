@@ -1,9 +1,10 @@
 use crate::{
-    apps::Apps,
+    apps::{routes::AppNameFromParam, Apps},
     http_result::HttpResult,
-    models::{AppName, AppNameError, LogChunk},
+    models::LogChunk,
 };
 use chrono::DateTime;
+use domain::AppName;
 use futures::stream::StreamExt;
 use http_api_problem::HttpApiProblem;
 use rocket::{
@@ -22,12 +23,12 @@ use std::str::FromStr;
 #[rocket::get("/<app_name>/logs/<service_name>?<log_query..>", rank = 1)]
 pub(super) async fn logs<'r>(
     _apt: AcceptingPlainText,
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     service_name: &'r str,
     log_query: LogQuery,
     apps: &State<Apps>,
 ) -> HttpResult<LogsResponse<'r>> {
-    let app_name = app_name?;
+    let app_name = app_name?.0;
 
     let since = match log_query.since {
         None => None,
@@ -62,12 +63,12 @@ pub(super) async fn logs<'r>(
     rank = 2
 )]
 pub(super) async fn stream_logs<'r>(
-    app_name: Result<AppName, AppNameError>,
+    app_name: Result<AppNameFromParam, HttpApiProblem>,
     service_name: &'r str,
     log_query: LogQuery,
     apps: &'r State<Apps>,
 ) -> HttpResult<EventStream![Event + 'r]> {
-    let app_name = app_name?;
+    let app_name = app_name?.0;
     let since = match &log_query.since {
         None => None,
         Some(since) => match DateTime::parse_from_rfc3339(since) {
@@ -204,8 +205,8 @@ mod test {
         apps::{CreateOrUpdateParams, HostMetaCache},
         config::Config,
         infrastructure::Dummy,
-        sc,
     };
+    use domain::blueprint_service;
     use rocket::{
         http::{hyper::header::CONTENT_TYPE, Accept, Header},
         local::asynchronous::Client,
@@ -220,7 +221,7 @@ mod test {
         let _result = apps
             .create_or_update(CreateOrUpdateParams {
                 app_name: AppName::master(),
-                service_configs: vec![sc!("service-a")],
+                service_configs: vec![blueprint_service!("service-a", "nginx")],
                 ..Default::default()
             })
             .await?;

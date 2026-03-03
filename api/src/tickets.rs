@@ -27,7 +27,7 @@
 use crate::config::{Config, JiraConfig};
 use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::ticket_info::TicketInfo;
-use crate::models::{App, AppName};
+use domain::{app_instance::App, AppName};
 use evmap::{ReadHandleFactory, WriteHandle};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
