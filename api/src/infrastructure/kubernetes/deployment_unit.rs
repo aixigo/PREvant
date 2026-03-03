@@ -7,11 +7,10 @@ use super::{
 };
 use crate::{
     config::BootstrappingContainer,
-    deployment::DeploymentUnit,
     infrastructure::{APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL},
-    models::{AppName, ContainerType, Image},
 };
 use anyhow::Result;
+use domain::{app_deployment::DeploymentUnit, app_instance::ContainerType, AppName, Image};
 use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt, TryStreamExt};
 use handlebars::RenderError;
 use k8s_openapi::{
@@ -505,7 +504,7 @@ impl K8sDeploymentUnit {
             return Ok(Default::default());
         }
 
-        let app_name = deployment_unit.app_name();
+        let app_name = &deployment_unit.app_name;
 
         let (bootstrapping_pod_name, mut log_streams) = Self::start_bootstrapping_pods(
             app_name,
@@ -534,7 +533,7 @@ impl K8sDeploymentUnit {
         <L as IntoIterator>::Item: AsyncBufReadExt,
         <L as IntoIterator>::Item: Unpin,
     {
-        let app_name = deployment_unit.app_name();
+        let app_name = &deployment_unit.app_name;
         let mut roles = Vec::new();
         let mut role_bindings = Vec::new();
         let mut stateful_sets = Vec::new();
@@ -622,7 +621,7 @@ impl K8sDeploymentUnit {
         for ingress in ingresses {
             let (route, middlewares) = match convert_k8s_ingress_to_traefik_ingress(
                 ingress,
-                deployment_unit.app_base_route().clone(),
+                deployment_unit.route.clone(),
                 &services,
             ) {
                 Ok((route, middlewares)) => (route, middlewares),
@@ -759,12 +758,12 @@ impl K8sDeploymentUnit {
     pub(super) fn filter_by_instances_and_replicas<S>(&mut self, services: S)
     where
         S: Iterator,
-        <S as Iterator>::Item: Borrow<crate::models::Service>,
+        <S as Iterator>::Item: Borrow<domain::app_instance::Service>,
     {
         let service_not_to_be_retained = services
             .filter(|s| {
-                s.borrow().container_type() == &ContainerType::Instance
-                    || s.borrow().container_type() == &ContainerType::Replica
+                s.borrow().service_type == ContainerType::Instance
+                    || s.borrow().service_type == ContainerType::Replica
             })
             .map(|s| s.borrow().service_name().clone())
             .collect::<HashSet<_>>();
@@ -1423,35 +1422,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{deployment::deployment_unit::DeploymentUnitBuilder, models::State};
     use assert_json_diff::assert_json_include;
     use chrono::Utc;
+    use domain::app_deployment::AppDeploymentBuilder;
     use k8s_openapi::api::{
         apps::v1::DeploymentSpec,
         core::v1::{ContainerPort, EnvVar, PodTemplateSpec},
     };
-    use std::collections::HashMap;
 
     async fn parse_unit_from_log_stream(stdout: &'static str) -> K8sDeploymentUnit {
         let log_streams = vec![stdout.as_bytes()];
 
-        let deployment_unit = DeploymentUnitBuilder::init(AppName::master(), Vec::new())
-            .extend_with_config(&Default::default())
-            .extend_with_templating_only_service_configs(Vec::new())
-            .extend_with_image_infos(HashMap::new())
-            .without_owners()
-            .apply_templating(&None, None)
-            .unwrap()
-            .apply_hooks(&Default::default())
-            .await
-            .unwrap()
-            .apply_base_traefik_ingress_route(
-                crate::infrastructure::TraefikIngressRoute::with_app_only_defaults(
-                    &AppName::master(),
-                ),
-            )
-            .unwrap()
-            .build();
+        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), Vec::new(), None)
+            .finish()
+            .unwrap();
 
         K8sDeploymentUnit::parse_from_log_streams(&deployment_unit, log_streams)
             .await
@@ -1760,13 +1744,13 @@ mod tests {
         )
         .await;
 
-        unit.filter_by_instances_and_replicas(std::iter::once(crate::models::Service {
+        unit.filter_by_instances_and_replicas(std::iter::once(domain::app_instance::Service {
             id: String::from("test"),
-            config: crate::sc!("nginx", "nginx:1.15"),
-            state: State {
-                status: crate::models::ServiceStatus::Running,
-                started_at: Some(Utc::now()),
+            blueprint_config: domain::blueprint_service!("nginx", "nginx:1.15"),
+            status: domain::app_instance::ServiceStatus::Running {
+                started_at: Utc::now(),
             },
+            service_type: ContainerType::Instance,
         }));
 
         assert!(unit.deployments.is_empty());
@@ -1800,13 +1784,13 @@ mod tests {
         )
         .await;
 
-        unit.filter_by_instances_and_replicas(std::iter::once(crate::models::Service {
+        unit.filter_by_instances_and_replicas(std::iter::once(domain::app_instance::Service {
             id: String::from("test"),
-            config: crate::sc!("postgres", "postgres"),
-            state: State {
-                status: crate::models::ServiceStatus::Running,
-                started_at: Some(Utc::now()),
+            blueprint_config: domain::blueprint_service!("postgres", "postgres"),
+            status: domain::app_instance::ServiceStatus::Running {
+                started_at: Utc::now(),
             },
+            service_type: ContainerType::Instance,
         }));
 
         assert!(!unit.deployments.is_empty());

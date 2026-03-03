@@ -1,0 +1,33 @@
+[package]
+name = "domain"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+handlebars = { workspace = true }
+jsonschema = { workspace = true }
+oci-client = { workspace = true }
+openidconnect = { workspace = true }
+pest = "2.8"
+pest_derive = "2.8"
+regex = { workspace = true }
+secstr = { workspace = true }
+serde = { workspace = true }
+serde-value = { workspace = true }
+serde_derive = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+assert-json-diff = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }

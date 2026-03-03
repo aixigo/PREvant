@@ -18,6 +18,25 @@ jobs:
         with:
           rustflags: ""
 
-      - name: Run cargo test
+      - name: Run cargo test for PREvant domain
         run:
-          cargo test --manifest-path api/Cargo.toml
+          cargo test --package domain
+
+      - name: Run cargo test for PREvant binary
+        run:
+          cargo test --package prevant
+
+  doc:
+    name: Rust doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+
+      - name: Install latest stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+
+      - name: Run cargo doc
+        run:
+          cargo doc --package domain

@@ -1,12 +1,15 @@
-use super::deployment_unit::DeployableService;
 use crate::auth::User;
 use crate::config::Config;
-use crate::models::{AppName, ContainerType, Environment, EnvironmentVariable, Image, Owner};
-use boa_engine::property::Attribute;
-use boa_engine::{Context, JsValue, Source};
+use boa_engine::{Context, JsValue, Source, property::Attribute};
+use domain::{
+    AppName, Image, Owner,
+    app_blueprints::{Environment, EnvironmentVariable},
+    app_deployment::DeployableService,
+    app_instance::ContainerType,
+};
 use log::error;
-use openidconnect::core::CoreGenderClaim;
 use openidconnect::IdTokenClaims;
+use openidconnect::core::CoreGenderClaim;
 use secstr::SecUtf8;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -241,9 +244,9 @@ impl<'a> Hooks<'a> {
             .into_iter()
             .filter_map(move |service| {
                 let index = transformed_configs.iter().position(|transformed_config| {
-                    &transformed_config.name == service.service_name()
-                        && &transformed_config.r#type == service.container_type()
-                        && &transformed_config.image == service.image()
+                    transformed_config.name == service.blueprint_service.service_name
+                        && transformed_config.r#type == service.service_type
+                        && transformed_config.image == service.blueprint_service.image
                 })?;
 
                 let transformed_config = transformed_configs.swap_remove(index);
@@ -268,15 +271,15 @@ struct JsServiceConfig {
 
 impl JsServiceConfig {
     fn apply_to(mut self, mut service: DeployableService) -> DeployableService {
-        service.set_files(Some(self.files));
+        service.blueprint_service.files = Some(self.files);
 
-        let env = match service.env().cloned() {
+        let env = match service.blueprint_service.env.as_ref().cloned() {
             Some(env) => {
                 let mut variables = Vec::new();
 
-                for ev in env.into_iter() {
+                for ev in env.iter() {
                     if let Some(value) = self.env.remove(ev.key()) {
-                        variables.push(ev.with_value(value));
+                        variables.push(ev.clone().with_value(value));
                     }
                 }
                 variables.extend(
@@ -298,7 +301,7 @@ impl JsServiceConfig {
             env => env,
         };
 
-        service.set_env(env);
+        service.blueprint_service.env = env;
 
         service
     }
@@ -307,18 +310,25 @@ impl JsServiceConfig {
 impl From<&DeployableService> for JsServiceConfig {
     fn from(config: &DeployableService) -> Self {
         Self {
-            name: config.service_name().clone(),
-            image: config.image().clone(),
+            name: config.blueprint_service.service_name.clone(),
+            image: config.blueprint_service.image.clone(),
             env: config
-                .env()
+                .blueprint_service
+                .env
+                .as_ref()
                 .map(|env| {
                     env.iter()
                         .map(|v| (v.key().clone(), v.value().clone()))
                         .collect()
                 })
                 .unwrap_or_default(),
-            files: config.files().cloned().unwrap_or_default(),
-            r#type: config.container_type().clone(),
+            files: config
+                .blueprint_service
+                .files
+                .as_ref()
+                .cloned()
+                .unwrap_or_default(),
+            r#type: config.service_type,
         }
     }
 }
@@ -326,8 +336,7 @@ impl From<&DeployableService> for JsServiceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deployment::deployment_unit::DeploymentUnitBuilder;
-    use std::collections::HashMap;
+    use domain::{app_deployment::AppDeploymentBuilder, blueprint_service};
     use std::io::Write;
     use std::vec;
     use tempfile::NamedTempFile;
@@ -365,22 +374,20 @@ mod tests {
             let (_temp_js_file, config) = config_with_deployment_hook(script);
 
             let app_name = AppName::master();
-            let service_configs = vec![crate::sc!("service-a")];
+            let service_configs = vec![blueprint_service!("service-a")];
 
-            let unit = DeploymentUnitBuilder::init(app_name, service_configs)
-                .extend_with_config(&config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)?
-                .apply_hooks(&config)
-                .await?
-                .build();
+            let unit = AppDeploymentBuilder::init(app_name, service_configs, None)
+                .finish()
+                .unwrap();
 
-            let deployed_files = unit
-                .services()
+            let services = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
+                .await
+                .unwrap();
+
+            let deployed_files = services
                 .iter()
-                .filter_map(|service| service.files().cloned())
+                .filter_map(|service| service.blueprint_service.files.as_ref())
                 .flatten()
                 .map(|(path, content)| (path.to_str().unwrap().to_string(), content.clone()))
                 .collect::<Vec<(String, SecUtf8)>>();
@@ -411,28 +418,22 @@ mod tests {
 
             let app_name = AppName::master();
 
-            let mut service_config = crate::sc!("service-a");
-            let mut files = BTreeMap::new();
-            files.insert(
-                PathBuf::from("/etc/some-config.txt"),
-                SecUtf8::from("value"),
-            );
-            service_config.set_files(Some(files));
+            let service_config = blueprint_service!("service-a", "some-image", env = (), files = (
+                "/etc/some-config.txt" =>  "value"
+            ));
 
-            let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
-                .extend_with_config(&config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)?
-                .apply_hooks(&config)
-                .await?
-                .build();
+            let unit = AppDeploymentBuilder::init(app_name, vec![service_config], None)
+                .finish()
+                .unwrap();
 
-            let deployed_files = unit
-                .services()
+            let services = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
+                .await
+                .unwrap();
+
+            let deployed_files = services
                 .iter()
-                .filter_map(|service| service.files().cloned())
+                .filter_map(|service| service.blueprint_service.files.as_ref())
                 .flatten()
                 .map(|(path, content)| (path.to_str().unwrap().to_string(), content.clone()))
                 .collect::<Vec<(String, SecUtf8)>>();
@@ -455,23 +456,21 @@ mod tests {
 
             let (_temp_js_file, config) = config_with_deployment_hook(script);
             let app_name = AppName::master();
-            let service_config = crate::sc!("service-a");
+            let service_config = blueprint_service!("service-a");
 
-            let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
-                .extend_with_config(&config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)?
-                .apply_hooks(&config)
-                .await?
-                .build();
+            let unit = AppDeploymentBuilder::init(app_name, vec![service_config], None)
+                .finish()
+                .unwrap();
 
-            let deployed_variables = unit
-                .services()
+            let services = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
+                .await
+                .unwrap();
+
+            let deployed_variables = services
                 .iter()
-                .filter_map(|service| service.env().cloned())
-                .flat_map(|env| env.into_iter())
+                .filter_map(|service| service.blueprint_service.env.as_ref())
+                .flat_map(|env| env.iter())
                 .map(|env| (env.key().clone(), env.value().unsecure().to_string()))
                 .collect::<Vec<(String, String)>>();
 
@@ -497,27 +496,22 @@ mod tests {
             let (_temp_js_file, config) = config_with_deployment_hook(script);
             let app_name = AppName::master();
 
-            let mut service_config = crate::sc!("service-a");
-            service_config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
-                String::from("VARIABLE_X"),
-                SecUtf8::from("Hello"),
-            )])));
+            let service_config =
+                blueprint_service!("service-a", "some-image", env = ("VARIABLE_X" => "Hello"));
 
-            let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
-                .extend_with_config(&config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)?
-                .apply_hooks(&config)
-                .await?
-                .build();
+            let unit = AppDeploymentBuilder::init(app_name, vec![service_config], None)
+                .finish()
+                .unwrap();
 
-            let deployed_variables = unit
-                .services()
+            let services = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
+                .await
+                .unwrap();
+
+            let deployed_variables = services
                 .iter()
-                .filter_map(|service| service.env().cloned())
-                .flat_map(|env| env.into_iter())
+                .filter_map(|service| service.blueprint_service.env.as_ref())
+                .flat_map(|env| env.iter())
                 .map(|env| (env.key().clone(), env.value().unsecure().to_string()))
                 .collect::<Vec<(String, String)>>();
 
@@ -546,27 +540,22 @@ mod tests {
             let (_temp_js_file, config) = config_with_deployment_hook(script);
 
             let app_name = AppName::master();
-            let mut service_config = crate::sc!("service-a");
-            service_config.set_env(Some(Environment::new(vec![EnvironmentVariable::new(
-                String::from("VARIABLE_X"),
-                SecUtf8::from("Hello"),
-            )])));
+            let service_config =
+                blueprint_service!("service-a", "some-image", env = ("VARIABLE_X" => "Hello"));
 
-            let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
-                .extend_with_config(&config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)?
-                .apply_hooks(&config)
-                .await?
-                .build();
+            let unit = AppDeploymentBuilder::init(app_name, vec![service_config], None)
+                .finish()
+                .unwrap();
 
-            let deployed_variables = unit
-                .services()
+            let services = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
+                .await
+                .unwrap();
+
+            let deployed_variables = services
                 .iter()
-                .filter_map(|service| service.env().cloned())
-                .flat_map(|env| env.into_iter())
+                .filter_map(|service| service.blueprint_service.env.as_ref())
+                .flat_map(|env| env.iter())
                 .map(|env| (env.key().clone(), env.value().unsecure().to_string()))
                 .collect::<Vec<(String, String)>>();
 
@@ -587,24 +576,22 @@ mod tests {
                     return configs;
                 }
             "#;
-            let service_config = crate::sc!("service-a");
+            let service_config = blueprint_service!("service-a");
             let (_temp_js_file, config) = config_with_deployment_hook(script);
             let app_name = AppName::master();
 
-            let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
-                .extend_with_config(&config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)?
-                .apply_hooks(&config)
-                .await?
-                .build();
+            let unit = AppDeploymentBuilder::init(app_name, vec![service_config], None)
+                .finish()
+                .unwrap();
 
-            let deployed_services = unit
-                .services()
+            let services = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
+                .await
+                .unwrap();
+
+            let deployed_services = services
                 .iter()
-                .map(|services| services.service_name().clone())
+                .map(|services| services.blueprint_service.service_name.clone())
                 .collect::<Vec<_>>();
 
             assert_eq!(deployed_services, vec![String::from("service-a")]);
@@ -623,23 +610,20 @@ mod tests {
                 }
             "#;
 
-            let service_config = crate::sc!("service-a");
+            let service_config = blueprint_service!("service-a");
             let (_temp_js_file, config) = config_with_deployment_hook(script);
             let app_name = AppName::master();
 
-            let unit = DeploymentUnitBuilder::init(app_name, vec![service_config])
-                .extend_with_config(&config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)?
-                .apply_hooks(&config)
-                .await?
-                .build();
+            let unit = AppDeploymentBuilder::init(app_name, vec![service_config], None)
+                .finish()
+                .unwrap();
 
-            let deployed_services = unit.services();
+            let services = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
+                .await
+                .unwrap();
 
-            assert!(deployed_services.is_empty());
+            assert!(services.is_empty());
 
             Ok(())
         }
@@ -652,16 +636,15 @@ mod tests {
                 }
             "#;
 
-            let service_config = crate::sc!("service-a");
+            let service_config = blueprint_service!("service-a");
             let (_temp_js_file, config) = config_with_deployment_hook(script);
             let app_name = AppName::master();
-            let result = DeploymentUnitBuilder::init(app_name, vec![service_config])
-                .extend_with_config(&config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)?
-                .apply_hooks(&config)
+            let unit = AppDeploymentBuilder::init(app_name, vec![service_config], None)
+                .finish()
+                .unwrap();
+
+            let result = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
                 .await;
 
             assert!(
@@ -679,16 +662,15 @@ mod tests {
                 }
             "#;
 
-            let service_config = crate::sc!("service-a");
+            let service_config = blueprint_service!("service-a");
             let (_temp_js_file, config) = config_with_deployment_hook(script);
             let app_name = AppName::master();
-            let result = DeploymentUnitBuilder::init(app_name, vec![service_config])
-                .extend_with_config(&config)
-                .extend_with_templating_only_service_configs(Vec::new())
-                .extend_with_image_infos(HashMap::new())
-                .without_owners()
-                .apply_templating(&None, None)?
-                .apply_hooks(&config)
+            let unit = AppDeploymentBuilder::init(app_name, vec![service_config], None)
+                .finish()
+                .unwrap();
+
+            let result = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
                 .await;
 
             assert!(
@@ -734,7 +716,9 @@ mod tests {
             assert_eq!(
                 result,
                 Err(HooksError::UserToOwner {
-                    err: String::from("Cannot read hook file \"/path/does/not/exists\": No such file or directory (os error 2)")
+                    err: String::from(
+                        "Cannot read hook file \"/path/does/not/exists\": No such file or directory (os error 2)"
+                    )
                 })
             )
         }

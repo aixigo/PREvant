@@ -23,8 +23,9 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-use crate::{config::AppSelector, models::AppName};
+use crate::config::AppSelector;
 use base64::{engine::general_purpose, Engine};
+use domain::AppName;
 use secstr::SecUtf8;
 use serde::{de, Deserialize, Deserializer};
 use std::path::PathBuf;

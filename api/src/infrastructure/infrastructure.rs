@@ -24,13 +24,17 @@
  * =========================LICENSE_END==================================
  */
 
-use super::traefik::TraefikIngressRoute;
 use crate::config::ContainerConfig;
-use crate::deployment::DeploymentUnit;
-use crate::models::{App, AppName, Service, ServiceStatus, WebHostMeta};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
+use domain::{
+    app_blueprints::DesiredServiceStatus,
+    app_deployment::DeploymentUnit,
+    app_instance::{App, Service},
+    traefik::TraefikIngressRoute,
+    AppName,
+};
 use dyn_clone::DynClone;
 use futures::stream::BoxStream;
 use regex::Regex;
@@ -108,7 +112,7 @@ pub trait Infrastructure: Send + Sync + DynClone {
         &self,
         app_name: &AppName,
         service_name: &str,
-        status: ServiceStatus,
+        status: DesiredServiceStatus,
     ) -> Result<Option<Service>>;
 
     async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder>>;
@@ -133,5 +137,5 @@ pub trait HttpForwarder: Send + Sync + DynClone {
         app_name: &AppName,
         service_name: &str,
         request: http::Request<http_body_util::Empty<bytes::Bytes>>,
-    ) -> Result<Option<WebHostMeta>>;
+    ) -> Result<Option<domain::app_instance::WebHostMeta>>;
 }

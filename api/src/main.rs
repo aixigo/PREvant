@@ -40,15 +40,16 @@ use auth::Auth;
 use auth::Issuers;
 use auth::User;
 use clap::Parser;
+use domain::traefik::TraefikIngressRoute;
 use handlebars::Handlebars;
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
 use http_result::HttpApiError;
 use http_result::HttpResult;
-use infrastructure::TraefikIngressRoute;
-use rocket::fs::{FileServer, Options};
-use rocket::routes;
-use rocket::State;
+use rocket::{
+    fs::{FileServer, Options},
+    routes, State,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -56,7 +57,6 @@ mod apps;
 mod auth;
 mod config;
 mod db;
-mod deployment;
 mod http_result;
 mod infrastructure;
 mod models;
@@ -111,7 +111,7 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
         "defaultAppName": config.applications.default_app,
         "isAuthRequired": matches!(config.api_access.mode, ApiAccessMode::RequireAuth { .. }),
         "isBackupsEnabled": config.database.is_some()
-            // TODO this condition can be removed once the Docker backend supports Docker compose types, see #146 
+            // TODO this condition can be removed once the Docker backend supports Docker compose types, see #146
             && matches!(config.runtime, Runtime::Kubernetes(..)),
     });
     data.insert("config", config_json.to_string());

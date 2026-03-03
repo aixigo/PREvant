@@ -1,15 +1,17 @@
 use crate::{
     apps::AppsError,
-    models::{
-        user_defined_parameters::UserDefinedParameters, App, AppName, AppStatusChangeId, AppTask,
-        MergedAppTask, Owner, Service, ServiceConfig, ServiceStatus, State,
-    },
+    models::{AppStatusChangeId, AppTask, MergedAppTask},
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use domain::{
+    AppName, Owner,
+    app_blueprints::{ServiceConfig, UserDefinedParameters},
+    app_instance::{App, ContainerType, Service, ServiceStatus},
+};
 use rocket::{
-    fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
+    fairing::{Fairing, Info, Kind},
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use std::{
@@ -51,7 +53,9 @@ impl Fairing for AppRepository {
             .map(|repository| repository.backup_updates())
         {
             Some((backup_poller, backup_updates)) => {
-                log::debug!("Database is available, configuring backup poller to stream backup changes into application updates.");
+                log::debug!(
+                    "Database is available, configuring backup poller to stream backup changes into application updates."
+                );
 
                 let mut bp = self.backup_poller.lock().unwrap();
                 *bp = Some(backup_poller);
@@ -329,7 +333,7 @@ impl AppPostgresRepository {
 
         let tasks_to_work_on = tasks
             .iter()
-            .map(|task_to_work_on| task_to_work_on.1 .0.clone())
+            .map(|task_to_work_on| task_to_work_on.1.0.clone())
             .collect::<Vec<_>>();
 
         if tasks_to_work_on.is_empty() {
@@ -388,16 +392,28 @@ impl AppPostgresRepository {
         let success_result = result.map_or_else(
             |_| None,
             |app| {
-                let (services, owner, user_defined_parameters) =
-                    app.into_services_and_owners_and_user_defined_parameters();
+                let App {
+                    services,
+                    owners,
+                    user_defined_parameters,
+                    ..
+                } = app;
                 let raw = RawApp {
-                    owner,
+                    owner: owners,
                     services: services
                         .into_iter()
                         .map(|service| RawService {
                             id: service.id,
-                            status: service.state.status,
-                            config: service.config,
+                            status: match service.status {
+                                ServiceStatus::Running { .. } => String::from("running"),
+                                ServiceStatus::Paused => String::from("paused"),
+                            },
+                            started_at: match service.status {
+                                ServiceStatus::Running { started_at } => Some(started_at),
+                                ServiceStatus::Paused => None,
+                            },
+                            config: service.blueprint_config,
+                            service_type: Some(service.service_type),
                         })
                         .collect(),
                     user_defined_parameters: user_defined_parameters.and_then(
@@ -459,7 +475,9 @@ impl AppPostgresRepository {
             AppTask::Delete { app_name, .. }
                 if is_success || is_failed_deletion_due_to_app_not_found =>
             {
-                log::debug!("Deleting infrastructure payload for {app_name} from backups due to deletion request.");
+                log::debug!(
+                    "Deleting infrastructure payload for {app_name} from backups due to deletion request."
+                );
 
                 sqlx::query(
                     r#"
@@ -532,7 +550,7 @@ impl AppPostgresRepository {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct RawApp {
     services: Vec<RawService>,
     owner: HashSet<Owner>,
@@ -544,30 +562,36 @@ impl From<RawApp> for App {
         Self::new(
             value.services.into_iter().map(Service::from).collect(),
             Owner::normalize(value.owner),
-            value
-                .user_defined_parameters
-                .map(|data| unsafe { UserDefinedParameters::without_validation(data) }),
+            value.user_defined_parameters.map(|data|
+                    // SAFETY: the data has been validated before storing, so it is safe to skip
+                    // validation here.
+                    unsafe { UserDefinedParameters::without_validation(data) }),
             None,
         )
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct RawService {
     id: String,
-    status: ServiceStatus,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    started_at: Option<DateTime<Utc>>,
     config: ServiceConfig,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    service_type: Option<ContainerType>,
 }
 
 impl From<RawService> for Service {
     fn from(value: RawService) -> Self {
         Self {
             id: value.id,
-            state: State {
-                status: value.status,
-                started_at: None,
+            status: match (value.status.as_str(), value.started_at) {
+                ("running", Some(started_at)) => ServiceStatus::Running { started_at },
+                _ => ServiceStatus::Paused,
             },
-            config: value.config,
+            blueprint_config: value.config,
+            service_type: value.service_type.unwrap_or_default(),
         }
     }
 }
@@ -576,17 +600,16 @@ impl From<RawService> for Service {
 mod tests {
     use super::*;
     use crate::{
+        apps::{DeploymentTemplatingError, hooks::HooksError},
         db::DatabasePool,
-        deployment::{deployment_unit::DeploymentTemplatingError, hooks::HooksError},
-        models::AppName,
         registry::RegistryError,
-        sc,
     };
+    use domain::{app_instance::ContainerType, blueprint_service};
     use sqlx::postgres::PgConnectOptions;
     use std::{str::FromStr, time::Duration};
     use testcontainers_modules::{
         postgres::{self},
-        testcontainers::{runners::AsyncRunner, ContainerAsync},
+        testcontainers::{ContainerAsync, runners::AsyncRunner},
     };
 
     async fn create_repository() -> (ContainerAsync<postgres::Postgres>, AppPostgresRepository) {
@@ -612,11 +635,9 @@ mod tests {
     #[case(Ok(App::new(
         vec![Service {
             id: String::from("nginx-1234"),
-                state: State {
-                    status: ServiceStatus::Paused,
-                    started_at: None,
-                },
-                config: sc!("nginx").with_port(0),
+            status: ServiceStatus::Paused,
+            blueprint_config: blueprint_service!("nginx"),
+            service_type: ContainerType::ApplicationCompanion,
         }],
         HashSet::new(),
         None,
@@ -625,11 +646,9 @@ mod tests {
     #[case(Ok(App::new(
         vec![Service {
             id: String::from("nginx-1234"),
-                state: State {
-                    status: ServiceStatus::Paused,
-                    started_at: None,
-                },
-                config: sc!("nginx").with_port(0),
+            status: ServiceStatus::Paused,
+            blueprint_config: blueprint_service!("nginx"),
+            service_type: ContainerType::ApplicationCompanion,
         }],
         HashSet::new(),
         UserDefinedParameters::new(
@@ -686,11 +705,9 @@ mod tests {
     #[case(Ok(App::new(
                 vec![Service {
                     id: String::from("nginx-1234"),
-                    state: State {
-                        status: ServiceStatus::Paused,
-                        started_at: None,
-                    },
-                    config: sc!("nginx"),
+                    status: ServiceStatus::Paused,
+                    blueprint_config: blueprint_service!("nginx"),
+                    service_type: ContainerType::ApplicationCompanion,
                 }],
                 HashSet::new(),
                 None,
@@ -727,11 +744,9 @@ mod tests {
                     Ok(App::new(
                         vec![Service {
                             id: String::from("nginx-1234"),
-                            state: State {
-                                status: ServiceStatus::Paused,
-                                started_at: None,
-                            },
-                            config: sc!("nginx"),
+                            status: ServiceStatus::Paused,
+                            blueprint_config: blueprint_service!("nginx"),
+                            service_type: ContainerType::ApplicationCompanion,
                         }],
                         HashSet::new(),
                         None,
@@ -795,11 +810,9 @@ mod tests {
                     Ok(App::new(
                         vec![Service {
                             id: String::from("nginx-1234"),
-                            state: State {
-                                status: ServiceStatus::Paused,
-                                started_at: None,
-                            },
-                            config: sc!("nginx"),
+                            status: ServiceStatus::Paused,
+                            blueprint_config: blueprint_service!("nginx"),
+                            service_type: ContainerType::Instance,
                         }],
                         HashSet::new(),
                         None,
@@ -844,11 +857,9 @@ mod tests {
             Some(App::new(
                 vec![Service {
                     id: String::from("nginx-1234"),
-                    state: State {
-                        status: ServiceStatus::Paused,
-                        started_at: None,
-                    },
-                    config: sc!("nginx").with_port(0),
+                    status: ServiceStatus::Paused,
+                    blueprint_config: blueprint_service!("nginx"),
+                    service_type: ContainerType::Instance
                 }],
                 HashSet::new(),
                 None,
@@ -910,11 +921,9 @@ mod tests {
                         Ok(App::new(
                             vec![Service {
                                 id: String::from("nginx-1234"),
-                                state: State {
-                                    status: ServiceStatus::Paused,
-                                    started_at: None,
-                                },
-                                config: sc!("nginx"),
+                                status: ServiceStatus::Paused,
+                                blueprint_config: blueprint_service!("nginx"),
+                                service_type: ContainerType::Instance,
                             }],
                             HashSet::new(),
                             None,
@@ -974,11 +983,9 @@ mod tests {
         let result_1 = Ok(App::new(
             vec![Service {
                 id: String::from("httpd-1234"),
-                state: State {
-                    status: ServiceStatus::Paused,
-                    started_at: None,
-                },
-                config: sc!("httpd").with_port(0),
+                status: ServiceStatus::Paused,
+                blueprint_config: blueprint_service!("httpd"),
+                service_type: ContainerType::Instance,
             }],
             HashSet::new(),
             None,
@@ -1000,11 +1007,9 @@ mod tests {
         let result_2 = Ok(App::new(
             vec![Service {
                 id: String::from("nginx-1234"),
-                state: State {
-                    status: ServiceStatus::Paused,
-                    started_at: None,
-                },
-                config: sc!("nginx").with_port(0),
+                status: ServiceStatus::Paused,
+                blueprint_config: blueprint_service!("nginx"),
+                service_type: ContainerType::Instance,
             }],
             HashSet::new(),
             None,
@@ -1060,11 +1065,9 @@ mod tests {
                     Ok(App::new(
                         vec![Service {
                             id: String::from("nginx-1234"),
-                            state: State {
-                                status: ServiceStatus::Paused,
-                                started_at: None,
-                            },
-                            config: sc!("nginx"),
+                            status: ServiceStatus::Paused,
+                            blueprint_config: blueprint_service!("nginx"),
+                            service_type: ContainerType::Instance,
                         }],
                         HashSet::new(),
                         None,
@@ -1099,11 +1102,9 @@ mod tests {
                     Ok(App::new(
                         vec![Service {
                             id: String::from("nginx-1234"),
-                            state: State {
-                                status: ServiceStatus::Paused,
-                                started_at: None,
-                            },
-                            config: sc!("nginx"),
+                            status: ServiceStatus::Paused,
+                            blueprint_config: blueprint_service!("nginx"),
+                            service_type: ContainerType::Instance,
                         }],
                         HashSet::new(),
                         None,
@@ -1114,5 +1115,61 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn backward_compatible_read() {
+        let (_postgres_instance, repository) = create_repository().await;
+
+        let status_id = AppStatusChangeId::new();
+        {
+            let task = AppTask::Delete {
+                status_id,
+                app_name: AppName::master(),
+            };
+            let mut connection = repository.pool.acquire().await.unwrap();
+            sqlx::query(
+                r#"
+                INSERT INTO app_task (id, app_name, status, task, result_success)
+                VALUES ($1, $2, 'done', $3, $4)
+                "#,
+            )
+            .bind(task.status_id().as_uuid())
+            .bind(task.app_name().as_str())
+            .bind(serde_json::to_value(&task).unwrap())
+            .bind(serde_json::json!({
+                "owner": [],
+                "services": [{
+                    "id": "adminer-1234",
+                    "config": {
+                        "files": null,
+                        "image": "adminer:4.8.1",
+                        "serviceName": "adminer"
+                    },
+                    "status": "running"
+                }],
+                "user_defined_parameters": {}
+            }))
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        }
+
+        let result = repository.peek_result(&status_id).await;
+
+        assert_eq!(
+            result,
+            Some(Ok(App::new(
+                vec![Service {
+                    id: String::from("adminer-1234"),
+                    status: ServiceStatus::Paused,
+                    service_type: ContainerType::Instance,
+                    blueprint_config: blueprint_service!("adminer", "adminer:4.8.1")
+                }],
+                HashSet::new(),
+                Some(unsafe { UserDefinedParameters::without_validation(serde_json::json!({})) }),
+                None,
+            )))
+        );
     }
 }

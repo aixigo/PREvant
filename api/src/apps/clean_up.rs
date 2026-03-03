@@ -1,10 +1,10 @@
 use crate::{
     apps::{repository::AppPostgresRepository, AppTaskQueueProducer, Apps},
     config::{ApplicationCleanUpPolicy, Config},
-    models::AppName,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use domain::AppName;
 use futures::try_join;
 use regex::Regex;
 use rocket::{
@@ -454,8 +454,9 @@ impl AutomatedStaleBackUpDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{infrastructure::Dummy, sc};
+    use crate::infrastructure::Dummy;
     use chrono::{TimeDelta, TimeZone};
+    use domain::blueprint_service;
     use std::str::FromStr;
 
     #[test]
@@ -566,22 +567,22 @@ mod tests {
         let dummy_infra = Dummy::new()
             .with_app(
                 AppName::master(),
-                vec![sc!("nginx")],
+                vec![blueprint_service!("nginx")],
                 now - TimeDelta::weeks(100),
             )
             .with_app(
                 AppName::from_str("to-be-kept-alive").unwrap(),
-                vec![sc!("nginx")],
+                vec![blueprint_service!("nginx")],
                 now,
             )
             .with_app(
                 AppName::from_str("to-be-backed-up").unwrap(),
-                vec![sc!("nginx")],
+                vec![blueprint_service!("nginx")],
                 now - TimeDelta::days(2),
             )
             .with_app(
                 AppName::from_str("to-be-kept-alive-2").unwrap(),
-                vec![sc!("nginx")],
+                vec![blueprint_service!("nginx")],
                 now - TimeDelta::hours(2) + TimeDelta::minutes(1),
             );
         let apps = Apps::new(config.clone(), Box::new(dummy_infra)).unwrap();

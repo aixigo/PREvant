@@ -24,9 +24,10 @@
  * =========================LICENSE_END==================================
  */
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 
+/// Provides some information about a running service, such as version strings, OpenAPI URL, etc.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Serialize, PartialEq)]
 pub struct WebHostMeta {
     properties: Option<Properties>,

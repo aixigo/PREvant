@@ -95,6 +95,7 @@ The list of available handlebars variables:
 - `services`: An array of the services of the application. Each element has the
   following structure:
   - `name`: The service name which is equivalent to the network alias
+  - `image`: The service's OCI image
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
 - `userDefined`: see [user defined schema configuration](user-defined-schema.md).
@@ -138,6 +139,7 @@ The list of available handlebars variables:
     available on K8s at the moment)
 - `service`: The companion's service containing the following fields:
   - `name`: The service name which is equivalent to the network alias
+  - `image`: The service's OCI image
   - `port`: The exposed port of the service
   - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
 - `userDefined`: see [user defined schema configuration](user-defined-schema.md).

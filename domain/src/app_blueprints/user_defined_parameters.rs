@@ -26,6 +26,12 @@ impl UserDefinedParameters {
         Ok(Self { data })
     }
 
+    /// # Safety
+    ///
+    /// This function is only safe to use if it is used outside of user controlled data. For
+    /// example, using it to create [`UserDefinedParameters`] in a HTTP request context is unsafe.
+    /// However, if it is used to deserialize data from a store, in which the data has been stored
+    /// after the validated with [`UserDefinedParameters::new`], this can be used.
     pub unsafe fn without_validation(data: Value) -> Self {
         Self { data }
     }
@@ -50,6 +56,14 @@ impl UserDefinedParameters {
             }
             (a, b) => *a = b,
         }
+    }
+
+    pub fn as_value(&self) -> &Value {
+        &self.data
+    }
+
+    pub fn into_value(self) -> Value {
+        self.data
     }
 }
 

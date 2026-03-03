@@ -1,6 +1,7 @@
-use crate::{config::AppSelector, models::AppName};
+use crate::config::AppSelector;
 use chrono::{DateTime, Utc};
 use cron::Schedule;
+use domain::AppName;
 use serde::Deserialize;
 use std::{fmt::Display, path::PathBuf, str::FromStr, time::Duration};
 use url::Url;

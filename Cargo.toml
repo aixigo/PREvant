@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["domain", "api", "api-tests"]
+
+[workspace.dependencies]
+async-trait = "0.1"
+anyhow = "1.0"
+assert-json-diff = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+handlebars = "6.3"
+jsonschema = "0.37"
+oci-client = "0.15"
+openidconnect = "4.0"
+pretty_assertions = "1.4"
+regex = "1.11"
+rstest = "0.26"
+secstr = { version = "0.5", features = ["serde"] }
+serde = "1.0"
+serde-value = "0.7"
+serde_derive = "1.0"
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+toml = "0.9"
+url = { version = "2.4", features = ["serde"] }
