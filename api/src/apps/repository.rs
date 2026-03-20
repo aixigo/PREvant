@@ -508,8 +508,18 @@ impl AppPostgresRepository {
         Ok(())
     }
 
-    pub async fn clean_up_done_tasks(&self, older_than: DateTime<Utc>) -> Result<usize> {
+    pub async fn clean_up_done_tasks(&self, older_than: DateTime<Utc>) -> Result<(u64, u64, u64)> {
         let mut tx = self.pool.begin().await?;
+
+        let count_done = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM app_task
+            WHERE status = 'done'
+            "#,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
 
         let affected_rows = sqlx::query(
             r#"
@@ -523,9 +533,19 @@ impl AppPostgresRepository {
         .await?
         .rows_affected();
 
+        let count_queued = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM app_task
+            WHERE status = 'queued'
+            "#,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
         tx.commit().await?;
 
-        Ok(affected_rows as usize)
+        Ok((affected_rows as u64, count_done as u64, count_queued as u64))
     }
 }
 
@@ -602,6 +622,7 @@ mod tests {
     async fn enqueue_and_execute_successfully() {
         let (_postgres_instance, repository) = create_repository().await;
 
+        let now = Utc::now();
         let status_id = AppStatusChangeId::new();
         repository
             .enqueue_task(AppTask::Delete {
@@ -637,8 +658,14 @@ mod tests {
         let result = repository.peek_result(&status_id).await;
         assert!(matches!(result, Some(Ok(_))));
 
+        let cleaned = repository.clean_up_done_tasks(now).await.unwrap();
+        assert_eq!(cleaned, (0, 1, 0));
+
         let cleaned = repository.clean_up_done_tasks(Utc::now()).await.unwrap();
-        assert_eq!(cleaned, 1);
+        assert_eq!(cleaned, (1, 1, 0));
+
+        let cleaned = repository.clean_up_done_tasks(Utc::now()).await.unwrap();
+        assert_eq!(cleaned, (0, 0, 0));
     }
 
     #[tokio::test]
@@ -896,7 +923,7 @@ mod tests {
         assert_eq!(result_2, result_1);
 
         let cleaned = repository.clean_up_done_tasks(Utc::now()).await.unwrap();
-        assert_eq!(cleaned, 2);
+        assert_eq!(cleaned, (2, 2, 0));
     }
 
     #[tokio::test]

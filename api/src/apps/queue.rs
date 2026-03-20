@@ -3,13 +3,17 @@ use crate::apps::{Apps, AppsError, CreateOrUpdateParams};
 use crate::models::{
     App, AppName, AppStatusChangeId, AppTask, MergedAppTask, Owner, ServiceConfig,
 };
+use crate::prometheus::PrometheusRegistry;
 use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
+use prometheus_client::metrics::family::Family;
+use prometheus_client::metrics::gauge::Gauge;
 use rocket::{
     fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
 };
 use std::collections::HashSet;
+use std::sync::atomic::AtomicU64;
 use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
 use tokio::{
     sync::{Mutex, Notify},
@@ -21,6 +25,33 @@ pub struct AppProcessingQueue {}
 impl AppProcessingQueue {
     pub fn fairing() -> Self {
         Self {}
+    }
+}
+
+#[derive(Clone)]
+struct QueueMetrics(Family<Vec<(String, String)>, Gauge<u64, AtomicU64>>);
+
+impl QueueMetrics {
+    fn new() -> Self {
+        Self(Family::<Vec<(String, String)>, Gauge<u64, AtomicU64>>::default())
+    }
+
+    fn set(&self, stats: StatsAfterCleanUp) {
+        let StatsAfterCleanUp {
+            cleaned_tasks,
+            queued_tasks,
+            done_tasks,
+        } = stats;
+
+        self.0
+            .get_or_create(&vec![(String::from("status"), String::from("cleaned"))])
+            .set(cleaned_tasks);
+        self.0
+            .get_or_create(&vec![(String::from("status"), String::from("queued"))])
+            .set(queued_tasks);
+        self.0
+            .get_or_create(&vec![(String::from("status"), String::from("done"))])
+            .set(done_tasks);
     }
 }
 
@@ -39,17 +70,32 @@ impl Fairing for AppProcessingQueue {
             _ => AppTaskQueueDB::inmemory(),
         };
 
+        let metrics = match rocket.state::<PrometheusRegistry>() {
+            Some(registry) => {
+                let mut registry = registry.write().unwrap();
+                let metrics = QueueMetrics::new();
+                registry.register(
+                    "prevant_application_task_queue",
+                    "Metrics of the task related to applications",
+                    metrics.0.clone(),
+                );
+                Some(metrics)
+            }
+            None => None,
+        };
+
         let producer = AppTaskQueueProducer {
             db: Arc::new(db),
             notify: Arc::new(Notify::new()),
         };
 
-        Ok(rocket.manage(producer))
+        Ok(rocket.manage(producer).manage(metrics))
     }
 
     async fn on_liftoff(&self, rocket: &Rocket<Orbit>) {
         let apps = rocket.state::<Apps>().unwrap();
         let producer = rocket.state::<AppTaskQueueProducer>().unwrap();
+        let metric = rocket.state::<Option<QueueMetrics>>().cloned().unwrap();
         let consumer = AppTaskQueueConsumer {
             db: producer.db.clone(),
             notify: producer.notify.clone(),
@@ -72,13 +118,17 @@ impl Fairing for AppProcessingQueue {
                 };
 
                 match consumer.clean_up_done_tasks().await {
-                    Ok(number_of_deleted_tasks) if number_of_deleted_tasks > 0 => {
-                        log::debug!("Deleted {number_of_deleted_tasks} done tasks");
+                    Ok(stats) => {
+                        if stats.cleaned_tasks > 0 {
+                            log::debug!("Deleted {} done tasks", stats.cleaned_tasks);
+                        }
+                        if let Some(m) = metric.as_ref() {
+                            m.set(stats);
+                        }
                     }
                     Err(err) => {
                         log::error!("Cannot cleanup done task: {err}");
                     }
-                    _ => {}
                 }
             }
         });
@@ -319,10 +369,17 @@ impl AppTaskQueueConsumer {
             .await
     }
 
-    pub async fn clean_up_done_tasks(&self) -> Result<usize> {
+    pub async fn clean_up_done_tasks(&self) -> Result<StatsAfterCleanUp> {
         let an_hour_ago = Utc::now() - TimeDelta::hours(1);
         self.db.clean_up_done_tasks(an_hour_ago).await
     }
+}
+
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
+struct StatsAfterCleanUp {
+    cleaned_tasks: u64,
+    queued_tasks: u64,
+    done_tasks: u64,
 }
 
 enum AppTaskStatus {
@@ -472,19 +529,49 @@ impl AppTaskQueueDB {
         }
     }
 
-    async fn clean_up_done_tasks(&self, older_than: DateTime<Utc>) -> Result<usize> {
+    async fn clean_up_done_tasks(&self, older_than: DateTime<Utc>) -> Result<StatsAfterCleanUp> {
         match self {
             AppTaskQueueDB::InMemory(mutex) => {
                 let mut queue = mutex.lock().await;
 
+                let mut queued_tasks = 0u64;
+                let mut done_tasks = 0u64;
+                let mut cleaned_tasks = 0u64;
                 let before = queue.len();
-                queue.retain(
-                    |(_, status)| !matches!(status, AppTaskStatus::Done((timestamp, _)) if timestamp < &older_than),
-                );
+                queue.retain(|(_, status)| match status {
+                    AppTaskStatus::New | AppTaskStatus::InProcess => {
+                        queued_tasks += 1;
+                        true
+                    }
+                    AppTaskStatus::Done((timestamp, _)) => {
+                        done_tasks += 1;
+                        if timestamp < &older_than {
+                            cleaned_tasks += 1;
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                });
 
-                Ok(before - queue.len())
+                assert!(cleaned_tasks == (before - queue.len()) as u64);
+
+                Ok(StatsAfterCleanUp {
+                    cleaned_tasks,
+                    done_tasks,
+                    queued_tasks,
+                })
             }
-            AppTaskQueueDB::DB(db) => db.clean_up_done_tasks(older_than).await,
+            AppTaskQueueDB::DB(db) => {
+                let (cleaned_tasks, done_tasks, queued_tasks) =
+                    db.clean_up_done_tasks(older_than).await?;
+
+                Ok(StatsAfterCleanUp {
+                    cleaned_tasks,
+                    queued_tasks,
+                    done_tasks,
+                })
+            }
         }
     }
 }
@@ -494,7 +581,7 @@ mod tests {
     use super::*;
     use crate::{db::DatabasePool, models::AppName, sc};
     use rstest::rstest;
-    use std::collections::HashSet;
+    use std::{collections::HashSet, str::FromStr};
     use testcontainers_modules::{
         postgres::{self},
         testcontainers::{runners::AsyncRunner, ContainerAsync},
@@ -560,7 +647,10 @@ mod tests {
             }
         }
 
-        async fn clean_up_done_tasks(&self, older_than: DateTime<Utc>) -> Result<usize> {
+        async fn clean_up_done_tasks(
+            &self,
+            older_than: DateTime<Utc>,
+        ) -> Result<StatsAfterCleanUp> {
             match self {
                 TestQueue::InMemory(queue) => queue.clean_up_done_tasks(older_than).await,
                 TestQueue::DB(b) => b.1.clean_up_done_tasks(older_than).await,
@@ -672,8 +762,18 @@ mod tests {
         let result = queue.peek_result(&status_id).await;
         assert!(matches!(result, Some(Ok(_))));
 
-        let cleaned = queue.clean_up_done_tasks(Utc::now()).await.unwrap();
-        assert_eq!(cleaned, 1);
+        let cleaned = queue
+            .clean_up_done_tasks(Utc::now())
+            .await
+            .map_err(|e| e.to_string());
+        assert_eq!(
+            cleaned,
+            Ok(StatsAfterCleanUp {
+                cleaned_tasks: 1,
+                done_tasks: 1,
+                ..Default::default()
+            })
+        );
     }
 
     #[rstest]
@@ -714,8 +814,18 @@ mod tests {
         let result = queue.peek_result(&status_id_2).await;
         assert!(matches!(result, Some(Ok(_))));
 
-        let cleaned = queue.clean_up_done_tasks(Utc::now()).await.unwrap();
-        assert_eq!(cleaned, 2);
+        let cleaned = queue
+            .clean_up_done_tasks(Utc::now())
+            .await
+            .map_err(|e| e.to_string());
+        assert_eq!(
+            cleaned,
+            Ok(StatsAfterCleanUp {
+                cleaned_tasks: 2,
+                done_tasks: 2,
+                ..Default::default()
+            })
+        );
     }
 
     #[rstest]
@@ -849,5 +959,95 @@ mod tests {
         assert!(matches!(result, Some(Ok(_))));
         let result = queue.peek_result(&status_id_2).await;
         assert!(result.is_none());
+    }
+
+    #[rstest]
+    #[case::inmemory(async { TestQueue::inmemory() })]
+    #[case::postgres(async { TestQueue::postgres_queue().await })]
+    #[tokio::test]
+    async fn clean_up_with_and_provide_stats(
+        #[future]
+        #[case]
+        queue: TestQueue,
+    ) {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let queue = queue.await;
+
+        let stats = queue
+            .clean_up_done_tasks(Utc::now())
+            .await
+            .map_err(|e| e.to_string());
+        assert_eq!(stats, Ok(StatsAfterCleanUp::default()));
+
+        queue
+            .enqueue_task(AppTask::Delete {
+                status_id: AppStatusChangeId::new(),
+                app_name: AppName::master(),
+            })
+            .await
+            .unwrap();
+        queue
+            .enqueue_task(AppTask::Delete {
+                status_id: AppStatusChangeId::new(),
+                app_name: AppName::from_str("other").unwrap(),
+            })
+            .await
+            .unwrap();
+
+        let stats = queue
+            .clean_up_done_tasks(Utc::now())
+            .await
+            .map_err(|e| e.to_string());
+        assert_eq!(
+            stats,
+            Ok(StatsAfterCleanUp {
+                queued_tasks: 2,
+                ..Default::default()
+            })
+        );
+
+        let before_task = Utc::now();
+        queue
+            .execute_tasks(async |tasks, _| simulate_result(tasks))
+            .await
+            .unwrap();
+        let stats = queue
+            .clean_up_done_tasks(before_task)
+            .await
+            .map_err(|e| e.to_string());
+        assert_eq!(
+            stats,
+            Ok(StatsAfterCleanUp {
+                queued_tasks: 1,
+                done_tasks: 1,
+                ..Default::default()
+            })
+        );
+
+        let stats = queue
+            .clean_up_done_tasks(Utc::now())
+            .await
+            .map_err(|e| e.to_string());
+        assert_eq!(
+            stats,
+            Ok(StatsAfterCleanUp {
+                queued_tasks: 1,
+                done_tasks: 1,
+                cleaned_tasks: 1,
+            })
+        );
+
+        let stats = queue
+            .clean_up_done_tasks(Utc::now())
+            .await
+            .map_err(|e| e.to_string());
+        assert_eq!(
+            stats,
+            Ok(StatsAfterCleanUp {
+                queued_tasks: 1,
+                ..Default::default()
+            })
+        );
     }
 }

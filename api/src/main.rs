@@ -34,6 +34,7 @@ use crate::config::{ApiAccessMode, Config, Runtime};
 use crate::db::DatabasePool;
 use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
 use crate::openapi::api_documentation;
+use crate::prometheus::PrometheusMetrics;
 use crate::tickets::TicketsCaching;
 use apps::AppProcessingQueue;
 use auth::Auth;
@@ -61,6 +62,7 @@ mod http_result;
 mod infrastructure;
 mod models;
 mod openapi;
+mod prometheus;
 mod registry;
 mod tickets;
 mod webhooks;
@@ -111,7 +113,7 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
         "defaultAppName": config.applications.default_app,
         "isAuthRequired": matches!(config.api_access.mode, ApiAccessMode::RequireAuth { .. }),
         "isBackupsEnabled": config.database.is_some()
-            // TODO this condition can be removed once the Docker backend supports Docker compose types, see #146 
+            // TODO this condition can be removed once the Docker backend supports Docker compose types, see #146
             && matches!(config.runtime, Runtime::Kubernetes(..)),
     });
     data.insert("config", config_json.to_string());
@@ -189,6 +191,7 @@ async fn main() -> Result<(), StartUpError> {
         .mount("/api", crate::tickets::ticket_routes())
         .mount("/api", routes![webhooks::webhooks])
         .mount("/auth", crate::auth::auth_routes())
+        .attach(PrometheusMetrics::fairing())
         .attach(DatabasePool::fairing())
         .attach(Auth::fairing())
         .attach(AppRepository::fairing())
