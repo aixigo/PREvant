@@ -129,6 +129,14 @@
                      <a v-if="container.url && isRunning( container )" :href='container.url' target="_blank" class="ra-service-title__name">{{ container.name }}</a>
                      <span v-else class="ra-service-title__name">{{ container.name }}</span>
 
+                     <span
+                        v-if="container.health"
+                        v-mdb-tooltip="healthTooltip( container.health )"
+                        class="ra-health-dot"
+                        :class="healthDotClass( container.health )"
+                        aria-hidden="true"
+                     />
+
                      <MDBIcon
                         class="ra-container__change-status"
                         tabindex="0"
@@ -228,6 +236,27 @@
    color: #64748b;
    opacity: 0.75;
    transition: color 0.2s ease-out, opacity 0.2s ease-out;
+}
+.ra-health-dot {
+   flex-shrink: 0;
+   display: inline-block;
+   width: 0.55rem;
+   height: 0.55rem;
+   border-radius: 50%;
+}
+.ra-health-dot--healthy {
+   background-color: #22c55e;
+}
+.ra-health-dot--unhealthy {
+   background-color: #ef4444;
+}
+.ra-health-dot--starting {
+   background-color: #f59e0b;
+   animation: ra-health-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ra-health-pulse {
+   0%, 100% { opacity: 1; }
+   50% { opacity: 0.35; }
 }
 .ra-container__change-status:hover,
 .ra-container__change-status:focus-visible {
@@ -440,6 +469,17 @@
          },
          isRunning(container) {
             return container.status !== 'paused' && this.reviewApp.status !== 'backed-up';
+         },
+         healthDotClass(health) {
+            return `ra-health-dot--${health}`;
+         },
+         healthTooltip(health) {
+            switch (health) {
+               case 'healthy':   return 'Health check passing';
+               case 'unhealthy': return 'Health check failing';
+               case 'starting':  return 'Health check starting';
+            }
+            return undefined;
          },
          isExpanded(container) {
             if (this.expandedContainers[container.name] == undefined) {

@@ -618,6 +618,7 @@ mod tests {
             },
             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
             service_type: ContainerType::Instance,
+            health: None,
         };
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
@@ -656,6 +657,7 @@ mod tests {
             },
             blueprint_config: blueprint_service!("kafka-rest", "confluentinc/cp-kafka-rest"),
             service_type: ContainerType::Instance,
+            health: None,
         };
         let forwarder = Box::new(DummyHttpForwarder {});
         let apps = HashMap::from([(
@@ -704,6 +706,7 @@ mod tests {
             status: ServiceStatus::Paused,
             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
             service_type: ContainerType::Instance,
+            health: None,
         };
 
         let forwarder = Box::new(DummyHttpForwarder {});
@@ -745,6 +748,7 @@ mod tests {
             },
             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
             service_type: ContainerType::Instance,
+            health: None,
         };
 
         let forwarder = Box::new(DummyHttpForwarder {});
@@ -762,6 +766,7 @@ mod tests {
             status: ServiceStatus::Paused,
             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
             service_type: ContainerType::Instance,
+            health: None,
         };
 
         let forwarder = Box::new(DummyHttpForwarder {});

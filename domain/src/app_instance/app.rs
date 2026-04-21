@@ -30,7 +30,7 @@ use crate::{
     app_instance::{ContainerType, WebHostMeta},
 };
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, marker::PhantomData};
 use url::Url;
 
@@ -75,6 +75,7 @@ pub struct Service {
     /// An unique identifier of the service, e.g. the Docker container id
     pub id: String,
     pub status: ServiceStatus,
+    pub health: Option<HealthStatus>,
     pub service_type: ContainerType,
     /// The [`ServiceConfig`] from which the deployed service has been derived.
     pub blueprint_config: ServiceConfig,
@@ -84,6 +85,14 @@ pub struct Service {
 pub enum ServiceStatus {
     Running { started_at: DateTime<Utc> },
     Paused,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum HealthStatus {
+    Starting,
+    Healthy,
+    Unhealthy,
 }
 
 impl Service {
@@ -111,8 +120,10 @@ impl Serialize for Service {
         use serde::ser::SerializeMap;
 
         #[derive(Serialize)]
-        struct State {
+        struct State<'a> {
             status: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            health: Option<&'a HealthStatus>,
         }
 
         let mut s = serializer.serialize_map(Some(3))?;
@@ -125,6 +136,7 @@ impl Serialize for Service {
                     ServiceStatus::Running { .. } => "running",
                     ServiceStatus::Paused => "paused",
                 },
+                health: self.health.as_ref(),
             },
         )?;
 
@@ -140,6 +152,7 @@ pub struct ServiceWithHostMeta {
     pub service_url: Option<Url>,
     pub web_host_meta: WebHostMeta,
     pub status: ServiceStatus,
+    pub health: Option<HealthStatus>,
     /// The [`ServiceConfig`] from which the deployed service has been derived.
     pub blueprint_config: ServiceConfig,
     pub service_type: ContainerType,
@@ -169,6 +182,7 @@ impl ServiceWithHostMeta {
             service_url,
             web_host_meta,
             status: service.status,
+            health: service.health,
             blueprint_config: service.blueprint_config,
             service_type: service.service_type,
         }
@@ -187,6 +201,8 @@ impl Serialize for ServiceWithHostMeta {
         #[serde(rename_all = "camelCase")]
         struct ServiceState<'a> {
             status: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            health: Option<&'a HealthStatus>,
         }
 
         #[derive(Serialize)]
@@ -240,6 +256,7 @@ impl Serialize for ServiceWithHostMeta {
                     ServiceStatus::Running { started_at: _ } => "running",
                     ServiceStatus::Paused => "paused",
                 },
+                health: self.health.as_ref(),
             },
         };
 
@@ -297,10 +314,35 @@ mod tests {
             serde_json::to_value(Service {
                 id: String::from("some id"),
                 service_type: ContainerType::Instance,
+                health: None,
                 status: ServiceStatus::Running {
                     started_at: Utc::now(),
                 },
                 blueprint_config: blueprint_service!("mariadb", "mariadb:latest")
+            })
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn serialize_service_with_health() {
+        assert_json_eq!(
+            serde_json::json!({
+                "name": "nginx",
+                "type": "instance",
+                "state": {
+                    "status": "running",
+                    "health": "unhealthy"
+                }
+            }),
+            serde_json::to_value(Service {
+                id: String::from("some id"),
+                status: ServiceStatus::Running {
+                    started_at: Utc::now(),
+                },
+                health: Some(HealthStatus::Unhealthy),
+                service_type: ContainerType::Instance,
+                blueprint_config: blueprint_service!("nginx", "nginx:latest"),
             })
             .unwrap()
         );
@@ -315,12 +357,14 @@ mod tests {
                 Service {
                     id: String::from("b1"),
                     service_type: ContainerType::Instance,
+                    health: None,
                     status: ServiceStatus::Running { started_at: now_b1 },
                     blueprint_config: blueprint_service!("b"),
                 },
                 Service {
                     id: String::from("a1"),
                     service_type: ContainerType::Instance,
+                    health: None,
                     status: ServiceStatus::Running { started_at: now_a1 },
                     blueprint_config: blueprint_service!("a"),
                 },
@@ -334,12 +378,14 @@ mod tests {
                 Service {
                     id: String::from("a1"),
                     service_type: ContainerType::Instance,
+                    health: None,
                     status: ServiceStatus::Running { started_at: now_a1 },
                     blueprint_config: blueprint_service!("a"),
                 },
                 Service {
                     id: String::from("b1"),
                     service_type: ContainerType::Instance,
+                    health: None,
                     status: ServiceStatus::Running { started_at: now_b1 },
                     blueprint_config: blueprint_service!("b"),
                 },
@@ -364,6 +410,7 @@ mod tests {
                     Service {
                         id: String::from("b1"),
                         service_type: ContainerType::Instance,
+                        health: None,
                         status: ServiceStatus::Running { started_at: now_b1 },
                         blueprint_config: blueprint_service!("b"),
                     },
@@ -375,6 +422,7 @@ mod tests {
                     Service {
                         id: String::from("a1"),
                         service_type: ContainerType::Instance,
+                        health: None,
                         status: ServiceStatus::Running { started_at: now_a1 },
                         blueprint_config: blueprint_service!("a"),
                     },
@@ -391,6 +439,7 @@ mod tests {
                     Service {
                         id: String::from("a1"),
                         service_type: ContainerType::Instance,
+                        health: None,
                         status: ServiceStatus::Running { started_at: now_a1 },
                         blueprint_config: blueprint_service!("a"),
                     },
@@ -402,6 +451,7 @@ mod tests {
                     Service {
                         id: String::from("b1"),
                         service_type: ContainerType::Instance,
+                        health: None,
                         status: ServiceStatus::Running { started_at: now_b1 },
                         blueprint_config: blueprint_service!("b"),
                     },
@@ -422,6 +472,7 @@ mod tests {
             vec![Service {
                 id: String::from("a1"),
                 service_type: ContainerType::Instance,
+                health: None,
                 status: ServiceStatus::Running {
                     started_at: Utc::now(),
                 },
@@ -467,6 +518,7 @@ mod tests {
                 Service {
                     id: String::from("a1"),
                     service_type: ContainerType::Instance,
+                    health: None,
                     status: ServiceStatus::Running {
                         started_at: Utc::now(),
                     },

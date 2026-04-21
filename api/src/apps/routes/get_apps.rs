@@ -284,7 +284,8 @@ mod tests {
                                     "postgres",
                                     "postgres:latest"
                                 ),
-                                service_type: domain::app_instance::ContainerType::Instance
+                                service_type: domain::app_instance::ContainerType::Instance,
+                                health: None,
                             },
                             WebHostMeta::invalid(),
                             base_url.clone(),
@@ -300,7 +301,8 @@ mod tests {
                                     "mariadb",
                                     "mariadb:latest"
                                 ),
-                                service_type: domain::app_instance::ContainerType::Instance
+                                service_type: domain::app_instance::ContainerType::Instance,
+                                health: None,
                             },
                             WebHostMeta::with_version(String::from("1.2.3")),
                             base_url,
@@ -357,6 +359,7 @@ mod tests {
                                     "postgres:latest"
                                 ),
                                 service_type: domain::app_instance::ContainerType::Instance,
+                                health: None,
                             },
                             WebHostMeta::invalid(),
                             base_url.clone(),
@@ -373,6 +376,7 @@ mod tests {
                                     "mariadb:latest"
                                 ),
                                 service_type: domain::app_instance::ContainerType::Instance,
+                                health: None,
                             },
                             WebHostMeta::with_version(String::from("1.2.3")),
                             base_url,
@@ -433,6 +437,7 @@ mod tests {
                                     "postgres:latest"
                                 ),
                                 service_type: domain::app_instance::ContainerType::Instance,
+                                health: None,
                             },
                             WebHostMeta::invalid(),
                             base_url.clone(),
@@ -449,6 +454,7 @@ mod tests {
                                     "mariadb:latest"
                                 ),
                                 service_type: domain::app_instance::ContainerType::Instance,
+                                health: None,
                             },
                             WebHostMeta::with_version(String::from("1.2.3")),
                             base_url,

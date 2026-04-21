@@ -1875,6 +1875,7 @@ mod tests {
                 vec![app_instance::Service {
                     id: String::from("http1"),
                     service_type: ContainerType::Instance,
+                    health: None,
                     status: app_instance::ServiceStatus::Paused,
                     blueprint_config: if app_name == AppName::master() {
                         blueprint_service!("http1", "nginx:1.14")
@@ -2091,6 +2092,7 @@ mod tests {
                             id: String::from("id"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Replica,
+                            health: None,
                             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                         }],
                         HashSet::from([Owner {
@@ -2210,6 +2212,7 @@ mod tests {
                             id: String::from("id"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Replica,
+                            health: None,
                             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                         }],
                         HashSet::from([existing_owner.clone()]),
@@ -2259,6 +2262,7 @@ mod tests {
                             id: String::from("id"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Replica,
+                            health: None,
                             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                         }],
                         HashSet::from([Owner {
@@ -2822,6 +2826,7 @@ mod tests {
                             status: app_instance::ServiceStatus::Running {
                                 started_at: Utc::now(),
                             },
+                            health: None,
                             service_type: database_service_type,
                             blueprint_config: mariadb_config(),
                         }],
@@ -2901,6 +2906,7 @@ mod tests {
                                     started_at: Utc::now(),
                                 },
                                 service_type: ContainerType::Instance,
+                                health: None,
                                 blueprint_config: blueprint_service!(mariadb_config(), env = (
                                         "MARIADB_AUTO_UPGRADE" => "true"
                                 )),
@@ -2982,6 +2988,7 @@ mod tests {
                                 started_at: Utc::now(),
                             },
                             service_type: ContainerType::ApplicationCompanion,
+                            health: None,
                             blueprint_config: blueprint_service!(mariadb_config(), env = ("TEST" => "test")),
                         }, app_instance::Service {
                             id: String::from("id-2"),
@@ -2989,6 +2996,7 @@ mod tests {
                                 started_at: Utc::now(),
                             },
                             service_type: ContainerType::ServiceCompanion,
+                            health: None,
                             blueprint_config: blueprint_service!("api", "gateway:example"),
                         }],
                         HashSet::new(),
@@ -3055,6 +3063,7 @@ mod tests {
                             started_at: Utc::now(),
                         },
                         service_type: ContainerType::Instance,
+                        health: None,
                         blueprint_config: blueprint_service!(mariadb_config(), env = (
                             "MARIADB_AUTO_UPGRADE" => format!("value from {app_name} will be deleted")
                         )),
@@ -3137,6 +3146,7 @@ mod tests {
                                 started_at: Utc::now(),
                             },
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!(mariadb_config(), env = (
                                     "MARIADB_AUTO_UPGRADE" => match app_name.as_str() {
                                         "other" => "false",
@@ -3150,6 +3160,7 @@ mod tests {
                                 started_at: Utc::now(),
                             },
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: wordpress_config(),
                         },
                     ],
@@ -3230,6 +3241,7 @@ mod tests {
                                         started_at: Utc::now(),
                                     },
                                     service_type: ContainerType::ServiceCompanion,
+                                    health: None,
                                     blueprint_config: blueprint_service!(
                                         "db1-my-name",
                                         "postgres:16.1"
@@ -3241,6 +3253,7 @@ mod tests {
                                         started_at: Utc::now(),
                                     },
                                     service_type: ContainerType::Instance,
+                                    health: None,
                                     blueprint_config: wordpress_config(),
                                 },
                             ],
@@ -3315,6 +3328,7 @@ mod tests {
                                 id: String::from("id"),
                                 status: app_instance::ServiceStatus::Paused,
                                 service_type: ContainerType::Replica,
+                                health: None,
                                 blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                             }],
                             HashSet::new(),
@@ -3372,6 +3386,7 @@ mod tests {
                                 id: String::from("id"),
                                 status: app_instance::ServiceStatus::Paused,
                                 service_type: ContainerType::Replica,
+                                health: None,
                                 blueprint_config: blueprint_service!(
                                     "blog",
                                     "wordpress",
@@ -3748,12 +3763,14 @@ mod tests {
                                 id: i.to_string(),
                                 status: app_instance::ServiceStatus::Paused,
                                 service_type: ContainerType::Instance,
+                                health: None,
                                 blueprint_config,
                             })
                             .chain(std::iter::once(app_instance::Service {
                                 id: String::from("db"),
                                 status: app_instance::ServiceStatus::Paused,
                                 service_type: ContainerType::ApplicationCompanion,
+                                health: None,
                                 blueprint_config: mariadb_config(),
                             }))
                             .collect::<Vec<_>>(),
@@ -3799,12 +3816,14 @@ mod tests {
                                 id: i.to_string(),
                                 status: app_instance::ServiceStatus::Paused,
                                 service_type: ContainerType::Instance,
+                                health: None,
                                 blueprint_config,
                             })
                             .chain(std::iter::once(app_instance::Service {
                                 id: String::from("db"),
                                 status: app_instance::ServiceStatus::Paused,
                                 service_type: ContainerType::ApplicationCompanion,
+                                health: None,
                                 blueprint_config: mariadb_config(),
                             }))
                             .collect::<Vec<_>>(),
@@ -3905,12 +3924,14 @@ mod tests {
                             id: i.to_string(),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config,
                         })
                         .chain(std::iter::once(app_instance::Service {
                             id: String::from("db"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::ApplicationCompanion,
+                            health: None,
                             blueprint_config: mariadb_config(),
                         }))
                         .collect::<Vec<_>>(),
@@ -3928,12 +3949,14 @@ mod tests {
                             id: i.to_string(),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config,
                         })
                         .chain(std::iter::once(app_instance::Service {
                             id: String::from("db"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::ApplicationCompanion,
+                            health: None,
                             blueprint_config: mariadb_config(),
                         }))
                         .collect::<Vec<_>>(),
@@ -4601,6 +4624,7 @@ mod tests {
                                     id: i.to_string(),
                                     status: app_instance::ServiceStatus::Paused,
                                     service_type: ContainerType::Instance,
+                                    health: None,
                                     blueprint_config: config,
                                 })
                                 .collect::<Vec<_>>(),
@@ -4848,6 +4872,7 @@ mod tests {
                             id: String::from("id"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Replica,
+                            health: None,
                             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                         }],
                         HashSet::new(),
@@ -4923,12 +4948,14 @@ mod tests {
                             id: String::from("id"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                         },
                         app_instance::Service {
                             id: String::from("adminer"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!("adminer", "adminer:5.0.0"),
                         }],
                         HashSet::new(),
@@ -4998,12 +5025,14 @@ mod tests {
                             id: String::from("id"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                         },
                         app_instance::Service {
                             id: String::from("adminer"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!("adminer", "adminer:5.0.0"),
                         }],
                         HashSet::new(),
@@ -5015,12 +5044,14 @@ mod tests {
                             id: String::from("id"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                         },
                         app_instance::Service {
                             id: String::from("adminer"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!(
                                 "adminer",
                                 "adminer:3.0.0",
@@ -5110,12 +5141,14 @@ mod tests {
                             id: String::from("id"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                         },
                         app_instance::Service {
                             id: String::from("adminer"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!("adminer", "adminer:5.0.0"),
                         }],
                         HashSet::new(),
@@ -5127,12 +5160,14 @@ mod tests {
                             id: String::from("id"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!("nginx", "nginx:latest"),
                         },
                         app_instance::Service {
                             id: String::from("adminer"),
                             status: app_instance::ServiceStatus::Paused,
                             service_type: ContainerType::Instance,
+                            health: None,
                             blueprint_config: blueprint_service!(
                                 "adminer",
                                 "adminer:3.0.0",

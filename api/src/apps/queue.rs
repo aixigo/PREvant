@@ -587,6 +587,7 @@ mod tests {
                     status: domain::app_instance::ServiceStatus::Paused,
                     blueprint_config: domain::blueprint_service!("nginx"),
                     service_type: domain::app_instance::ContainerType::Instance,
+                    health: None,
                 }],
                 HashSet::new(),
                 None,
