@@ -301,16 +301,19 @@ impl AppPostgresRepository {
 
         let tasks = sqlx::query_as::<_, (sqlx::types::Uuid, sqlx::types::Json<AppTask>)>(
             r#"
-            WITH eligible_tasks AS (
+            WITH oldest_unlocked_app AS (
+                SELECT app_name
+                FROM app_task
+                WHERE status = 'queued'
+                ORDER BY created_at
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            ),
+            eligible_tasks AS (
                 SELECT id, task
                 FROM app_task
                 WHERE status = 'queued'
-                AND app_name = (
-                    SELECT app_name
-                    FROM app_task
-                    WHERE created_at = (SELECT min(created_at) FROM app_task WHERE status = 'queued')
-                    AND status = 'queued'
-                )
+                AND app_name = (SELECT app_name FROM oldest_unlocked_app)
                 ORDER BY created_at
                 FOR UPDATE SKIP LOCKED
             )
@@ -318,7 +321,7 @@ impl AppPostgresRepository {
             SET status = 'running'
             FROM eligible_tasks
             WHERE app_task.id = eligible_tasks.id
-            RETURNING eligible_tasks .id, eligible_tasks.task;
+            RETURNING eligible_tasks.id, eligible_tasks.task;
             "#,
         )
         .fetch_all(&mut *tx)
@@ -572,7 +575,13 @@ impl From<RawService> for Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::DatabasePool, models::AppName, sc};
+    use crate::{
+        db::DatabasePool,
+        deployment::{deployment_unit::DeploymentTemplatingError, hooks::HooksError},
+        models::AppName,
+        registry::RegistryError,
+        sc,
+    };
     use sqlx::postgres::PgConnectOptions;
     use std::{str::FromStr, time::Duration};
     use testcontainers_modules::{
@@ -599,7 +608,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enqueue_and_execute_successfully() {
+    #[rstest::rstest]
+    #[case(Ok(App::new(
+        vec![Service {
+            id: String::from("nginx-1234"),
+                state: State {
+                    status: ServiceStatus::Paused,
+                    started_at: None,
+                },
+                config: sc!("nginx").with_port(0),
+        }],
+        HashSet::new(),
+        None,
+        None,
+    )))]
+    #[case(Ok(App::new(
+        vec![Service {
+            id: String::from("nginx-1234"),
+                state: State {
+                    status: ServiceStatus::Paused,
+                    started_at: None,
+                },
+                config: sc!("nginx").with_port(0),
+        }],
+        HashSet::new(),
+        UserDefinedParameters::new(
+            serde_json::json!("v0"),
+            &jsonschema::Validator::new(&serde_json::json!({"type": "string"})).unwrap(),
+        )
+        .ok(),
+        None,
+    )))]
+    #[case(Err(AppsError::AppNotFound { app_name: AppName::master() }))]
+    #[case(Err(AppsError::AppLimitExceeded { limit: 10 }))]
+    #[case(Err(AppsError::BaseRouteNotMergeable { error: String::from("error") }))]
+    #[case(Err(AppsError::InfrastructureError { error: String::from("error") }))]
+    #[case(Err(AppsError::InvalidServerConfiguration { error: String::from("error") }))]
+    #[case(Err(AppsError::TemplatingIssue {
+        error: DeploymentTemplatingError::TemplateRenderingError { err: String::from("error") }
+    }))]
+    #[case(Err(AppsError::UnableToResolveImage {
+        error: RegistryError::ImageNotFound { image: String::from("nginx") }
+    }))]
+    #[case(Err(AppsError::UnapplicableHook {
+        err: HooksError::Unexpected { err: String::from("error") }
+    }))]
+    #[case(Err(AppsError::InvalidUserDefinedParameters { err: String::from("error") }))]
+    async fn enqueue_and_execute_successfully(#[case] task_result: Result<App, AppsError>) {
         let (_postgres_instance, repository) = create_repository().await;
 
         let status_id = AppStatusChangeId::new();
@@ -611,31 +666,16 @@ mod tests {
             .await
             .unwrap();
 
+        let task_result_clone = task_result.clone();
         repository
             .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                let merged = AppTask::merge_tasks(tasks);
-                (
-                    merged,
-                    Ok(App::new(
-                        vec![Service {
-                            id: String::from("nginx-1234"),
-                            state: State {
-                                status: ServiceStatus::Paused,
-                                started_at: None,
-                            },
-                            config: sc!("nginx"),
-                        }],
-                        HashSet::new(),
-                        None,
-                        None,
-                    )),
-                )
+                (AppTask::merge_tasks(tasks), task_result_clone)
             })
             .await
             .unwrap();
 
         let result = repository.peek_result(&status_id).await;
-        assert!(matches!(result, Some(Ok(_))));
+        assert_eq!(result, Some(task_result));
 
         let cleaned = repository.clean_up_done_tasks(Utc::now()).await.unwrap();
         assert_eq!(cleaned, 1);
@@ -931,26 +971,24 @@ mod tests {
         let spawned_repository = AppPostgresRepository {
             pool: repository.pool.clone(),
         };
+        let result_1 = Ok(App::new(
+            vec![Service {
+                id: String::from("httpd-1234"),
+                state: State {
+                    status: ServiceStatus::Paused,
+                    started_at: None,
+                },
+                config: sc!("httpd").with_port(0),
+            }],
+            HashSet::new(),
+            None,
+            None,
+        ));
+        let result_1_clone = result_1.clone();
         let spawn_handle_1 = tokio::spawn(async move {
             spawned_repository
                 .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                    let merged = AppTask::merge_tasks(tasks);
-                    (
-                        merged,
-                        Ok(App::new(
-                            vec![Service {
-                                id: String::from("nginx-1234"),
-                                state: State {
-                                    status: ServiceStatus::Paused,
-                                    started_at: None,
-                                },
-                                config: sc!("nginx"),
-                            }],
-                            HashSet::new(),
-                            None,
-                            None,
-                        )),
-                    )
+                    (AppTask::merge_tasks(tasks), result_1_clone)
                 })
                 .await
                 .unwrap();
@@ -959,40 +997,37 @@ mod tests {
         let spawned_repository = AppPostgresRepository {
             pool: repository.pool.clone(),
         };
+        let result_2 = Ok(App::new(
+            vec![Service {
+                id: String::from("nginx-1234"),
+                state: State {
+                    status: ServiceStatus::Paused,
+                    started_at: None,
+                },
+                config: sc!("nginx").with_port(0),
+            }],
+            HashSet::new(),
+            None,
+            None,
+        ));
+        let result_2_clone = result_2.clone();
         let spawn_handle_2 = tokio::spawn(async move {
             spawned_repository
                 .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                    let merged = AppTask::merge_tasks(tasks);
-                    (
-                        merged,
-                        Ok(App::new(
-                            vec![Service {
-                                id: String::from("nginx-1234"),
-                                state: State {
-                                    status: ServiceStatus::Paused,
-                                    started_at: None,
-                                },
-                                config: sc!("nginx"),
-                            }],
-                            HashSet::new(),
-                            None,
-                            None,
-                        )),
-                    )
+                    (AppTask::merge_tasks(tasks), result_2_clone)
                 })
                 .await
                 .unwrap();
         });
 
-        let result_1 = spawn_handle_1.await;
-        assert!(result_1.is_ok());
-        let result_2 = spawn_handle_2.await;
-        assert!(result_2.is_ok());
+        let (wait_result_1, wait_result_2) = tokio::join!(spawn_handle_1, spawn_handle_2);
+        assert!(wait_result_1.is_ok());
+        assert!(wait_result_2.is_ok());
 
         let result_from_master = repository.peek_result(&status_id_1).await;
-        assert!(matches!(result_from_master, Some(Ok(_))));
+        assert_eq!(result_from_master, Some(result_1));
         let result = repository.peek_result(&status_id_2).await;
-        assert!(matches!(result, Some(Ok(_))));
+        assert_eq!(result, Some(result_2));
         let result = repository.peek_result(&status_id_3).await;
         assert_eq!(result, result_from_master);
     }
