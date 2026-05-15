@@ -1,19 +1,31 @@
 use super::{
     infrastructure::KubernetesInfrastructureError,
-    payloads::{
-        convert_k8s_ingress_to_traefik_ingress, IngressRoute as TraefikIngressRoute,
-        Middleware as TraefikMiddleware,
-    },
+    payloads::{convert_k8s_ingress_to_traefik_ingress, kubernetes_deployement_to_service_config},
+    traefik_crds::{IngressRoute as TraefikIngressRoute, Middleware as TraefikMiddleware},
 };
 use crate::{
     config::BootstrappingContainer,
-    infrastructure::{APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL},
+    infrastructure::{
+        APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL,
+        kubernetes::payloads::{
+            convert_k8s_traefik_crds_to_domain_traefik_routes, ingress_route_payload,
+            ingress_route_payload_base, middleware_payload,
+        },
+    },
 };
 use anyhow::Result;
-use domain::{app_deployment::DeploymentUnit, app_instance::ContainerType, AppName, Image};
+use domain::{
+    AppName, Image,
+    app_deployment::{
+        ApplicationCompanion, BootstrappedCompanions, MergeRawElementsContext,
+        RawInfrastructureElement,
+    },
+    app_instance::ContainerType,
+};
 use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt, TryStreamExt};
 use handlebars::RenderError;
 use k8s_openapi::{
+    DeepMerge, Metadata, Resource,
     api::{
         apps::v1::{Deployment, StatefulSet},
         batch::v1::Job,
@@ -25,18 +37,16 @@ use k8s_openapi::{
         rbac::v1::{Role, RoleBinding},
     },
     apimachinery::pkg::apis::meta::v1::LabelSelector,
-    DeepMerge, Metadata, Resource,
 };
 use kube::{
+    Api, Client, ResourceExt,
     api::{LogParams, Patch, PatchParams, PostParams, WatchParams},
     core::{DynamicObject, ObjectMeta, WatchEvent},
-    Api, Client, ResourceExt,
 };
 use log::{debug, error, trace, warn};
 use serde::Deserialize;
 use std::{
-    borrow::Borrow,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
 };
 
@@ -307,6 +317,11 @@ macro_rules! parse_from_dynamic_object {
 macro_rules! empty_read_only_fields {
     ($field:expr) => {
         for meta in $field.iter_mut().map(|manifest| &mut manifest.metadata) {
+            meta.annotations = meta.annotations.take().map(|mut annotations| {
+                annotations.remove(&String::from("deployment.kubernetes.io/revision"));
+                annotations
+            });
+            meta.managed_fields = None;
             meta.creation_timestamp = None;
             meta.deletion_grace_period_seconds = None;
             meta.deletion_timestamp = None;
@@ -334,6 +349,64 @@ macro_rules! empty_read_only_fields {
 }
 
 impl K8sDeploymentUnit {
+    fn sorted(self) -> Self {
+        let Self {
+            mut roles,
+            mut role_bindings,
+            mut stateful_sets,
+            mut config_maps,
+            mut secrets,
+            mut pvcs,
+            mut services,
+            mut pods,
+            mut deployments,
+            mut jobs,
+            mut service_accounts,
+            mut policies,
+            mut traefik_ingresses,
+            mut traefik_middlewares,
+        } = self;
+
+        fn sort_by<T>(a: &T, b: &T) -> std::cmp::Ordering
+        where
+            T: kube::Resource,
+        {
+            a.meta().name.as_deref().cmp(&b.meta().name.as_deref())
+        }
+
+        roles.sort_by(sort_by);
+        role_bindings.sort_by(sort_by);
+        stateful_sets.sort_by(sort_by);
+        config_maps.sort_by(sort_by);
+        secrets.sort_by(sort_by);
+        pvcs.sort_by(sort_by);
+        services.sort_by(sort_by);
+        pods.sort_by(sort_by);
+        deployments.sort_by(sort_by);
+        jobs.sort_by(sort_by);
+        service_accounts.sort_by(sort_by);
+        policies.sort_by(sort_by);
+        traefik_ingresses.sort_by(sort_by);
+        traefik_middlewares.sort_by(sort_by);
+
+        Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        }
+    }
+
     async fn start_bootstrapping_pods(
         app_name: &AppName,
         client: Client,
@@ -495,16 +568,14 @@ impl K8sDeploymentUnit {
     }
 
     pub(super) async fn bootstrap(
-        deployment_unit: &DeploymentUnit,
         client: Client,
+        app_name: &AppName,
         bootstrapping_container: &[BootstrappingContainer],
         image_pull_secret: Option<Secret>,
     ) -> Result<Self> {
         if bootstrapping_container.is_empty() {
             return Ok(Default::default());
         }
-
-        let app_name = &deployment_unit.app_name;
 
         let (bootstrapping_pod_name, mut log_streams) = Self::start_bootstrapping_pods(
             app_name,
@@ -514,7 +585,7 @@ impl K8sDeploymentUnit {
         )
         .await?;
 
-        let result = Self::parse_from_log_streams(deployment_unit, &mut log_streams).await;
+        let result = Self::parse_from_log_streams(app_name, &mut log_streams).await;
 
         let pod_api: Api<Pod> = Api::namespaced(client, &app_name.to_rfc1123_namespace_id());
         pod_api
@@ -524,8 +595,8 @@ impl K8sDeploymentUnit {
         result
     }
 
-    async fn parse_from_log_streams<L>(
-        deployment_unit: &DeploymentUnit,
+    pub(super) async fn parse_from_log_streams<L>(
+        app_name: &AppName,
         log_streams: L,
     ) -> Result<Self>
     where
@@ -533,7 +604,6 @@ impl K8sDeploymentUnit {
         <L as IntoIterator>::Item: AsyncBufReadExt,
         <L as IntoIterator>::Item: Unpin,
     {
-        let app_name = &deployment_unit.app_name;
         let mut roles = Vec::new();
         let mut role_bindings = Vec::new();
         let mut stateful_sets = Vec::new();
@@ -620,15 +690,13 @@ impl K8sDeploymentUnit {
 
         for ingress in ingresses {
             let (route, middlewares) = match convert_k8s_ingress_to_traefik_ingress(
-                ingress,
-                deployment_unit.route.clone(),
-                &services,
+                ingress, &services,
             ) {
                 Ok((route, middlewares)) => (route, middlewares),
-                Err((ingress, err)) => {
+                Err(err) => {
                     warn!(
                         "Cannot convert K8s ingress to Traefik ingress and middlewares for {app_name}: {err} ({})",
-                        serde_json::to_string(&ingress).unwrap()
+                        serde_json::to_string(err.ingress()).unwrap()
                     );
                     continue;
                 }
@@ -638,7 +706,7 @@ impl K8sDeploymentUnit {
             traefik_middlewares.extend(middlewares);
         }
 
-        Ok(Self {
+        Ok(Self::sorted(Self {
             roles,
             role_bindings,
             stateful_sets,
@@ -653,7 +721,44 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
-        })
+        }))
+    }
+
+    pub fn update_with_merge_context(mut self, context: MergeRawElementsContext<'_>) -> Self {
+        let routes = convert_k8s_traefik_crds_to_domain_traefik_routes(
+            std::mem::take(&mut self.traefik_ingresses),
+            std::mem::take(&mut self.traefik_middlewares),
+        );
+
+        for (original_name, route, services) in routes.into_iter() {
+            let mut traefik_ingress = context.base_route.clone();
+            traefik_ingress.merge_with(route).unwrap();
+
+            let mut traefik_k8s_ingress =
+                if let Some(service_config_context) = &context.service_config_context {
+                    let blueprint_service = service_config_context.blueprint_config_after;
+
+                    ingress_route_payload(
+                        context.app_name,
+                        blueprint_service,
+                        &traefik_ingress,
+                        &service_config_context.service_type,
+                        None,
+                    )
+                } else {
+                    ingress_route_payload_base(context.app_name, &traefik_ingress)
+                };
+
+            traefik_k8s_ingress.metadata.name = Some(original_name);
+            traefik_k8s_ingress.spec.routes.as_mut().unwrap()[0].services = services;
+
+            self.traefik_ingresses.push(traefik_k8s_ingress);
+
+            self.traefik_middlewares
+                .extend(middleware_payload(context.app_name, &traefik_ingress));
+        }
+
+        self
     }
 
     pub(super) fn merge(
@@ -750,36 +855,6 @@ impl K8sDeploymentUnit {
                 self.traefik_middlewares.extend(middlewares);
             }
         }
-    }
-
-    /// This filters bootstrapped [Deployments](Deployment), [Stateful Sets](StatefulSet), or
-    /// [Pods](Pod) by the existing [services](Service) in already deployed application to avoid
-    /// that deployments of instances overwrite each other
-    pub(super) fn filter_by_instances_and_replicas<S>(&mut self, services: S)
-    where
-        S: Iterator,
-        <S as Iterator>::Item: Borrow<domain::app_instance::Service>,
-    {
-        let service_not_to_be_retained = services
-            .filter(|s| {
-                s.borrow().service_type == ContainerType::Instance
-                    || s.borrow().service_type == ContainerType::Replica
-            })
-            .map(|s| s.borrow().service_name().clone())
-            .collect::<HashSet<_>>();
-
-        self.deployments.retain(|deployment| {
-            let Some(service_name) = deployment
-                .metadata
-                .labels
-                .as_ref()
-                .and_then(|labels| labels.get(SERVICE_NAME_LABEL))
-            else {
-                return false;
-            };
-
-            !service_not_to_be_retained.contains(service_name)
-        });
     }
 
     fn images_of_pod_spec(spec: &PodSpec) -> HashSet<Image> {
@@ -959,7 +1034,7 @@ impl K8sDeploymentUnit {
         let api = Api::<NetworkPolicy>::namespaced(api.into_client(), &namespace);
         policies.extend(api.list(&Default::default()).await?.items);
 
-        Ok(Self {
+        Ok(Self::sorted(Self {
             roles,
             role_bindings,
             stateful_sets,
@@ -974,7 +1049,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
-        })
+        }))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -999,60 +1074,94 @@ impl K8sDeploymentUnit {
         client: Client,
         app_name: &AppName,
     ) -> Result<Vec<Deployment>> {
-        let mut deployments = Vec::with_capacity(self.deployments.len());
+        let Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        } = self;
 
-        for role in self.roles {
+        let mut deployed_deployments = Vec::with_capacity(deployments.len());
+
+        for role in roles {
             create_or_patch(client.clone(), app_name, role).await?;
         }
-        for role_binding in self.role_bindings {
+        for role_binding in role_bindings {
             create_or_patch(client.clone(), app_name, role_binding).await?;
         }
-        for config_map in self.config_maps {
+        for config_map in config_maps {
             create_or_patch(client.clone(), app_name, config_map).await?;
         }
-        for secret in self.secrets {
+        for secret in secrets {
             create_or_patch(client.clone(), app_name, secret).await?;
         }
-        for pvc in self.pvcs {
+        for pvc in pvcs {
             create_or_patch(client.clone(), app_name, pvc).await?;
         }
-        for service in self.services {
+        for service in services {
             create_or_patch(client.clone(), app_name, service).await?;
         }
-        for service_account in self.service_accounts {
+        for service_account in service_accounts {
             create_or_patch(client.clone(), app_name, service_account).await?;
         }
-        for policy in self.policies {
+        for policy in policies {
             create_or_patch(client.clone(), app_name, policy).await?;
         }
-        for deployment in self.deployments {
+        for deployment in deployments {
             let deployment = create_or_patch(client.clone(), app_name, deployment).await?;
-            deployments.push(deployment);
+            deployed_deployments.push(deployment);
         }
-        for job in self.jobs {
+        for job in jobs {
             create_or_patch(client.clone(), app_name, job).await?;
         }
-        for stateful_set in self.stateful_sets {
+        for stateful_set in stateful_sets {
             create_or_patch(client.clone(), app_name, stateful_set).await?;
         }
-        for ingress in self.traefik_ingresses {
+        for ingress in traefik_ingresses {
             create_or_patch(client.clone(), app_name, ingress).await?;
         }
-        for middleware in self.traefik_middlewares {
+        for middleware in traefik_middlewares {
             create_or_patch(client.clone(), app_name, middleware).await?;
         }
-        for pod in self.pods {
+        for pod in pods {
             create_or_patch(client.clone(), app_name, pod).await?;
         }
 
-        Ok(deployments)
+        Ok(deployed_deployments)
     }
 
     pub(super) async fn delete(self, client: Client, app_name: &AppName) -> Result<()> {
+        let Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        } = self;
+
         let namespace = app_name.to_rfc1123_namespace_id();
 
         let api = Api::<Role>::namespaced(client, &namespace);
-        for role in self.roles {
+        for role in roles {
             api.delete(
                 role.metadata().name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1061,7 +1170,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<RoleBinding>::namespaced(api.into_client(), &namespace);
-        for role_binding in self.role_bindings {
+        for role_binding in role_bindings {
             api.delete(
                 role_binding.metadata().name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1070,7 +1179,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<ConfigMap>::namespaced(api.into_client(), &namespace);
-        for config_map in self.config_maps {
+        for config_map in config_maps {
             api.delete(
                 config_map.metadata().name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1079,7 +1188,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<Secret>::namespaced(api.into_client(), &namespace);
-        for secret in self.secrets {
+        for secret in secrets {
             api.delete(
                 secret.metadata().name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1088,7 +1197,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<PersistentVolumeClaim>::namespaced(api.into_client(), &namespace);
-        for pvc in self.pvcs {
+        for pvc in pvcs {
             api.delete(
                 pvc.metadata().name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1097,7 +1206,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<Service>::namespaced(api.into_client(), &namespace);
-        for service in self.services {
+        for service in services {
             api.delete(
                 service.metadata().name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1106,7 +1215,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<ServiceAccount>::namespaced(api.into_client(), &namespace);
-        for service_account in self.service_accounts {
+        for service_account in service_accounts {
             api.delete(
                 service_account
                     .metadata()
@@ -1119,7 +1228,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<NetworkPolicy>::namespaced(api.into_client(), &namespace);
-        for policy in self.policies {
+        for policy in policies {
             api.delete(
                 policy.metadata().name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1128,7 +1237,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<Deployment>::namespaced(api.into_client(), &namespace);
-        for deployment in self.deployments {
+        for deployment in deployments {
             api.delete(
                 deployment.metadata().name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1137,7 +1246,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<Job>::namespaced(api.into_client(), &namespace);
-        for job in self.jobs {
+        for job in jobs {
             api.delete(
                 job.metadata().name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1146,7 +1255,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<StatefulSet>::namespaced(api.into_client(), &namespace);
-        for stateful_set in self.stateful_sets {
+        for stateful_set in stateful_sets {
             api.delete(
                 stateful_set.metadata.name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1155,7 +1264,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<TraefikIngressRoute>::namespaced(api.into_client(), &namespace);
-        for ingress in self.traefik_ingresses {
+        for ingress in traefik_ingresses {
             api.delete(
                 ingress.metadata.name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1164,7 +1273,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<TraefikMiddleware>::namespaced(api.into_client(), &namespace);
-        for middleware in self.traefik_middlewares {
+        for middleware in traefik_middlewares {
             api.delete(
                 middleware.metadata.name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1173,7 +1282,7 @@ impl K8sDeploymentUnit {
         }
 
         let api = Api::<Pod>::namespaced(api.into_client(), &namespace);
-        for pod in self.pods {
+        for pod in pods {
             api.delete(
                 pod.metadata.name.as_deref().unwrap_or_default(),
                 &Default::default(),
@@ -1184,34 +1293,94 @@ impl K8sDeploymentUnit {
         Ok(())
     }
 
+    pub(super) fn without_managed_data(self) -> Self {
+        let K8sDeploymentUnit {
+            mut roles,
+            mut role_bindings,
+            mut stateful_sets,
+            mut config_maps,
+            mut secrets,
+            mut pvcs,
+            mut services,
+            mut pods,
+            mut deployments,
+            mut jobs,
+            mut service_accounts,
+            mut policies,
+            mut traefik_ingresses,
+            mut traefik_middlewares,
+        } = self;
+
+        // Keep only the pods that aren't created by a deployment
+        pods.retain(|pod| {
+            deployments.iter().any(|deployment| {
+                let Some(spec) = deployment.spec.as_ref() else {
+                    return false;
+                };
+
+                matches(&spec.selector, pod)
+            })
+        });
+
+        empty_read_only_fields!(roles);
+        empty_read_only_fields!(role_bindings);
+
+        empty_read_only_fields!(stateful_sets, status);
+
+        empty_read_only_fields!(config_maps);
+        empty_read_only_fields!(secrets);
+        empty_read_only_fields!(pvcs);
+
+        empty_read_only_fields!(services,
+            status (spec => cluster_ip, cluster_ips)
+        );
+        empty_read_only_fields!(pods, status);
+        empty_read_only_fields!(deployments, status);
+
+        // TODO: double check if this should be removed. We must ensure that the back-up & restore
+        // feature sets this again.
+        for metadata in deployments
+            .iter_mut()
+            .flat_map(|d| d.spec.as_mut())
+            .map(|d| &mut d.template)
+            .flat_map(|p| p.metadata.as_mut())
+        {
+            metadata.annotations = metadata.annotations.take().map(|mut annotations| {
+                annotations.remove(&String::from("date"));
+                annotations
+            });
+        }
+
+        empty_read_only_fields!(jobs);
+
+        empty_read_only_fields!(service_accounts);
+        empty_read_only_fields!(policies);
+        empty_read_only_fields!(traefik_middlewares);
+        empty_read_only_fields!(traefik_ingresses);
+
+        Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        }
+    }
+
     /// Clears out any Kubernetes object that shouldn't be put into the backup. For example,
     /// [persistent volumes](https://kubernetes.io/docs/concepts/storage/persistent-volumes/) are
     /// removed from `self` and then `self` can be deleted from the infrastructure with
     /// [`Self::delete`].
     pub(super) fn prepare_for_back_up(mut self) -> Self {
-        // Keep only the pods that aren't created by a deployment
-        self.pods.retain(|pod| {
-            self.deployments.iter().any(|deployment| {
-                let Some(spec) = deployment.spec.as_ref() else {
-                    return false;
-                };
-                let Some(matches_labels) = spec.selector.match_labels.as_ref() else {
-                    return false;
-                };
-
-                pod.metadata
-                    .labels
-                    .as_ref()
-                    .map(|labels| labels.iter().all(|(k, v)| matches_labels.get(k) == Some(v)))
-                    .unwrap_or(false)
-            })
-        });
-
-        empty_read_only_fields!(self.roles);
-        empty_read_only_fields!(self.role_bindings);
-
-        empty_read_only_fields!(self.stateful_sets, status);
-
         // Clear the volume mounts and keep them on the Kubernetes infrastructure because they
         // might contain data that a tester of the application crafted for a long time and this
         // should be preserved.
@@ -1219,23 +1388,12 @@ impl K8sDeploymentUnit {
         self.secrets.clear();
         self.pvcs.clear();
 
-        empty_read_only_fields!(self.services,
-            status (spec => cluster_ip, cluster_ips)
-        );
-        empty_read_only_fields!(self.pods, status);
-        empty_read_only_fields!(self.deployments, status);
-
         // The jobs won't be contained in the back-up because “Jobs represent one-off tasks that
         // run to completion and then stop.” If they are part of the back-up they would restart and
         // try to the same thing again which might be already done.
         self.jobs.clear();
 
-        empty_read_only_fields!(self.service_accounts);
-        empty_read_only_fields!(self.policies);
-        empty_read_only_fields!(self.traefik_middlewares);
-        empty_read_only_fields!(self.traefik_ingresses);
-
-        self
+        self.without_managed_data()
     }
 
     pub fn parse_from_json<'a, I>(app_name: &AppName, payload: I) -> Result<Self>
@@ -1299,7 +1457,7 @@ impl K8sDeploymentUnit {
             }
         }
 
-        Ok(Self {
+        Ok(Self::sorted(Self {
             roles,
             role_bindings,
             stateful_sets,
@@ -1314,67 +1472,280 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
-        })
+        }))
     }
 
     pub fn to_json_vec(&self) -> Vec<serde_json::Value> {
+        let Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        } = &self;
+
         let mut json = Vec::with_capacity(
-            self.roles.len()
-                + self.config_maps.len()
-                + self.secrets.len()
-                + self.pvcs.len()
-                + self.services.len()
-                + self.service_accounts.len()
-                + self.policies.len()
-                + self.deployments.len()
-                + self.jobs.len()
-                + self.stateful_sets.len()
-                + self.traefik_ingresses.len()
-                + self.traefik_middlewares.len()
-                + self.pods.len(),
+            roles.len()
+                + config_maps.len()
+                + secrets.len()
+                + pvcs.len()
+                + services.len()
+                + service_accounts.len()
+                + policies.len()
+                + deployments.len()
+                + jobs.len()
+                + stateful_sets.len()
+                + traefik_ingresses.len()
+                + traefik_middlewares.len()
+                + pods.len(),
         );
 
-        for role in self.roles.iter() {
+        for role in roles.iter() {
             json.push(serde_json::to_value(role).unwrap());
         }
-        for config_map in self.config_maps.iter() {
+        for role_binding in role_bindings.iter() {
+            json.push(serde_json::to_value(role_binding).unwrap());
+        }
+        for config_map in config_maps.iter() {
             json.push(serde_json::to_value(config_map).unwrap());
         }
-        for secret in self.secrets.iter() {
+        for secret in secrets.iter() {
             json.push(serde_json::to_value(secret).unwrap());
         }
-        for pvc in self.pvcs.iter() {
+        for pvc in pvcs.iter() {
             json.push(serde_json::to_value(pvc).unwrap());
         }
-        for service in self.services.iter() {
+        for service in services.iter() {
             json.push(serde_json::to_value(service).unwrap());
         }
-        for service_account in self.service_accounts.iter() {
+        for service_account in service_accounts.iter() {
             json.push(serde_json::to_value(service_account).unwrap());
         }
-        for policy in self.policies.iter() {
+        for policy in policies.iter() {
             json.push(serde_json::to_value(policy).unwrap());
         }
-        for deployment in self.deployments.iter() {
+        for deployment in deployments.iter() {
             json.push(serde_json::to_value(deployment).unwrap());
         }
-        for job in self.jobs.iter() {
+        for job in jobs.iter() {
             json.push(serde_json::to_value(job).unwrap());
         }
-        for stateful_set in self.stateful_sets.iter() {
+        for stateful_set in stateful_sets.iter() {
             json.push(serde_json::to_value(stateful_set).unwrap());
         }
-        for ingress in self.traefik_ingresses.iter() {
+        for ingress in traefik_ingresses.iter() {
             json.push(serde_json::to_value(ingress).unwrap());
         }
-        for middleware in self.traefik_middlewares.iter() {
+        for middleware in traefik_middlewares.iter() {
             json.push(serde_json::to_value(middleware).unwrap());
         }
-        for pod in self.pods.iter() {
+        for pod in pods.iter() {
             json.push(serde_json::to_value(pod).unwrap());
         }
 
         json
+    }
+}
+
+fn matches<T>(selector: &LabelSelector, obj: &T) -> bool
+where
+    T: kube::Resource,
+{
+    match (&selector.match_labels, &selector.match_expressions) {
+        (None, None) => false,
+        (None, Some(_)) => unimplemented!(),
+        (Some(ml), None) => obj
+            .meta()
+            .labels
+            .as_ref()
+            .map(|labels| matches_labels(ml, labels))
+            .unwrap_or(false),
+        (Some(_), Some(_)) => unimplemented!(),
+    }
+}
+
+fn matches_labels(
+    match_labels: &BTreeMap<String, String>,
+    labels: &BTreeMap<String, String>,
+) -> bool {
+    labels.iter().all(|(k, v)| match_labels.get(k) == Some(v))
+}
+
+impl TryFrom<K8sDeploymentUnit> for BootstrappedCompanions {
+    type Error = anyhow::Error;
+
+    fn try_from(value: K8sDeploymentUnit) -> std::result::Result<Self, Self::Error> {
+        let K8sDeploymentUnit {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            mut services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            mut traefik_ingresses,
+            mut traefik_middlewares,
+        } = value;
+
+        let mut service_by_deployement = HashMap::new();
+        let mut ingress_by_deployement = HashMap::<String, Vec<TraefikIngressRoute>>::new();
+        let mut middlewares_by_deployement = HashMap::<String, Vec<TraefikMiddleware>>::new();
+
+        for deployment in deployments.iter() {
+            let (services_of_deployment, remaining): (Vec<_>, Vec<_>) =
+                services.into_iter().partition(|service| {
+                    matches_labels(
+                        // TODO: unwrap()
+                        service.spec.as_ref().unwrap().selector.as_ref().unwrap(),
+                        deployment
+                            .spec
+                            .as_ref()
+                            .unwrap()
+                            .template
+                            .metadata
+                            .as_ref()
+                            .unwrap()
+                            .labels
+                            .as_ref()
+                            .unwrap(),
+                    )
+                });
+
+            service_by_deployement
+                .entry(deployment.metadata.name.as_ref().unwrap().clone())
+                .or_insert(services_of_deployment);
+
+            services = remaining;
+        }
+
+        for (deployment, services) in service_by_deployement.iter() {
+            for service in services {
+                let (ingresses_of_service, remaining): (Vec<_>, Vec<_>) =
+                    traefik_ingresses.into_iter().partition(|ingress| {
+                        for route in ingress.spec.routes.as_ref().iter().flat_map(|r| r.iter()) {
+                            for s in route.services.iter() {
+                                if Some(s.name.as_str()) == service.metadata.name.as_deref() {
+                                    return true;
+                                }
+                            }
+                        }
+                        false
+                    });
+
+                ingress_by_deployement
+                    .entry(deployment.clone())
+                    .and_modify(|e| e.extend(ingresses_of_service.clone()))
+                    .or_insert(ingresses_of_service);
+
+                traefik_ingresses = remaining;
+            }
+        }
+
+        for (deployment, ingresses) in ingress_by_deployement.iter() {
+            for ingress in ingresses.iter() {
+                let (middlewares_of_ingress, remaining): (Vec<_>, Vec<_>) =
+                    traefik_middlewares.into_iter().partition(|middleware| {
+                        for route in ingress.spec.routes.as_ref().iter().flat_map(|r| r.iter()) {
+                            for m in route.middlewares.as_ref().iter().flat_map(|m| m.iter()) {
+                                if Some(m.name.as_str()) == middleware.metadata.name.as_deref() {
+                                    return true;
+                                }
+                            }
+                        }
+                        false
+                    });
+
+                middlewares_by_deployement
+                    .entry(deployment.clone())
+                    .and_modify(|e| e.extend(middlewares_of_ingress.clone()))
+                    .or_insert(middlewares_of_ingress);
+
+                traefik_middlewares = remaining;
+            }
+        }
+
+        Ok(Self {
+            bootstrapped_companions: deployments
+                .into_iter()
+                .map(|deployment| {
+                    let mut elements = vec![RawInfrastructureElement::from(serde_json::to_value(
+                        &deployment,
+                    )?)];
+
+                    elements.extend(
+                        service_by_deployement
+                            .remove(deployment.metadata.name.as_ref().unwrap().as_str())
+                            .into_iter()
+                            .flat_map(|i| i.into_iter())
+                            .map(|i| {
+                                RawInfrastructureElement::from(serde_json::to_value(i).unwrap())
+                            }),
+                    );
+                    elements.extend(
+                        ingress_by_deployement
+                            .remove(deployment.metadata.name.as_ref().unwrap().as_str())
+                            .into_iter()
+                            .flat_map(|i| i.into_iter())
+                            .map(|i| {
+                                RawInfrastructureElement::from(serde_json::to_value(i).unwrap())
+                            }),
+                    );
+                    elements.extend(
+                        middlewares_by_deployement
+                            .remove(deployment.metadata.name.as_ref().unwrap().as_str())
+                            .into_iter()
+                            .flat_map(|i| i.into_iter())
+                            .map(|i| {
+                                RawInfrastructureElement::from(serde_json::to_value(i).unwrap())
+                            }),
+                    );
+
+                    Ok(ApplicationCompanion::bootstrapped(
+                        kubernetes_deployement_to_service_config(&deployment)?,
+                        elements,
+                    ))
+                })
+                .collect::<Result<Vec<ApplicationCompanion>>>()?,
+            bootstrapped_companion_elements: roles
+                .into_iter()
+                .map(serde_json::to_value)
+                .chain(role_bindings.into_iter().map(serde_json::to_value))
+                // TODO: compare with merge logic…
+                .chain(stateful_sets.into_iter().map(serde_json::to_value))
+                .chain(config_maps.into_iter().map(serde_json::to_value))
+                .chain(secrets.into_iter().map(serde_json::to_value))
+                .chain(pvcs.into_iter().map(serde_json::to_value))
+                .chain(services.into_iter().map(serde_json::to_value))
+                .chain(pods.into_iter().map(serde_json::to_value))
+                .chain(jobs.into_iter().map(serde_json::to_value))
+                .chain(service_accounts.into_iter().map(serde_json::to_value))
+                .chain(policies.into_iter().map(serde_json::to_value))
+                .chain(traefik_ingresses.into_iter().map(serde_json::to_value))
+                .chain(traefik_middlewares.into_iter().map(serde_json::to_value))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Should not happen when serializing Kubernetes objects as JSON: {e}"
+                    )
+                })?
+                .into_iter()
+                .map(RawInfrastructureElement::from)
+                .collect::<Vec<_>>(),
+        })
     }
 }
 
@@ -1423,8 +1794,6 @@ where
 mod tests {
     use super::*;
     use assert_json_diff::assert_json_include;
-    use chrono::Utc;
-    use domain::app_deployment::AppDeploymentBuilder;
     use k8s_openapi::api::{
         apps::v1::DeploymentSpec,
         core::v1::{ContainerPort, EnvVar, PodTemplateSpec},
@@ -1433,11 +1802,7 @@ mod tests {
     async fn parse_unit_from_log_stream(stdout: &'static str) -> K8sDeploymentUnit {
         let log_streams = vec![stdout.as_bytes()];
 
-        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), Vec::new(), None)
-            .finish()
-            .unwrap();
-
-        K8sDeploymentUnit::parse_from_log_streams(&deployment_unit, log_streams)
+        K8sDeploymentUnit::parse_from_log_streams(&AppName::master(), log_streams)
             .await
             .unwrap()
     }
@@ -1670,130 +2035,57 @@ mod tests {
                 "apiVersion": "apps/v1",
                 "kind": "Deployment",
                 "metadata": {
-                    "name": "nginx",
-                    "namespace": "master",
-                    "labels": {
-                        "app": "nginx",
-                        APP_NAME_LABEL: "master",
-                        SERVICE_NAME_LABEL: "nginx",
-                        CONTAINER_TYPE_LABEL: "instance"
-                    },
-                    "annotations": {
-                        "my-important-annotation": "test data"
-                    }
+                  "name": "nginx",
+                  "namespace": "master",
+                  "labels": {
+                    "app": "nginx",
+                    APP_NAME_LABEL: "master",
+                    SERVICE_NAME_LABEL: "nginx",
+                    CONTAINER_TYPE_LABEL: "instance"
+                  },
+                  "annotations": {
+                    "my-important-annotation": "test data"
+                  }
                 },
                 "spec": {
-                    "selector": {
-                        "matchLabels": {
-                            "app": "nginx"
-                        }
-                    },
-                    "template": {
-                        "metadata": {
-                            "labels": {
-                                "app": "nginx"
-                            },
-                            "annotations": {
-                                "date": "2024-01-01"
-                            }
-                        },
-                        "spec": {
-                            "containers": [{
-                                "name": "nginx",
-                                "image": "nginx:1.29.0",
-                                "env": [{
-                                    "name": "NGINX_HOST",
-                                    "value": "example.com"
-                                }],
-                                "ports": [{
-                                    "containerPort": 80
-                                }]
-                            }]
-                        }
+                  "selector": {
+                    "matchLabels": {
+                      "app": "nginx"
                     }
+                  },
+                  "template": {
+                    "metadata": {
+                      "labels": {
+                        "app": "nginx"
+                      },
+                      "annotations": {
+                        "date": "2024-01-01"
+                      }
+                    },
+                    "spec": {
+                      "containers": [
+                        {
+                          "name": "nginx",
+                          "image": "nginx:1.29.0",
+                          "env": [
+                            {
+                              "name": "NGINX_HOST",
+                              "value": "example.com"
+                            }
+                          ],
+                          "ports": [
+                            {
+                              "containerPort": 80
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  }
                 }
-            }])
+              }]
+            )
         )
-    }
-
-    #[tokio::test]
-    async fn filter_by_instances_and_replicas() {
-        let mut unit = parse_unit_from_log_stream(
-            r#"
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: nginx
-              labels:
-                app: nginx
-            spec:
-              selector:
-                matchLabels:
-                  app: nginx
-              template:
-                metadata:
-                  labels:
-                    app: nginx
-                spec:
-                  containers:
-                  - name: nginx
-                    image: nginx:1.14.2
-                    ports:
-                    - containerPort: 80
-                        "#,
-        )
-        .await;
-
-        unit.filter_by_instances_and_replicas(std::iter::once(domain::app_instance::Service {
-            id: String::from("test"),
-            blueprint_config: domain::blueprint_service!("nginx", "nginx:1.15"),
-            status: domain::app_instance::ServiceStatus::Running {
-                started_at: Utc::now(),
-            },
-            service_type: ContainerType::Instance,
-        }));
-
-        assert!(unit.deployments.is_empty());
-    }
-
-    #[tokio::test]
-    async fn filter_not_by_instances_and_replicas() {
-        let mut unit = parse_unit_from_log_stream(
-            r#"
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: nginx
-              labels:
-                app: nginx
-            spec:
-              selector:
-                matchLabels:
-                  app: nginx
-              template:
-                metadata:
-                  labels:
-                    app: nginx
-                spec:
-                  containers:
-                  - name: nginx
-                    image: nginx:1.14.2
-                    ports:
-                    - containerPort: 80
-                        "#,
-        )
-        .await;
-
-        unit.filter_by_instances_and_replicas(std::iter::once(domain::app_instance::Service {
-            id: String::from("test"),
-            blueprint_config: domain::blueprint_service!("postgres", "postgres"),
-            status: domain::app_instance::ServiceStatus::Running {
-                started_at: Utc::now(),
-            },
-            service_type: ContainerType::Instance,
-        }));
-
-        assert!(!unit.deployments.is_empty());
     }
 
     fn captured_example_from_k3s() -> Vec<serde_json::Value> {
@@ -2708,6 +3000,522 @@ spec:
             assert!(prepared_for_back_up.secrets.is_empty());
             assert!(prepared_for_back_up.config_maps.is_empty());
             assert!(prepared_for_back_up.pvcs.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn without_managed_data() -> Result<()> {
+        let unit = parse_unit_from_log_stream(
+            r#"
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: 2026-05-21T10:40:48Z
+  managedFields:
+  - apiVersion: v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:spec:
+        f:internalTrafficPolicy: {}
+        f:ports:
+          .: {}
+          k:{"port":2001,"protocol":"TCP"}:
+            .: {}
+            f:port: {}
+            f:protocol: {}
+            f:targetPort: {}
+        f:selector: {}
+        f:sessionAffinity: {}
+        f:type: {}
+    manager: unknown
+    operation: Update
+    time: 2026-05-21T10:40:48Z
+  name: whoami
+  namespace: master
+  resourceVersion: '677'
+  uid: fc7a5380-068c-49df-90ab-b44abbff5ce4
+spec:
+    clusterIP: 10.43.25.124
+    clusterIPs:
+    - 10.43.25.124
+    internalTrafficPolicy: Cluster
+    ipFamilies:
+    - IPv4
+    ipFamilyPolicy: SingleStack
+    ports:
+    - port: 2001
+      protocol: TCP
+      targetPort: 2001
+    selector:
+      app: whoami
+    sessionAffinity: None
+    type: ClusterIP
+status:
+    loadBalancer: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+    creationTimestamp: 2026-05-21T10:40:48Z
+    name: default
+    namespace: master
+    resourceVersion: '674'
+    uid: a0b510d4-2ab0-4e8e-b8b3-d3683fee25da
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    com.aixigo.preview.servant.image: docker.io/traefik/whoami:v1.11.0
+  labels:
+    com.aixigo.preview.servant.app-name: master
+    com.aixigo.preview.servant.container-type: instance
+    com.aixigo.preview.servant.service-name: whoami
+  name: whoami
+  namespace: master
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: whoami
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations: {}
+      labels:
+        app: whoami
+        com.aixigo.preview.servant.app-name: master
+        com.aixigo.preview.servant.container-type: instance
+        com.aixigo.preview.servant.service-name: whoami
+    spec:
+      containers:
+      - args:
+        - --port=2001
+        - --name=iamfoo
+        image: docker.io/traefik/whoami:v1.11.0
+        imagePullPolicy: Always
+        name: whoami
+        ports:
+        - containerPort: 2001
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    date: 2026-05-21T10:27:12.499685791+00:00
+  generateName: whoami-75d4df8d8f-
+  labels:
+    app: whoami
+    com.aixigo.preview.servant.app-name: master
+    com.aixigo.preview.servant.container-type: app-companion
+    com.aixigo.preview.servant.service-name: whoami
+    pod-template-hash: 75d4df8d8f
+  name: whoami-75d4df8d8f-tt42b
+  namespace: master
+  ownerReferences:
+  - apiVersion: apps/v1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ReplicaSet
+    name: whoami-75d4df8d8f
+    uid: f8e0aa53-7356-4c66-a11e-9e187ebedc81
+spec:
+  containers:
+  - args:
+    - --port=2001
+    - --name=iamfoo
+    image: docker.io/traefik/whoami:latest
+    imagePullPolicy: Always
+    name: whoami
+    ports:
+    - containerPort: 2001
+      protocol: TCP
+    resources: {}
+    terminationMessagePath: /dev/termination-log
+    terminationMessagePolicy: File
+    volumeMounts:
+    - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+      name: kube-api-access-n244h
+      readOnly: true
+  dnsPolicy: ClusterFirst
+  enableServiceLinks: true
+  nodeName: 2b84ea3dacd5
+  preemptionPolicy: PreemptLowerPriority
+  priority: 0
+  restartPolicy: Always
+  schedulerName: default-scheduler
+  securityContext: {}
+  serviceAccount: default
+  serviceAccountName: default
+  terminationGracePeriodSeconds: 30
+  tolerations:
+  - effect: NoExecute
+    key: node.kubernetes.io/not-ready
+    operator: Exists
+    tolerationSeconds: 300
+  - effect: NoExecute
+    key: node.kubernetes.io/unreachable
+    operator: Exists
+    tolerationSeconds: 300
+  volumes:
+  - name: kube-api-access-n244h
+    projected:
+      defaultMode: 420
+      sources:
+      - serviceAccountToken:
+          expirationSeconds: 3607
+          path: token
+      - configMap:
+          items:
+          - key: ca.crt
+            path: ca.crt
+          name: kube-root-ca.crt
+      - downwardAPI:
+          items:
+          - fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+            path: namespace"#,
+        )
+        .await;
+
+        assert_json_diff::assert_json_eq!(
+            unit.without_managed_data().to_json_vec(),
+            serde_json::json!([
+              {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {
+                  "labels": {
+                    "com.aixigo.preview.servant.app-name": "master"
+                  },
+                  "name": "whoami",
+                  "namespace": "master"
+                },
+                "spec": {
+                  "internalTrafficPolicy": "Cluster",
+                  "ipFamilies": [
+                    "IPv4"
+                  ],
+                  "ipFamilyPolicy": "SingleStack",
+                  "ports": [
+                    {
+                      "port": 2001,
+                      "protocol": "TCP",
+                      "targetPort": 2001
+                    }
+                  ],
+                  "selector": {
+                    "app": "whoami"
+                  },
+                  "sessionAffinity": "None",
+                  "type": "ClusterIP"
+                }
+              },
+              {
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "metadata": {
+                  "labels": {
+                    "com.aixigo.preview.servant.app-name": "master"
+                  },
+                  "name": "default",
+                  "namespace": "master"
+                }
+              },
+              {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {
+                  "annotations": {
+                    "com.aixigo.preview.servant.image": "docker.io/traefik/whoami:v1.11.0"
+                  },
+                  "labels": {
+                    "com.aixigo.preview.servant.app-name": "master",
+                    "com.aixigo.preview.servant.container-type": "instance",
+                    "com.aixigo.preview.servant.service-name": "whoami"
+                  },
+                  "name": "whoami",
+                  "namespace": "master"
+                },
+                "spec": {
+                  "progressDeadlineSeconds": 600,
+                  "replicas": 1,
+                  "revisionHistoryLimit": 10,
+                  "selector": {
+                    "matchLabels": {
+                      "app": "whoami"
+                    }
+                  },
+                  "strategy": {
+                    "rollingUpdate": {
+                      "maxSurge": "25%",
+                      "maxUnavailable": "25%"
+                    },
+                    "type": "RollingUpdate"
+                  },
+                  "template": {
+                    "metadata": {
+                      "annotations": {},
+                      "labels": {
+                        "app": "whoami",
+                        "com.aixigo.preview.servant.app-name": "master",
+                        "com.aixigo.preview.servant.container-type": "instance",
+                        "com.aixigo.preview.servant.service-name": "whoami"
+                      }
+                    },
+                    "spec": {
+                      "containers": [
+                        {
+                          "args": [
+                            "--port=2001",
+                            "--name=iamfoo"
+                          ],
+                          "image": "docker.io/traefik/whoami:v1.11.0",
+                          "imagePullPolicy": "Always",
+                          "name": "whoami",
+                          "ports": [
+                            {
+                              "containerPort": 2001,
+                              "protocol": "TCP"
+                            }
+                          ],
+                          "resources": {},
+                          "terminationMessagePath": "/dev/termination-log",
+                          "terminationMessagePolicy": "File"
+                        }
+                      ],
+                      "dnsPolicy": "ClusterFirst",
+                      "restartPolicy": "Always",
+                      "schedulerName": "default-scheduler",
+                      "securityContext": {},
+                      "terminationGracePeriodSeconds": 30
+                    }
+                  }
+                }
+              }
+            ])
+        );
+        Ok(())
+    }
+
+    mod update_with_merge_context {
+        use super::*;
+
+        #[tokio::test]
+        async fn merge_routes_that_do_not_map_to_any_blueprint_config() {
+            let unit = parse_unit_from_log_stream(
+                r#"apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: whoami
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: true
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /my-route
+        pathType: Prefix
+        backend:
+          service:
+            name: whoami
+            port:
+              number: 2001
+"#,
+            )
+            .await;
+
+            let payload = unit
+                .update_with_merge_context(MergeRawElementsContext {
+                    app_name: &AppName::master(),
+                    service_config_context: None,
+                    base_route: &domain::traefik::TraefikIngressRoute::with_rule_and_middlewares(
+                        domain::traefik::TraefikRouterRule::from_str(
+                            "Host(`example.com`) && PathPrefix(`/some-route/master/`)",
+                        )
+                        .unwrap(),
+                        vec![domain::traefik::TraefikMiddleware::with_prefix_strip(
+                            String::from("name"),
+                            [String::from("/some-route/master/")],
+                        )],
+                    ),
+                })
+                .to_json_vec();
+
+            assert_json_diff::assert_json_include!(
+                actual: payload,
+                expected: serde_json::json!([
+                    {
+                      "apiVersion": "traefik.containo.us/v1alpha1",
+                      "kind": "IngressRoute",
+                      "metadata": {
+                        "annotations": {
+                          "com.aixigo.preview.servant.app-name": "master",
+                          "traefik.ingress.kubernetes.io/router.entrypoints": "web"
+                        },
+                        "name": "whoami",
+                        "namespace": "master"
+                      },
+                      "spec": {
+                        "routes": [
+                          {
+                            "kind": "Rule",
+                            "match": "Host(`example.com`) && PathPrefix(`/some-route/master/my-route/`)",
+                            "middlewares": [
+                              {
+                                "name": "whoami-middleware"
+                              }
+                            ],
+                            "services": [
+                              {
+                                "kind": "Service",
+                                "name": "whoami",
+                                "port": 2001
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "apiVersion": "traefik.containo.us/v1alpha1",
+                      "kind": "Middleware",
+                      "metadata": {
+                        "name": "whoami-middleware",
+                      },
+                      "spec": {
+                        "stripPrefix": {
+                          "prefixes": [
+                            "/some-route/master/my-route/"
+                          ]
+                        }
+                      }
+                    }
+                ])
+            );
+        }
+
+        #[tokio::test]
+        async fn merge_routes_that_do_not_map_to_any_blueprint_config_without_path_prefixing() {
+            let unit = parse_unit_from_log_stream(
+                r#"apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: whoami
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /my-route
+        pathType: Prefix
+        backend:
+          service:
+            name: whoami
+            port:
+              number: 2001
+---
+r#"apiVersion: v1
+kind: Service
+metadata:
+  name: whoami
+spec:
+  selector:
+    app: whoami
+  ports:
+  - port: 2001
+    targetPort: 2001
+"#,
+            )
+            .await;
+
+            let payload = unit
+                .update_with_merge_context(MergeRawElementsContext {
+                    app_name: &AppName::master(),
+                    service_config_context: None,
+                    base_route: &domain::traefik::TraefikIngressRoute::with_rule_and_middlewares(
+                        domain::traefik::TraefikRouterRule::from_str(
+                            "Host(`example.com`) && PathPrefix(`/some-route/master/`)",
+                        )
+                        .unwrap(),
+                        vec![domain::traefik::TraefikMiddleware::with_prefix_strip(
+                            String::from("name"),
+                            [String::from("/some-route/master/")],
+                        )],
+                    ),
+                })
+                .to_json_vec();
+
+            assert_json_diff::assert_json_include!(
+                actual: payload,
+                expected: serde_json::json!([
+                    {
+                      "apiVersion": "traefik.containo.us/v1alpha1",
+                      "kind": "IngressRoute",
+                      "metadata": {
+                        "annotations": {
+                          "com.aixigo.preview.servant.app-name": "master",
+                          "traefik.ingress.kubernetes.io/router.entrypoints": "web"
+                        },
+                        "name": "whoami",
+                        "namespace": "master"
+                      },
+                      "spec": {
+                        "routes": [
+                          {
+                            "kind": "Rule",
+                            "match": "Host(`example.com`) && PathPrefix(`/some-route/master/my-route/`)",
+                            "middlewares": [
+                              {
+                                "name": "name"
+                              }
+                            ],
+                            "services": [
+                              {
+                                "kind": "Service",
+                                "name": "whoami",
+                                "port": 2001
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "apiVersion": "traefik.containo.us/v1alpha1",
+                      "kind": "Middleware",
+                      "metadata": {
+                        "name": "name",
+                        "namespace": "master"
+                      },
+                      "spec": {
+                        "stripPrefix": {
+                          "prefixes": [
+                            "/some-route/master/"
+                          ]
+                        }
+                      }
+                    }
+                ])
+            );
         }
     }
 }

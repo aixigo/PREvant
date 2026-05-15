@@ -49,8 +49,13 @@ pub enum TraefikIngressRouteMergeError {
         "Cannot merge {rule_1} with {rule_2} because there is currently no known way of implementing this merge logic."
     )]
     PathRegexpNotMergable {
-        rule_1: TraefikRouterRule,
-        rule_2: TraefikRouterRule,
+        rule_1: Box<TraefikRouterRule>,
+        rule_2: Box<TraefikRouterRule>,
+    },
+    #[error("Cannot merge {middleware_1:?} with {middleware_2:?}")]
+    MiddlewaresNotMergable {
+        middleware_1: Box<TraefikMiddleware>,
+        middleware_2: Box<TraefikMiddleware>,
     },
 }
 
@@ -67,6 +72,10 @@ impl TraefikIngressRoute {
         &self.tls
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entry_points.is_empty() && self.routes.is_empty() && self.tls.is_none()
+    }
+
     pub fn empty() -> Self {
         Self {
             entry_points: Vec::new(),
@@ -76,26 +85,16 @@ impl TraefikIngressRoute {
     }
 
     pub fn with_app_only_defaults(app_name: &AppName) -> Self {
-        let mut prefixes = BTreeMap::new();
-        prefixes.insert(
-            Value::String(String::from("prefixes")),
-            Value::Seq(vec![Value::String(format!("/{app_name}/",))]),
-        );
-
-        let mut middlewares = BTreeMap::new();
-        middlewares.insert(
-            Value::String(String::from("stripPrefix")),
-            Value::Map(prefixes),
+        let middleware = TraefikMiddleware::with_prefix_strip(
+            format!("{}-middleware", app_name.to_rfc1123_namespace_id()),
+            std::iter::once(format!("/{app_name}/")),
         );
 
         Self {
             entry_points: Vec::new(),
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::path_prefix_rule([app_name.as_str()]),
-                middlewares: vec![TraefikMiddleware {
-                    name: format!("{}-middleware", app_name.to_rfc1123_namespace_id()),
-                    spec: Value::Map(middlewares),
-                }],
+                middlewares: vec![middleware],
             }],
             tls: None,
         }
@@ -113,22 +112,10 @@ impl TraefikIngressRoute {
     where
         I: IntoIterator<Item = TraefikMiddleware>,
     {
-        let mut prefixes = BTreeMap::new();
-        prefixes.insert(
-            Value::String(String::from("prefixes")),
-            Value::Seq(vec![Value::String(format!("/{app_name}/{service_name}/",))]),
-        );
-
-        let mut middlewares = BTreeMap::new();
-        middlewares.insert(
-            Value::String(String::from("stripPrefix")),
-            Value::Map(prefixes),
-        );
-
-        let mut middlewares = vec![TraefikMiddleware {
-            name: format!("{app_name}-{service_name}-middleware"),
-            spec: Value::Map(middlewares),
-        }];
+        let mut middlewares = vec![TraefikMiddleware::with_prefix_strip(
+            format!("{app_name}-{service_name}-middleware"),
+            std::iter::once(format!("/{app_name}/{service_name}/")),
+        )];
         middlewares.extend(additional_middlewares);
 
         Self {
@@ -187,7 +174,11 @@ impl TraefikIngressRoute {
             (Some(_), None) => {}
             (Some(route1), Some(route2)) => {
                 route1.rule.merge_with(route2.rule)?;
-                route1.middlewares.extend(route2.middlewares);
+
+                route1.middlewares = TraefikMiddleware::merge_middlewares(
+                    std::mem::take(&mut route1.middlewares),
+                    route2.middlewares,
+                )?;
             }
         };
 
@@ -327,6 +318,10 @@ impl TraefikRouterRule {
             .expect("URL shoud be a base")
             .extend(segments);
 
+        if base.path() == "/" {
+            return String::from("/");
+        }
+
         format!("/{}/", base.path().trim_matches('/'))
     }
 
@@ -362,8 +357,8 @@ impl TraefikRouterRule {
         for m in &self.matches {
             if matches!(m, Matcher::PathRegexp { .. }) {
                 return Err(TraefikIngressRouteMergeError::PathRegexpNotMergable {
-                    rule_1: self.clone(),
-                    rule_2: other,
+                    rule_1: Box::new(self.clone()),
+                    rule_2: Box::new(other),
                 });
             }
         }
@@ -420,8 +415,8 @@ impl TraefikRouterRule {
                 }
                 Matcher::PathRegexp { .. } => {
                     return Err(TraefikIngressRouteMergeError::PathRegexpNotMergable {
-                        rule_1: self.clone(),
-                        rule_2: other,
+                        rule_1: Box::new(self.clone()),
+                        rule_2: Box::new(other),
                     });
                 }
             }
@@ -436,23 +431,175 @@ impl TraefikRouterRule {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraefikMiddleware {
     pub name: String,
-    pub spec: serde_value::Value,
+    spec: TraefikMiddlewareSpec,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TraefikMiddlewareSpec {
+    ForwardAuth {
+        address: Url,
+        params: serde_value::Value,
+    },
+    Headers {
+        request: BTreeMap<String, String>,
+        response: BTreeMap<String, String>,
+    },
+    StripPrefix(Vec<String>),
+    Other(serde_value::Value),
 }
 
 impl TraefikMiddleware {
-    pub fn name(&self) -> &String {
-        &self.name
+    pub fn from_json(name: String, spec: serde_json::Value) -> Self {
+        use serde_json::Value;
+
+        match &spec {
+            Value::Object(map)
+                if let Some(Value::Object(strip_prefix)) = map.get("stripPrefix")
+                    && let Some(Value::Array(prefixes)) = strip_prefix.get("prefixes") =>
+            {
+                Self::with_prefix_strip(
+                    name,
+                    prefixes
+                        .iter()
+                        .flat_map(|e| e.as_str())
+                        .map(ToString::to_string),
+                )
+            }
+            Value::Object(map)
+                if let Some(Value::Object(forward_auth)) = map.get("forwardAuth")
+                    && let Some(Value::String(address)) = forward_auth.get("address") =>
+            {
+                let mut params = forward_auth.clone();
+                params.remove("address");
+
+                Self::with_forward_auth_and_params(
+                    name,
+                    Url::from_str(address).unwrap(),
+                    serde_value::to_value(params).unwrap(),
+                )
+            }
+            Value::Object(map) if let Some(Value::Object(headers)) = map.get("headers") => {
+                let request = headers
+                    .get("customRequestHeaders")
+                    .and_then(|crh| crh.as_object())
+                    .iter()
+                    .flat_map(|crh| crh.iter())
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect::<BTreeMap<_, _>>();
+                let response = headers
+                    .get("customResponseHeaders")
+                    .and_then(|crh| crh.as_object())
+                    .iter()
+                    .flat_map(|crh| crh.iter())
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect::<BTreeMap<_, _>>();
+
+                Self::with_headers(name, request, response)
+            }
+            spec => {
+                let spec = TraefikMiddlewareSpec::Other(serde_value::to_value(spec).unwrap());
+                Self { name, spec }
+            }
+        }
     }
 
-    pub fn spec(&self) -> &serde_value::Value {
-        &self.spec
+    pub fn with_forward_auth_and_params(name: String, address: Url, params: Value) -> Self {
+        Self {
+            name,
+            spec: TraefikMiddlewareSpec::ForwardAuth { address, params },
+        }
+    }
+
+    pub fn with_forward_auth(name: String, address: Url) -> Self {
+        Self::with_forward_auth_and_params(name, address, serde_value::Value::Map(BTreeMap::new()))
+    }
+
+    /// Creates [headers
+    /// middleware](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/headers/)
+    pub fn with_headers<I, J>(name: String, request_headers: I, response_headers: J) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+        J: IntoIterator<Item = (String, String)>,
+    {
+        Self {
+            name,
+            spec: TraefikMiddlewareSpec::Headers {
+                request: BTreeMap::from_iter(request_headers),
+                response: BTreeMap::from_iter(response_headers),
+            },
+        }
+    }
+
+    pub fn with_request_headers<I>(name: String, header_and_value: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        Self {
+            name,
+            spec: TraefikMiddlewareSpec::Headers {
+                request: BTreeMap::from_iter(header_and_value),
+                response: BTreeMap::new(),
+            },
+        }
+    }
+
+    pub fn with_prefix_strip<I>(name: String, prefixes: I) -> Self
+    where
+        I: IntoIterator<Item = String>,
+    {
+        Self {
+            name,
+            spec: TraefikMiddlewareSpec::StripPrefix(
+                prefixes
+                    .into_iter()
+                    .map(|prefix| {
+                        if prefix == "/" {
+                            prefix
+                        } else {
+                            format!("/{}/", prefix.trim_start_matches("/").trim_end_matches("/"))
+                        }
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    pub fn to_json_spec(&self) -> serde_json::Value {
+        match &self.spec {
+            TraefikMiddlewareSpec::ForwardAuth { address, params } => {
+                let mut map = serde_json::json!({
+                    "address": address,
+                });
+                if let serde_value::Value::Map(extra) = params {
+                    for (k, v) in extra {
+                        if let (serde_value::Value::String(key), Ok(val)) =
+                            (k, serde_json::to_value(v))
+                        {
+                            map.as_object_mut().unwrap().insert(key.clone(), val);
+                        }
+                    }
+                }
+                serde_json::json!({ "forwardAuth": map })
+            }
+            TraefikMiddlewareSpec::Headers { request, response } => {
+                serde_json::json!({
+                    "headers": {
+                        "customRequestHeaders": request,
+                        "customResponseHeaders": response
+                    }
+                })
+            }
+            TraefikMiddlewareSpec::StripPrefix(items) => serde_json::json!({
+                "stripPrefix": {
+                    "prefixes": items
+                }
+            }),
+            TraefikMiddlewareSpec::Other(value) => serde_json::json!(value),
+        }
     }
 
     pub fn is_strip_prefix(&self) -> bool {
-        matches!(&self.spec,
-            serde_value::Value::Map(m)
-                if m.get(&serde_value::Value::String(String::from("stripPrefix")))
-                    .is_some())
+        matches!(self.spec, TraefikMiddlewareSpec::StripPrefix(_))
     }
 
     pub fn to_key_value_spec(&self) -> Vec<(String, String)> {
@@ -463,28 +610,145 @@ impl TraefikMiddleware {
 
         elements
     }
+
+    fn match_type(&self, other: &Self) -> bool {
+        match (&self.spec, &other.spec) {
+            (
+                TraefikMiddlewareSpec::ForwardAuth { .. },
+                TraefikMiddlewareSpec::ForwardAuth { .. },
+            )
+            | (TraefikMiddlewareSpec::Headers { .. }, TraefikMiddlewareSpec::Headers { .. })
+            | (TraefikMiddlewareSpec::StripPrefix(_), TraefikMiddlewareSpec::StripPrefix(_)) => {
+                true
+            }
+            (_, _) => false,
+        }
+    }
+
+    pub fn merge_middlewares(
+        mut s: Vec<Self>,
+        o: Vec<Self>,
+    ) -> Result<Vec<Self>, TraefikIngressRouteMergeError> {
+        for middleware2 in o {
+            if let Some(middleware) = s.iter_mut().find(|m| m.match_type(&middleware2)) {
+                middleware.merge_with(middleware2)?;
+                continue;
+            }
+
+            s.push(middleware2);
+        }
+        Ok(s)
+    }
+
+    pub fn merge_with(&mut self, other: Self) -> Result<(), TraefikIngressRouteMergeError> {
+        match (&mut self.spec, other.spec.clone()) {
+            (
+                TraefikMiddlewareSpec::ForwardAuth { address, params },
+                TraefikMiddlewareSpec::ForwardAuth {
+                    address: o_address,
+                    params: o_params,
+                },
+            ) => {
+                *address = o_address;
+                *params = o_params
+            }
+            (
+                TraefikMiddlewareSpec::Headers { request, response },
+                TraefikMiddlewareSpec::Headers {
+                    request: o_request,
+                    response: o_response,
+                },
+            ) => {
+                request.extend(o_request);
+                response.extend(o_response);
+            }
+            (
+                TraefikMiddlewareSpec::StripPrefix(items),
+                TraefikMiddlewareSpec::StripPrefix(o_items),
+            ) => {
+                for i in items.iter_mut() {
+                    for j in o_items.iter() {
+                        *i = i.trim_end_matches("/").to_string() + "/" + j.trim_start_matches("/");
+                    }
+                }
+            }
+            _ => {
+                return Err(TraefikIngressRouteMergeError::MiddlewaresNotMergable {
+                    middleware_1: Box::new(self.clone()),
+                    middleware_2: Box::new(other),
+                });
+            }
+        }
+        self.name = other.name;
+
+        Ok(())
+    }
 }
 
 fn traverse_and_append(
     elements: &mut Vec<(String, String)>,
-    spec: &serde_value::Value,
+    spec: &TraefikMiddlewareSpec,
     path: &mut VecDeque<String>,
 ) {
     match spec {
-        Value::Unit => {}
-        Value::Option(Some(value)) => {
-            elements.push((path_to_dot_separated_string(path), value_to_string(value)));
+        TraefikMiddlewareSpec::ForwardAuth { address, .. } => {
+            path.push_back(String::from("forwardAuth"));
+            path.push_back(String::from("address"));
+            elements.push((path_to_dot_separated_string(path), address.to_string()));
+            path.pop_back();
+            path.pop_back();
         }
-        Value::Map(btree_map) => {
-            for (k, v) in btree_map {
-                path.push_back(value_to_string(k));
-                traverse_and_append(elements, v, path);
+        TraefikMiddlewareSpec::Headers { request, response } => {
+            path.push_back(String::from("headers"));
+
+            if !request.is_empty() {
+                path.push_back(String::from("customRequestHeaders"));
+
+                for (k, v) in request.iter() {
+                    path.push_back(k.clone());
+                    elements.push((path_to_dot_separated_string(path), v.clone()));
+                    path.pop_back();
+                }
+
                 path.pop_back();
             }
+            if !response.is_empty() {
+                path.push_back(String::from("customResponseHeaders"));
+
+                for (k, v) in response.iter() {
+                    path.push_back(k.clone());
+                    elements.push((path_to_dot_separated_string(path), v.clone()));
+                    path.pop_back();
+                }
+
+                path.pop_back();
+            }
+
+            path.pop_back();
         }
-        value => {
-            elements.push((path_to_dot_separated_string(path), value_to_string(value)));
+        TraefikMiddlewareSpec::StripPrefix(items) => {
+            path.push_back(String::from("stripPrefix"));
+            path.push_back(String::from("prefixes"));
+            elements.push((path_to_dot_separated_string(path), items.join(",")));
+            path.pop_back();
+            path.pop_back();
         }
+        TraefikMiddlewareSpec::Other(spec) => match spec {
+            Value::Unit => {}
+            Value::Option(Some(value)) => {
+                elements.push((path_to_dot_separated_string(path), value_to_string(value)));
+            }
+            Value::Map(btree_map) => {
+                for (k, v) in btree_map {
+                    path.push_back(value_to_string(k));
+                    traverse_and_append(elements, &TraefikMiddlewareSpec::Other(v.clone()), path);
+                    path.pop_back();
+                }
+            }
+            value => {
+                elements.push((path_to_dot_separated_string(path), value_to_string(value)));
+            }
+        },
     }
 }
 
@@ -687,14 +951,21 @@ impl TryFrom<Image> for TraefikVersion {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn sound_failing() {
         let result = "Random String".parse::<TraefikRouterRule>();
 
         assert!(std::matches!(result, Err(_)));
+    }
+
+    #[test]
+    fn with_empty_list_of_path_prefixes() {
+        let rule = TraefikRouterRule::path_prefix_rule(Vec::<String>::new());
+        assert_eq!(rule.to_string(), "PathPrefix(`/`)");
     }
 
     #[test]
@@ -873,8 +1144,8 @@ mod test {
         assert_eq!(
             err,
             TraefikIngressRouteMergeError::PathRegexpNotMergable {
-                rule_1: base.parse().unwrap(),
-                rule_2: other.parse().unwrap()
+                rule_1: Box::new(base.parse().unwrap()),
+                rule_2: Box::new(other.parse().unwrap())
             }
         );
     }
@@ -992,14 +1263,13 @@ mod test {
             entry_points: vec![String::from("web")],
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
-                middlewares: vec![TraefikMiddleware {
-                    name: String::from("traefik-forward-auth"),
-                    spec: serde_value::to_value(serde_json::json!({
-                        "forwardAuth": {
-                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                        }
-                    })).unwrap()
-                }],
+                middlewares: vec![TraefikMiddleware::with_forward_auth(
+                    String::from("traefik-forward-auth"),
+                    Url::from_str(
+                        "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181",
+                    )
+                    .unwrap(),
+                )],
             }],
             tls: Some(TraefikTLS {
                 cert_resolver: String::from("letsencrypt"),
@@ -1019,26 +1289,17 @@ mod test {
                     )
                     .unwrap(),
                     middlewares: vec![
-                        TraefikMiddleware {
-                            name: String::from("traefik-forward-auth"),
-                            spec: serde_value::to_value(serde_json::json!({
-                                "forwardAuth": {
-                                    "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                                }
-                            })).unwrap()
-                        },
-                        TraefikMiddleware {
-                            name: String::from("master-whoami-middleware"),
-                            spec: Value::Map(BTreeMap::from([(
-                                Value::String(String::from("stripPrefix")),
-                                Value::Map(BTreeMap::from([(
-                                    Value::String(String::from("prefixes")),
-                                    Value::Seq(vec![Value::String(String::from(
-                                        "/master/whoami/"
-                                    ))])
-                                )]))
-                            )]))
-                        }
+                        TraefikMiddleware::with_forward_auth(
+                            String::from("traefik-forward-auth"),
+                            Url::from_str(
+                                "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                            )
+                            .unwrap(),
+                        ),
+                        TraefikMiddleware::with_prefix_strip(
+                            String::from("master-whoami-middleware"),
+                            std::iter::once(String::from("/master/whoami/")),
+                        ),
                     ],
                 }],
                 tls: Some(TraefikTLS {
@@ -1049,19 +1310,94 @@ mod test {
     }
 
     #[test]
+    fn merge_ingress_routes_with_prefix_strips() {
+        let mut route1 = TraefikIngressRoute::with_rule_and_middlewares(
+            TraefikRouterRule::from_str("Host(`prevant.example.com`) && PathPrefix(`/test/`)")
+                .unwrap(),
+            vec![TraefikMiddleware::with_prefix_strip(
+                String::from("will-be-overwritten"),
+                std::iter::once(String::from("/test/")),
+            )],
+        );
+        let route2 = TraefikIngressRoute::with_defaults(&AppName::master(), "whoami");
+
+        route1.merge_with(route2).unwrap();
+
+        assert_eq!(
+            route1,
+            TraefikIngressRoute::with_rule_and_middlewares(
+                TraefikRouterRule::from_str(
+                    "Host(`prevant.example.com`) && PathPrefix(`/test/master/whoami/`)"
+                )
+                .unwrap(),
+                vec![TraefikMiddleware::with_prefix_strip(
+                    String::from("master-whoami-middleware"),
+                    std::iter::once(String::from("/test/master/whoami/"))
+                )],
+            )
+        );
+    }
+
+    #[test]
+    fn merge_ingress_routes_with_headers() {
+        let mut route1 = TraefikIngressRoute::with_rule_and_middlewares(
+            TraefikRouterRule::from_str("Host(`prevant.example.com`) && PathPrefix(`/test/`)")
+                .unwrap(),
+            vec![TraefikMiddleware::with_request_headers(
+                String::from("any"),
+                [(String::from("X-Script-Name"), String::from("test"))],
+            )],
+        );
+        let mut route2 = TraefikIngressRoute::with_defaults(&AppName::master(), "whoami");
+        route2.routes[0]
+            .middlewares
+            .push(TraefikMiddleware::with_request_headers(
+                String::from("any"),
+                [(
+                    String::from("X-Script-Name"),
+                    String::from("test-overwrite"),
+                )],
+            ));
+
+        route1.merge_with(route2).unwrap();
+
+        assert_eq!(
+            route1,
+            TraefikIngressRoute::with_rule_and_middlewares(
+                TraefikRouterRule::from_str(
+                    "Host(`prevant.example.com`) && PathPrefix(`/test/master/whoami/`)"
+                )
+                .unwrap(),
+                vec![
+                    TraefikMiddleware::with_request_headers(
+                        String::from("any"),
+                        [(
+                            String::from("X-Script-Name"),
+                            String::from("test-overwrite")
+                        )],
+                    ),
+                    TraefikMiddleware::with_prefix_strip(
+                        String::from("master-whoami-middleware"),
+                        std::iter::once(String::from("/master/whoami/"))
+                    )
+                ],
+            )
+        );
+    }
+
+    #[test]
     fn merge_ingress_routes_reverse() {
         let route1 = TraefikIngressRoute {
             entry_points: vec![String::from("web")],
             routes: vec![TraefikRoute {
                 rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
-                middlewares: vec![TraefikMiddleware {
-                    name: String::from("traefik-forward-auth"),
-                    spec: serde_value::to_value(serde_json::json!({
-                        "forwardAuth": {
-                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                        }
-                    })).unwrap()
-                }],
+                middlewares: vec![TraefikMiddleware::with_forward_auth(
+                    String::from("traefik-forward-auth"),
+                    Url::from_str(
+                        "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181",
+                    )
+                    .unwrap(),
+                )],
             }],
             tls: Some(TraefikTLS {
                 cert_resolver: String::from("letsencrypt"),
@@ -1081,24 +1417,17 @@ mod test {
                     )
                     .unwrap(),
                     middlewares: vec![
-                        TraefikMiddleware {
-                            name: String::from("master-whoami-middleware"),
-                            spec: serde_value::to_value(serde_json::json!({
-                                "stripPrefix": {
-                                    "prefixes": [
-                                        "/master/whoami/"
-                                    ]
-                                }
-                            })).unwrap()
-                        },
-                        TraefikMiddleware {
-                            name: String::from("traefik-forward-auth"),
-                            spec: serde_value::to_value(serde_json::json!({
-                                "forwardAuth": {
-                                    "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                                }
-                            })).unwrap()
-                        },
+                        TraefikMiddleware::with_prefix_strip(
+                            String::from("master-whoami-middleware"),
+                            [String::from("/master/whoami/")]
+                        ),
+                        TraefikMiddleware::with_forward_auth(
+                            String::from("traefik-forward-auth"),
+                            Url::from_str(
+                                "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
+                            )
+                            .unwrap()
+                        ),
                     ],
                 }],
                 tls: Some(TraefikTLS {
@@ -1164,27 +1493,28 @@ mod test {
     fn cannot_merge_ingress_routes() {
         let route1 = TraefikIngressRoute {
             entry_points: vec![String::from("web")],
-            routes: vec![TraefikRoute {
-                rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
-                middlewares: vec![TraefikMiddleware {
-                    name: String::from("traefik-forward-auth"),
-                    spec: serde_value::to_value(serde_json::json!({
-                        "forwardAuth": {
-                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                        }
-                    })).unwrap()
-                }],
-            }, TraefikRoute {
-                rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
-                middlewares: vec![TraefikMiddleware {
-                    name: String::from("traefik-forward-auth"),
-                    spec: serde_value::to_value(serde_json::json!({
-                        "forwardAuth": {
-                            "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                        }
-                    })).unwrap()
-                }],
-            }],
+            routes: vec![
+                TraefikRoute {
+                    rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
+                    middlewares: vec![TraefikMiddleware::with_forward_auth(
+                        String::from("traefik-forward-auth"),
+                        Url::from_str(
+                            "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181",
+                        )
+                        .unwrap(),
+                    )],
+                },
+                TraefikRoute {
+                    rule: TraefikRouterRule::host_rule(vec![String::from("prevant.example.com")]),
+                    middlewares: vec![TraefikMiddleware::with_forward_auth(
+                        String::from("traefik-forward-auth"),
+                        Url::from_str(
+                            "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181",
+                        )
+                        .unwrap(),
+                    )],
+                },
+            ],
             tls: Some(TraefikTLS {
                 cert_resolver: String::from("letsencrypt"),
             }),
@@ -1198,6 +1528,7 @@ mod test {
 
     mod from_url {
         use super::*;
+        use pretty_assertions::assert_eq;
 
         #[test]
         fn with_host_and_path() {
@@ -1230,6 +1561,7 @@ mod test {
 
     mod to_url {
         use super::*;
+        use pretty_assertions::assert_eq;
 
         #[test]
         fn empty_route() {
@@ -1314,17 +1646,10 @@ mod test {
                 entry_points: Vec::new(),
                 routes: vec![TraefikRoute {
                     rule: TraefikRouterRule::from_str("PathPrefix(`/ALL-CAPS-APP-NAME/`)").unwrap(),
-                    middlewares: vec![TraefikMiddleware {
-                        name: String::from("all-caps-app-name-middleware"),
-                        spec: serde_value::to_value(serde_json::json!({
-                            "stripPrefix": {
-                                "prefixes": [
-                                    "/ALL-CAPS-APP-NAME/"
-                                ]
-                            }
-                        }))
-                        .unwrap()
-                    }]
+                    middlewares: vec![TraefikMiddleware::with_prefix_strip(
+                        String::from("all-caps-app-name-middleware"),
+                        [String::from("/ALL-CAPS-APP-NAME/")]
+                    )]
                 }],
                 tls: None
             }
@@ -1333,32 +1658,21 @@ mod test {
 
     #[test]
     fn is_strip_prefix_middleware() {
-        let middleware = TraefikMiddleware {
-            name: String::from("all-caps-app-name-middleware"),
-            spec: serde_value::to_value(serde_json::json!({
-                "stripPrefix": {
-                    "prefixes": [
-                        "/ALL-CAPS-APP-NAME/"
-                    ]
-                }
-            }))
-            .unwrap(),
-        };
+        let middleware = TraefikMiddleware::with_prefix_strip(
+            String::from("all-caps-app-name-middleware"),
+            [String::from("/ALL-CAPS-APP-NAME/")],
+        );
 
         assert!(middleware.is_strip_prefix());
     }
 
     #[test]
     fn is_not_strip_prefix_middleware() {
-        let middleware = TraefikMiddleware {
-            name: String::from("traefik-forward-auth"),
-            spec: serde_value::to_value(serde_json::json!({
-                "forwardAuth": {
-                    "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                }
-            }))
-            .unwrap(),
-        };
+        let middleware = TraefikMiddleware::with_forward_auth(
+            String::from("traefik-forward-auth"),
+            Url::from_str("http://traefik-forward-auth.my-namespace.svc.cluster.local:4181")
+                .unwrap(),
+        );
 
         assert!(!middleware.is_strip_prefix());
     }
@@ -1392,27 +1706,238 @@ mod test {
 
     mod middleware {
         use super::*;
+        use pretty_assertions::assert_eq;
 
-        #[test]
-        fn to_key_value_spec() {
-            let middleware = TraefikMiddleware {
-                name: String::from("traefik-forward-auth"),
-                spec: serde_value::to_value(serde_json::json!({
-                    "forwardAuth": {
-                        "address": "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181"
-                    }
-                }))
-                .unwrap(),
-            };
-
-            let kv_spec = middleware.to_key_value_spec();
+        #[rstest::rstest]
+        #[case(vec![String::from("/")], vec!["/"])]
+        #[case(vec![String::from("/path")], vec!["/path/"])]
+        #[case(vec![String::from("path/")], vec!["/path/"])]
+        fn normalize_prefixes(#[case] prefixes: Vec<String>, #[case] expected_prefixes: Vec<&str>) {
+            let middleware = TraefikMiddleware::with_prefix_strip(String::from("name"), prefixes);
             assert_eq!(
-                kv_spec,
-                vec![(
-                    String::from("forwardAuth.address"),
-                    String::from("http://traefik-forward-auth.my-namespace.svc.cluster.local:4181")
-                )]
-            )
+                middleware.to_json_spec(),
+                serde_json::json!({
+                    "stripPrefix": {
+                        "prefixes": expected_prefixes
+                    }
+                })
+            );
+        }
+
+        mod to_key_value_spec {
+            use super::*;
+            use pretty_assertions::assert_eq;
+
+            #[test]
+            fn forward_auth() {
+                let middleware = TraefikMiddleware::with_forward_auth(
+                    String::from("traefik-forward-auth"),
+                    Url::from_str(
+                        "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181",
+                    )
+                    .unwrap(),
+                );
+
+                let kv_spec = middleware.to_key_value_spec();
+                assert_eq!(
+                    kv_spec,
+                    vec![(
+                        String::from("forwardAuth.address"),
+                        String::from(
+                            "http://traefik-forward-auth.my-namespace.svc.cluster.local:4181/"
+                        )
+                    )]
+                )
+            }
+
+            #[test]
+            fn strip_prefixes() {
+                let middleware = TraefikMiddleware::with_prefix_strip(
+                    String::from("name"),
+                    [String::from("/foobar"), String::from("/fiibar")],
+                );
+
+                let kv_spec = middleware.to_key_value_spec();
+                assert_eq!(
+                    kv_spec,
+                    vec![(
+                        String::from("stripPrefix.prefixes"),
+                        String::from("/foobar/,/fiibar/")
+                    )]
+                )
+            }
+
+            #[test]
+            fn headers() {
+                let middleware = TraefikMiddleware::with_headers(
+                    String::from("name"),
+                    [(String::from("X-Script-Name"), String::from("test"))],
+                    [(
+                        String::from("X-Custom-Response-Header"),
+                        String::from("value"),
+                    )],
+                );
+
+                let kv_spec = middleware.to_key_value_spec();
+                assert_eq!(
+                    kv_spec,
+                    vec![
+                        (
+                            String::from("headers.customRequestHeaders.X-Script-Name"),
+                            String::from("test")
+                        ),
+                        (
+                            String::from("headers.customResponseHeaders.X-Custom-Response-Header"),
+                            String::from("value")
+                        )
+                    ]
+                )
+            }
+        }
+
+        mod from_json {
+            use super::*;
+            use pretty_assertions::assert_eq;
+
+            #[test]
+            fn foward_auth() {
+                let from_json = TraefikMiddleware::from_json(
+                    String::from("name"),
+                    serde_json::json!({
+                        "forwardAuth": {
+                            "address": "https://example.com/auth"
+                        }
+                    }),
+                );
+
+                assert_eq!(
+                    from_json,
+                    TraefikMiddleware::with_forward_auth(
+                        String::from("name"),
+                        Url::from_str("https://example.com/auth").unwrap(),
+                    )
+                );
+            }
+
+            #[test]
+            fn strip_prefixes() {
+                let from_json = TraefikMiddleware::from_json(
+                    String::from("name"),
+                    serde_json::json!({
+                        "stripPrefix": {
+                            "prefixes": [
+                                "/foobar",
+                                "/fiibar"
+                            ]
+                        }
+                    }),
+                );
+
+                assert_eq!(
+                    from_json,
+                    TraefikMiddleware::with_prefix_strip(
+                        String::from("name"),
+                        [String::from("/foobar"), String::from("/fiibar")]
+                    )
+                );
+            }
+
+            #[test]
+            fn headers() {
+                let from_json = TraefikMiddleware::from_json(
+                    String::from("name"),
+                    serde_json::json!({
+                        "headers": {
+                            "customRequestHeaders": {
+                                "X-Script-Name": "test"
+                            },
+                            "customResponseHeaders": {
+                                "X-Custom-Response-Header": "value"
+                            }
+                        }
+                    }),
+                );
+
+                assert_eq!(
+                    from_json,
+                    TraefikMiddleware::with_headers(
+                        String::from("name"),
+                        [(String::from("X-Script-Name"), String::from("test"))],
+                        [(
+                            String::from("X-Custom-Response-Header"),
+                            String::from("value")
+                        )],
+                    )
+                );
+            }
+        }
+
+        mod to_json {
+            use super::*;
+            use pretty_assertions::assert_eq;
+
+            #[test]
+            fn foward_auth() {
+                let middleware = TraefikMiddleware::with_forward_auth(
+                    String::from("name"),
+                    Url::from_str("https://example.com/auth").unwrap(),
+                );
+
+                assert_eq!(
+                    middleware.to_json_spec(),
+                    serde_json::json!({
+                        "forwardAuth": {
+                            "address": "https://example.com/auth"
+                        }
+                    })
+                );
+            }
+
+            #[test]
+            fn strip_prefixes() {
+                let middleware = TraefikMiddleware::with_prefix_strip(
+                    String::from("name"),
+                    [String::from("/foobar"), String::from("/fiibar")],
+                );
+
+                assert_eq!(
+                    middleware.to_json_spec(),
+                    serde_json::json!({
+                        "stripPrefix": {
+                            "prefixes": [
+                                "/foobar/",
+                                "/fiibar/"
+                            ]
+                        }
+                    })
+                );
+            }
+
+            #[test]
+            fn headers() {
+                let middleware = TraefikMiddleware::with_headers(
+                    String::from("name"),
+                    [(String::from("X-Script-Name"), String::from("test"))],
+                    [(
+                        String::from("X-Custom-Response-Header"),
+                        String::from("value"),
+                    )],
+                );
+
+                assert_eq!(
+                    middleware.to_json_spec(),
+                    serde_json::json!({
+                        "headers": {
+                            "customRequestHeaders": {
+                                "X-Script-Name": "test"
+                            },
+                            "customResponseHeaders": {
+                                "X-Custom-Response-Header": "value"
+                            }
+                        }
+                    })
+                );
+            }
         }
     }
 }

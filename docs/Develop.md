@@ -197,7 +197,7 @@ cargo test --package prevant-api-tests --test docker -- --test-threads=1 --nocap
    ```
 3. Run Tests:
    ```sh
-   cargo test --manifest-path api-tests/Cargo.toml --test k3s
+   cargo test --packaeg prevant-api-tests --test k3s
    ```
 
 [k3d]: https://k3d.io

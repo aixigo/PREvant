@@ -32,8 +32,12 @@ use chrono::{DateTime, FixedOffset, Utc};
 use domain::{
     AppName,
     app_blueprints::{DesiredServiceStatus, ServiceConfig},
-    app_deployment::{DeployableService, DeploymentUnit},
+    app_deployment::{
+        ApplicationCompanion, BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions,
+        DeployableService, DeploymentUnit,
+    },
     app_instance::{App, Service, ServiceStatus},
+    templating::{TemplateData, TemplatedClone},
 };
 use futures::stream::{self, BoxStream};
 use std::collections::{HashMap, HashSet};
@@ -46,6 +50,7 @@ pub struct DummyInfrastructure {
     delay: Option<Duration>,
     deployment_units: Arc<Mutex<HashMap<AppName, DeploymentUnit>>>,
     created_at: Arc<Mutex<HashMap<AppName, DateTime<Utc>>>>,
+    bootstrapping_configs: Vec<ServiceConfig>,
 }
 
 #[cfg(test)]
@@ -55,6 +60,7 @@ impl DummyInfrastructure {
             delay: None,
             deployment_units: Arc::new(Mutex::new(HashMap::new())),
             created_at: Arc::new(Mutex::new(HashMap::new())),
+            bootstrapping_configs: Vec::new(),
         }
     }
 
@@ -63,6 +69,7 @@ impl DummyInfrastructure {
             delay: Some(delay),
             deployment_units: Arc::new(Mutex::new(HashMap::new())),
             created_at: Arc::new(Mutex::new(HashMap::new())),
+            bootstrapping_configs: Vec::new(),
         }
     }
 
@@ -75,7 +82,7 @@ impl DummyInfrastructure {
             .collect::<Vec<_>>()
     }
 
-    pub fn with_app(
+    pub fn with_existing_app(
         self,
         app_name: AppName,
         services: Vec<ServiceConfig>,
@@ -104,6 +111,11 @@ impl DummyInfrastructure {
             let mut units = self.deployment_units.lock().unwrap();
             units.insert(app_name.clone(), deployment_unit.clone());
         }
+    }
+
+    pub fn with_bootstrapping(mut self, bootstrapping_configs: Vec<ServiceConfig>) -> Self {
+        self.bootstrapping_configs.extend(bootstrapping_configs);
+        self
     }
 }
 
@@ -141,7 +153,7 @@ impl Infrastructure for DummyInfrastructure {
             }
 
             let created_at = self.created_at.lock().unwrap();
-            let created_at = created_at.get(&app_name).cloned();
+            let created_at = created_at.get(app_name).cloned();
             apps.insert(
                 app_name.clone(),
                 App::new(
@@ -256,5 +268,27 @@ impl Infrastructure for DummyInfrastructure {
 
     async fn http_forwarder(&self) -> Result<Box<dyn super::HttpForwarder>> {
         unimplemented!("Currently not supported by the dummy infra")
+    }
+
+    async fn bootstrap_companions_with_raw_elements(
+        &self,
+        _context: BootstrapCompanionsWithRawElementsContext<'_>,
+        template_data: &TemplateData,
+    ) -> Result<BootstrappedCompanions> {
+        Ok(BootstrappedCompanions {
+            bootstrapped_companions: self
+                .bootstrapping_configs
+                .iter()
+                .map(|config| {
+                    Ok(ApplicationCompanion::bootstrapped(
+                        config
+                            .templated_clone(template_data)
+                            .map_err(|e| anyhow::anyhow!("Cannot template config: {e:?}"))?,
+                        Vec::new(),
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+            ..Default::default()
+        })
     }
 }

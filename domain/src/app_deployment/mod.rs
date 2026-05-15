@@ -9,8 +9,10 @@ use crate::{
     traefik::TraefikIngressRoute,
 };
 pub use builder::{
-    AppDeploymentBuilder, BuildDeploymentUintBuildError, Initialized, ResolveApps,
-    ResolveAppsError, StaticCompanion, StaticCompanionDeploymentStrategy,
+    AppDeploymentBuilder, ApplicationCompanion, BootstrapCompanions,
+    BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions,
+    BuildDeploymentUintBuildError, Initialized, MergeRawElementsContext, ResolveApps,
+    ResolveAppsError, ServiceCompanion, StaticCompanion, StaticCompanionDeploymentStrategy,
     StaticCompanionStorageStrategy, WithResolvedImages, WithStaticCompanions,
 };
 use std::{
@@ -23,7 +25,12 @@ mod builder;
 #[derive(Debug, PartialEq, Clone)]
 pub struct DeploymentUnit {
     pub app_name: AppName,
+    /// The services that have to be deployed on the infrastructure
     pub services: Vec<DeployableService>,
+    /// These are infrastructure specific payloads, see [`RawInfrastructureElement`], that originate
+    /// from the infrastructure-specific bootstrapping of companions. These elements are treated as
+    /// opaque elements by the domain layer.
+    pub bootstrapped_companion_elements: Vec<RawInfrastructureElement>,
     /// The Traefik route under which the unit shall be accessible.
     pub route: TraefikIngressRoute,
     pub user_defined_parameters: Option<UserDefinedParameters>,
@@ -59,5 +66,31 @@ pub struct DeployableService {
     pub labels: HashMap<String, String>,
     /// The port that is exposed by the service.
     pub port: u16,
+    /// These are infrastructure specific payloads, see [`RawInfrastructureElement`], that originate
+    /// from the infrastructure-specific bootstrapping of this service. These elements are treated as
+    /// opaque elements by the domain layer but indicate to the infrastructure that how this service
+    /// was bootstrapped.
+    pub bootstrapped_companion_elements: Vec<RawInfrastructureElement>,
     phantom_data: PhantomData<()>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct RawInfrastructureElement(serde_json::Value);
+
+impl RawInfrastructureElement {
+    pub fn as_json(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+
+impl From<serde_json::Value> for RawInfrastructureElement {
+    fn from(value: serde_json::Value) -> Self {
+        Self(value)
+    }
+}
+
+impl From<RawInfrastructureElement> for serde_json::Value {
+    fn from(value: RawInfrastructureElement) -> Self {
+        value.0
+    }
 }
