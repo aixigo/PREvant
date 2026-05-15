@@ -37,12 +37,16 @@ use crate::models::LogChunk;
 use crate::registry::{Registry, RegistryError};
 use chrono::{DateTime, FixedOffset};
 pub use clean_up::AppCleanUp;
-use domain::app_deployment::BuildDeploymentUintBuildError;
+use domain::app_deployment::{
+    BootstrapCompanions, BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions,
+    BuildDeploymentUintBuildError, MergeRawElementsContext, RawInfrastructureElement,
+};
 use domain::{
     AppName, Owner,
     app_blueprints::{DesiredServiceStatus, ServiceConfig, UserDefinedParameters},
     app_deployment::{AppDeploymentBuilder, ResolveApps},
     app_instance::{App, Service},
+    templating::TemplateData,
     traefik::TraefikIngressRoute,
 };
 use futures::StreamExt;
@@ -292,6 +296,15 @@ impl Apps {
                 .await?
                 .resolve_base_route::<AppsError, _>(async || Ok(self.prevant_base_route.clone()))
                 .await?
+                .resolve_infrastructure_template_data::<AppsError, _>(async || {
+                    // TODO: add to infrastructure method
+                    Ok::<_, AppsError>(None)
+                })
+                .await?
+                .bootstrap_companions::<AppsError, _>(InfrastructureBootstrapCompanions {
+                    infrastructure: dyn_clone::clone_box(&*self.infrastructure),
+                })
+                .await?
                 .finish()?;
 
         deployment_unit.services = hooks::Hooks::new(&self.config)
@@ -509,6 +522,35 @@ impl ResolveApps for InfrastructureAppResolver {
     }
 }
 
+struct InfrastructureBootstrapCompanions {
+    infrastructure: Box<dyn Infrastructure>,
+}
+
+#[async_trait::async_trait]
+impl BootstrapCompanions for InfrastructureBootstrapCompanions {
+    type Error = AppsError;
+
+    async fn bootstrap_companions_with_raw_elements(
+        &self,
+        context: BootstrapCompanionsWithRawElementsContext<'_>,
+        template_data: &TemplateData,
+    ) -> Result<BootstrappedCompanions, Self::Error> {
+        Ok(self
+            .infrastructure
+            .bootstrap_companions_with_raw_elements(context, template_data)
+            .await?)
+    }
+
+    fn update_raw_elements(
+        &self,
+        context: MergeRawElementsContext<'_>,
+        raw_elements: Vec<RawInfrastructureElement>,
+    ) -> Vec<RawInfrastructureElement> {
+        self.infrastructure
+            .update_raw_elements_after_merged_blueprint_config(context, raw_elements)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,8 +558,8 @@ mod tests {
     use chrono::Utc;
     use domain::app_blueprints::EnvironmentVariable;
     use domain::app_instance::{ContainerType, ServiceStatus};
-    use domain::blueprint_service;
     use domain::traefik::{TraefikIngressRoute, TraefikRouterRule};
+    use domain::{Image, blueprint_service};
     use futures::StreamExt;
     use openidconnect::{IssuerUrl, SubjectIdentifier};
     use secstr::SecUtf8;
@@ -1717,6 +1759,40 @@ Log msg 3 of service-a of app master
                 iss: IssuerUrl::new(String::from("https://gitlab.com")).unwrap(),
                 name: None,
             },])
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bootstrap_companions() -> Result<(), AppsError> {
+        let config = Config::default();
+        let infrastructure = Box::new(Dummy::new().with_bootstrapping(vec![blueprint_service!(
+            "adminer-{{application.name}}",
+            "adminer:5.4.2"
+        )]));
+        let apps = Apps::new(config, infrastructure)?;
+
+        apps.create_or_update(CreateOrUpdateParams {
+            app_name: AppName::from_str("test").unwrap(),
+            ..Default::default()
+        })
+        .await?;
+
+        let mut deployed_apps = apps.fetch_apps().await?;
+        let app = deployed_apps
+            .remove(&AppName::from_str("test").unwrap())
+            .unwrap();
+
+        assert_eq!(
+            vec![("adminer-test", &Image::from_str("adminer:5.4.2").unwrap())],
+            app.services
+                .iter()
+                .map(|s| (
+                    s.blueprint_config.service_name.as_str(),
+                    &s.blueprint_config.image
+                ))
+                .collect::<Vec<_>>(),
         );
 
         Ok(())

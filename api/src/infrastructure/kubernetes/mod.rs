@@ -28,3 +28,4 @@ pub use infrastructure::KubernetesInfrastructure;
 mod deployment_unit;
 mod infrastructure;
 mod payloads;
+mod traefik_crds;

@@ -26,20 +26,20 @@
 use crate::config::AppSelector;
 use domain::{
     AppName, Image,
-    app_blueprints::{Environment, ServiceConfig, UserDefinedParameters},
+    app_blueprints::{Environment, ServiceConfig},
     app_deployment::{
         StaticCompanion, StaticCompanionDeploymentStrategy, StaticCompanionStorageStrategy,
     },
     app_instance::ContainerType,
+    templating::TemplateData,
 };
-use handlebars::{Handlebars, RenderError, RenderErrorReason};
+use handlebars::{RenderError, RenderErrorReason};
 use jsonschema::Validator;
 use secstr::SecUtf8;
 use serde_value::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::path::PathBuf;
-use url::Url;
 
 #[derive(Clone, Default, Deserialize)]
 pub struct Companions {
@@ -235,24 +235,17 @@ impl Companions {
 
         let labels = companion.labels.clone();
 
-        match companion.companion_type {
-            CompanionType::Application => StaticCompanion::ApplicationCompanion {
-                blueprint_config,
-                labels,
-                deployment_strategy,
-                rule_template,
-                middleware_templates,
-                storage_strategy,
-            },
-            CompanionType::Service => StaticCompanion::ServiceCompanion {
-                blueprint_config,
-                labels,
-                deployment_strategy,
-                rule_template,
-                middleware_templates,
-                storage_strategy,
-            },
-        }
+        let companion = match companion.companion_type {
+            CompanionType::Application => StaticCompanion::app_companion(blueprint_config),
+            CompanionType::Service => StaticCompanion::service_companion(blueprint_config),
+        };
+
+        companion
+            .with_labels(labels)
+            .with_deployment_strategy(deployment_strategy)
+            .with_templated_rule(rule_template)
+            .with_templated_middlewares(middleware_templates)
+            .with_storage_strategy(storage_strategy)
     }
 
     pub(super) fn user_defined_schema_validator(&self) -> Option<Validator> {
@@ -262,55 +255,19 @@ impl Companions {
 
     /// Applies templating to all bootstrapping containers and returns the templated set of
     /// containers..
-    ///
-    /// * `infrastructure` - Additional parameter that holds infrastructure specific information
-    ///   such [Kubernetes namespace](https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/)
-    pub(super) fn companion_bootstrapping_containers<S>(
+    pub fn companion_bootstrapping_containers(
         &self,
-        app_name: &AppName,
-        base_url: &Option<Url>,
-        infrastructure: Option<S>,
-        user_defined_parameters: &Option<UserDefinedParameters>,
-    ) -> Result<Vec<BootstrappingContainer>, RenderError>
-    where
-        S: serde::Serialize,
-    {
-        let handlebars = Handlebars::new();
-
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct AppData<'a> {
-            name: &'a str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            base_url: &'a Option<Url>,
-        }
-
-        // TODO: apply same pattern as for companions. {{application.name}}, {{service.…}}…
-        #[derive(Serialize)]
-        struct Data<'a, S> {
-            application: AppData<'a>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            infrastructure: Option<S>,
-            #[serde(skip_serializing_if = "Option::is_none", rename = "userDefined")]
-            user_defined_parameters: &'a Option<UserDefinedParameters>,
-        }
-
-        let data = Data {
-            infrastructure,
-            application: AppData {
-                name: app_name,
-                base_url,
-            },
-            user_defined_parameters,
-        };
+        template_data: &TemplateData,
+    ) -> Result<Vec<BootstrappingContainer>, RenderError> {
+        let handlebars = template_data.as_handlerbars();
 
         let mut containers = Vec::with_capacity(self.bootstrapping.containers.len());
         for c in self.bootstrapping.containers.iter() {
-            let img = handlebars.render_template(&c.image, &data)?;
+            let img = handlebars.render(&c.image)?;
 
             let mut args = Vec::with_capacity(c.args.len());
             for arg in c.args.iter() {
-                args.push(handlebars.render_template(arg, &data)?);
+                args.push(handlebars.render(arg)?);
             }
 
             containers.push(BootstrappingContainer {
@@ -346,9 +303,9 @@ mod tests {
     use super::*;
     use crate::config_from_str;
     use domain::blueprint_service;
-    use jsonschema::Validator;
     use pretty_assertions::assert_eq;
     use std::{collections::HashMap, str::FromStr};
+    use url::Url;
 
     macro_rules! companion_from_str {
         ( $config_str:expr_2021 ) => {
@@ -651,7 +608,13 @@ mod tests {
         );
 
         let containers = &companions
-            .companion_bootstrapping_containers(&AppName::master(), &None, None::<String>, &None)
+            .companion_bootstrapping_containers(&TemplateData {
+                application: domain::templating::ApplicationTemplateData {
+                    name: &AppName::master(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .unwrap();
 
         assert_eq!(containers[0].image, Image::from_str("busybox").unwrap());
@@ -673,12 +636,13 @@ mod tests {
         );
 
         let containers = &companions
-            .companion_bootstrapping_containers(
-                &AppName::master(),
-                &Url::parse("http://example.com").ok(),
-                None::<String>,
-                &None,
-            )
+            .companion_bootstrapping_containers(&TemplateData {
+                application: domain::templating::ApplicationTemplateData {
+                    base_url: Url::parse("http://example.com").ok().as_ref(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .unwrap();
 
         assert_eq!(containers[0].image, Image::from_str("busybox").unwrap());
@@ -702,14 +666,15 @@ mod tests {
         );
 
         let containers = &companions
-            .companion_bootstrapping_containers(
-                &AppName::master(),
-                &None,
-                Some(serde_json::json!({
+            .companion_bootstrapping_containers(&TemplateData {
+                application: domain::templating::ApplicationTemplateData {
+                    ..Default::default()
+                },
+                infrastructure: Some(&serde_json::json!({
                     "namespace": "my-namespace"
                 })),
-                &None,
-            )
+                ..Default::default()
+            })
             .unwrap();
 
         assert_eq!(containers[0].image, Image::from_str("busybox").unwrap());
@@ -729,7 +694,13 @@ mod tests {
         );
 
         let containers = &companions
-            .companion_bootstrapping_containers(&AppName::master(), &None, None::<String>, &None)
+            .companion_bootstrapping_containers(&TemplateData {
+                application: domain::templating::ApplicationTemplateData {
+                    name: &AppName::master(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .unwrap();
 
         assert_eq!(containers[0].image, Image::from_str("busybox:v0").unwrap());
@@ -745,16 +716,10 @@ mod tests {
         );
 
         let containers = &companions
-            .companion_bootstrapping_containers(
-                &AppName::master(),
-                &None,
-                None::<String>,
-                &UserDefinedParameters::new(
-                    serde_json::json!("v0"),
-                    &Validator::new(&serde_json::json!({"type": "string"})).unwrap(),
-                )
-                .ok(),
-            )
+            .companion_bootstrapping_containers(&TemplateData {
+                user_defined_parameters: Some(&serde_json::json!("v0")),
+                ..Default::default()
+            })
             .unwrap();
 
         assert_eq!(containers[0].image, Image::from_str("busybox:v0").unwrap());

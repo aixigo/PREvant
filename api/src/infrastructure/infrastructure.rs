@@ -29,11 +29,15 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use domain::{
-    app_blueprints::DesiredServiceStatus,
-    app_deployment::DeploymentUnit,
-    app_instance::{App, Service},
-    traefik::TraefikIngressRoute,
     AppName,
+    app_blueprints::DesiredServiceStatus,
+    app_deployment::{
+        BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions, DeploymentUnit,
+        MergeRawElementsContext, RawInfrastructureElement,
+    },
+    app_instance::{App, Service},
+    templating::TemplateData,
+    traefik::TraefikIngressRoute,
 };
 use dyn_clone::DynClone;
 use futures::stream::BoxStream;
@@ -86,7 +90,9 @@ pub trait Infrastructure: Send + Sync + DynClone {
         app_name: &AppName,
         infrastructure: &[serde_json::Value],
     ) -> Result<Option<App>> {
-        anyhow::bail!("Cannot restore {app_name}: not yet implemented for the configured backend to restore {infrastructure:?}")
+        anyhow::bail!(
+            "Cannot restore {app_name}: not yet implemented for the configured backend to restore {infrastructure:?}"
+        )
     }
 
     async fn delete_infrastructure_objects_partially(
@@ -94,7 +100,9 @@ pub trait Infrastructure: Send + Sync + DynClone {
         app_name: &AppName,
         infrastructure: &[serde_json::Value],
     ) -> Result<()> {
-        anyhow::bail!("Cannot back up {app_name}: not yet implemented for the configured backend to delete {infrastructure:?}")
+        anyhow::bail!(
+            "Cannot back up {app_name}: not yet implemented for the configured backend to delete {infrastructure:?}"
+        )
     }
 
     /// Streams the log lines with a the corresponding timestamps in it.
@@ -123,9 +131,27 @@ pub trait Infrastructure: Send + Sync + DynClone {
         Ok(None)
     }
 
+    async fn bootstrap_companions_with_raw_elements(
+        &self,
+        _context: BootstrapCompanionsWithRawElementsContext<'_>,
+        _template_data: &TemplateData,
+    ) -> Result<BootstrappedCompanions> {
+        Ok(Default::default())
+    }
+
+    fn update_raw_elements_after_merged_blueprint_config(
+        &self,
+        _context: MergeRawElementsContext<'_>,
+        raw_elements: Vec<RawInfrastructureElement>,
+    ) -> Vec<RawInfrastructureElement> {
+        raw_elements
+    }
+
     #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any {
-        panic!("This should be only use in test environments with following approach: https://stackoverflow.com/a/33687996/5088458")
+        panic!(
+            "This should be only use in test environments with following approach: https://stackoverflow.com/a/33687996/5088458"
+        )
     }
 }
 

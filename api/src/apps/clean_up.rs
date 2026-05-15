@@ -565,22 +565,22 @@ mod tests {
         let now = Utc::now();
 
         let dummy_infra = Dummy::new()
-            .with_app(
+            .with_existing_app(
                 AppName::master(),
                 vec![blueprint_service!("nginx")],
                 now - TimeDelta::weeks(100),
             )
-            .with_app(
+            .with_existing_app(
                 AppName::from_str("to-be-kept-alive").unwrap(),
                 vec![blueprint_service!("nginx")],
                 now,
             )
-            .with_app(
+            .with_existing_app(
                 AppName::from_str("to-be-backed-up").unwrap(),
                 vec![blueprint_service!("nginx")],
                 now - TimeDelta::days(2),
             )
-            .with_app(
+            .with_existing_app(
                 AppName::from_str("to-be-kept-alive-2").unwrap(),
                 vec![blueprint_service!("nginx")],
                 now - TimeDelta::hours(2) + TimeDelta::minutes(1),

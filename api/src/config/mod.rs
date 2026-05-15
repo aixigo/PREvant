@@ -33,7 +33,7 @@ pub use self::container::ContainerConfig;
 pub use self::runtime::Runtime;
 use clap::Parser;
 use domain::app_blueprints::ServiceConfig;
-use domain::{AppName, Image, app_blueprints::UserDefinedParameters, traefik::TraefikVersion};
+use domain::{AppName, Image, traefik::TraefikVersion};
 use figment::providers::{Env, Format, Toml};
 use figment::value::{Dict, Map, Tag, Value};
 use figment::{Metadata, Profile};
@@ -304,24 +304,6 @@ impl Config {
 
     pub fn user_defined_schema_validator(&self) -> Option<Validator> {
         self.companions.user_defined_schema_validator()
-    }
-
-    pub fn companion_bootstrapping_containers<S>(
-        &self,
-        app_name: &AppName,
-        base_url: &Option<url::Url>,
-        infrastructure: Option<S>,
-        user_defined_parameters: &Option<UserDefinedParameters>,
-    ) -> Result<Vec<BootstrappingContainer>, handlebars::RenderError>
-    where
-        S: serde::Serialize,
-    {
-        self.companions.companion_bootstrapping_containers(
-            app_name,
-            base_url,
-            infrastructure,
-            user_defined_parameters,
-        )
     }
 
     pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &AppName) {
