@@ -131,6 +131,13 @@ pub trait Infrastructure: Send + Sync + DynClone {
         Ok(None)
     }
 
+    async fn resolve_infrastructure_template_data(
+        &self,
+        _app_name: &AppName,
+    ) -> Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+
     async fn bootstrap_companions_with_raw_elements(
         &self,
         _context: BootstrapCompanionsWithRawElementsContext<'_>,

@@ -139,9 +139,6 @@ impl AppDeploymentBuilder<Initialized> {
     /// ```
     pub fn finish(self) -> Result<DeploymentUnit, BuildDeploymentUintBuildError> {
         let base_route = TraefikIngressRoute::empty();
-        let application_base_url = base_route
-            .to_url()
-            .and_then(|url| url.join(&self.stage.app_name).ok());
 
         AppDeploymentBuilder::<WithBaseRoute> {
             stage: WithBaseRoute {
@@ -158,7 +155,6 @@ impl AppDeploymentBuilder<Initialized> {
                     image_infos: HashMap::new(),
                 },
                 prevant_base_route: base_route,
-                application_base_url,
             },
         }
         .finish()
@@ -425,9 +421,6 @@ impl AppDeploymentBuilder<WithStaticCompanions> {
     /// method to build [`DeploymentUnit`] in testing scenarios.
     pub fn finish(self) -> Result<DeploymentUnit, BuildDeploymentUintBuildError> {
         let base_route = TraefikIngressRoute::empty();
-        let application_base_url = base_route
-            .to_url()
-            .and_then(|url| url.join(&self.stage.initialized.app_name).ok());
 
         AppDeploymentBuilder::<WithBaseRoute> {
             stage: WithBaseRoute {
@@ -440,7 +433,6 @@ impl AppDeploymentBuilder<WithStaticCompanions> {
                     image_infos: HashMap::new(),
                 },
                 prevant_base_route: base_route,
-                application_base_url,
             },
         }
         .finish()
@@ -619,6 +611,15 @@ pub struct WithResolvedImages {
     image_infos: HashMap<Image, ImageInfo>,
 }
 
+impl WithResolvedImages {
+    fn port(&self, image: &Image) -> u16 {
+        self.image_infos
+            .get(image)
+            .and_then(|image_info| image_info.exposed_port())
+            .unwrap_or(80)
+    }
+}
+
 impl AppDeploymentBuilder<WithResolvedImages> {
     /// Resolves the base route where PREvant runs.
     pub async fn resolve_base_route<E, P>(
@@ -632,23 +633,10 @@ impl AppDeploymentBuilder<WithResolvedImages> {
             .await?
             .unwrap_or_else(TraefikIngressRoute::empty);
 
-        let application_base_url = base_route.to_url().and_then(|url| {
-            url.join(
-                &self
-                    .stage
-                    .with_resolved_apps
-                    .with_static_companions
-                    .initialized
-                    .app_name,
-            )
-            .ok()
-        });
-
         Ok(AppDeploymentBuilder {
             stage: WithBaseRoute {
                 with_resolved_images: self.stage,
                 prevant_base_route: base_route,
-                application_base_url,
             },
         })
     }
@@ -657,7 +645,6 @@ impl AppDeploymentBuilder<WithResolvedImages> {
 pub struct WithBaseRoute {
     with_resolved_images: WithResolvedImages,
     prevant_base_route: TraefikIngressRoute,
-    application_base_url: Option<Url>,
 }
 
 impl WithBaseRoute {
@@ -707,9 +694,18 @@ impl AppDeploymentBuilder<WithBaseRoute> {
         resolve_infrastructure_template_data: P,
     ) -> Result<AppDeploymentBuilder<WithInfrastructureTemplateData>, E>
     where
-        P: AsyncFnOnce() -> Result<Option<serde_json::Value>, E>,
+        P: AsyncFnOnce(&AppName) -> Result<Option<serde_json::Value>, E>,
     {
-        let infrastructure_template_data = resolve_infrastructure_template_data().await?;
+        let infrastructure_template_data = resolve_infrastructure_template_data(
+            &self
+                .stage
+                .with_resolved_images
+                .with_resolved_apps
+                .with_static_companions
+                .initialized
+                .app_name,
+        )
+        .await?;
         Ok(AppDeploymentBuilder {
             stage: WithInfrastructureTemplateData {
                 with_base_route: self.stage,
@@ -738,6 +734,7 @@ impl WithInfrastructureTemplateData {
     fn base_template_data<'a, 'b: 'a>(
         &'b self,
         merged_user_defined_parameters: &'a Option<UserDefinedParameters>,
+        base_url: Option<&'a Url>,
     ) -> TemplateData<'a> {
         TemplateData {
             application: crate::templating::ApplicationTemplateData {
@@ -748,7 +745,7 @@ impl WithInfrastructureTemplateData {
                     .with_static_companions
                     .initialized
                     .app_name,
-                base_url: self.with_base_route.application_base_url.as_ref(),
+                base_url,
             },
             user_defined_parameters: merged_user_defined_parameters
                 .as_ref()
@@ -918,9 +915,23 @@ impl AppDeploymentBuilder<WithInfrastructureTemplateData> {
         P: BootstrapCompanions<Error = E> + 'bc,
     {
         let merged_user_defined_parameters = self.stage.merged_user_defined_parameters();
-        let template_data = self
-            .stage
-            .base_template_data(&merged_user_defined_parameters);
+        let base_url = self.stage.with_base_route.application_base_route().to_url();
+
+        let template_data = TemplateData {
+            service_or_services: ServiceOrServices::Services {
+                services: self
+                    .stage
+                    .with_base_route
+                    .with_resolved_images
+                    .with_resolved_apps
+                    .blueprint_configs_as_template_data(|image| {
+                        self.stage.with_base_route.with_resolved_images.port(image)
+                    }),
+            },
+            ..self
+                .stage
+                .base_template_data(&merged_user_defined_parameters, base_url.as_ref())
+        };
 
         let owners = self
             .stage
@@ -1007,17 +1018,6 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
             .clone();
         ingress_route.merge_with(TraefikIngressRoute::with_defaults(app_name, service_name))?;
         Ok(ingress_route)
-    }
-
-    fn port(&self, image: &Image) -> u16 {
-        self.stage
-            .with_infrastructure_template_data
-            .with_base_route
-            .with_resolved_images
-            .image_infos
-            .get(image)
-            .and_then(|image_info| image_info.exposed_port())
-            .unwrap_or(80)
     }
 
     fn deployment_strategy(
@@ -1166,7 +1166,12 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
         } else {
             self.service_route(&blueprint_service.service_name)?
         };
-        let port = self.port(&blueprint_service.image);
+        let port = self
+            .stage
+            .with_infrastructure_template_data
+            .with_base_route
+            .with_resolved_images
+            .port(&blueprint_service.image);
         let strategy =
             self.deployment_strategy(companion.deployment_strategy(), &blueprint_service.image);
 
@@ -1251,6 +1256,13 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
     ) -> Result<impl Iterator<Item = DeployableService>, BuildDeploymentUintBuildError> {
         let mut services = BTreeMap::<String, DeployableService>::new();
 
+        let base_url = self
+            .stage
+            .with_infrastructure_template_data
+            .with_base_route
+            .application_base_route()
+            .to_url();
+
         let data = TemplateData {
             service_or_services: ServiceOrServices::Services {
                 services: self
@@ -1259,12 +1271,18 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
                     .with_base_route
                     .with_resolved_images
                     .with_resolved_apps
-                    .blueprint_configs_as_template_data(|image| self.port(image)),
+                    .blueprint_configs_as_template_data(|image| {
+                        self.stage
+                            .with_infrastructure_template_data
+                            .with_base_route
+                            .with_resolved_images
+                            .port(image)
+                    }),
             },
             ..self
                 .stage
                 .with_infrastructure_template_data
-                .base_template_data(merged_user_defined_parameters)
+                .base_template_data(merged_user_defined_parameters, base_url.as_ref())
         };
 
         let instance_or_replica_configs = self
@@ -1410,10 +1428,17 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
     ) -> Result<Vec<DeployableService>, BuildDeploymentUintBuildError> {
         let mut deployable_services = BTreeMap::<String, DeployableService>::new();
 
+        let base_url = self
+            .stage
+            .with_infrastructure_template_data
+            .with_base_route
+            .application_base_route()
+            .to_url();
+
         let mut data = self
             .stage
             .with_infrastructure_template_data
-            .base_template_data(merged_user_defined_parameters);
+            .base_template_data(merged_user_defined_parameters, base_url.as_ref());
 
         // First pass of templating: check if the resulting companion matches to an instance or
         // replica.
@@ -1435,7 +1460,12 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
                     service: ServiceTemplateData {
                         name: &instance_or_replica_config.service_name,
                         image: &instance_or_replica_config.image,
-                        port: self.port(&instance_or_replica_config.image),
+                        port: self
+                            .stage
+                            .with_infrastructure_template_data
+                            .with_base_route
+                            .with_resolved_images
+                            .port(&instance_or_replica_config.image),
                         container_type,
                     },
                 };
@@ -1488,7 +1518,12 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
                     service: ServiceTemplateData {
                         name: &instance_or_replica_config.service_name,
                         image: &instance_or_replica_config.image,
-                        port: self.port(&instance_or_replica_config.image),
+                        port: self
+                            .stage
+                            .with_infrastructure_template_data
+                            .with_base_route
+                            .with_resolved_images
+                            .port(&instance_or_replica_config.image),
                         container_type,
                     },
                 };
@@ -1532,7 +1567,12 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
             })
             .cloned()
             .map(|service| {
-                let port = self.port(&service.blueprint_config.image);
+                let port = self
+                    .stage
+                    .with_infrastructure_template_data
+                    .with_base_route
+                    .with_resolved_images
+                    .port(&service.blueprint_config.image);
                 let ingress_route = self.service_route(&service.blueprint_config.service_name)?;
 
                 Ok(DeployableService {
@@ -1660,10 +1700,17 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
                 ));
         }
 
+        let base_url = self
+            .stage
+            .with_infrastructure_template_data
+            .with_base_route
+            .application_base_route()
+            .to_url();
+
         let template_data = self
             .stage
             .with_infrastructure_template_data
-            .base_template_data(&user_defined_parameters);
+            .base_template_data(&user_defined_parameters, base_url.as_ref());
         for config in self
             .stage
             .with_infrastructure_template_data
@@ -1698,7 +1745,12 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
                 &config.service_name,
             ))?;
 
-            let port = self.port(&config.image);
+            let port = self
+                .stage
+                .with_infrastructure_template_data
+                .with_base_route
+                .with_resolved_images
+                .port(&config.image);
 
             services
                 .entry(config.service_name.clone())
@@ -3545,7 +3597,7 @@ mod tests {
             wordpress_config.add_env(
                 EnvironmentVariable::with_templating(
                     String::from("WORDPRESS_CONFIG_EXTRA"),
-                    SecUtf8::from_str("define('WP_HOME','http://localhost');\ndefine('WP_SITEURL','{{application.baseUrl}}/blog');").unwrap(),
+                    SecUtf8::from_str("define('WP_HOME','http://localhost');\ndefine('WP_SITEURL','{{application.baseUrl}}blog');").unwrap(),
                 ),
             );
 
@@ -3699,7 +3751,7 @@ mod tests {
                         "openid",
                         "private.example.com/library/openid:backup",
                         env = (
-                            "REDIRECT_URI" => "http://example.com/master"
+                            "REDIRECT_URI" => "http://example.com/master/"
                         )
                     ),
                 ),],
@@ -4451,7 +4503,7 @@ mod tests {
                     .await?
                     .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
                     .await?
-                    .resolve_infrastructure_template_data::<anyhow::Error, _>(async || {
+                    .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| {
                         Ok::<_, anyhow::Error>(Some(serde_json::json!({
                             "kubernetesVersion": "1.30.0"
                         })))
@@ -4808,7 +4860,7 @@ mod tests {
             .await?
             .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
             .await?
-            .resolve_infrastructure_template_data::<anyhow::Error, _>(async || Ok(None))
+            .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| Ok(None))
             .await?
             .bootstrap_companions(DummyBootstrapCompanions {})
             .await?
@@ -4822,6 +4874,73 @@ mod tests {
                     &ContainerType::Instance,
                     &vec![RawInfrastructureElement::from(
                         serde_json::json!({"opaque": "docker.io/library/adminer:5.4.2"})
+                    )]
+                ),],
+                deployment_unit
+                    .services
+                    .iter()
+                    .filter(|service| service.blueprint_service.service_name == "adminer")
+                    .map(|service| (
+                        service.blueprint_service.service_name.as_str(),
+                        &service.blueprint_service.image,
+                        &service.blueprint_service,
+                        &service.service_type,
+                        &service.bootstrapped_companion_elements
+                    ))
+                    .collect::<Vec<_>>(),
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn bootstrapped_companion_with_running_services() -> Result<()> {
+            let deployment_unit = AppDeploymentBuilder::init(AppName::master(), Vec::new(), None)
+                .with_static_companions(std::iter::empty())
+                .resolve_apps::<anyhow::Error, _>(|app_name: AppName| match app_name.as_str() {
+                    "master" => Ok(Some(App::new(
+                        vec![app_instance::Service {
+                            id: String::from("id"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Replica,
+                            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+                        }],
+                        HashSet::new(),
+                        None,
+                        None,
+                    ))),
+                    _ => Ok(None),
+                })
+                .await?
+                .resolve_image_manifests::<anyhow::Error, _>(async |_images| Ok(HashMap::new()))
+                .await?
+                .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
+                .await?
+                .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| Ok(None))
+                .await?
+                .bootstrap_companions(Box::new(
+                    |_: &BootstrapCompanionsWithRawElementsContext, data: &TemplateData<'_>| {
+                        Ok::<_, anyhow::Error>(BootstrappedCompanions {
+                            bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                                blueprint_service!("adminer", "adminer:4.8.1"),
+                                vec![RawInfrastructureElement::from(serde_json::json!({
+                                    "opaque": data.as_handlerbars().render("{{#each services}}{{name}}{{/each}}")?
+                                }))],
+                            )],
+                            ..Default::default()
+                        })
+                    },
+                ))
+                .await?
+                .finish()?;
+
+            assert_eq!(
+                vec![(
+                    "adminer",
+                    &Image::from_str("adminer:4.8.1").unwrap(),
+                    &blueprint_service!("adminer", "adminer:4.8.1"),
+                    &ContainerType::ApplicationCompanion,
+                    &vec![RawInfrastructureElement::from(
+                        serde_json::json!({"opaque": "nginx"})
                     )]
                 ),],
                 deployment_unit

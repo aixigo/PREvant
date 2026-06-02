@@ -241,6 +241,12 @@ and the container image:
   - 'namespace' (Kubernetes): the name of the namespace where the application
     will be installed in.
 - `userDefined`: see [user defined schema configuration](user-defined-schema.md).
+- `services`: An array of the services of the application. Each element has the
+  following structure:
+  - `name`: The service name which is equivalent to the network alias
+  - `image`: The service's OCI image
+  - `port`: The exposed port of the service
+  - `type`: The type of service. For example, `instance`, `replica`, `app-companion`, or `service-companion`.
 
 Additionally, check out the [builtin extra helpers][builtin-extra-helpers]
 PREvant offers via the [Handlebars Rust library][handlebars-rust].

@@ -296,9 +296,8 @@ impl Apps {
                 .await?
                 .resolve_base_route::<AppsError, _>(async || Ok(self.prevant_base_route.clone()))
                 .await?
-                .resolve_infrastructure_template_data::<AppsError, _>(async || {
-                    // TODO: add to infrastructure method
-                    Ok::<_, AppsError>(None)
+                .resolve_infrastructure_template_data::<AppsError, _>(async |app_name| {
+                    Ok(self.infrastructure.resolve_infrastructure_template_data(app_name).await?)
                 })
                 .await?
                 .bootstrap_companions::<AppsError, _>(InfrastructureBootstrapCompanions {

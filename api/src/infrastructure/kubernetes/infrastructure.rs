@@ -1059,6 +1059,15 @@ impl Infrastructure for KubernetesInfrastructure {
         .map(RawInfrastructureElement::from)
         .collect::<Vec<_>>()
     }
+
+    async fn resolve_infrastructure_template_data(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<serde_json::Value>> {
+        Ok(Some(serde_json::json!({
+            "namespace": app_name.to_rfc1123_namespace_id()
+        })))
+    }
 }
 
 #[derive(Clone)]
@@ -1438,7 +1447,9 @@ spec:
                 .await?
                 .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
                 .await?
-                .resolve_infrastructure_template_data::<anyhow::Error, _>(async || Ok(None))
+                .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| {
+                    Ok(None)
+                })
                 .await?
                 .bootstrap_companions::<anyhow::Error, _>(DummyBootstrapCompanions {
                     with_deployment,

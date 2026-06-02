@@ -301,6 +301,7 @@ macro_rules! parse_from_dynamic_object {
                     }
                 }
             }
+            ("", "") => {}
             _ => {
                 warn!(
                     "Cannot parse {name} ({api_version}, {kind}) for {app_name} because its kind is unknown",
