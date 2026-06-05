@@ -173,12 +173,7 @@ impl TraefikIngressRoute {
             }
             (Some(_), None) => {}
             (Some(route1), Some(route2)) => {
-                route1.rule.merge_with(route2.rule)?;
-
-                route1.middlewares = TraefikMiddleware::merge_middlewares(
-                    std::mem::take(&mut route1.middlewares),
-                    route2.middlewares,
-                )?;
+                route1.merge_with(route2)?;
             }
         };
 
@@ -285,6 +280,68 @@ impl TraefikRoute {
     pub fn middlewares(&self) -> &Vec<TraefikMiddleware> {
         &self.middlewares
     }
+
+    /// Merges two [routes](`Self`) into one route.
+    ///
+    /// Please note, there is some special case handling by the route merging. For example, in the
+    /// snippet below the [strip-prefix
+    /// middlewares](https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/stripprefix/)
+    /// will be dropped because a service behind `/another-path/` will no expect any stripping of
+    /// paths. Instead, the service wants to be accessed via the full URL. Keycloak is here a good
+    /// example because Keycloak doesn't provide any dynamic URL rendering, instead there is a fixed
+    /// configured path.
+    ///
+    /// ```rust
+    /// # use domain::traefik::*;
+    /// # use std::str::FromStr;
+    /// let mut route1 = TraefikIngressRoute::with_rule_and_middlewares(
+    ///     TraefikRouterRule::from_str("Host(`prevant.example.com`) && PathPrefix(`/test/`)")
+    ///         .unwrap(),
+    ///     vec![TraefikMiddleware::with_prefix_strip(
+    ///         String::from("will-be-deleted"),
+    ///         std::iter::once(String::from("/test/")),
+    ///     )],
+    /// );
+    /// let route2 = TraefikIngressRoute::with_rule(
+    ///     TraefikRouterRule::from_str("PathPrefix(`/another-path/`)").unwrap(),
+    /// );
+    ///
+    /// route1.merge_with(route2).unwrap();
+    ///
+    /// assert_eq!(
+    ///     route1,
+    ///     TraefikIngressRoute::with_rule(
+    ///         TraefikRouterRule::from_str(
+    ///             "Host(`prevant.example.com`) && PathPrefix(`/test/another-path/`)"
+    ///         )
+    ///         .unwrap(),
+    ///     )
+    /// );
+    /// ```
+    pub fn merge_with(&mut self, other: Self) -> Result<(), TraefikIngressRouteMergeError> {
+        if self.rule.matches_path_prefix()
+            && other.rule.matches_path_prefix()
+            && self
+                .middlewares
+                .iter()
+                .any(TraefikMiddleware::is_strip_prefix)
+            && !other
+                .middlewares
+                .iter()
+                .any(TraefikMiddleware::is_strip_prefix)
+        {
+            self.middlewares.retain(|m| !m.is_strip_prefix());
+        }
+
+        self.rule.merge_with(other.rule)?;
+
+        self.middlewares = TraefikMiddleware::merge_middlewares(
+            std::mem::take(&mut self.middlewares),
+            other.middlewares,
+        )?;
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -293,6 +350,12 @@ pub struct TraefikRouterRule {
 }
 
 impl TraefikRouterRule {
+    fn matches_path_prefix(&self) -> bool {
+        self.matches
+            .iter()
+            .any(|m| matches!(m, Matcher::PathPrefix { .. }))
+    }
+
     pub fn path_prefix_from_segments<S>(segments: S) -> String
     where
         S: IntoIterator,
@@ -1334,6 +1397,33 @@ mod tests {
                     String::from("master-whoami-middleware"),
                     std::iter::once(String::from("/test/master/whoami/"))
                 )],
+            )
+        );
+    }
+
+    #[test]
+    fn merge_ingress_routes_with_and_without_prefix_strip() {
+        let mut route1 = TraefikIngressRoute::with_rule_and_middlewares(
+            TraefikRouterRule::from_str("Host(`prevant.example.com`) && PathPrefix(`/test/`)")
+                .unwrap(),
+            vec![TraefikMiddleware::with_prefix_strip(
+                String::from("will-be-overwritten"),
+                std::iter::once(String::from("/test/")),
+            )],
+        );
+        let route2 = TraefikIngressRoute::with_rule(
+            TraefikRouterRule::from_str("PathPrefix(`/another-path/`)").unwrap(),
+        );
+
+        route1.merge_with(route2).unwrap();
+
+        assert_eq!(
+            route1,
+            TraefikIngressRoute::with_rule(
+                TraefikRouterRule::from_str(
+                    "Host(`prevant.example.com`) && PathPrefix(`/test/another-path/`)"
+                )
+                .unwrap(),
             )
         );
     }
