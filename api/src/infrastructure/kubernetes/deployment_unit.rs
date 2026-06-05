@@ -3484,11 +3484,6 @@ spec:
                           {
                             "kind": "Rule",
                             "match": "Host(`example.com`) && PathPrefix(`/some-route/master/my-route/`)",
-                            "middlewares": [
-                              {
-                                "name": "name"
-                              }
-                            ],
                             "services": [
                               {
                                 "kind": "Service",
@@ -3498,21 +3493,6 @@ spec:
                             ]
                           }
                         ]
-                      }
-                    },
-                    {
-                      "apiVersion": "traefik.containo.us/v1alpha1",
-                      "kind": "Middleware",
-                      "metadata": {
-                        "name": "name",
-                        "namespace": "master"
-                      },
-                      "spec": {
-                        "stripPrefix": {
-                          "prefixes": [
-                            "/some-route/master/"
-                          ]
-                        }
                       }
                     }
                 ])
