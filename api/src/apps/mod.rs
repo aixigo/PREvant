@@ -297,7 +297,10 @@ impl Apps {
                 .resolve_base_route::<AppsError, _>(async || Ok(self.prevant_base_route.clone()))
                 .await?
                 .resolve_infrastructure_template_data::<AppsError, _>(async |app_name| {
-                    Ok(self.infrastructure.resolve_infrastructure_template_data(app_name).await?)
+                    Ok(self
+                        .infrastructure
+                        .resolve_infrastructure_template_data(app_name)
+                        .await?)
                 })
                 .await?
                 .bootstrap_companions::<AppsError, _>(InfrastructureBootstrapCompanions {
@@ -469,6 +472,14 @@ impl From<BuildDeploymentUintBuildError> for AppsError {
             ) => Self::BaseRouteNotMergeable {
                 error: traefik_ingress_route_merge_error.to_string(),
             },
+            BuildDeploymentUintBuildError::UpdatingRawElements { err } => {
+                Self::InfrastructureError { error: err }
+            }
+            BuildDeploymentUintBuildError::InvalidMiddlewareTemplate { err } => {
+                Self::InfrastructureError {
+                    error: err.to_string(),
+                }
+            }
         }
     }
 }
@@ -544,9 +555,10 @@ impl BootstrapCompanions for InfrastructureBootstrapCompanions {
         &self,
         context: MergeRawElementsContext<'_>,
         raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Vec<RawInfrastructureElement> {
-        self.infrastructure
-            .update_raw_elements_after_merged_blueprint_config(context, raw_elements)
+    ) -> Result<Vec<RawInfrastructureElement>, Self::Error> {
+        Ok(self
+            .infrastructure
+            .update_raw_elements_after_merged_blueprint_config(context, raw_elements)?)
     }
 }
 

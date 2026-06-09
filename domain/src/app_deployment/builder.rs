@@ -7,12 +7,14 @@ use crate::{
         ServiceOrServices, ServiceTemplateData, TemplateData, TemplatedClone, TemplatedCloneError,
     },
     traefik::{
-        TraefikIngressRoute, TraefikIngressRouteMergeError, TraefikMiddleware, TraefikRouterRule,
+        TraefikIngressRoute, TraefikIngressRouteMergeError, TraefikMiddleware,
+        TraefikMiddlewareParseError, TraefikRouterRule,
     },
 };
 use handlebars::RenderError;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    fmt::Display,
     marker::PhantomData,
     str::FromStr,
 };
@@ -680,11 +682,21 @@ pub enum BuildDeploymentUintBuildError {
     FailedTemplatingForService(RenderError),
     #[error("Failed to parse Traefik rule from templated rule ({rule}) in static companion: {err}")]
     TraefikRuleParsingFromTemplatedStaticCompanionRule { rule: String, err: String },
+    #[error("Failed to update the bootstrapped, raw elements due to {err}")]
+    UpdatingRawElements { err: String },
+    #[error("Failed to create middleware: {err}")]
+    InvalidMiddlewareTemplate { err: TraefikMiddlewareParseError },
 }
 
 impl From<TraefikIngressRouteMergeError> for BuildDeploymentUintBuildError {
     fn from(error: TraefikIngressRouteMergeError) -> Self {
         Self::TraefikIngressRouteMergeError(error)
+    }
+}
+
+impl From<TraefikMiddlewareParseError> for BuildDeploymentUintBuildError {
+    fn from(err: TraefikMiddlewareParseError) -> Self {
+        Self::InvalidMiddlewareTemplate { err }
     }
 }
 
@@ -853,7 +865,7 @@ pub trait BootstrapCompanions {
         &self,
         context: MergeRawElementsContext<'_>,
         raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Vec<RawInfrastructureElement>;
+    ) -> Result<Vec<RawInfrastructureElement>, Self::Error>;
 }
 
 #[async_trait::async_trait]
@@ -881,8 +893,8 @@ where
         &self,
         _context: MergeRawElementsContext<'_>,
         raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Vec<RawInfrastructureElement> {
-        raw_elements
+    ) -> Result<Vec<RawInfrastructureElement>, Self::Error> {
+        Ok(raw_elements)
     }
 }
 
@@ -995,7 +1007,10 @@ pub struct WithBootstrappedCompanions<'bc, E> {
     bootstrap_companions: Option<Box<dyn BootstrapCompanions<Error = E> + 'bc>>,
 }
 
-impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
+impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>>
+where
+    E: Display,
+{
     fn service_route(
         &self,
         service_name: &str,
@@ -1112,7 +1127,7 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
                                     }),
                                 )
                             })
-                            .collect::<Vec<_>>(),
+                            .collect::<Result<Vec<_>, _>>()?,
                     )
                 }
                 (Some(rule_template), None) => {
@@ -1149,7 +1164,8 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
                                         name: spec.clone()
                                     }),
                                 )
-                            }),
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
                     )
                 }
                 (None, None) => unreachable!(),
@@ -1233,7 +1249,10 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
                             .application_base_route(),
                     },
                     raw_elements.clone(),
-                ),
+                )
+                .map_err(|e| BuildDeploymentUintBuildError::UpdatingRawElements {
+                    err: e.to_string(),
+                })?,
             (_, _) => Vec::new(),
         };
 
@@ -1816,14 +1835,18 @@ impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>> {
             .owners();
 
         let bootstrapped_companion_elements = match self.stage.bootstrap_companions {
-            Some(bootstrap_companions) => bootstrap_companions.update_raw_elements(
-                MergeRawElementsContext {
-                    app_name,
-                    service_config_context: None,
-                    base_route: &route,
-                },
-                self.stage.bootstrapped_companion_elements,
-            ),
+            Some(bootstrap_companions) => bootstrap_companions
+                .update_raw_elements(
+                    MergeRawElementsContext {
+                        app_name,
+                        service_config_context: None,
+                        base_route: &route,
+                    },
+                    self.stage.bootstrapped_companion_elements,
+                )
+                .map_err(|e| BuildDeploymentUintBuildError::UpdatingRawElements {
+                    err: e.to_string(),
+                })?,
             None => self.stage.bootstrapped_companion_elements,
         };
 
@@ -4399,6 +4422,36 @@ mod tests {
             Ok(())
         }
 
+        #[rstest::rstest]
+        #[case::service_companions(vec![
+            StaticCompanion::service_companion(mariadb_config()),
+            StaticCompanion::service_companion(blueprint_service!("adminer", "adminer:4.8.1"))
+                .with_templated_rule(Some(String::from("PathPrefix(`/{{application.name}}/adminer/sub-path`)")))
+                .with_templated_middlewares(toml::from_str::<BTreeMap<String, serde_value::Value>>(r#"
+                    headers = { 'customRequestHeaders' = { 'X-Forwarded-Prefix' =  '/{{application.name}}/adminer/sub-path' } }
+                    stripPrefix = { 'prefixes' = [ '/{{application.name}}/adminer/sub-path' ] }
+                    forwardAuth = { address = '12345' }
+                "#).ok()),
+        ])]
+        fn failing_middleware_templating(
+            #[case] static_companions: Vec<StaticCompanion>,
+        ) -> Result<()> {
+            let deployment_unit_err =
+                AppDeploymentBuilder::init(AppName::master(), vec![nextcloud_config()], None)
+                    .with_static_companions(static_companions)
+                    .finish()
+                    .unwrap_err();
+
+            assert!(matches!(
+                deployment_unit_err,
+                BuildDeploymentUintBuildError::InvalidMiddlewareTemplate {
+                    err: TraefikMiddlewareParseError::InvalidAuthForwardAddress { .. }
+                }
+            ));
+
+            Ok(())
+        }
+
         #[test]
         fn user_defined_data_templating() -> Result<()> {
             let mut wordpress_config = wordpress_config();
@@ -4811,7 +4864,7 @@ mod tests {
                     &self,
                     context: MergeRawElementsContext<'_>,
                     raw_elements: Vec<RawInfrastructureElement>,
-                ) -> Vec<RawInfrastructureElement> {
+                ) -> Result<Vec<RawInfrastructureElement>, Self::Error> {
                     if context.service_config_context.is_some() {
                         assert_eq!(
                             context
@@ -4822,7 +4875,7 @@ mod tests {
                         );
                     }
 
-                    raw_elements
+                    Ok(raw_elements
                         .into_iter()
                         .map(serde_json::Value::from)
                         .map(|mut json| {
@@ -4841,7 +4894,7 @@ mod tests {
                             json
                         })
                         .map(RawInfrastructureElement::from)
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>())
                 }
             }
 

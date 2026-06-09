@@ -969,7 +969,7 @@ impl Infrastructure for KubernetesInfrastructure {
             let middleware = TraefikMiddleware::from_json(
                 middleware.metadata.name.expect("There should be a name"),
                 middleware.spec.0,
-            );
+            )?;
 
             traefik_middlewares.push(middleware);
         }
@@ -1046,18 +1046,16 @@ impl Infrastructure for KubernetesInfrastructure {
         &self,
         context: MergeRawElementsContext<'_>,
         raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Vec<RawInfrastructureElement> {
-        K8sDeploymentUnit::parse_from_json(
+    ) -> Result<Vec<RawInfrastructureElement>> {
+        Ok(K8sDeploymentUnit::parse_from_json(
             &AppName::master(),
             raw_elements.into_iter().map(serde_json::Value::from),
-        )
-        // TODO: the interface must have error handling
-        .unwrap()
-        .update_with_merge_context(context)
+        )?
+        .update_with_merge_context(context)?
         .to_json_vec()
         .into_iter()
         .map(RawInfrastructureElement::from)
-        .collect::<Vec<_>>()
+        .collect::<Vec<_>>())
     }
 
     async fn resolve_infrastructure_template_data(
@@ -1422,17 +1420,16 @@ spec:
                 &self,
                 context: MergeRawElementsContext<'_>,
                 raw_elements: Vec<RawInfrastructureElement>,
-            ) -> Vec<RawInfrastructureElement> {
-                K8sDeploymentUnit::parse_from_json(
+            ) -> Result<Vec<RawInfrastructureElement>> {
+                Ok(K8sDeploymentUnit::parse_from_json(
                     &AppName::master(),
                     raw_elements.into_iter().map(serde_json::Value::from),
-                )
-                .unwrap()
-                .update_with_merge_context(context)
+                )?
+                .update_with_merge_context(context)?
                 .to_json_vec()
                 .into_iter()
                 .map(RawInfrastructureElement::from)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>())
             }
         }
 
@@ -1503,6 +1500,7 @@ spec:
         let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
             .without_managed_data()
+            .without_date_annotations()
             .to_json_vec();
 
         assert_json_diff::assert_json_include!(
@@ -1568,6 +1566,7 @@ spec:
         let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
             .without_managed_data()
+            .without_date_annotations()
             .to_json_vec();
         assert_json_diff::assert_json_eq!(payload, payload_2);
 
@@ -1722,6 +1721,7 @@ spec:
         let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
             .without_managed_data()
+            .without_date_annotations()
             .to_json_vec();
 
         // Redeploy again to check if the operation is idempotent
@@ -1730,6 +1730,7 @@ spec:
         let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
             .without_managed_data()
+            .without_date_annotations()
             .to_json_vec();
         assert_json_diff::assert_json_eq!(payload, payload_2);
 
@@ -1805,6 +1806,7 @@ spec:
         let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
             .without_managed_data()
+            .without_date_annotations()
             .to_json_vec();
 
         // Redeploy again to check if the operation is idempotent
@@ -1813,6 +1815,7 @@ spec:
         let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
             .without_managed_data()
+            .without_date_annotations()
             .to_json_vec();
         assert_json_diff::assert_json_eq!(payload, payload_2);
 
