@@ -197,13 +197,17 @@ macro_rules! parse_from_dynamic_object {
             (Deployment::API_VERSION, Deployment::KIND) => {
                 match $dyn_obj.clone().try_parse::<Deployment>() {
                     Ok(mut deployment) => {
-                        let service_name = deployment
-                            .labels()
-                            .get("app.kubernetes.io/component")
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                deployment.metadata.name.clone().unwrap_or_default()
-                            });
+                        // TODO: eventually we should support that bootstrapped elements support the
+                        // reading of PREvant labels. In this case, the  following code snippet
+                        // should be evaluated.
+                        // let service_name = deployment
+                        //     .labels()
+                        //     .get(SERVICE_NAME_LABEL)
+                        //     .cloned()
+                        //     .unwrap_or_else(|| {
+                        //         deployment.metadata.name.clone().unwrap_or_default()
+                        //     });
+                        let service_name = deployment.metadata.name.clone().unwrap_or_default();
 
                         deployment.labels_mut().entry(SERVICE_NAME_LABEL.to_string())
                             .or_insert(service_name);
