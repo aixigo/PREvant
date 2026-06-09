@@ -511,8 +511,17 @@ enum TraefikMiddlewareSpec {
     Other(serde_value::Value),
 }
 
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum TraefikMiddlewareParseError {
+    #[error("Invalid forward adderss {value}: {err}")]
+    InvalidAuthForwardAddress { value: String, err: url::ParseError },
+}
+
 impl TraefikMiddleware {
-    pub fn from_json(name: String, spec: serde_json::Value) -> Self {
+    pub fn from_json(
+        name: String,
+        spec: serde_json::Value,
+    ) -> Result<Self, TraefikMiddlewareParseError> {
         use serde_json::Value;
 
         match &spec {
@@ -520,13 +529,13 @@ impl TraefikMiddleware {
                 if let Some(Value::Object(strip_prefix)) = map.get("stripPrefix")
                     && let Some(Value::Array(prefixes)) = strip_prefix.get("prefixes") =>
             {
-                Self::with_prefix_strip(
+                Ok(Self::with_prefix_strip(
                     name,
                     prefixes
                         .iter()
                         .flat_map(|e| e.as_str())
                         .map(ToString::to_string),
-                )
+                ))
             }
             Value::Object(map)
                 if let Some(Value::Object(forward_auth)) = map.get("forwardAuth")
@@ -535,11 +544,16 @@ impl TraefikMiddleware {
                 let mut params = forward_auth.clone();
                 params.remove("address");
 
-                Self::with_forward_auth_and_params(
+                Ok(Self::with_forward_auth_and_params(
                     name,
-                    Url::from_str(address).unwrap(),
+                    Url::from_str(address).map_err(|err| {
+                        TraefikMiddlewareParseError::InvalidAuthForwardAddress {
+                            value: address.to_string(),
+                            err,
+                        }
+                    })?,
                     serde_value::to_value(params).unwrap(),
-                )
+                ))
             }
             Value::Object(map) if let Some(Value::Object(headers)) = map.get("headers") => {
                 let request = headers
@@ -557,11 +571,11 @@ impl TraefikMiddleware {
                     .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
                     .collect::<BTreeMap<_, _>>();
 
-                Self::with_headers(name, request, response)
+                Ok(Self::with_headers(name, request, response))
             }
             spec => {
                 let spec = TraefikMiddlewareSpec::Other(serde_value::to_value(spec).unwrap());
-                Self { name, spec }
+                Ok(Self { name, spec })
             }
         }
     }
@@ -645,12 +659,25 @@ impl TraefikMiddleware {
                 serde_json::json!({ "forwardAuth": map })
             }
             TraefikMiddlewareSpec::Headers { request, response } => {
-                serde_json::json!({
-                    "headers": {
-                        "customRequestHeaders": request,
-                        "customResponseHeaders": response
-                    }
-                })
+                match (!request.is_empty(), !response.is_empty()) {
+                    (true, true) => serde_json::json!({
+                        "headers": {
+                            "customRequestHeaders": request,
+                            "customResponseHeaders": response
+                        }
+                    }),
+                    (true, false) => serde_json::json!({
+                        "headers": {
+                            "customRequestHeaders": request,
+                        }
+                    }),
+                    (false, true) => serde_json::json!({
+                        "headers": {
+                            "customResponseHeaders": response
+                        }
+                    }),
+                    (false, false) => serde_json::json!({}),
+                }
             }
             TraefikMiddlewareSpec::StripPrefix(items) => serde_json::json!({
                 "stripPrefix": {
@@ -1902,10 +1929,30 @@ mod tests {
 
                 assert_eq!(
                     from_json,
-                    TraefikMiddleware::with_forward_auth(
+                    Ok(TraefikMiddleware::with_forward_auth(
                         String::from("name"),
                         Url::from_str("https://example.com/auth").unwrap(),
-                    )
+                    ))
+                );
+            }
+
+            #[test]
+            fn invalid_foward_auth() {
+                let from_json = TraefikMiddleware::from_json(
+                    String::from("name"),
+                    serde_json::json!({
+                        "forwardAuth": {
+                            "address": "12345"
+                        }
+                    }),
+                );
+
+                assert_eq!(
+                    from_json,
+                    Err(TraefikMiddlewareParseError::InvalidAuthForwardAddress {
+                        value: String::from("12345"),
+                        err: url::ParseError::RelativeUrlWithoutBase
+                    })
                 );
             }
 
@@ -1925,10 +1972,10 @@ mod tests {
 
                 assert_eq!(
                     from_json,
-                    TraefikMiddleware::with_prefix_strip(
+                    Ok(TraefikMiddleware::with_prefix_strip(
                         String::from("name"),
                         [String::from("/foobar"), String::from("/fiibar")]
-                    )
+                    ))
                 );
             }
 
@@ -1950,21 +1997,21 @@ mod tests {
 
                 assert_eq!(
                     from_json,
-                    TraefikMiddleware::with_headers(
+                    Ok(TraefikMiddleware::with_headers(
                         String::from("name"),
                         [(String::from("X-Script-Name"), String::from("test"))],
                         [(
                             String::from("X-Custom-Response-Header"),
                             String::from("value")
                         )],
-                    )
+                    ))
                 );
             }
         }
 
         mod to_json {
             use super::*;
-            use pretty_assertions::assert_eq;
+            use assert_json_diff::assert_json_eq;
 
             #[test]
             fn foward_auth() {
@@ -1973,7 +2020,7 @@ mod tests {
                     Url::from_str("https://example.com/auth").unwrap(),
                 );
 
-                assert_eq!(
+                assert_json_eq!(
                     middleware.to_json_spec(),
                     serde_json::json!({
                         "forwardAuth": {
@@ -1990,7 +2037,7 @@ mod tests {
                     [String::from("/foobar"), String::from("/fiibar")],
                 );
 
-                assert_eq!(
+                assert_json_eq!(
                     middleware.to_json_spec(),
                     serde_json::json!({
                         "stripPrefix": {
@@ -2014,7 +2061,7 @@ mod tests {
                     )],
                 );
 
-                assert_eq!(
+                assert_json_eq!(
                     middleware.to_json_spec(),
                     serde_json::json!({
                         "headers": {
@@ -2024,6 +2071,48 @@ mod tests {
                             "customResponseHeaders": {
                                 "X-Custom-Response-Header": "value"
                             }
+                        }
+                    })
+                );
+            }
+
+            #[test]
+            fn response_headers() {
+                let middleware = TraefikMiddleware::with_headers(
+                    String::from("name"),
+                    [],
+                    [(
+                        String::from("X-Custom-Response-Header"),
+                        String::from("value"),
+                    )],
+                );
+
+                assert_json_eq!(
+                    middleware.to_json_spec(),
+                    serde_json::json!({
+                        "headers": {
+                            "customResponseHeaders": {
+                                "X-Custom-Response-Header": "value"
+                            }
+                        }
+                    })
+                );
+            }
+
+            #[test]
+            fn request_headers() {
+                let middleware = TraefikMiddleware::with_request_headers(
+                    String::from("name"),
+                    [(String::from("X-Script-Name"), String::from("test"))],
+                );
+
+                assert_json_eq!(
+                    middleware.to_json_spec(),
+                    serde_json::json!({
+                        "headers": {
+                            "customRequestHeaders": {
+                                "X-Script-Name": "test"
+                            },
                         }
                     })
                 );

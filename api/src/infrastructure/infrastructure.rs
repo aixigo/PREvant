@@ -150,8 +150,8 @@ pub trait Infrastructure: Send + Sync + DynClone {
         &self,
         _context: MergeRawElementsContext<'_>,
         raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Vec<RawInfrastructureElement> {
-        raw_elements
+    ) -> Result<Vec<RawInfrastructureElement>> {
+        Ok(raw_elements)
     }
 
     #[cfg(test)]

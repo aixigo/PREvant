@@ -729,11 +729,14 @@ impl K8sDeploymentUnit {
         }))
     }
 
-    pub fn update_with_merge_context(mut self, context: MergeRawElementsContext<'_>) -> Self {
+    pub fn update_with_merge_context(
+        mut self,
+        context: MergeRawElementsContext<'_>,
+    ) -> Result<Self> {
         let routes = convert_k8s_traefik_crds_to_domain_traefik_routes(
             std::mem::take(&mut self.traefik_ingresses),
             std::mem::take(&mut self.traefik_middlewares),
-        );
+        )?;
 
         for (original_name, route, services) in routes.into_iter() {
             let mut traefik_ingress = context.base_route.clone();
@@ -763,7 +766,7 @@ impl K8sDeploymentUnit {
                 .extend(middleware_payload(context.app_name, &traefik_ingress));
         }
 
-        self
+        Ok(self)
     }
 
     pub(super) fn merge(
@@ -1342,20 +1345,6 @@ impl K8sDeploymentUnit {
         empty_read_only_fields!(pods, status);
         empty_read_only_fields!(deployments, status);
 
-        // TODO: double check if this should be removed. We must ensure that the back-up & restore
-        // feature sets this again.
-        for metadata in deployments
-            .iter_mut()
-            .flat_map(|d| d.spec.as_mut())
-            .map(|d| &mut d.template)
-            .flat_map(|p| p.metadata.as_mut())
-        {
-            metadata.annotations = metadata.annotations.take().map(|mut annotations| {
-                annotations.remove(&String::from("date"));
-                annotations
-            });
-        }
-
         empty_read_only_fields!(jobs);
 
         empty_read_only_fields!(service_accounts);
@@ -1379,6 +1368,24 @@ impl K8sDeploymentUnit {
             traefik_ingresses,
             traefik_middlewares,
         }
+    }
+
+    /// Test helper method to clear out date that is set randomly when self [`K8sDeploymentUnit`] in
+    /// [`assert_json_diff::assert_json_include!`].
+    #[cfg(test)]
+    pub(super) fn without_date_annotations(mut self) -> Self {
+        for metadata in self.deployments
+            .iter_mut()
+            .flat_map(|d| d.spec.as_mut())
+            .map(|d| &mut d.template)
+            .flat_map(|p| p.metadata.as_mut())
+        {
+            metadata.annotations = metadata.annotations.take().map(|mut annotations| {
+                annotations.remove(&String::from("date"));
+                annotations
+            });
+        }
+        self
     }
 
     /// Clears out any Kubernetes object that shouldn't be put into the backup. For example,
@@ -3363,6 +3370,7 @@ spec:
                         )],
                     ),
                 })
+                .unwrap()
                 .to_json_vec();
 
             assert_json_diff::assert_json_include!(
@@ -3467,6 +3475,7 @@ spec:
                         )],
                     ),
                 })
+                .unwrap()
                 .to_json_vec();
 
             assert_json_diff::assert_json_include!(

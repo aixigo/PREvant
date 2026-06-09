@@ -780,7 +780,6 @@ pub fn secrets_payload(app_name: &AppName, blueprint_service: &ServiceConfig) ->
         "namespace": app_name.to_rfc1123_namespace_id(),
          APP_NAME_LABEL: app_name,
          SERVICE_NAME_LABEL: blueprint_service.service_name,
-         // TODO: CONTAINER_TYPE_LABEL: blueprint_service.service_type.to_string()
       },
       "type": "Opaque",
       "data": secrets
@@ -872,7 +871,7 @@ pub fn service_payload(app_name: &AppName, service_config: &DeployableService) -
 pub fn convert_k8s_traefik_crds_to_domain_traefik_routes(
     routes: Vec<IngressRoute>,
     middlewares: Vec<Middleware>,
-) -> Vec<(String, TraefikIngressRoute, Vec<TraefikRuleService>)> {
+) -> anyhow::Result<Vec<(String, TraefikIngressRoute, Vec<TraefikRuleService>)>> {
     let middlewares_by_name = middlewares
         .iter()
         .filter_map(|m| Some((m.metadata.name.as_deref()?, m)))
@@ -901,7 +900,7 @@ pub fn convert_k8s_traefik_crds_to_domain_traefik_routes(
                 .map(|(name, middleware)| {
                     TraefikMiddleware::from_json(name.to_string(), middleware.spec.0.clone())
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
 
             converted_routes.push((
                 if i > 0 {
@@ -919,7 +918,7 @@ pub fn convert_k8s_traefik_crds_to_domain_traefik_routes(
             ));
         }
     }
-    converted_routes
+    Ok(converted_routes)
 }
 
 pub fn ingress_route_payload_base(app_name: &AppName, route: &TraefikIngressRoute) -> IngressRoute {
@@ -1656,9 +1655,13 @@ mod tests {
         let ingress = ingress_route_payload_base(&AppName::master(), &route);
         let middlewares = middleware_payload(&AppName::master(), &route);
 
-        let routes = convert_k8s_traefik_crds_to_domain_traefik_routes(vec![ingress], middlewares);
+        let routes =
+            convert_k8s_traefik_crds_to_domain_traefik_routes(vec![ingress], middlewares).unwrap();
 
-        assert_eq!(routes, vec![(String::from("master-ingress-route"), route, Vec::new())]);
+        assert_eq!(
+            routes,
+            vec![(String::from("master-ingress-route"), route, Vec::new())]
+        );
     }
 
     #[test]
