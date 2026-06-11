@@ -114,14 +114,14 @@
                      <a v-if="container.url && isRunning( container )" :href='container.url' target="_blank">{{ container.name }}</a>
                      <span v-else>{{ container.name }}</span>
 
-                     <button type="button" class="btn btn-dark ra-container__change-status" @click="changeState($event, container.name)" v-if="reviewApp.status == 'deployed'">
-                        <template v-if="container.status === 'running'">
-                           <i class="ra-icons  material-icons">pause_circle_outline</i>
-                        </template>
-                        <template v-else>
-                           <i class="ra-icons  material-icons">play_circle_outline</i>
-                        </template>
-                     </button>
+                     <MDBIcon  
+                        class="ra-container__change-status ms-2 align-middle"
+                        size="lg"
+                        tabindex="0"
+                        v-if="reviewApp.status == 'deployed'"
+                        :icon="container.status === 'running' ? 'pause-circle' : 'play-circle'"  
+                        @click="changeState($event, container.name)">
+                     </MDBIcon>
                   </h5>
 
                   <div class="ra-build-infos__wrapper"
@@ -220,6 +220,7 @@
    import moment from 'moment';
    import { MDBDropdown, MDBDropdownItem, MDBDropdownMenu, MDBDropdownToggle } from 'mdb-vue-ui-kit';
    import BackupAppDialog from './BackupAppDialog.vue';
+   import { MDBDropdown, MDBDropdownItem, MDBDropdownMenu, MDBDropdownToggle, MDBIcon } from 'mdb-vue-ui-kit';
    import DuplicateAppDialog from './DuplicateAppDialog.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
    import { useConfig } from '../composables/useConfig';
@@ -249,6 +250,7 @@
          MDBDropdownItem,
          MDBDropdownMenu,
          MDBDropdownToggle,
+         MDBIcon,
          'backup-app-dialog': BackupAppDialog,
          'duplicate-app-dialog': DuplicateAppDialog,
          'shutdown-app-dialog': ShutdownAppDialog,
