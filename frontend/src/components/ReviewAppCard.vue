@@ -41,22 +41,22 @@
 
                <MDBDropdown v-model="menuOpen">
                   <MDBDropdownToggle tag="a" class="p-0 border-0 bg-transparent dropdown-toggle" @click="menuOpen = !menuOpen">
-                     <i class="material-icons">more_vert</i>
+                     <MDBIcon icon="ellipsis-vertical" />
                   </MDBDropdownToggle>
 
                   <MDBDropdownMenu>
                      <MDBDropdownItem tag="button" @click="copyVersions">
-                        <font-awesome-icon icon="clipboard" /> &nbsp; Versions
+                        <MDBIcon icon="clipboard" /> &nbsp; Versions
                      </MDBDropdownItem>
                      <MDBDropdownItem tag="button" @click="duplicateApp">
-                        <font-awesome-icon icon="copy" /> &nbsp; Duplicate
+                        <MDBIcon icon="copy" /> &nbsp; Duplicate
                      </MDBDropdownItem>
                      <MDBDropdownItem v-if="isBackupsEnabled" tag="button" @click="openBackupDialog">
                         <template v-if="reviewApp.status === 'backed-up'">
-                           <font-awesome-icon icon="server" /> &nbsp; Redeploy
+                           <MDBIcon icon="server" /> &nbsp; Redeploy
                         </template>
                         <template v-else>
-                           <font-awesome-icon icon="download" /> &nbsp; Back up
+                           <MDBIcon icon="download" /> &nbsp; Back up
                         </template>
                      </MDBDropdownItem>
                      <MDBDropdownItem
@@ -64,7 +64,7 @@
                         tag="button"
                         class="text-danger"
                         @click="openDeleteDialog">
-                        <font-awesome-icon icon="trash" /> &nbsp; Shutdown
+                        <MDBIcon icon="trash" /> &nbsp; Shutdown
                      </MDBDropdownItem>
                   </MDBDropdownMenu>
                </MDBDropdown>
@@ -96,16 +96,28 @@
                     :class="{ 'is-expanded': isExpanded( container ) }"
                     @click="toggleContainer( container )">
 
-                  <i v-if="isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_down</i>
-                  <i v-else="!isExpanded( container )" class="ra-icon--expander ra-icons material-icons">keyboard_arrow_right</i>
+                  <MDBIcon
+                     v-if="isExpanded( container )"
+                     class="ra-icon--expander ra-icons"
+                     icon="chevron-down"
+                  />
+                  <MDBIcon
+                     v-else
+                     class="ra-icon--expander ra-icons"
+                     icon="chevron-right"
+                  />
 
-                  <i v-if="container.name.endsWith( 'openid' )" class="ra-icons  material-icons">security</i>
-                  <i v-else-if="container.name.endsWith( '-proxy' )" class="ra-icons  material-icons">call_split</i>
-                  <i v-else-if="container.name.endsWith( '-frontend' )" class="ra-icons  material-icons">web</i>
-                  <i v-else-if="container.name.endsWith( '-service' )" class="ra-icons  material-icons">dns</i>
-                  <i v-else-if="container.name.endsWith( '-api' )" class="ra-icons  material-icons">developer_board</i>
-                  <i v-else-if="container.name.endsWith( '-db' ) || container.name.endsWith( '-database' )" class="ra-icons  material-icons">archive</i>
-                  <i v-else class="ra-icons  material-icons">link</i>
+                  <MDBIcon v-if="container.name.endsWith( 'openid' )" class="ra-icons" icon="shield-halved" />
+                  <MDBIcon v-else-if="container.name.endsWith( '-proxy' )" class="ra-icons" icon="code-branch" />
+                  <MDBIcon v-else-if="container.name.endsWith( '-frontend' )" class="ra-icons" icon="globe" />
+                  <MDBIcon v-else-if="container.name.endsWith( '-service' )" class="ra-icons" icon="server" />
+                  <MDBIcon v-else-if="container.name.endsWith( '-api' )" class="ra-icons" icon="code" />
+                  <MDBIcon
+                     v-else-if="container.name.endsWith( '-db' ) || container.name.endsWith( '-database' )"
+                     class="ra-icons"
+                     icon="database"
+                  />
+                  <MDBIcon v-else class="ra-icons" icon="link" />
                </div>
 
                <div class="ra-container__infos">
@@ -113,14 +125,13 @@
                      <a v-if="container.url && isRunning( container )" :href='container.url' target="_blank" class="ra-service-title__name">{{ container.name }}</a>
                      <span v-else class="ra-service-title__name">{{ container.name }}</span>
 
-                     <MDBIcon  
+                     <MDBIcon
                         class="ra-container__change-status"
-                        size="sm"
                         tabindex="0"
                         v-if="reviewApp.status == 'deployed'"
-                        :icon="container.status === 'running' ? 'pause-circle' : 'play-circle'"  
-                        @click="changeState($event, container.name)">
-                     </MDBIcon>
+                        :icon="container.status === 'running' ? 'circle-pause' : 'circle-play'"
+                        @click="changeState($event, container.name)"
+                     />
                   </h5>
 
                   <div class="ra-build-infos__wrapper"

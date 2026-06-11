@@ -52,7 +52,7 @@
           :href="downloadLink"
           download="filename.txt"
         >
-          <font-awesome-icon icon="download" />
+          <MDBIcon icon="download" />
           &nbsp;Download Full Logs
         </MDBBtn>
       </div>
@@ -114,6 +114,7 @@
       MDBModalBody,
       MDBBtn,
       MDBModalFooter,
+      MDBIcon,
    } from "mdb-vue-ui-kit";
    import LinkHeader from 'http-link-header';
    import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
@@ -151,6 +152,7 @@
          MDBModalBody,
          MDBBtn,
          MDBModalFooter,
+         MDBIcon,
          DynamicScrollerItem: DynamicScrollerItem,
          DynamicScroller: DynamicScroller,
       },

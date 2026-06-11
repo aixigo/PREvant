@@ -64,7 +64,6 @@ function mountCard(reviewApp) {
     global: {
       renderStubDefaultSlot: true,
       stubs: {
-        "font-awesome-icon": true,
         "router-link": RouterLinkStub,
       },
     },
