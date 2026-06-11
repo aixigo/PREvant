@@ -26,31 +26,35 @@
 
 <template>
    <MDBModal v-model="visible" centered @shown="focusInput">
-      <MDBModalHeader>
+      <MDBModalHeader class="px-4 pt-4 pb-3">
          <MDBModalTitle>
             {{ title }}
          </MDBModalTitle>
       </MDBModalHeader>
 
-      <MDBModalBody>
-         <slot name="description">
-            <p v-if="description">{{ description }}</p>
-         </slot>
+      <MDBModalBody class="px-4 py-4">
+         <div v-if="$slots.description || description" class="mb-4">
+            <slot name="description">
+               <p class="mb-0">{{ description }}</p>
+            </slot>
+         </div>
 
          <MDBInput
             ref="inputElement"
             v-model="inputValue"
+            size="lg"
             :label="inputPlaceholder"
             :disabled="!isActionAllowed"
             @keyup.enter="confirm" />
 
-         <BootstrapAlert v-if="requiresWritePermissions && !hasWritePermissions && authMessage != null" type="warning" class="mt-4">
+         <BootstrapAlert v-if="requiresWritePermissions && !hasWritePermissions && authMessage != null" type="warning" class="mt-4 mb-0">
             {{ authMessage }}
          </BootstrapAlert>
       </MDBModalBody>
 
-      <MDBModalFooter>
+      <MDBModalFooter class="px-4 pt-0 pb-4 border-0">
          <MDBBtn
+            class="px-4"
             type="button"
             :outline="confirmColor"
             @click="confirm()"
