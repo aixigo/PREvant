@@ -39,34 +39,35 @@
                   <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ml-2">Backed up</span>
                </h4>
 
-               <div class="dropdown menu">
-                  <button class="btn bmd-btn-icon dropdown-toggle" type="button" :id="'menu' + reviewApp.name"
-                          data-toggle="dropdown"
-                          aria-haspopup="true" aria-expanded="false">
+               <MDBDropdown v-model="menuOpen">
+                  <MDBDropdownToggle tag="a" class="p-0 border-0 bg-transparent dropdown-toggle" @click="menuOpen = !menuOpen">
                      <i class="material-icons">more_vert</i>
-                  </button>
+                  </MDBDropdownToggle>
 
-                  <div class="dropdown-menu dropdown-menu-left" :aria-labelledby="'menu' + reviewApp.name">
-                     <button type="button" class="dropdown-item btn btn-primary" @click="copyVersions()">
-                        <font-awesome-icon icon="clipboard"/> &nbsp; Versions
-                     </button>
-                     <button type="button" class="dropdown-item btn btn-primary" @click="duplicateApp()">
-                        <font-awesome-icon icon="copy"/> &nbsp; Duplicate
-                     </button>
-                     <button type="button" class="dropdown-item btn btn-primary" @click="openBackupDialog()" v-if="isBackupsEnabled">
+                  <MDBDropdownMenu>
+                     <MDBDropdownItem tag="button" @click="copyVersions">
+                        <font-awesome-icon icon="clipboard" /> &nbsp; Versions
+                     </MDBDropdownItem>
+                     <MDBDropdownItem tag="button" @click="duplicateApp">
+                        <font-awesome-icon icon="copy" /> &nbsp; Duplicate
+                     </MDBDropdownItem>
+                     <MDBDropdownItem v-if="isBackupsEnabled" tag="button" @click="openBackupDialog">
                         <template v-if="reviewApp.status === 'backed-up'">
-                           <font-awesome-icon icon="server"/> &nbsp; Redeploy
+                           <font-awesome-icon icon="server" /> &nbsp; Redeploy
                         </template>
                         <template v-else>
-                           <font-awesome-icon icon="download"/> &nbsp; Back up
+                           <font-awesome-icon icon="download" /> &nbsp; Back up
                         </template>
-                     </button>
-                     <button type="button" class="dropdown-item btn btn-danger" @click="openDeleteDialog()"
-                             v-if="reviewApp.name !== defaultAppName">
-                        <font-awesome-icon icon="trash"/> &nbsp; Shutdown
-                     </button>
-                  </div>
-               </div>
+                     </MDBDropdownItem>
+                     <MDBDropdownItem
+                        v-if="reviewApp.name !== defaultAppName"
+                        tag="button"
+                        class="text-danger"
+                        @click="openDeleteDialog">
+                        <font-awesome-icon icon="trash" /> &nbsp; Shutdown
+                     </MDBDropdownItem>
+                  </MDBDropdownMenu>
+               </MDBDropdown>
             </div>
 
             <div v-if="reviewApp.ticket !== undefined"
@@ -178,8 +179,8 @@
          </template>
       </div>
 
-      <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name !== defaultAppName"/>
-      <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
+      <shutdown-app-dialog v-if="reviewApp.name !== defaultAppName" v-model="shutdownAppDialogVisibility" :app-name="reviewApp.name"/>
+      <duplicate-app-dialog v-model="duplicateAppDialogVisibility" :duplicate-from-app-name="reviewApp.name"/>
       <backup-app-dialog ref="backupDlg" :app-name="reviewApp.name" :app-status="reviewApp.status" v-if="isBackupsEnabled"/>
    </div>
 </template>
@@ -208,10 +209,16 @@
 .ra-container__expandable .ra-icon--expander{
    visibility: visible;
 }
+
+.dropdown-toggle:after {
+   display: none;
+}
 </style>
 
 <script>
+   import { ref } from 'vue';
    import moment from 'moment';
+   import { MDBDropdown, MDBDropdownItem, MDBDropdownMenu, MDBDropdownToggle } from 'mdb-vue-ui-kit';
    import BackupAppDialog from './BackupAppDialog.vue';
    import DuplicateAppDialog from './DuplicateAppDialog.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
@@ -220,10 +227,16 @@
    export default {
       setup() {
          const { defaultAppName, isBackupsEnabled } = useConfig();
+         const menuOpen = ref(false);
+         const shutdownAppDialogVisibility = ref(false);
+         const duplicateAppDialogVisibility = ref(false);
 
          return {
             defaultAppName,
-            isBackupsEnabled
+            isBackupsEnabled,
+            menuOpen,
+            shutdownAppDialogVisibility,
+            duplicateAppDialogVisibility
          };
       },
       data() {
@@ -232,6 +245,10 @@
          };
       },
       components: {
+         MDBDropdown,
+         MDBDropdownItem,
+         MDBDropdownMenu,
+         MDBDropdownToggle,
          'backup-app-dialog': BackupAppDialog,
          'duplicate-app-dialog': DuplicateAppDialog,
          'shutdown-app-dialog': ShutdownAppDialog,
@@ -273,7 +290,7 @@
       },
       methods: {
          duplicateApp() {
-            this.$refs.duplicateDlg.open();
+            this.duplicateAppDialogVisibility = true;
          },
          openBackupDialog() {
             this.$refs.backupDlg.open();
@@ -296,7 +313,7 @@
             }
          },
          openDeleteDialog() {
-            this.$refs.deleteDlg.open();
+            this.shutdownAppDialogVisibility = true;
          },
          badgeClass(serviceType) {
             switch (serviceType) {

@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant Frontend
  * %%
- * Copyright (C) 2018 - 2026 aixigo AG
+ * Copyright (C) 2018 - 2019 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,39 +25,76 @@
  */
 
 <template>
-   <InputDialog
-      ref="dialog"
-      :title="'Duplicate ' + duplicateFromAppName"
-      confirm-label="Duplicate"
-      auth-message="You need to be logged in to duplicate apps."
-      :trim-input="true"
-      @confirm="duplicateApp" />
+  <MDBModal v-model="model" size="sm" @shown="focusInput">
+    <MDBModalHeader>
+      <MDBModalTitle>
+         Duplicate {{ duplicateFromAppName }}
+      </MDBModalTitle>
+    </MDBModalHeader>
+
+    <MDBModalBody>
+      <div class="mb-3">
+        <MDBInput
+          v-model.trim="newAppName"
+          ref="input"
+          required
+          label="Enter new app name"
+          :disabled="!hasWritePermissions"
+          @keyup.enter="duplicateApp"
+        />
+      </div>
+      <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
+         You need to be logged in to duplicate apps.
+      </div>
+    </MDBModalBody>
+
+    <MDBModalFooter>
+      <MDBBtn color="primary" :disabled="!newAppName || !hasWritePermissions" @click="duplicateApp">
+        Duplicate
+      </MDBBtn>
+    </MDBModalFooter>
+  </MDBModal>
 </template>
 
+
 <script setup>
-   import { useTemplateRef } from 'vue';
+   import { ref, defineModel, watch, useTemplateRef } from 'vue';
    import { useStore } from 'vuex';
-   import InputDialog from './InputDialog.vue';
+   import {
+      MDBModal,
+      MDBModalHeader,
+      MDBModalTitle,
+      MDBModalBody,
+      MDBBtn,
+      MDBModalFooter,
+      MDBInput
+   } from "mdb-vue-ui-kit";
+   import { useAuth } from '../composables/useAuth';
 
    const props = defineProps({
-      duplicateFromAppName: { type: String, required: true }
+      duplicateFromAppName: String
    });
+
+   const newAppName = ref('');
+
+   const model = defineModel({ default: false });
+   watch(model, () => {
+      newAppName.value = '';
+   })
+
+   const input = useTemplateRef("input");
+   function focusInput() {
+      input.value?.inputRef?.focus();
+   }
 
    const store = useStore();
-   const dialog = useTemplateRef('dialog');
-
-   function open() {
-      dialog.value.open();
-   }
-
-   function duplicateApp(newAppName) {
-      store.dispatch('duplicateApp', {
+   function duplicateApp() {
+      store.dispatch( 'duplicateApp', {
          appToDuplicate: props.duplicateFromAppName,
-         newAppName
-      });
+         newAppName: newAppName.value
+      } );
+      model.value = false;
    }
 
-   defineExpose({
-      open
-   });
+   const { hasWritePermissions } = useAuth();
 </script>

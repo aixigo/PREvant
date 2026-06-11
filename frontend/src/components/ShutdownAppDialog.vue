@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant Frontend
  * %%
- * Copyright (C) 2018 - 2026 aixigo AG
+ * Copyright (C) 2018 - 2019 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -25,41 +25,80 @@
  */
 
 <template>
-   <ConfirmationDialog
-      ref="dialog"
-      :title="'Shutdown ' + appName"
-      :expected-value="appName"
-      confirm-label="Confirm"
-      auth-message="You need to be logged in to shutdown apps."
-      button-class="btn btn-outline-danger"
-      @confirm="deleteApp">
-      <template #description>
-         <p>Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing in the app:</p>
-      </template>
-   </ConfirmationDialog>
+  <MDBModal v-model="model" size="sm" @shown="focusInput">
+    <MDBModalHeader>
+      <MDBModalTitle>
+         Shutdown {{ appName }}
+      </MDBModalTitle>
+    </MDBModalHeader>
+
+    <MDBModalBody>
+      <p>
+        Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing the app name below:
+      </p>
+      <MDBInput
+        v-model="confirmedAppName"
+        ref="input"
+        label="Enter app name"
+        :disabled="!hasWritePermissions"
+        @keyup.enter="deleteApp"
+      />
+      <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
+         You need to be logged in to shutdown apps.
+      </div>
+    </MDBModalBody>
+
+    <MDBModalFooter>
+      <MDBBtn
+        color="danger"
+        @click="deleteApp"
+        :disabled="confirmedAppName !== appName || !hasWritePermissions"
+      >
+        Confirm
+      </MDBBtn>
+    </MDBModalFooter>
+  </MDBModal>
 </template>
 
 <script setup>
-   import { useTemplateRef } from 'vue';
+   import { ref, watch, defineModel, useTemplateRef } from 'vue';
    import { useStore } from 'vuex';
-   import ConfirmationDialog from './ConfirmationDialog.vue';
+   import {
+      MDBModal,
+      MDBModalHeader,
+      MDBModalTitle,
+      MDBModalBody,
+      MDBBtn,
+      MDBModalFooter,
+      MDBInput
+   } from "mdb-vue-ui-kit";
+   import { useAuth } from '../composables/useAuth';
 
-   defineProps({
-      appName: { type: String, required: true }
+   const props = defineProps({
+      appName: String
    });
+
+   const confirmedAppName = ref('');
+
+   const model = defineModel({ default: false });
+   watch(model, () => {
+      confirmedAppName.value = '';
+   })
+
+   const input = useTemplateRef("input");
+   function focusInput() {
+      input.value?.inputRef?.focus();
+   }
 
    const store = useStore();
-   const dialog = useTemplateRef('dialog');
+   function deleteApp() {
+      if (confirmedAppName.value !== props.appName) {
+         return;
+      }
 
-   function open() {
-      dialog.value.open();
+      store.dispatch( 'deleteApp', { appName: confirmedAppName.value } );
+      model.value = false
    }
 
-   function deleteApp(appName) {
-      store.dispatch('deleteApp', { appName });
-   }
-
-   defineExpose({
-      open
-   });
+   const { hasWritePermissions } = useAuth();
 </script>
