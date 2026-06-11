@@ -15,10 +15,9 @@ use crate::{
 };
 use anyhow::Result;
 use domain::{
-    AppName, Image,
+    AppName, Image, RawInfrastructureElement,
     app_deployment::{
         ApplicationCompanion, BootstrappedCompanions, MergeRawElementsContext,
-        RawInfrastructureElement,
     },
     app_instance::ContainerType,
 };

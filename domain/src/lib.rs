@@ -3,6 +3,7 @@
 
 pub use app_name::{AppName, AppNameError};
 pub use image::{Image, ImageInfo, ImageBlob};
+pub use raw_infrastructure_element::RawInfrastructureElement;
 pub use owner::Owner;
 
 #[macro_use]
@@ -12,5 +13,6 @@ pub mod app_instance;
 mod app_name;
 mod image;
 mod owner;
+mod raw_infrastructure_element;
 pub mod templating;
 pub mod traefik;

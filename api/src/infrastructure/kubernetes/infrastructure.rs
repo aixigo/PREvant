@@ -40,16 +40,15 @@ use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
-use domain::app_deployment::{
-    BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions, MergeRawElementsContext,
-    RawInfrastructureElement,
-};
-use domain::templating::TemplateData;
 use domain::{
-    AppName, Image, Owner,
+    AppName, Image, Owner, RawInfrastructureElement,
     app_blueprints::{DesiredServiceStatus, UserDefinedParameters},
-    app_deployment::{DeployableService, DeploymentUnit},
+    app_deployment::{
+        BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions, DeployableService,
+        DeploymentUnit, MergeRawElementsContext,
+    },
     app_instance::{App, ContainerTypeParseError, Service, ServiceStatus, WebHostMeta},
+    templating::TemplateData,
     traefik::{TraefikIngressRoute, TraefikMiddleware, TraefikRouterRule},
 };
 use futures::StreamExt;
@@ -1157,10 +1156,12 @@ mod tests {
     use super::*;
     use crate::{apps::AppsError, config::runtime::KubernetesRuntimeConfig};
     use domain::{
-        app_deployment::{AppDeploymentBuilder, MergeRawElementsContext, RawInfrastructureElement},
+        RawInfrastructureElement,
+        app_deployment::{AppDeploymentBuilder, MergeRawElementsContext},
         app_instance::ContainerType,
         blueprint_service,
     };
+    use std::convert::Infallible;
     use tempfile::TempDir;
     use testcontainers::{
         ContainerAsync, ImageExt,
@@ -1325,137 +1326,6 @@ mod tests {
         );
     }
 
-    async fn bootstrap_whoami_deployment_unit(
-        app_name: AppName,
-        user_payload: Vec<domain::app_blueprints::ServiceConfig>,
-        with_deployment: bool,
-    ) -> Result<DeploymentUnit> {
-        struct DummyBootstrapCompanions {
-            with_deployment: bool,
-        }
-
-        #[async_trait::async_trait]
-        impl domain::app_deployment::BootstrapCompanions for DummyBootstrapCompanions {
-            type Error = anyhow::Error;
-
-            async fn bootstrap_companions_with_raw_elements(
-                &self,
-                context: BootstrapCompanionsWithRawElementsContext<'_>,
-                _template_data: &TemplateData,
-            ) -> Result<BootstrappedCompanions, Self::Error> {
-                let output = [
-                    if self.with_deployment {
-                        r#"apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: whoami
-spec:
-  selector:
-    matchLabels:
-      app: whoami
-  template:
-    metadata:
-      labels:
-        app: whoami
-    spec:
-      containers:
-      - name: whoami
-        image: traefik/whoami
-        args:
-        - --port=2001
-        - --name=iamfoo
-        ports:
-        - containerPort: 2001
-"#
-                    } else {
-                        ""
-                    }
-                    .as_bytes(),
-                    if self.with_deployment {
-                        r#"apiVersion: v1
-kind: Service
-metadata:
-  name: whoami
-spec:
-  selector:
-    app: whoami
-  ports:
-  - port: 2001
-    targetPort: 2001
-"#
-                    } else {
-                        ""
-                    }
-                    .as_bytes(),
-                    r#"apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: whoami
-  annotations:
-    nginx.ingress.kubernetes.io/use-regex: true
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
-spec:
-  ingressClassName: nginx
-  rules:
-  - http:
-      paths:
-      - path: /my-route
-        pathType: Prefix
-        backend:
-          service:
-            name: whoami
-            port:
-              number: 2001
-"#
-                    .as_bytes(),
-                ];
-
-                let k8s_deployment_unit =
-                    K8sDeploymentUnit::parse_from_log_streams(context.app_name, output).await?;
-
-                Ok(BootstrappedCompanions::try_from(k8s_deployment_unit)?)
-            }
-
-            fn update_raw_elements(
-                &self,
-                context: MergeRawElementsContext<'_>,
-                raw_elements: Vec<RawInfrastructureElement>,
-            ) -> Result<Vec<RawInfrastructureElement>> {
-                Ok(K8sDeploymentUnit::parse_from_json(
-                    &AppName::master(),
-                    raw_elements.into_iter().map(serde_json::Value::from),
-                )?
-                .update_with_merge_context(context)?
-                .to_json_vec()
-                .into_iter()
-                .map(RawInfrastructureElement::from)
-                .collect::<Vec<_>>())
-            }
-        }
-
-        Ok(
-            AppDeploymentBuilder::init(app_name.clone(), user_payload, None)
-                .with_static_companions(std::iter::empty())
-                .resolve_apps::<anyhow::Error, _>(|_| Ok::<_, anyhow::Error>(None))
-                .await?
-                .resolve_image_manifests::<anyhow::Error, _>(async |_| {
-                    Ok::<_, anyhow::Error>(HashMap::new())
-                })
-                .await?
-                .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
-                .await?
-                .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| {
-                    Ok(None)
-                })
-                .await?
-                .bootstrap_companions::<anyhow::Error, _>(DummyBootstrapCompanions {
-                    with_deployment,
-                })
-                .await?
-                .finish()?,
-        )
-    }
-
     #[tokio::test]
     #[rstest::rstest]
     #[case::only_bootstrapping(
@@ -1467,7 +1337,7 @@ spec:
         (ContainerType::Instance, Image::from_str("traefik/whoami:v1.11.0").unwrap())
     )]
     async fn bootstrap_application(
-        #[case] user_payload: Vec<domain::app_blueprints::ServiceConfig>,
+        #[case] service_configs: Vec<domain::app_blueprints::ServiceConfig>,
         #[case] (expected_container_type, expected_image): (ContainerType, Image),
     ) -> Result<()> {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -1475,9 +1345,13 @@ spec:
         let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
 
         let app_name = AppName::master();
-        let unit = bootstrap_whoami_deployment_unit(app_name.clone(), user_payload, true).await?;
-
-        infra.deploy_services(&unit, &Default::default()).await?;
+        let (unit, _) = StaticBootstrapCompanion {
+            app_name: app_name.clone(),
+            service_configs,
+            ..Default::default()
+        }
+        .bootstrap(&infra)
+        .await?;
 
         let app = infra.fetch_app(&app_name).await?;
 
@@ -1580,9 +1454,13 @@ spec:
         let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
 
         let app_name = AppName::master();
-        let unit = bootstrap_whoami_deployment_unit(app_name.clone(), Vec::new(), false).await?;
-
-        infra.deploy_services(&unit, &Default::default()).await?;
+        let (unit, _) = StaticBootstrapCompanion {
+            generate_whoami_deployment: false,
+            app_name: app_name.clone(),
+            ..Default::default()
+        }
+        .bootstrap(&infra)
+        .await?;
 
         let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
@@ -1661,9 +1539,12 @@ spec:
         let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
 
         let app_name = AppName::master();
-        let unit = bootstrap_whoami_deployment_unit(app_name.clone(), Vec::new(), true).await?;
-
-        infra.deploy_services(&unit, &Default::default()).await?;
+        StaticBootstrapCompanion {
+            app_name: app_name.clone(),
+            ..Default::default()
+        }
+        .bootstrap(&infra)
+        .await?;
 
         let app = infra.fetch_app(&app_name).await?;
 
@@ -1687,14 +1568,13 @@ spec:
             }),
         );
 
-        let unit = bootstrap_whoami_deployment_unit(
-            app_name.clone(),
-            vec![blueprint_service!("whoami", "traefik/whoami:v1.11.0")],
-            true,
-        )
+        let (unit, _) = StaticBootstrapCompanion {
+            app_name: app_name.clone(),
+            service_configs: vec![blueprint_service!("whoami", "traefik/whoami:v1.11.0")],
+            ..Default::default()
+        }
+        .bootstrap(&infra)
         .await?;
-
-        infra.deploy_services(&unit, &Default::default()).await?;
 
         let app = infra.fetch_app(&app_name).await?;
 
@@ -1820,5 +1700,166 @@ spec:
         assert_json_diff::assert_json_eq!(payload, payload_2);
 
         Ok(())
+    }
+
+    /// A fake bootstrapping implementation for testing purposes
+    struct StaticBootstrapCompanion {
+        generate_whoami_deployment: bool,
+        app_name: AppName,
+        service_configs: Vec<domain::app_blueprints::ServiceConfig>,
+        app_to_replicate_from: Option<(AppName, App)>,
+    }
+
+    impl Default for StaticBootstrapCompanion {
+        fn default() -> Self {
+            Self {
+                generate_whoami_deployment: true,
+                app_name: AppName::master(),
+                service_configs: Vec::new(),
+                app_to_replicate_from: None,
+            }
+        }
+    }
+
+    impl StaticBootstrapCompanion {
+        async fn bootstrap(
+            self,
+            infra: &KubernetesInfrastructure,
+        ) -> Result<(DeploymentUnit, App)> {
+            let unit = AppDeploymentBuilder::init(
+                self.app_name.clone(),
+                self.service_configs.clone(),
+                None,
+            )
+            .with_app_to_replicate_from(
+                self.app_to_replicate_from
+                    .as_ref()
+                    .map(|(app_name, _)| app_name.clone()),
+            )
+            .with_static_companions(std::iter::empty())
+            .resolve_apps::<Infallible, _>(|app_name| {
+                Ok(self
+                    .app_to_replicate_from
+                    .as_ref()
+                    .filter(|(o, _)| app_name == *o)
+                    .map(|(_, app)| app.clone()))
+            })
+            .await?
+            .resolve_image_manifests::<Infallible, _>(async |_| Ok(HashMap::new()))
+            .await?
+            .resolve_base_route::<Infallible, _>(async || Ok(None))
+            .await?
+            .resolve_infrastructure_template_data::<Infallible, _>(async |_app_name| Ok(None))
+            .await?
+            .bootstrap_companions::<anyhow::Error, _>(self)
+            .await?
+            .finish()?;
+
+            let app = infra.deploy_services(&unit, &Default::default()).await?;
+
+            Ok((unit, app))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl domain::app_deployment::BootstrapCompanions for StaticBootstrapCompanion {
+        type Error = anyhow::Error;
+
+        async fn bootstrap_companions_with_raw_elements(
+            &self,
+            context: BootstrapCompanionsWithRawElementsContext<'_>,
+            _template_data: &TemplateData,
+        ) -> Result<BootstrappedCompanions, Self::Error> {
+            let output = [
+                if self.generate_whoami_deployment {
+                    r#"
+                        apiVersion: apps/v1
+                        kind: Deployment
+                        metadata:
+                          name: whoami
+                        spec:
+                          selector:
+                            matchLabels:
+                              app: whoami
+                          template:
+                            metadata:
+                              labels:
+                                app: whoami
+                            spec:
+                              containers:
+                              - name: whoami
+                                image: traefik/whoami
+                                args:
+                                - --port=2001
+                                - --name=iamfoo
+                                ports:
+                                - containerPort: 2001
+                    "#
+                } else {
+                    ""
+                }
+                .as_bytes(),
+                if self.generate_whoami_deployment {
+                    r#"
+                        apiVersion: v1
+                        kind: Service
+                        metadata:
+                          name: whoami
+                        spec:
+                          selector:
+                            app: whoami
+                          ports:
+                          - port: 2001
+                            targetPort: 2001
+                    "#
+                } else {
+                    ""
+                }
+                .as_bytes(),
+                r#"
+                    apiVersion: networking.k8s.io/v1
+                    kind: Ingress
+                    metadata:
+                      name: whoami
+                      annotations:
+                        nginx.ingress.kubernetes.io/use-regex: true
+                        nginx.ingress.kubernetes.io/rewrite-target: /$2
+                    spec:
+                      ingressClassName: nginx
+                      rules:
+                      - http:
+                          paths:
+                          - path: /my-route
+                            pathType: Prefix
+                            backend:
+                              service:
+                                name: whoami
+                                port:
+                                  number: 2001
+                "#
+                .as_bytes(),
+            ];
+
+            let k8s_deployment_unit =
+                K8sDeploymentUnit::parse_from_log_streams(context.app_name, output).await?;
+
+            Ok(BootstrappedCompanions::try_from(k8s_deployment_unit)?)
+        }
+
+        fn update_raw_elements(
+            &self,
+            context: MergeRawElementsContext<'_>,
+            raw_elements: Vec<RawInfrastructureElement>,
+        ) -> Result<Vec<RawInfrastructureElement>> {
+            Ok(K8sDeploymentUnit::parse_from_json(
+                &self.app_name,
+                raw_elements.into_iter().map(serde_json::Value::from),
+            )?
+            .update_with_merge_context(context)?
+            .to_json_vec()
+            .into_iter()
+            .map(RawInfrastructureElement::from)
+            .collect::<Vec<_>>())
+        }
     }
 }

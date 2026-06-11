@@ -3,7 +3,7 @@
 //! the moment Docker or Kubernetes, into the API call to deploy it.
 
 use crate::{
-    AppName, Owner,
+    AppName, Owner, RawInfrastructureElement,
     app_blueprints::{ServiceConfig, UserDefinedParameters},
     app_instance::{App, ContainerType},
     traefik::TraefikIngressRoute,
@@ -72,25 +72,4 @@ pub struct DeployableService {
     /// was bootstrapped.
     pub bootstrapped_companion_elements: Vec<RawInfrastructureElement>,
     phantom_data: PhantomData<()>,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct RawInfrastructureElement(serde_json::Value);
-
-impl RawInfrastructureElement {
-    pub fn as_json(&self) -> &serde_json::Value {
-        &self.0
-    }
-}
-
-impl From<serde_json::Value> for RawInfrastructureElement {
-    fn from(value: serde_json::Value) -> Self {
-        Self(value)
-    }
-}
-
-impl From<RawInfrastructureElement> for serde_json::Value {
-    fn from(value: RawInfrastructureElement) -> Self {
-        value.0
-    }
 }

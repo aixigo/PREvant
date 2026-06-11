@@ -1,7 +1,7 @@
 use crate::{
-    AppName, Image, ImageInfo, Owner,
+    AppName, Image, ImageInfo, Owner, RawInfrastructureElement,
     app_blueprints::{ServiceConfig, UserDefinedParameters},
-    app_deployment::{self, DeployableService, DeploymentUnit, RawInfrastructureElement},
+    app_deployment::{self, DeployableService, DeploymentUnit},
     app_instance::{self, ContainerType},
     templating::{
         ServiceOrServices, ServiceTemplateData, TemplateData, TemplatedClone, TemplatedCloneError,
@@ -1326,7 +1326,7 @@ where
                     TemplatedCloneError::RenderError(e) => {
                         BuildDeploymentUintBuildError::FailedTemplatingForApplicationCompanions(e)
                     }
-                    TemplatedCloneError::Other(()) => {
+                    TemplatedCloneError::Other(_infallible) => {
                         unreachable!("Unit means this case in unreachable")
                     }
                 })?;
@@ -1368,7 +1368,7 @@ where
                     TemplatedCloneError::RenderError(e) => {
                         BuildDeploymentUintBuildError::FailedTemplatingForApplicationCompanions(e)
                     }
-                    TemplatedCloneError::Other(()) => {
+                    TemplatedCloneError::Other(_infallible) => {
                         unreachable!("Unit means this case in unreachable")
                     }
                 })?;
@@ -1492,7 +1492,7 @@ where
                 let blueprint_service = blueprint_config.templated_clone(&data).map_err(|e| {
                     BuildDeploymentUintBuildError::FailedTemplatingForServiceCompanions(match e {
                         TemplatedCloneError::RenderError(render_error) => render_error,
-                        TemplatedCloneError::Other(()) => {
+                        TemplatedCloneError::Other(_infallible) => {
                             unreachable!("Unit means this case in unreachable")
                         }
                     })
@@ -1550,7 +1550,7 @@ where
                 let blueprint_service = blueprint_config.templated_clone(&data).map_err(|e| {
                     BuildDeploymentUintBuildError::FailedTemplatingForServiceCompanions(match e {
                         TemplatedCloneError::RenderError(render_error) => render_error,
-                        TemplatedCloneError::Other(()) => {
+                        TemplatedCloneError::Other(_infallible) => {
                             unreachable!("Unit means this case in unreachable")
                         }
                     })
@@ -1632,6 +1632,7 @@ where
             .with_infrastructure_template_data
             .merged_user_defined_parameters();
 
+        #[derive(Debug)]
         enum DeployableServiceOrigin {
             ServiceCompanion,
             ApplicationCompanion,
@@ -1662,23 +1663,28 @@ where
             .running_app_to_replicate_from
             .as_ref()
         {
-            // TODO: make sure that this will replace companions
-            services.extend(
-                self.build_deployable_services_from_app(
+            for deployable_service in self
+                .build_deployable_services_from_app(
                     running_app_to_replicate_from,
                     Some(ContainerType::Replica),
                 )?
                 .into_iter()
-                .map(|deployable_service| {
-                    (
-                        deployable_service.blueprint_service.service_name.clone(),
-                        (
-                            deployable_service,
-                            DeployableServiceOrigin::ReplicatedFromRunningApp,
-                        ),
-                    )
-                }),
-            );
+            {
+                services
+                    .entry(deployable_service.blueprint_service.service_name.clone())
+                    .and_modify(|(existing_deployable_service, _)| {
+                        // TODO: double check that in combination with the TODO four lines above
+                        //
+                        // This line is triggered when we have a app_to_replicate_from and an
+                        // already running application. We want to keep the service that is running
+                        // as is or do we need to merge it too?
+                        existing_deployable_service.service_type = ContainerType::Replica
+                    })
+                    .or_insert((
+                        deployable_service,
+                        DeployableServiceOrigin::ReplicatedFromRunningApp,
+                    ));
+            }
         }
 
         if let Some(running_app) = self
@@ -1748,7 +1754,7 @@ where
                     TemplatedCloneError::RenderError(render_error) => {
                         BuildDeploymentUintBuildError::FailedTemplatingForService(render_error)
                     }
-                    TemplatedCloneError::Other(()) => {
+                    TemplatedCloneError::Other(_infallible) => {
                         unreachable!("Unit means this case in unreachable")
                     }
                 })?;
@@ -4994,6 +5000,87 @@ mod tests {
                     &ContainerType::ApplicationCompanion,
                     &vec![RawInfrastructureElement::from(
                         serde_json::json!({"opaque": "nginx"})
+                    )]
+                ),],
+                deployment_unit
+                    .services
+                    .iter()
+                    .filter(|service| service.blueprint_service.service_name == "adminer")
+                    .map(|service| (
+                        service.blueprint_service.service_name.as_str(),
+                        &service.blueprint_service.image,
+                        &service.blueprint_service,
+                        &service.service_type,
+                        &service.bootstrapped_companion_elements
+                    ))
+                    .collect::<Vec<_>>(),
+            );
+            Ok(())
+        }
+
+        /// Test scenario:
+        ///
+        /// - Pretend that there is an application running for “master”
+        /// - This app has been created via bootstrapping plus an payload that updated the version
+        ///   of the bootstrapped companion (see [`merge_bootstrapped_companion_with_user_requested`])
+        /// - The new application will be bootstrapped too but the replication information from
+        ///   “master” must upgrade the service version too
+        #[tokio::test]
+        async fn update_bootstrapped_companion_from_replicated_app() -> Result<()> {
+            let deployment_unit = AppDeploymentBuilder::init(AppName::from_str("other")?, Vec::new(), None)
+                .with_app_to_replicate_from(Some(AppName::master()))
+                .with_static_companions(std::iter::empty())
+                .resolve_apps::<anyhow::Error, _>(|app_name: AppName| match app_name.as_str() {
+                    "master" => Ok(Some(App::new(
+                        vec![app_instance::Service {
+                            id: String::from("id"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+                        },
+                        app_instance::Service {
+                            id: String::from("adminer"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!("adminer", "adminer:5.0.0"),
+                        }],
+                        HashSet::new(),
+                        None,
+                        None,
+                    ))),
+                    _ => Ok(None),
+                })
+                .await?
+                .resolve_image_manifests::<anyhow::Error, _>(async |_images| Ok(HashMap::new()))
+                .await?
+                .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
+                .await?
+                .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| Ok(None))
+                .await?
+                .bootstrap_companions(Box::new(
+                    |_: &BootstrapCompanionsWithRawElementsContext, data: &TemplateData<'_>| {
+                        Ok::<_, anyhow::Error>(BootstrappedCompanions {
+                            bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                                blueprint_service!("adminer", "adminer:4.8.1"),
+                                vec![RawInfrastructureElement::from(serde_json::json!({
+                                    "opaque": data.as_handlerbars().render("{{#each services}}{{name}}:{{/each}}")?
+                                }))],
+                            )],
+                            ..Default::default()
+                        })
+                    },
+                ))
+                .await?
+                .finish()?;
+
+            assert_eq!(
+                vec![(
+                    "adminer",
+                    &Image::from_str("adminer:5.0.0").unwrap(),
+                    &blueprint_service!("adminer", "adminer:5.0.0"),
+                    &ContainerType::Replica,
+                    &vec![RawInfrastructureElement::from(
+                        serde_json::json!({"opaque": "adminer:nginx:"})
                     )]
                 ),],
                 deployment_unit

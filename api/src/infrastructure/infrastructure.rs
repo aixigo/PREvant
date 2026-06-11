@@ -29,11 +29,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use domain::{
-    AppName,
+    AppName, RawInfrastructureElement,
     app_blueprints::DesiredServiceStatus,
     app_deployment::{
         BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions, DeploymentUnit,
-        MergeRawElementsContext, RawInfrastructureElement,
+        MergeRawElementsContext,
     },
     app_instance::{App, Service},
     templating::TemplateData,

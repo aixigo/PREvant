@@ -37,14 +37,14 @@ use crate::models::LogChunk;
 use crate::registry::{Registry, RegistryError};
 use chrono::{DateTime, FixedOffset};
 pub use clean_up::AppCleanUp;
-use domain::app_deployment::{
-    BootstrapCompanions, BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions,
-    BuildDeploymentUintBuildError, MergeRawElementsContext, RawInfrastructureElement,
-};
 use domain::{
-    AppName, Owner,
+    AppName, Owner, RawInfrastructureElement,
     app_blueprints::{DesiredServiceStatus, ServiceConfig, UserDefinedParameters},
-    app_deployment::{AppDeploymentBuilder, ResolveApps},
+    app_deployment::{
+        AppDeploymentBuilder, BootstrapCompanions, BootstrapCompanionsWithRawElementsContext,
+        BootstrappedCompanions, BuildDeploymentUintBuildError, MergeRawElementsContext,
+        ResolveApps,
+    },
     app_instance::{App, Service},
     templating::TemplateData,
     traefik::TraefikIngressRoute,

@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    convert::Infallible,
     hash::{Hash, Hasher},
     path::PathBuf,
     sync::OnceLock,
@@ -84,20 +85,20 @@ impl ServiceConfig {
     }
 }
 
-impl TemplatedClone<()> for ServiceConfig {
+impl TemplatedClone<Infallible> for ServiceConfig {
     fn templated_clone(
         &self,
         template_data: &TemplateData,
-    ) -> Result<Self, TemplatedCloneError<()>> {
+    ) -> Result<Self, TemplatedCloneError<Infallible>> {
         Ok(self.clone().apply_template(template_data)?)
     }
 }
 
-impl Templated<()> for ServiceConfig {
+impl Templated<Infallible> for ServiceConfig {
     fn apply_template(
         mut self,
         template_data: &TemplateData,
-    ) -> Result<Self, crate::templating::TemplatedError<()>> {
+    ) -> Result<Self, crate::templating::TemplatedError<Infallible>> {
         let handlebars = template_data.as_handlerbars();
 
         let mut templated_config = self.clone();
@@ -129,20 +130,20 @@ pub struct Environment {
     values: Vec<EnvironmentVariable>,
 }
 
-impl TemplatedClone<()> for Environment {
+impl TemplatedClone<Infallible> for Environment {
     fn templated_clone(
         &self,
         template_data: &TemplateData,
-    ) -> Result<Self, TemplatedCloneError<()>> {
+    ) -> Result<Self, TemplatedCloneError<Infallible>> {
         Ok(self.clone().apply_template(template_data)?)
     }
 }
 
-impl Templated<()> for Environment {
+impl Templated<Infallible> for Environment {
     fn apply_template(
         self,
         template_data: &TemplateData,
-    ) -> Result<Self, crate::templating::TemplatedError<()>> {
+    ) -> Result<Self, crate::templating::TemplatedError<Infallible>> {
         let mut templated_env = Vec::new();
 
         let handlebars = template_data.as_handlerbars();
