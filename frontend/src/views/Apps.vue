@@ -35,7 +35,7 @@
          <b>{{ error.title }}</b>: {{ error.detail }}
       </BootstrapAlert>
         
-      <h1 v-else-if="reviewApps.length === 0" class="ra-container__title--preview">
+      <h1 v-else-if="reviewApps.length === 0" class="ra-container__title ra-container__title--preview">
          No apps to review.
       </h1>
 

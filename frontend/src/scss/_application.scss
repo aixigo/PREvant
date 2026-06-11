@@ -65,6 +65,7 @@ body {
 .ra-container__title {
    --ra-title-margin-top: 0.67em;
    scroll-margin-top: calc(var(--ra-navbar-height, 0px) + (var(--ra-title-margin-top) * 0.5));
+   margin-top: var(--ra-title-margin-top);
 }
 
 .ra-container__title--preview {
@@ -79,7 +80,6 @@ body {
 
 .ra-container__title--feature {
    --ra-title-margin-top: 3rem;
-   margin-top: var(--ra-title-margin-top);
 
    grid-column: 1/2;
    grid-row: 3;
