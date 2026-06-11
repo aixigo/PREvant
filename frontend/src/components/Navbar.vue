@@ -46,7 +46,7 @@
             </MDBBtn>
 
             <MDBBtn outline="success" size="sm" tag="router-link"
-               :to="{ name: 'open-api-ui', params: { url: '/openapi.yaml' }, meta: { title: 'PREvant' } }"
+               :to="{ name: 'open-api-ui', params: { url: '/openapi.yaml' } }"
                class="me-2 border-0">
                <font-awesome-icon icon="terminal" class="me-1" />
                API
