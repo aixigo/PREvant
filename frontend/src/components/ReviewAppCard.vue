@@ -40,7 +40,11 @@
                </h4>
 
                <MDBDropdown v-model="menuOpen">
-                  <MDBDropdownToggle tag="a" class="p-0 border-0 bg-transparent dropdown-toggle" @click="menuOpen = !menuOpen">
+                  <MDBDropdownToggle
+                     tag="a"
+                     class="ra-menu-toggle p-0 border-0 bg-transparent dropdown-toggle"
+                     :aria-label="`Open actions for ${reviewApp.name}`"
+                     @click="menuOpen = !menuOpen">
                      <MDBIcon icon="ellipsis-vertical" />
                   </MDBDropdownToggle>
 
@@ -245,6 +249,16 @@
 .badge-backed-up {
    background-color: #ef6c00;
    color: #fff;
+}
+
+.ra-menu-toggle {
+   width: 2rem;
+   height: 2rem;
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+   line-height: 1;
+   border-radius: 0.25rem;
 }
 
 .ra-icon--expander {
