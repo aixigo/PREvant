@@ -33,19 +33,17 @@
     </MDBModalHeader>
 
     <MDBModalBody>
-      <div class="mb-3">
-        <MDBInput
-          v-model.trim="newAppName"
-          ref="input"
-          required
-          label="Enter new app name"
-          :disabled="!hasWritePermissions"
-          @keyup.enter="duplicateApp"
-        />
-      </div>
-      <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
+      <MDBInput
+         v-model.trim="newAppName"
+         ref="input"
+         required
+         label="Enter new app name"
+         :disabled="!hasWritePermissions"
+         @keyup.enter="duplicateApp"
+      />
+      <BootstrapAlert v-if="!hasWritePermissions" type="warning" class="mt-4">
          You need to be logged in to duplicate apps.
-      </div>
+      </BootstrapAlert>
     </MDBModalBody>
 
     <MDBModalFooter>
@@ -70,6 +68,7 @@
       MDBInput
    } from "mdb-vue-ui-kit";
    import { useAuth } from '../composables/useAuth';
+   import BootstrapAlert from './bootstrap/BootstrapAlert.vue';
 
    const props = defineProps({
       duplicateFromAppName: String

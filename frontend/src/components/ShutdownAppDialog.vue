@@ -43,9 +43,9 @@
         :disabled="!hasWritePermissions"
         @keyup.enter="deleteApp"
       />
-      <div v-if="!hasWritePermissions" class="alert alert-warning text-center" role="alert">
+      <BootstrapAlert v-if="!hasWritePermissions" type="warning" class="mt-4">
          You need to be logged in to shutdown apps.
-      </div>
+      </BootstrapAlert>
     </MDBModalBody>
 
     <MDBModalFooter>
@@ -73,6 +73,7 @@
       MDBInput
    } from "mdb-vue-ui-kit";
    import { useAuth } from '../composables/useAuth';
+   import BootstrapAlert from './bootstrap/BootstrapAlert.vue';
 
    const props = defineProps({
       appName: String
