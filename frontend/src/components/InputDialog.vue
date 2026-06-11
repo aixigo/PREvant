@@ -50,13 +50,13 @@
       </MDBModalBody>
 
       <MDBModalFooter>
-         <button
+         <MDBBtn
             type="button"
-            :class="buttonClass"
+            :outline="confirmColor"
             @click="confirm()"
             :disabled="!canConfirm">
             {{ confirmLabel }}
-         </button>
+         </MDBBtn>
       </MDBModalFooter>
    </MDBModal>
 </template>
@@ -69,6 +69,7 @@
       MDBModalTitle,
       MDBModalBody,
       MDBModalFooter,
+      MDBBtn,
       MDBInput
    } from 'mdb-vue-ui-kit';
    import { useAuth } from '../composables/useAuth';
@@ -86,7 +87,7 @@
       confirmLabel: { type: String, required: true },
       authMessage: { type: String, default: undefined },
       inputPlaceholder: { type: String, default: 'Enter app name' },
-      buttonClass: { type: String, default: 'btn btn-outline-primary' },
+      confirmColor: { type: String, default: 'primary' },
    });
 
    const emit = defineEmits(['confirm']);

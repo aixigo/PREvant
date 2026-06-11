@@ -31,7 +31,7 @@
       :expected-value="appName"
       confirm-label="Confirm"
       auth-message="You need to be logged in to shutdown apps."
-      button-class="btn btn-outline-danger"
+      confirm-color="danger"
       @confirm="deleteApp">
       <template #description>
          <p>Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing in the app:</p>
