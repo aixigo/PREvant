@@ -24,38 +24,75 @@
 * =========================LICENSE_END==================================
 */
 <template>
-   <dlg ref="dialog" :title="`Logs of ${$route.params.service} in ${$route.params.app}`" :large="true" @close="clearLogs"
-      :errorStatusText="this.errorText">
-      <template v-slot:body>
-         <div class="d-flex justify-content-end align-items-center">
-            <div class="alert alert-primary mr-auto" v-if="scrollPosition === 0" role="alert">
-               Maximum Log View Reached. For complete log details, please use the 'Download Full Logs' button.
-            </div>
-            <a :href="downloadLink" class="btn btn-primary ml-auto" download="filename.txt"><font-awesome-icon
-                  icon="download" />
-               &nbsp;
-               Download Full Logs</a>
+  <MDBModal
+    v-model="showModal"
+    centered
+    size="lg"
+    @hidden="clearLogs"
+    @hide="destroyScrollContainer"
+    @show="initScrollContainer"
+  >
+    <MDBModalHeader>
+      <MDBModalTitle>
+        Logs of {{ $route.params.service }} in {{ $route.params.app }}
+      </MDBModalTitle>
+    </MDBModalHeader>
+
+    <MDBModalBody>
+      <div class="d-flex justify-content-end align-items-center mb-2">
+        <div
+            v-if="scrollPosition === 0"
+            class="alert alert-primary mr-auto"
+            role="alert">
+            Maximum Log View Reached. For complete log details, please use the
+            'Download Full Logs' button.
          </div>
-         <DynamicScroller ref="scroller" :items="logLines" :min-item-size="20" :item-size="itemSize" class="ra-logs"
-            :buffer="500">
-            <template v-slot="{ item, index, active }">
-               <DynamicScrollerItem :item="item" :active="active" :size-dependencies="[item.line,]" :data-index="index"
-                  :data-active="active">
-                  <div class="ra-log-line" :key="item.id">
-                     {{ item.line }}
-                  </div>
-               </DynamicScrollerItem>
-            </template>
-         </DynamicScroller>
-      </template>
-   </dlg>
+
+        <MDBBtn
+          outline="primary"
+          class="ml-auto"
+          tag="a" 
+          :href="downloadLink"
+          download="filename.txt"
+        >
+          <font-awesome-icon icon="download" />
+          &nbsp;Download Full Logs
+        </MDBBtn>
+      </div>
+
+      <DynamicScroller
+        ref="scroller"
+        :items="logLines"
+        :min-item-size="20"
+        :item-size="itemSize"
+        class="ra-logs"
+        :buffer="500"
+      >
+        <template v-slot="{ item, index, active }">
+          <DynamicScrollerItem
+            :item="item"
+            :active="active"
+            :size-dependencies="[item.line]"
+            :data-index="index"
+            :data-active="active"
+          >
+            <div class="ra-log-line" :key="item.id">{{ item.line }}</div>
+          </DynamicScrollerItem>
+        </template>
+      </DynamicScroller>
+    </MDBModalBody>
+
+    <MDBModalFooter>
+      <MDBBtn color="secondary" @click="showModal = false">Close</MDBBtn>
+    </MDBModalFooter>
+  </MDBModal>
 </template>
 
 <style>
 @import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 
 .ra-logs {
-   height: 80vh;
+   height: 70vh;
    overflow: auto;
 
    background-color: black;
@@ -72,9 +109,17 @@
 </style>
 
 <script>
+   import { ref } from "vue";
+   import {
+      MDBModal,
+      MDBModalHeader,
+      MDBModalTitle,
+      MDBModalBody,
+      MDBBtn,
+      MDBModalFooter,
+   } from "mdb-vue-ui-kit";
    import LinkHeader from 'http-link-header';
    import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
-   import Dialog from '../components/Dialog.vue';
    import moment from 'moment';
    import { useCloseNavigation } from '../composables/useCloseNavigation';
 
@@ -99,9 +144,23 @@
          };
       },
       components: {
-         dlg: Dialog,
+         MDBModal,
+         MDBModalHeader,
+         MDBModalTitle,
+         MDBModalBody,
+         MDBBtn,
+         MDBModalFooter,
          DynamicScrollerItem: DynamicScrollerItem,
          DynamicScroller: DynamicScroller,
+      },
+      setup() {
+         const showModal = ref(false);
+         const itemSize = ref(24);
+         
+         return {
+            showModal,
+            itemSize
+         }
       },
       computed: {
          currentPageLink() {
@@ -114,8 +173,7 @@
       },
       mounted() {
          this.fetchLogs(this.currentPageLink);
-         this.$refs.dialog.open();
-         this.$refs.scroller.$el.addEventListener('scroll', this.handleScroll);
+         this.showModal = true;
       },
       beforeDestroy() {
          this.errorText = '';
@@ -123,9 +181,14 @@
          if (this.eventSource) {
             this.eventSource.close();
          }
-         this.$refs.scroller.$el.removeEventListener('scroll', this.handleScroll);
       },
       methods: {
+         initScrollContainer() {
+            this.$refs.scroller?.$el.addEventListener('scroll', this.handleScroll);
+         },
+         destroyScrollContainer() {
+            this.$refs.scroller?.$el.removeEventListener('scroll', this.handleScroll);
+         },
          fetchLogs(newRequestUri) {
             if (newRequestUri == null || requestUri != null) {
                return;
