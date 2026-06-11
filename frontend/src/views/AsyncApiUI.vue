@@ -1,34 +1,46 @@
 <template>
-  <Dialog
-    ref="dialog"
-    title="AsyncAPI Documentation"
-    large
-    @close="handleClose"
+  <MDBModal
+    v-model="visible"
+    centered
+    size="lg"
+    @hide="handleClose"
+    @show="renderOpenApi"
   >
-    <template v-slot:body>
+    <MDBModalHeader>
+      <MDBModalTitle>
+        AsyncAPI Documentation
+      </MDBModalTitle>
+    </MDBModalHeader>
+
+    <MDBModalBody>
       <div ref="asyncapi"></div>
-    </template>
-  </Dialog>
+    </MDBModalBody>
+  </MDBModal>
 </template>
 
 <style src="@asyncapi/react-component/styles/default.min.css"></style>
 
 <script setup>
-import { onMounted, useTemplateRef } from "vue";
+import { ref, onMounted, useTemplateRef } from "vue";
 import { useRoute } from "vue-router";
 import AsyncApiStandalone from "@asyncapi/react-component/browser/standalone";
-import Dialog from "../components/Dialog.vue";
+import {
+  MDBModal,
+  MDBModalHeader,
+  MDBModalBody,
+  MDBModalTitle,
+} from "mdb-vue-ui-kit";
 import { useCloseNavigation } from "../composables/useCloseNavigation";
+
+const visible = ref(false);
+onMounted(() => {
+  visible.value = true;
+});
 
 const route = useRoute();
 const { navigateOnClose } = useCloseNavigation();
-
-const dialog = useTemplateRef("dialog");
 const asyncapi = useTemplateRef("asyncapi");
-
-onMounted(() => {
-  dialog.value.open();
-
+function renderOpenApi() {
   AsyncApiStandalone.render(
     {
       schema: { url: route.params.url },
@@ -36,7 +48,7 @@ onMounted(() => {
     },
     asyncapi.value
   );
-});
+}
 
 function handleClose() {
   navigateOnClose();
