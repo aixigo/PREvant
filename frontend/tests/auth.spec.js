@@ -174,7 +174,7 @@ async function shouldAllowActionOnApp({ page, action }) {
     "confirm button should initially be disabled"
   ).toBeDisabled();
 
-  const input = dialog.getByPlaceholder("Enter app name");
+  const input = dialog.getByLabel("Enter app name");
   await expect(input, "input should not be disabled").not.toBeDisabled();
   await input.fill(PREVIEW_NAME);
 
@@ -214,7 +214,7 @@ async function shouldNotAllowActionOnApp({ page, action }) {
     "confirm button should be disabled"
   ).toBeDisabled();
 
-  const input = dialog.getByPlaceholder("Enter app name");
+  const input = dialog.getByLabel("Enter app name");
   await expect(input, "input should be disabled").toBeDisabled();
 }
 
