@@ -143,7 +143,7 @@
                   <span class="badge"
                         :class="badgeClass( container.type )">{{ container.type }}</span>
                   <span v-if="container.version && container.version.gitCommit"
-                        class="ra-build-infos ra-build-infos__hash text-right"
+                        class="ra-build-infos ra-build-infos__hash text-right text-nowrap"
                         :title="formatVersion( container.version )">
                      {{ formatSlicedVersion( container.version ) }}
                      <!-- only for layout -->

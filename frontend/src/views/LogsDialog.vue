@@ -41,8 +41,8 @@
     <MDBModalBody>
       <div class="d-flex justify-content-between align-items-center gap-4 mb-2">
          <BootstrapAlert type="primary" class="m-0 me-auto" :class="{ invisible: scrollPosition !== 0}">
-            Maximum Log View Reached. For complete log details, please use the
-            'Download Full Logs' button.
+            Maximum Log View Reached. <br/>
+            For complete log details, please use the 'Download Full Logs' button.
          </BootstrapAlert>
 
         <MDBBtn
