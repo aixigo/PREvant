@@ -33,7 +33,7 @@
       <MDBNavbarToggler target="#navbarSupportedContent" @click="collapse = !collapse" />
 
       <MDBCollapse v-model="collapse" id="navbarSupportedContent">
-         <MDBNavbarNav class="mb-2 mb-lg-0" right>
+         <MDBNavbarNav class="mb-2 mb-lg-0 align-items-center" right>
             <form class="d-flex input-group w-auto align-items-center">
                <MDBInput type="search" size="sm" wrapperClass="me-2" placeholder="Search Apps" aria-label="Search"
                   :model-value="appNameFilter" @update:model-value="fireSearchEvent" />
