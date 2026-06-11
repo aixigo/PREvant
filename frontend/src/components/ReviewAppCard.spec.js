@@ -1,7 +1,28 @@
 /* @vitest-environment jsdom */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import { nextTick } from "vue";
+
+vi.mock("mdb-vue-ui-kit", () => {
+  const stub = { template: "<div><slot /></div>" };
+  const inputStub = { template: "<input />" };
+
+  return {
+    MDBDropdown: stub,
+    MDBDropdownItem: stub,
+    MDBDropdownMenu: stub,
+    MDBDropdownToggle: stub,
+    MDBIcon: stub,
+    MDBModal: stub,
+    MDBModalHeader: stub,
+    MDBModalTitle: stub,
+    MDBModalBody: stub,
+    MDBModalFooter: stub,
+    MDBBtn: stub,
+    MDBInput: inputStub,
+  };
+});
+
 import ReviewAppCard from "./ReviewAppCard.vue";
 
 function createReviewApp(containerOverrides = {}, appOverrides = {}) {

@@ -218,9 +218,8 @@
 <script>
    import { ref } from 'vue';
    import moment from 'moment';
-   import { MDBDropdown, MDBDropdownItem, MDBDropdownMenu, MDBDropdownToggle } from 'mdb-vue-ui-kit';
-   import BackupAppDialog from './BackupAppDialog.vue';
    import { MDBDropdown, MDBDropdownItem, MDBDropdownMenu, MDBDropdownToggle, MDBIcon } from 'mdb-vue-ui-kit';
+   import BackupAppDialog from './BackupAppDialog.vue';
    import DuplicateAppDialog from './DuplicateAppDialog.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
    import { useConfig } from '../composables/useConfig';
