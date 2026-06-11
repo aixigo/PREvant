@@ -25,7 +25,7 @@
  */
 
 <template>
-   <div class="container" id="app">
+   <MDBContainer id="app">
 
       <div v-if="isFetchInProgress" class="d-flex justify-content-center">
          <MDBSpinner size="lg" color="primary" />
@@ -82,7 +82,7 @@
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
-   </div>
+   </MDBContainer>
 </template>
 
 <style>
@@ -104,7 +104,7 @@
 
 <script>
    import { mapGetters } from 'vuex';
-   import { MDBSpinner } from 'mdb-vue-ui-kit';
+   import { MDBContainer, MDBSpinner } from 'mdb-vue-ui-kit';
    import BootstrapAlert from '../components/bootstrap/BootstrapAlert.vue';
    import ReviewAppCard from '../components/ReviewAppCard.vue';
 
@@ -115,6 +115,7 @@
          };
       },
       components: {
+         MDBContainer,
          MDBSpinner,
          BootstrapAlert,
          'review-app-card': ReviewAppCard
