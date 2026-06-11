@@ -25,7 +25,7 @@
  */
 
 <template>
-   <MDBNavbar expand="lg" bg="light" position="top" container>
+   <MDBNavbar class="ra-navbar" expand="lg" bg="light" position="top" container>
       <MDBNavbarBrand href="#">
          <img src="/logo.svg" alt="PREvant Logo" height="30" loading="lazy" />
       </MDBNavbarBrand>
