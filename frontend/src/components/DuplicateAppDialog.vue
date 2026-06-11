@@ -25,7 +25,7 @@
  */
 
 <template>
-  <MDBModal v-model="model" centered size="m" @shown="focusInput">
+  <MDBModal v-model="model" centered @shown="focusInput">
     <MDBModalHeader>
       <MDBModalTitle>
          Duplicate {{ duplicateFromAppName }}

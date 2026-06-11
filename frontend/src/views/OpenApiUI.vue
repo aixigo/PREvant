@@ -2,7 +2,7 @@
   <MDBModal
     v-model="visible"
     centered
-    size="lg"
+    size="xl"
     @hide="handleClose"
     @show="renderOpenApi"
   >
