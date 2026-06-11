@@ -27,7 +27,7 @@
   <MDBModal
     v-model="showModal"
     centered
-    size="lg"
+    size="xl"
     @hidden="clearLogs"
     @hide="destroyScrollContainer"
     @show="initScrollContainer"
@@ -39,14 +39,11 @@
     </MDBModalHeader>
 
     <MDBModalBody>
-      <div class="d-flex justify-content-end align-items-center mb-2">
-        <div
-            v-if="scrollPosition === 0"
-            class="alert alert-primary mr-auto"
-            role="alert">
+      <div class="d-flex justify-content-between align-items-center gap-4 mb-2">
+         <BootstrapAlert type="primary" class="m-0 me-auto" :class="{ invisible: scrollPosition !== 0}">
             Maximum Log View Reached. For complete log details, please use the
             'Download Full Logs' button.
-         </div>
+         </BootstrapAlert>
 
         <MDBBtn
           outline="primary"
@@ -122,14 +119,17 @@
    import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
    import moment from 'moment';
    import { useCloseNavigation } from '../composables/useCloseNavigation';
+   import BootstrapAlert from "../components/bootstrap/BootstrapAlert.vue";
 
    let requestUri;
 
    export default {
       setup() {
+         const showModal = ref(false);
          const { navigateOnClose } = useCloseNavigation();
 
          return {
+            showModal,
             navigateOnClose
          };
       },
@@ -144,6 +144,7 @@
          };
       },
       components: {
+         BootstrapAlert,
          MDBModal,
          MDBModalHeader,
          MDBModalTitle,
@@ -152,15 +153,6 @@
          MDBModalFooter,
          DynamicScrollerItem: DynamicScrollerItem,
          DynamicScroller: DynamicScroller,
-      },
-      setup() {
-         const showModal = ref(false);
-         const itemSize = ref(24);
-         
-         return {
-            showModal,
-            itemSize
-         }
       },
       computed: {
          currentPageLink() {

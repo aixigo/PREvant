@@ -29,11 +29,10 @@
 
       <spinner v-if="isFetchInProgress" />
 
-      <div v-if="errors.length > 0" class="alert alert-danger" role="alert">
-         <p v-for="error in errors">
-            <b>{{ error.title }}</b>: {{ error.detail }}
-         </p>
-      </div>
+      <BootstrapAlert v-if="errors.length > 0" v-for="error in errors" type="danger">
+         <b>{{ error.title }}</b>: {{ error.detail }}
+      </BootstrapAlert>
+        
       <h1 v-else-if="reviewApps.length === 0" class="ra-container__title--preview">
          No apps to review.
       </h1>
@@ -99,18 +98,11 @@
    .list-complete-leave-active {
       position: absolute;
    }
-
-   .alert > p {
-      margin-bottom: 0;
-      text-align: center;
-   }
-   .alert > p + p {
-      margin-top: 1rem;
-   }
 </style>
 
 <script>
    import { mapGetters } from 'vuex';
+   import BootstrapAlert from '../components/bootstrap/BootstrapAlert.vue';
    import ReviewAppCard from '../components/ReviewAppCard.vue';
    import Spinner from '../components/Spinner.vue';
 
@@ -121,6 +113,7 @@
          };
       },
       components: {
+         BootstrapAlert,
          'review-app-card': ReviewAppCard,
          'spinner': Spinner
       },
