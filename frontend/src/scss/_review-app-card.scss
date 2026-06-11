@@ -123,6 +123,10 @@
    height: 1.5rem;
 }
 
+.ra-container__expandable .ra-container__type > .ra-icons:not(.ra-icon--expander) {
+   margin-left: .125rem;
+}
+
 .ra-container__infos {
    padding: 0 .5em;
 
