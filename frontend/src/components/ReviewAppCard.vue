@@ -133,6 +133,7 @@
                         class="ra-container__change-status"
                         tabindex="0"
                         v-if="reviewApp.status == 'deployed'"
+                        iconStyle="far"
                         :icon="container.status === 'running' ? 'circle-pause' : 'circle-play'"
                         @click="changeState($event, container.name)"
                      />

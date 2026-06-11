@@ -31,6 +31,7 @@ import '@fontsource/roboto/latin-500.css';
 import '@fontsource/roboto/latin-700.css';
 import '@fortawesome/fontawesome-free/css/fontawesome.min.css';
 import '@fortawesome/fontawesome-free/css/solid.min.css';
+import '@fortawesome/fontawesome-free/css/regular.min.css';
 import 'mdb-vue-ui-kit/css/mdb.min.css';
 import './scss/theme.scss';
 import Main from './Main.vue';
