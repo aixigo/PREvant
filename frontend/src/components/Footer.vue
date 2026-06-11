@@ -11,7 +11,7 @@
                </RouterLink>
             </MDBCol>
             <MDBCol auto v-if="hasFilter" class="ra-footer__filter">
-               <MDBIcon icon="circle-exclamation" class="me-1" />
+               <MDBIcon icon="triangle-exclamation" class="me-1" />
                <span>Filtered by <em>{{ appNameFilter }}</em></span>
             </MDBCol>
          </MDBRow>
@@ -36,11 +36,11 @@
 }
 
 .ra-footer__count {
-   min-width: 2rem;
    text-align: center;
 }
 
 .ra-footer__filter {
+   margin-left: 2rem;
    font-size: 0.875rem;
    opacity: 0.95;
 }
