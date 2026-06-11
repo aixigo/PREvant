@@ -35,12 +35,13 @@ import '@fortawesome/fontawesome-free/css/regular.min.css';
 import 'mdb-vue-ui-kit/css/mdb.min.css';
 import './scss/theme.scss';
 import Main from './Main.vue';
+import Apps from './views/Apps.vue';
 import { createStore } from './store';
 import mdbTooltipDirective from './directives/mdb-tooltip';
 export const router = createRouter({
    history: createWebHashHistory(),
    routes: [
-      { path: '/:heading?', component: () => import('./views/Apps.vue'), query: { appNameFilter: { type: String } } },
+      { path: '/:heading?', component: Apps, query: { appNameFilter: { type: String } } },
       { path: '/open-api-ui/:url', name: 'open-api-ui', component: () => import('./views/OpenApiUI.vue') },
       { path: '/async-api-ui/:url', name: 'async-api-ui', component: () => import('./views/AsyncApiUI.vue') },
       { path: '/logs/:app/:service', name: 'logs', component: () => import('./views/LogsDialog.vue') }
