@@ -34,21 +34,21 @@
 
       <MDBCollapse v-model="collapse" id="navbarSupportedContent">
          <MDBNavbarNav class="mb-2 mb-lg-0 align-items-center" right>
-            <form class="d-flex input-group w-auto align-items-center">
-               <MDBInput type="search" wrapperClass="me-2" placeholder="Search Apps" aria-label="Search"
+            <form class="ra-navbar-search d-flex align-items-center mb-0">
+               <MDBInput type="search" wrapperClass="me-2 mb-0 w-auto" placeholder="Search Apps" aria-label="Search"
                   :model-value="appNameFilter" @update:model-value="fireSearchEvent" />
             </form>
 
             <MDBBtn outline="success" tag="a" href="https://github.com/aixigo/PREvant" target="_blank"
-               class="me-2 border-0">
-               <font-awesome-icon icon="code" class="me-1" />
+               class="me-2 mb-0 border-0 d-flex align-items-center">
+               <MDBIcon icon="code" class="me-1" />
                Code
             </MDBBtn>
 
             <MDBBtn outline="success" tag="router-link"
                :to="{ name: 'open-api-ui', params: { url: '/openapi.yaml' } }"
-               class="me-2 border-0">
-               <font-awesome-icon icon="terminal" class="me-1" />
+               class="me-2 mb-0 border-0 d-flex align-items-center">
+               <MDBIcon icon="terminal" class="me-1" />
                API
             </MDBBtn>
 
@@ -74,7 +74,8 @@
       MDBNavbarNav,
       MDBCollapse,
       MDBBtn,
-      MDBInput
+      MDBInput,
+      MDBIcon
    } from "mdb-vue-ui-kit";
    import { mapGetters } from 'vuex';
 
@@ -87,6 +88,7 @@
          MDBCollapse,
          MDBBtn,
          MDBInput,
+         MDBIcon,
       },
       data() {
          return {};
@@ -115,3 +117,9 @@
       }
    }
 </script>
+
+<style scoped>
+.ra-navbar-search :deep(.form-outline) {
+   margin-bottom: 0;
+}
+</style>
