@@ -179,15 +179,17 @@
          </MDBCardBody>
 
          <template v-if="showOwners">
-            <MDBCardFooter class="text-muted" v-if="reviewApp.owners == null || reviewApp.owners.length === 0">
+            <MDBCardFooter class="ra-owners-footer" v-if="reviewApp.owners == null || reviewApp.owners.length === 0">
                No known owners
             </MDBCardFooter>
-            <MDBCardFooter class="owners text-muted" v-else>
-               Owners:
-               <MDBBadge color="secondary" v-for="owner in reviewApp.owners" :key="owner.sub ?? owner.name">
-                  <template v-if="owner.name">{{ owner.name }}</template>
-                  <template v-else>{{ owner.sub }}</template>
-               </MDBBadge>
+            <MDBCardFooter class="owners ra-owners-footer" v-else>
+               <span class="owners__label">Owners:</span>
+               <div class="owners__list">
+                  <MDBBadge color="secondary" v-for="owner in reviewApp.owners" :key="owner.sub ?? owner.name">
+                     <template v-if="owner.name">{{ owner.name }}</template>
+                     <template v-else>{{ owner.sub }}</template>
+                  </MDBBadge>
+               </div>
             </MDBCardFooter>
          </template>
       </MDBCard>
@@ -200,11 +202,28 @@
 
 <style lang="css" scoped>
 .owners {
+   display: flex;
+   align-items: center;
+   gap: 0.35rem;
    overflow: hidden;
    white-space: nowrap;
 }
+.owners__label {
+   flex-shrink: 0;
+}
+.owners__list {
+   display: flex;
+   align-items: center;
+   gap: 0.35rem;
+   min-width: 0;
+}
+.ra-owners-footer {
+   color: #3f4b57;
+}
 .owners .badge {
-    margin: 0 0.2em;
+   margin: 0;
+   background-color: #5b6772;
+   color: #fff;
 }
 .ra-app-title {
    display: flex;
