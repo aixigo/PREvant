@@ -37,12 +37,18 @@
             <form class="ra-navbar-search d-flex align-items-center mb-0">
                <MDBInput
                   type="search"
+                  :form-outline="false"
+                  :input-group="true"
                   wrapperClass="me-2 mb-0 w-auto ra-navbar-search-input"
                   placeholder="Search Apps"
                   aria-label="Search"
                   :model-value="appNameFilter"
                   @update:model-value="fireSearchEvent">
-                  <MDBIcon icon="magnifying-glass" class="trailing text-muted" />
+                  <template #prepend>
+                     <span class="input-group-text">
+                        <MDBIcon icon="magnifying-glass" class="text-muted" />
+                     </span>
+                  </template>
                </MDBInput>
             </form>
 
@@ -126,6 +132,11 @@
 </script>
 
 <style scoped>
+.ra-navbar-search :deep(.input-group) {
+   margin-bottom: 0;
+   width: 14rem;
+}
+
 .ra-navbar-search :deep(.form-outline) {
    margin-bottom: 0;
 }
