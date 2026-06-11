@@ -28,7 +28,7 @@
    <div>
       <div class="card">
          <div class="card-header">
-            <div class="d-flex justify-content-between">
+            <div class="d-flex justify-content-between align-items-center">
                <h4 v-if="reviewApp.ticket !== undefined"
                    class="ra-headline ra-app-title">
                   <a :href="reviewApp.ticket.link" target="_blank">{{ reviewApp.name }}</a>
