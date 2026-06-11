@@ -1,14 +1,21 @@
 <template>
-  <Dialog
-    ref="dialog"
-    title="API Documentation"
-    large
-    @close="handleClose"
+  <MDBModal
+    v-model="visible"
+    centered
+    size="lg"
+    @hide="handleClose"
+    @show="renderOpenApi"
   >
-    <template v-slot:body>
+    <MDBModalHeader>
+      <MDBModalTitle>
+        API Documentation
+      </MDBModalTitle>
+    </MDBModalHeader>
+
+    <MDBModalBody>
       <div class="open-api-ui" ref="openapi"></div>
-    </template>
-  </Dialog>
+    </MDBModalBody>
+  </MDBModal>
 </template>
 
 <style lang="css" src="swagger-ui/dist/swagger-ui.css"></style>
@@ -26,26 +33,32 @@
 </style>
 
 <script setup>
-import { onMounted, useTemplateRef } from "vue";
+import { ref, onMounted, useTemplateRef } from "vue";
 import { useRoute } from "vue-router";
 import SwaggerUI from "swagger-ui";
-import Dialog from "../components/Dialog.vue";
+import {
+  MDBModal,
+  MDBModalHeader,
+  MDBModalBody,
+  MDBModalTitle,
+} from "mdb-vue-ui-kit";
 import { useCloseNavigation } from "../composables/useCloseNavigation";
+
+const visible = ref(false);
+onMounted(() => {
+  visible.value = true;
+});
 
 const route = useRoute();
 const { navigateOnClose } = useCloseNavigation();
-
-const dialog = useTemplateRef("dialog");
 const openapi = useTemplateRef("openapi");
 
-onMounted(() => {
-  dialog.value.open();
-
+function renderOpenApi() {
   SwaggerUI({
     url: route.params.url,
     domNode: openapi.value,
   });
-});
+}
 
 function handleClose() {
   navigateOnClose();
