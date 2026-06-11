@@ -35,8 +35,15 @@
       <MDBCollapse v-model="collapse" id="navbarSupportedContent">
          <MDBNavbarNav class="mb-2 mb-lg-0 align-items-center" right>
             <form class="ra-navbar-search d-flex align-items-center mb-0">
-               <MDBInput type="search" wrapperClass="me-2 mb-0 w-auto" placeholder="Search Apps" aria-label="Search"
-                  :model-value="appNameFilter" @update:model-value="fireSearchEvent" />
+               <MDBInput
+                  type="search"
+                  wrapperClass="me-2 mb-0 w-auto ra-navbar-search-input"
+                  placeholder="Search Apps"
+                  aria-label="Search"
+                  :model-value="appNameFilter"
+                  @update:model-value="fireSearchEvent">
+                  <MDBIcon icon="magnifying-glass" class="trailing text-muted" />
+               </MDBInput>
             </form>
 
             <MDBBtn outline="success" tag="a" href="https://github.com/aixigo/PREvant" target="_blank"
