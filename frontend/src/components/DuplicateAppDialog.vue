@@ -58,7 +58,7 @@
 
 
 <script setup>
-   import { ref, defineModel, watch, useTemplateRef } from 'vue';
+   import { ref, watch, useTemplateRef } from 'vue';
    import { useStore } from 'vuex';
    import {
       MDBModal,
