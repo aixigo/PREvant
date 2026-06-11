@@ -25,7 +25,7 @@
  */
 
 <template>
-  <MDBModal v-model="model" size="sm" @shown="focusInput">
+  <MDBModal v-model="model" centered size="m" @shown="focusInput">
     <MDBModalHeader>
       <MDBModalTitle>
          Shutdown {{ appName }}
