@@ -13,6 +13,11 @@ vi.mock("mdb-vue-ui-kit", () => {
     MDBDropdownMenu: stub,
     MDBDropdownToggle: stub,
     MDBIcon: stub,
+    MDBCard: stub,
+    MDBCardHeader: stub,
+    MDBCardBody: stub,
+    MDBCardFooter: stub,
+    MDBBadge: stub,
     MDBModal: stub,
     MDBModalHeader: stub,
     MDBModalTitle: stub,
@@ -57,6 +62,7 @@ function mountCard(reviewApp) {
       showOwners: false,
     },
     global: {
+      renderStubDefaultSlot: true,
       stubs: {
         "font-awesome-icon": true,
         "router-link": RouterLinkStub,

@@ -26,17 +26,17 @@
 
 <template>
    <div>
-      <div class="card">
-         <div class="card-header">
+      <MDBCard class="h-100">
+         <MDBCardHeader>
             <div class="d-flex justify-content-between align-items-center">
                <h4 v-if="reviewApp.ticket !== undefined"
                    class="ra-headline ra-app-title">
                   <a :href="reviewApp.ticket.link" target="_blank">{{ reviewApp.name }}</a>
-                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ms-2">Backed up</span>
+                  <MDBBadge v-if="reviewApp.status === 'backed-up'" class="badge-backed-up ms-2">Backed up</MDBBadge>
                </h4>
                <h4 v-else class="ra-app-title">
                   {{ reviewApp.name }}
-                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ms-2">Backed up</span>
+                  <MDBBadge v-if="reviewApp.status === 'backed-up'" class="badge-backed-up ms-2">Backed up</MDBBadge>
                </h4>
 
                <MDBDropdown v-model="menuOpen">
@@ -74,17 +74,16 @@
                  class="ra-headline__intro">
                <span class="ra-ellipsis"
                      :title="reviewApp.ticket['summary']">{{ reviewApp.ticket['summary'] }}</span>
-               <span class="badge"
-                     :class="{ 'jira--ready': reviewApp.ticket['status'] === 'Bereit',
-                            'jira--process': reviewApp.ticket['status'] === 'In Bearbeitung',
-                            'jira--review': reviewApp.ticket['status'] === 'Review',
-                            'jira--done': reviewApp.ticket['status'] === 'Erledigt' }">
+               <MDBBadge :class="{ 'jira--ready': reviewApp.ticket['status'] === 'Bereit',
+                        'jira--process': reviewApp.ticket['status'] === 'In Bearbeitung',
+                        'jira--review': reviewApp.ticket['status'] === 'Review',
+                        'jira--done': reviewApp.ticket['status'] === 'Erledigt' }">
                   {{ reviewApp.ticket['status'] }}
-               </span>
+               </MDBBadge>
             </div>
-         </div>
+         </MDBCardHeader>
 
-         <div class="card-body">
+         <MDBCardBody>
             <div v-for="container in reviewApp.containers"
                  :key="container.name"
                  class="ra-container"
@@ -140,8 +139,7 @@
                </div>
 
                <div class="ra-container__tags">
-                  <span class="badge"
-                        :class="badgeClass( container.type )">{{ container.type }}</span>
+                  <MDBBadge :color="badgeColor( container.type )">{{ container.type }}</MDBBadge>
                   <span v-if="container.version && container.version.gitCommit"
                         class="ra-build-infos ra-build-infos__hash text-end text-nowrap"
                         :title="formatVersion( container.version )">
@@ -163,21 +161,21 @@
                   autocapitalize="off"
                   :spellcheck="false">
             </textarea>
-         </div>
+         </MDBCardBody>
 
          <template v-if="showOwners">
-            <div class="card-footer text-muted" v-if="reviewApp.owners == null || reviewApp.owners.length === 0">
+            <MDBCardFooter class="text-muted" v-if="reviewApp.owners == null || reviewApp.owners.length === 0">
                No known owners
-            </div>
-            <div class="owners card-footer text-muted" v-else>
+            </MDBCardFooter>
+            <MDBCardFooter class="owners text-muted" v-else>
                Owners:
-               <span class="badge badge-secondary" v-for="owner in reviewApp.owners">
+               <MDBBadge color="secondary" v-for="owner in reviewApp.owners" :key="owner.sub ?? owner.name">
                   <template v-if="owner.name">{{ owner.name }}</template>
                   <template v-else>{{ owner.sub }}</template>
-               </span>
-            </div>
+               </MDBBadge>
+            </MDBCardFooter>
          </template>
-      </div>
+      </MDBCard>
 
       <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name !== defaultAppName"/>
       <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
@@ -190,7 +188,7 @@
    overflow: hidden;
    white-space: nowrap;
 }
-.owners span {
+.owners .badge {
     margin: 0 0.2em;
 }
 .ra-app-title {
@@ -218,7 +216,18 @@
 <script>
    import { ref } from 'vue';
    import moment from 'moment';
-   import { MDBDropdown, MDBDropdownItem, MDBDropdownMenu, MDBDropdownToggle, MDBIcon } from 'mdb-vue-ui-kit';
+   import {
+      MDBBadge,
+      MDBCard,
+      MDBCardBody,
+      MDBCardFooter,
+      MDBCardHeader,
+      MDBDropdown,
+      MDBDropdownItem,
+      MDBDropdownMenu,
+      MDBDropdownToggle,
+      MDBIcon
+   } from 'mdb-vue-ui-kit';
    import BackupAppDialog from './BackupAppDialog.vue';
    import DuplicateAppDialog from './DuplicateAppDialog.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
@@ -241,6 +250,11 @@
          };
       },
       components: {
+         MDBBadge,
+         MDBCard,
+         MDBCardBody,
+         MDBCardFooter,
+         MDBCardHeader,
          MDBDropdown,
          MDBDropdownItem,
          MDBDropdownMenu,
@@ -312,16 +326,16 @@
          openDeleteDialog() {
             this.$refs.deleteDlg.open();
          },
-         badgeClass(serviceType) {
+         badgeColor(serviceType) {
             switch (serviceType) {
                case 'instance':
-                  return 'badge-info';
+                  return 'info';
                case 'linked':
-                  return 'badge-warning';
+                  return 'warning';
                case 'replica':
-                  return 'badge-dark';
+                  return 'dark';
             }
-            return 'badge-secondary';
+            return 'secondary';
          },
          toggleContainer(container) {
             if (!this.isExpandable(container)) {
