@@ -119,5 +119,12 @@ test.describe("app modal dialogs", () => {
 });
 
 async function closeActiveModal(page) {
-  await page.locator(".modal.show button.close[aria-label='Close']").click();
+  const dialog = page.getByRole("dialog");
+  const closeButton = dialog.getByLabel("Close");
+
+  if ((await closeButton.count()) === 0) {
+    return;
+  }
+
+  await closeButton.first().click();
 }

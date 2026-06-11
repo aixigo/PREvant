@@ -36,7 +36,7 @@ test.describe("when the user is logged in", () => {
 
   test("should display the name of the user", async ({ page }) => {
     await expect(
-      page.locator(`a:has-text("${me.name}")`),
+      page.locator(`span:has-text("${me.name}")`),
       "name of the logged in user is displayed"
     ).toBeVisible();
   });
@@ -170,7 +170,7 @@ async function shouldAllowActionOnApp({ page, action }) {
   ).not.toBeVisible();
 
   await expect(
-    page.getByRole("button", { name: confirmButtonText }),
+    dialog.getByRole("button", { name: confirmButtonText }),
     "confirm button should initially be disabled"
   ).toBeDisabled();
 
@@ -179,7 +179,7 @@ async function shouldAllowActionOnApp({ page, action }) {
   await input.fill(PREVIEW_NAME);
 
   await expect(
-    page.getByRole("button", { name: confirmButtonText }),
+    dialog.getByRole("button", { name: confirmButtonText }),
     "confirm button should be enabled"
   ).not.toBeDisabled();
 }
@@ -210,7 +210,7 @@ async function shouldNotAllowActionOnApp({ page, action }) {
   ).toBeVisible();
 
   await expect(
-    page.getByRole("button", { name: confirmButtonText }),
+    dialog.getByRole("button", { name: confirmButtonText }),
     "confirm button should be disabled"
   ).toBeDisabled();
 
