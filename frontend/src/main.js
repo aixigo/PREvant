@@ -23,19 +23,9 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-// Bootstrap material design library
-import $ from 'jquery';
-import 'popper.js';
-import 'bootstrap-material-design/dist/css/bootstrap-material-design.css';
-import 'bootstrap-material-design/dist/js/bootstrap-material-design.js';
-
-$(document).ready(() => {
-     $('body').bootstrapMaterialDesign();
-});
-
 import { createApp, } from 'vue';
 import { createRouter, createWebHashHistory } from 'vue-router';
-
+import 'mdb-vue-ui-kit/css/mdb.min.css';
 import './scss/theme.scss';
 import Main from './Main.vue';
 import Apps from './views/Apps.vue';
@@ -61,7 +51,6 @@ library.add(faExclamation);
 
 export const router = createRouter({
    history: createWebHashHistory(),
-   // It is currently not possible to use lazy loading for routes because of bootstrap v4 and jquery
    routes: [
       { path: '/:heading?', component: Apps, query: { appNameFilter: { type: String } } },
       { path: '/open-api-ui/:url', name: 'open-api-ui', component: OpenApiUI },
