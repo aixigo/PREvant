@@ -100,7 +100,8 @@
 }
 
 .ra-icons {
-   font-size: 1.5rem;
+   font-size: 1.125rem;
+   line-height: 1;
 
    opacity: .5;
 
@@ -108,17 +109,17 @@
 }
 
 .ra-icon--expander {
-   font-size: 1rem;
+   font-size: .875rem;
 
    position: absolute;
    top: 50%;
-   left: -1rem;
+   left: -.875rem;
    transform: translateY(-50%);
 
    display: flex;
    align-items: center;
 
-   width: 1rem;
+   width: .875rem;
    height: 1.5rem;
 }
 
