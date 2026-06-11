@@ -179,17 +179,8 @@
          </MDBCardBody>
 
          <template v-if="showOwners">
-            <MDBCardFooter class="ra-owners-footer" v-if="reviewApp.owners == null || reviewApp.owners.length === 0">
-               No known owners
-            </MDBCardFooter>
-            <MDBCardFooter class="owners ra-owners-footer" v-else>
-               <span class="owners__label">Owners:</span>
-               <div class="owners__list">
-                  <MDBBadge color="secondary" v-for="owner in reviewApp.owners" :key="owner.sub ?? owner.name">
-                     <template v-if="owner.name">{{ owner.name }}</template>
-                     <template v-else>{{ owner.sub }}</template>
-                  </MDBBadge>
-               </div>
+            <MDBCardFooter class="ra-owners-footer">
+               <ReviewAppCardOwners :owners="reviewApp.owners" />
             </MDBCardFooter>
          </template>
       </MDBCard>
@@ -201,29 +192,9 @@
 </template>
 
 <style lang="css" scoped>
-.owners {
-   display: flex;
-   align-items: center;
-   gap: 0.35rem;
-   overflow: hidden;
-   white-space: nowrap;
-}
-.owners__label {
-   flex-shrink: 0;
-}
-.owners__list {
-   display: flex;
-   align-items: center;
-   gap: 0.35rem;
-   min-width: 0;
-}
 .ra-owners-footer {
-   color: #3f4b57;
-}
-.owners .badge {
-   margin: 0;
-   background-color: #5b6772;
-   color: #fff;
+   padding-top: 0.5rem;
+   padding-bottom: 0.5rem;
 }
 .ra-app-title {
    display: flex;
@@ -310,6 +281,7 @@
    } from 'mdb-vue-ui-kit';
    import BackupAppDialog from './BackupAppDialog.vue';
    import DuplicateAppDialog from './DuplicateAppDialog.vue';
+   import ReviewAppCardOwners from './ReviewAppCardOwners.vue';
    import ShutdownAppDialog from './ShutdownAppDialog.vue';
    import { useConfig } from '../composables/useConfig';
 
@@ -342,6 +314,7 @@
          MDBIcon,
          'backup-app-dialog': BackupAppDialog,
          'duplicate-app-dialog': DuplicateAppDialog,
+         ReviewAppCardOwners,
          'shutdown-app-dialog': ShutdownAppDialog,
       },
       props: {
