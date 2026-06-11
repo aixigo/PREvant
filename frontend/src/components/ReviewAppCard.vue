@@ -224,6 +224,15 @@
 }
 .ra-container__change-status {
    flex-shrink: 0;
+   font-size: 1.25rem;
+   color: #64748b;
+   opacity: 0.75;
+   transition: color 0.2s ease-out, opacity 0.2s ease-out;
+}
+.ra-container__change-status:hover,
+.ra-container__change-status:focus-visible {
+   color: #334155;
+   opacity: 1;
 }
 .ra-container-badge {
    font-size: 0.55rem;
