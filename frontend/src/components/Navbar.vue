@@ -35,17 +35,17 @@
       <MDBCollapse v-model="collapse" id="navbarSupportedContent">
          <MDBNavbarNav class="mb-2 mb-lg-0 align-items-center" right>
             <form class="d-flex input-group w-auto align-items-center">
-               <MDBInput type="search" size="sm" wrapperClass="me-2" placeholder="Search Apps" aria-label="Search"
+               <MDBInput type="search" wrapperClass="me-2" placeholder="Search Apps" aria-label="Search"
                   :model-value="appNameFilter" @update:model-value="fireSearchEvent" />
             </form>
 
-            <MDBBtn outline="success" size="sm" tag="a" href="https://github.com/aixigo/PREvant" target="_blank"
+            <MDBBtn outline="success" tag="a" href="https://github.com/aixigo/PREvant" target="_blank"
                class="me-2 border-0">
                <font-awesome-icon icon="code" class="me-1" />
                Code
             </MDBBtn>
 
-            <MDBBtn outline="success" size="sm" tag="router-link"
+            <MDBBtn outline="success" tag="router-link"
                :to="{ name: 'open-api-ui', params: { url: '/openapi.yaml' } }"
                class="me-2 border-0">
                <font-awesome-icon icon="terminal" class="me-1" />
@@ -57,7 +57,7 @@
             </span>
 
             <MDBBtn v-else-if="issuers != null" v-for="issuer in issuers" :key="issuer.issuer" outline="success"
-               size="sm" tag="a" class="ms-2" :href="issuer.loginUrl">
+               tag="a" class="ms-2" :href="issuer.loginUrl">
                Login with {{ issuer.issuer }}
             </MDBBtn>
          </MDBNavbarNav>
