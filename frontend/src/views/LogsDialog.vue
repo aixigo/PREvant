@@ -47,7 +47,7 @@
 
         <MDBBtn
           outline="primary"
-          class="ml-auto"
+          class="ms-auto"
           tag="a" 
           :href="downloadLink"
           download="filename.txt"

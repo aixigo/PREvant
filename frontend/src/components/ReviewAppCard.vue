@@ -32,11 +32,11 @@
                <h4 v-if="reviewApp.ticket !== undefined"
                    class="ra-headline ra-app-title">
                   <a :href="reviewApp.ticket.link" target="_blank">{{ reviewApp.name }}</a>
-                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ml-2">Backed up</span>
+                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ms-2">Backed up</span>
                </h4>
                <h4 v-else class="ra-app-title">
                   {{ reviewApp.name }}
-                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ml-2">Backed up</span>
+                  <span v-if="reviewApp.status === 'backed-up'" class="badge badge-backed-up ms-2">Backed up</span>
                </h4>
 
                <MDBDropdown v-model="menuOpen">
@@ -143,7 +143,7 @@
                   <span class="badge"
                         :class="badgeClass( container.type )">{{ container.type }}</span>
                   <span v-if="container.version && container.version.gitCommit"
-                        class="ra-build-infos ra-build-infos__hash text-right text-nowrap"
+                        class="ra-build-infos ra-build-infos__hash text-end text-nowrap"
                         :title="formatVersion( container.version )">
                      {{ formatSlicedVersion( container.version ) }}
                      <!-- only for layout -->
