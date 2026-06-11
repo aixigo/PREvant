@@ -28,23 +28,7 @@ import { createRouter, createWebHashHistory } from 'vue-router';
 import 'mdb-vue-ui-kit/css/mdb.min.css';
 import './scss/theme.scss';
 import Main from './Main.vue';
-
-import {library} from '@fortawesome/fontawesome-svg-core';
-import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose, faDownload, faExclamation} from '@fortawesome/free-solid-svg-icons';
-import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome';
 import { createStore } from './store';
-
-library.add(faClipboard);
-library.add(faCode);
-library.add(faCopy);
-library.add(faDownload);
-library.add(faServer);
-library.add(faSpinner);
-library.add(faTerminal);
-library.add(faTrash);
-library.add(faWindowClose);
-library.add(faExclamation);
-
 export const router = createRouter({
    history: createWebHashHistory(),
    routes: [
@@ -60,7 +44,6 @@ const store = createStore(router, me, issuers);
 store.dispatch('fetchData');
 
 createApp(Main)
-   .component('font-awesome-icon', FontAwesomeIcon)
    .use(store)
    .use(router)
    .mount('#main')
