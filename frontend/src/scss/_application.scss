@@ -29,6 +29,8 @@
 :root {
    font-size: 13px;
    --ra-navbar-height: 56px;
+   --ra-footer-height: 52px;
+   --ra-page-content-gap: 1rem;
 
    @media (max-width: 576px) {
       font-size: 10px;
@@ -36,13 +38,17 @@
 }
 
 body {
-   padding: 7rem 0;
+   padding: var(--ra-navbar-height, 56px) 0 calc(var(--ra-footer-height, 52px) + var(--ra-page-content-gap, 1rem));
 
    background-color: colors.$app-background-color;
 }
 
 .ra-navbar {
    min-height: var(--ra-navbar-height, 56px);
+}
+
+.ra-footer {
+   min-height: var(--ra-footer-height, 52px);
 }
 
 .container {
