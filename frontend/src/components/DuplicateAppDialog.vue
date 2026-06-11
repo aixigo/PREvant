@@ -25,75 +25,40 @@
  */
 
 <template>
-  <MDBModal v-model="model" centered @shown="focusInput">
-    <MDBModalHeader>
-      <MDBModalTitle>
-         Duplicate {{ duplicateFromAppName }}
-      </MDBModalTitle>
-    </MDBModalHeader>
-
-    <MDBModalBody>
-      <MDBInput
-         v-model.trim="newAppName"
-         ref="input"
-         required
-         label="Enter new app name"
-         :disabled="!hasWritePermissions"
-         @keyup.enter="duplicateApp"
-      />
-      <BootstrapAlert v-if="!hasWritePermissions" type="warning" class="mt-4">
-         You need to be logged in to duplicate apps.
-      </BootstrapAlert>
-    </MDBModalBody>
-
-    <MDBModalFooter>
-      <MDBBtn color="primary" :disabled="!newAppName || !hasWritePermissions" @click="duplicateApp">
-        Duplicate
-      </MDBBtn>
-    </MDBModalFooter>
-  </MDBModal>
+   <InputDialog
+      ref="dialog"
+      :title="'Duplicate ' + duplicateFromAppName"
+      confirm-label="Duplicate"
+      auth-message="You need to be logged in to duplicate apps."
+      :trim-input="true"
+      @confirm="duplicateApp" />
 </template>
 
 
 <script setup>
-   import { ref, watch, useTemplateRef } from 'vue';
+   import { useTemplateRef } from 'vue';
    import { useStore } from 'vuex';
-   import {
-      MDBModal,
-      MDBModalHeader,
-      MDBModalTitle,
-      MDBModalBody,
-      MDBBtn,
-      MDBModalFooter,
-      MDBInput
-   } from "mdb-vue-ui-kit";
-   import { useAuth } from '../composables/useAuth';
-   import BootstrapAlert from './bootstrap/BootstrapAlert.vue';
+   import InputDialog from './InputDialog.vue';
 
    const props = defineProps({
-      duplicateFromAppName: String
+      duplicateFromAppName: { type: String, required: true }
    });
 
-   const newAppName = ref('');
-
-   const model = defineModel({ default: false });
-   watch(model, () => {
-      newAppName.value = '';
-   })
-
-   const input = useTemplateRef("input");
-   function focusInput() {
-      input.value?.inputRef?.focus();
-   }
-
    const store = useStore();
-   function duplicateApp() {
-      store.dispatch( 'duplicateApp', {
-         appToDuplicate: props.duplicateFromAppName,
-         newAppName: newAppName.value
-      } );
-      model.value = false;
+   const dialog = useTemplateRef('dialog');
+
+   function open() {
+      dialog.value.open();
    }
 
-   const { hasWritePermissions } = useAuth();
+   function duplicateApp(newAppName) {
+      store.dispatch('duplicateApp', {
+         appToDuplicate: props.duplicateFromAppName,
+         newAppName
+      });
+   }
+
+   defineExpose({
+      open
+   });
 </script>

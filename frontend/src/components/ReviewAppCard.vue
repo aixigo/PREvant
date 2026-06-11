@@ -179,8 +179,8 @@
          </template>
       </div>
 
-      <shutdown-app-dialog v-if="reviewApp.name !== defaultAppName" v-model="shutdownAppDialogVisibility" :app-name="reviewApp.name"/>
-      <duplicate-app-dialog v-model="duplicateAppDialogVisibility" :duplicate-from-app-name="reviewApp.name"/>
+      <shutdown-app-dialog ref="deleteDlg" :app-name="reviewApp.name" v-if="reviewApp.name !== defaultAppName"/>
+      <duplicate-app-dialog ref="duplicateDlg" :duplicate-from-app-name="reviewApp.name"/>
       <backup-app-dialog ref="backupDlg" :app-name="reviewApp.name" :app-status="reviewApp.status" v-if="isBackupsEnabled"/>
    </div>
 </template>
@@ -228,15 +228,11 @@
       setup() {
          const { defaultAppName, isBackupsEnabled } = useConfig();
          const menuOpen = ref(false);
-         const shutdownAppDialogVisibility = ref(false);
-         const duplicateAppDialogVisibility = ref(false);
 
          return {
             defaultAppName,
             isBackupsEnabled,
             menuOpen,
-            shutdownAppDialogVisibility,
-            duplicateAppDialogVisibility
          };
       },
       data() {
@@ -291,7 +287,7 @@
       },
       methods: {
          duplicateApp() {
-            this.duplicateAppDialogVisibility = true;
+            this.$refs.duplicateDlg.open();
          },
          openBackupDialog() {
             this.$refs.backupDlg.open();
@@ -314,7 +310,7 @@
             }
          },
          openDeleteDialog() {
-            this.shutdownAppDialogVisibility = true;
+            this.$refs.deleteDlg.open();
          },
          badgeClass(serviceType) {
             switch (serviceType) {

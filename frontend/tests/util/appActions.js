@@ -2,7 +2,7 @@ import { expect } from "@playwright/test";
 
 export async function openAppMenu({ page, appName }) {
   await page.click(
-    `div.card:has(.card-header:has-text("${appName}")) button[data-toggle="dropdown"]`
+    `div.card:has(.card-header:has-text("${appName}")) .dropdown-toggle`
   );
 }
 

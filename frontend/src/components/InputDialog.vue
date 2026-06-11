@@ -25,29 +25,31 @@
  */
 
 <template>
-   <Dialog ref="dialog" :title="title" @opened="focusInput">
-      <template #body>
+   <MDBModal v-model="visible" centered @shown="focusInput">
+      <MDBModalHeader>
+         <MDBModalTitle>
+            {{ title }}
+         </MDBModalTitle>
+      </MDBModalHeader>
+
+      <MDBModalBody>
          <slot name="description">
             <p v-if="description">{{ description }}</p>
          </slot>
 
-         <div class="form-group">
-            <input
-               ref="inputElement"
-               type="name"
-               class="form-control"
-               :placeholder="inputPlaceholder"
-               v-model="inputValue"
-               :disabled="!isActionAllowed"
-               @keyup.enter="confirm">
-         </div>
+         <MDBInput
+            ref="inputElement"
+            v-model="inputValue"
+            :label="inputPlaceholder"
+            :disabled="!isActionAllowed"
+            @keyup.enter="confirm" />
 
-         <div v-if="requiresWritePermissions && !hasWritePermissions && authMessage != null" class="alert alert-warning text-center" role="alert">
+         <BootstrapAlert v-if="requiresWritePermissions && !hasWritePermissions && authMessage != null" type="warning" class="mt-4">
             {{ authMessage }}
-         </div>
-      </template>
+         </BootstrapAlert>
+      </MDBModalBody>
 
-      <template #footer>
+      <MDBModalFooter>
          <button
             type="button"
             :class="buttonClass"
@@ -55,14 +57,22 @@
             :disabled="!canConfirm">
             {{ confirmLabel }}
          </button>
-      </template>
-   </Dialog>
+      </MDBModalFooter>
+   </MDBModal>
 </template>
 
 <script setup>
    import { computed, ref, useTemplateRef } from 'vue';
+   import {
+      MDBModal,
+      MDBModalHeader,
+      MDBModalTitle,
+      MDBModalBody,
+      MDBModalFooter,
+      MDBInput
+   } from 'mdb-vue-ui-kit';
    import { useAuth } from '../composables/useAuth';
-   import Dialog from './Dialog.vue';
+   import BootstrapAlert from './bootstrap/BootstrapAlert.vue';
 
    const { hasWritePermissions } = useAuth();
 
@@ -81,8 +91,8 @@
 
    const emit = defineEmits(['confirm']);
 
-   const dialog = useTemplateRef('dialog');
    const inputElement = useTemplateRef('inputElement');
+   const visible = ref(false);
    const inputValue = ref('');
 
    const normalizedInput = computed(() => {
@@ -105,13 +115,11 @@
 
    function open() {
       inputValue.value = '';
-      dialog.value.open();
+      visible.value = true;
    }
 
    function focusInput() {
-      if (inputElement.value && !inputElement.value.disabled) {
-         inputElement.value.focus();
-      }
+      inputElement.value?.inputRef?.focus();
    }
 
    function confirm() {
@@ -120,7 +128,7 @@
       }
 
       emit('confirm', normalizedInput.value);
-      dialog.value.close();
+      visible.value = false;
    }
 
    defineExpose({
