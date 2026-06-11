@@ -63,6 +63,9 @@ function mountCard(reviewApp) {
     },
     global: {
       renderStubDefaultSlot: true,
+      directives: {
+        "mdb-tooltip": {},
+      },
       stubs: {
         "router-link": RouterLinkStub,
       },

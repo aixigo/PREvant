@@ -35,6 +35,7 @@ import 'mdb-vue-ui-kit/css/mdb.min.css';
 import './scss/theme.scss';
 import Main from './Main.vue';
 import { createStore } from './store';
+import mdbTooltipDirective from './directives/mdb-tooltip';
 export const router = createRouter({
    history: createWebHashHistory(),
    routes: [
@@ -49,7 +50,10 @@ export const router = createRouter({
 const store = createStore(router, me, issuers);
 store.dispatch('fetchData');
 
-createApp(Main)
+const app = createApp(Main);
+
+app.directive('mdb-tooltip', mdbTooltipDirective);
+app
    .use(store)
    .use(router)
-   .mount('#main')
+   .mount('#main');

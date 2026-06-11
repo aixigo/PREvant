@@ -154,7 +154,11 @@
                </div>
 
                <div class="ra-container__tags">
-                  <MDBBadge :class="badgeClass( container.type )">{{ container.type }}</MDBBadge>
+                  <MDBBadge
+                     v-mdb-tooltip="badgeTooltip( container.type )"
+                     :class="badgeClass( container.type )">
+                     {{ container.type }}
+                  </MDBBadge>
                   <span v-if="container.version && container.version.gitCommit"
                         class="ra-build-infos ra-build-infos__hash text-end"
                         :title="formatVersion( container.version )">
@@ -390,6 +394,15 @@
                   return `${base} ${base}--replica`;
             }
             return `${base} ${base}--default`;
+         },
+         badgeTooltip(serviceType) {
+            switch (serviceType) {
+               case 'instance':
+                  return 'This service has been deployed especially for the review-app.';
+               case 'replica':
+                  return 'This service has been replicated from the service of the default review app. Changes to this service won\'t affect the service of the default review-app.';
+            }
+            return undefined;
          },
          toggleContainer(container) {
             if (!this.isExpandable(container)) {
