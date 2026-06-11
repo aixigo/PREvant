@@ -109,13 +109,13 @@
                </div>
 
                <div class="ra-container__infos">
-                  <h5>
-                     <a v-if="container.url && isRunning( container )" :href='container.url' target="_blank">{{ container.name }}</a>
-                     <span v-else>{{ container.name }}</span>
+                  <h5 class="ra-service-title">
+                     <a v-if="container.url && isRunning( container )" :href='container.url' target="_blank" class="ra-service-title__name">{{ container.name }}</a>
+                     <span v-else class="ra-service-title__name">{{ container.name }}</span>
 
                      <MDBIcon  
-                        class="ra-container__change-status ms-2 align-middle"
-                        size="lg"
+                        class="ra-container__change-status"
+                        size="sm"
                         tabindex="0"
                         v-if="reviewApp.status == 'deployed'"
                         :icon="container.status === 'running' ? 'pause-circle' : 'play-circle'"  
@@ -139,9 +139,9 @@
                </div>
 
                <div class="ra-container__tags">
-                  <MDBBadge :color="badgeColor( container.type )">{{ container.type }}</MDBBadge>
+                  <MDBBadge :class="badgeClass( container.type )">{{ container.type }}</MDBBadge>
                   <span v-if="container.version && container.version.gitCommit"
-                        class="ra-build-infos ra-build-infos__hash text-end text-nowrap"
+                        class="ra-build-infos ra-build-infos__hash text-end"
                         :title="formatVersion( container.version )">
                      {{ formatSlicedVersion( container.version ) }}
                      <!-- only for layout -->
@@ -194,6 +194,42 @@
 .ra-app-title {
    display: flex;
    align-items: center;
+}
+.ra-service-title {
+   display: flex;
+   align-items: center;
+   flex-wrap: nowrap;
+   gap: 0.5rem;
+   font-size: 0.9rem;
+   line-height: 1.2;
+   min-width: 0;
+}
+.ra-service-title__name {
+   flex: 0 1 auto;
+   max-width: 100%;
+   min-width: 0;
+   overflow: hidden;
+   text-overflow: ellipsis;
+   white-space: nowrap;
+}
+.ra-container__change-status {
+   flex-shrink: 0;
+}
+.ra-container-badge {
+   font-size: 0.55rem;
+   color: #fff;
+}
+.ra-container-badge--instance {
+   background-color: #343a40;
+}
+.ra-container-badge--linked {
+   background-color: #a35f00;
+}
+.ra-container-badge--replica {
+   background-color: #5f6972;
+}
+.ra-container-badge--default {
+   background-color: #6c757d;
 }
 .badge-backed-up {
    background-color: #ef6c00;
@@ -326,16 +362,17 @@
          openDeleteDialog() {
             this.$refs.deleteDlg.open();
          },
-         badgeColor(serviceType) {
+         badgeClass(serviceType) {
+            const base = 'ra-container-badge';
             switch (serviceType) {
                case 'instance':
-                  return 'info';
+                  return `${base} ${base}--instance`;
                case 'linked':
-                  return 'warning';
+                  return `${base} ${base}--linked`;
                case 'replica':
-                  return 'dark';
+                  return `${base} ${base}--replica`;
             }
-            return 'secondary';
+            return `${base} ${base}--default`;
          },
          toggleContainer(container) {
             if (!this.isExpandable(container)) {
