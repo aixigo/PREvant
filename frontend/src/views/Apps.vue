@@ -27,7 +27,9 @@
 <template>
    <div class="container" id="app">
 
-      <spinner v-if="isFetchInProgress" />
+      <div v-if="isFetchInProgress" class="d-flex justify-content-center">
+         <MDBSpinner size="lg" color="primary" />
+      </div>
 
       <BootstrapAlert v-if="errors.length > 0" v-for="error in errors" type="danger">
          <b>{{ error.title }}</b>: {{ error.detail }}
@@ -102,9 +104,9 @@
 
 <script>
    import { mapGetters } from 'vuex';
+   import { MDBSpinner } from 'mdb-vue-ui-kit';
    import BootstrapAlert from '../components/bootstrap/BootstrapAlert.vue';
    import ReviewAppCard from '../components/ReviewAppCard.vue';
-   import Spinner from '../components/Spinner.vue';
 
    export default {
       data() {
@@ -113,9 +115,9 @@
          };
       },
       components: {
+         MDBSpinner,
          BootstrapAlert,
-         'review-app-card': ReviewAppCard,
-         'spinner': Spinner
+         'review-app-card': ReviewAppCard
       },
       computed: {
          ...mapGetters([
