@@ -227,19 +227,29 @@
 }
 .ra-container-badge {
    font-size: 0.55rem;
-   color: #fff;
+   border: 1px solid transparent;
+   font-weight: 500;
 }
 .ra-container-badge--instance {
-   background-color: #343a40;
+   background-color: #d1d5db;
+   border-color: #9ca3af;
+   color: #111827;
+   font-weight: 600;
 }
 .ra-container-badge--linked {
-   background-color: #a35f00;
+   background-color: #fef3c7;
+   border-color: #fde68a;
+   color: #92400e;
 }
 .ra-container-badge--replica {
-   background-color: #5f6972;
+   background-color: #e5e7eb;
+   border-color: #d1d5db;
+   color: #374151;
 }
 .ra-container-badge--default {
-   background-color: #6c757d;
+   background-color: #e2e8f0;
+   border-color: #cbd5e1;
+   color: #334155;
 }
 .badge-backed-up {
    background-color: #ef6c00;
