@@ -27,8 +27,8 @@
 <template>
    <MDBContainer id="app">
 
-      <div v-if="isFetchInProgress" class="d-flex justify-content-center">
-         <MDBSpinner size="lg" color="primary" />
+      <div v-if="isFetchInProgress" class="d-flex justify-content-center align-items-center ra-fetch-spinner">
+         <MDBSpinner class="ra-fetch-spinner__icon" color="primary" />
       </div>
 
       <BootstrapAlert v-if="errors.length > 0" v-for="error in errors" type="danger">
@@ -88,6 +88,17 @@
 <style>
    .list-complete-item {
       transition: all 1s;
+   }
+
+   .ra-fetch-spinner {
+      margin-top: 1rem;
+      min-height: 2.5rem;
+   }
+
+   .ra-fetch-spinner .ra-fetch-spinner__icon {
+      --mdb-spinner-width: 3rem;
+      --mdb-spinner-height: 3rem;
+      --mdb-spinner-border-width: 0.35rem;
    }
 
    .list-complete-enter, .list-complete-leave-to
