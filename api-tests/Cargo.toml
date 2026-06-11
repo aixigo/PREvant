@@ -6,22 +6,22 @@ repository = "https://github.com/aixigo/PREvant/"
 edition = "2018"
 
 [dev-dependencies]
-env_logger = "0.11"
+env_logger = { workspace = true }
 exponential-backoff = "2.1.0"
-futures = "0.3"
+futures = { workspace = true }
 lazy_static = "1.5"
-log = "0.4"
-reqwest = { version = "0.12", features = ["json"] }
+log = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 rstest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-testcontainers = { version = "0.26", features = ["docker-compose"] }
+testcontainers = { workspace = true }
 tokio = { workspace = true }
-uuid = { version = "1.19", features = ["serde", "v4"] }
+uuid = { workspace = true }
 
 [features]
 # TODO: make sure that the compose tests run in CI
 ci = []
 
 [dependencies]
-scraper = "0.24.0"
+scraper = "0.27.0"

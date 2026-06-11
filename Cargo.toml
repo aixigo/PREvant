@@ -6,13 +6,18 @@ members = ["domain", "api", "api-tests"]
 async-trait = "0.1"
 anyhow = "1.0"
 assert-json-diff = "2.0"
+bollard = { version = "0.20", features = ["chrono"] }
 chrono = { version = "0.4", features = ["serde"] }
+env_logger = "0.11"
+futures = "0.3"
 handlebars = "6.3"
 jsonschema = "0.37"
+log = "0.4"
 oci-client = "0.15"
 openidconnect = "4.0"
 pretty_assertions = "1.4"
 regex = "1.11"
+reqwest = "0.12"
 rstest = "0.26"
 secstr = { version = "0.5", features = ["serde"] }
 serde = "1.0"
@@ -21,7 +26,10 @@ serde_derive = "1.0"
 serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0"
+testcontainers = { version = "0.27", features = ["docker-compose"] }
+testcontainers-modules = { version = "0.15", features = ["k3s", "postgres"] }
 tokio = { version = "1.47", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "0.9"
 url = { version = "2.4", features = ["serde"] }
+uuid = { version = "1.18", features = ["serde", "v4"] }

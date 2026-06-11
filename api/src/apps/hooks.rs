@@ -24,8 +24,12 @@ pub struct Hooks<'a> {
 pub enum HooksError {
     #[error("Invalid deployment hook, {err}")]
     InvalidDeploymentHook { err: String },
+    #[error("Invalid deployment hook: the hook script did not return anything.")]
+    DeploymentHookReturnedNothing,
     #[error("Invalid user-to-owner hook execution: {err}")]
     UserToOwner { err: String },
+    #[error("Invalid user-to-owner hook execution: the hook script did not return anything.")]
+    UserToOwnerReturnedNothing,
     #[error("Unexpected err during hook execution: {err}")]
     Unexpected { err: String },
     #[error("Expected function {expected} is not present in hook file {file}")]
@@ -112,10 +116,14 @@ impl<'a> Hooks<'a> {
                 err: format!("Cannot execute hook: {err}"),
             })?;
 
-        serde_json::from_value::<Owner>(owner.to_json(&mut context).unwrap()).map_err(|err| {
-            HooksError::UserToOwner {
-                err: err.to_string(),
-            }
+        serde_json::from_value::<Owner>(
+            owner
+                .to_json(&mut context)
+                .map_err(|e| HooksError::UserToOwner { err: e.to_string() })?
+                .ok_or(HooksError::UserToOwnerReturnedNothing)?,
+        )
+        .map_err(|err| HooksError::UserToOwner {
+            err: err.to_string(),
         })
     }
 
@@ -161,7 +169,7 @@ impl<'a> Hooks<'a> {
         context
             .register_global_property(
                 boa_engine::js_string!("appName"),
-                JsValue::String(app_name.into_string().into()),
+                JsValue::new(boa_engine::js_string!(app_name.as_str())),
                 Attribute::READONLY,
             )
             .expect("Property registration failed unexpectedly");
@@ -174,7 +182,10 @@ impl<'a> Hooks<'a> {
                 err: format!("Cannot execute hook: {err}"),
             })?;
 
-        let transformed_configs = transformed_configs.to_json(&mut context).unwrap();
+        let transformed_configs = transformed_configs
+            .to_json(&mut context)
+            .map_err(|e| HooksError::InvalidDeploymentHook { err: e.to_string() })?
+            .ok_or(HooksError::DeploymentHookReturnedNothing)?;
 
         Self::parse_service_config(services, transformed_configs)
     }
@@ -647,9 +658,37 @@ mod tests {
                 .apply_deployment_hook(&AppName::master(), unit.services)
                 .await;
 
-            assert!(
-                matches!(result, Err(HooksError::InvalidDeploymentHook { err }) if err == "Cannot execute hook: ReferenceError: undefinedVar is not defined")
+            assert_eq!(
+                result,
+                Err(HooksError::InvalidDeploymentHook {
+                    err: String::from(
+                        "Cannot execute hook: ReferenceError: undefinedVar is not defined\n    at deploymentHook (unknown at :2:61)\n    at <main> (unknown at :1:15)"
+                    )
+                })
             );
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn fail_gracefully_if_script_does_not_return_a_value() -> anyhow::Result<()> {
+            let script = r#"
+                function deploymentHook( appName, configs ) {
+                }
+            "#;
+
+            let service_config = blueprint_service!("service-a");
+            let (_temp_js_file, config) = config_with_deployment_hook(script);
+            let app_name = AppName::master();
+            let unit = AppDeploymentBuilder::init(app_name, vec![service_config], None)
+                .finish()
+                .unwrap();
+
+            let result = Hooks::new(&config)
+                .apply_deployment_hook(&AppName::master(), unit.services)
+                .await;
+
+            assert_eq!(result, Err(HooksError::DeploymentHookReturnedNothing));
 
             Ok(())
         }
@@ -863,10 +902,39 @@ mod tests {
                 result,
                 Err(HooksError::UserToOwner {
                     err: String::from(
-                        "Cannot execute hook: ReferenceError: undefinedVar is not defined"
+                        "Cannot execute hook: ReferenceError: undefinedVar is not defined\n    at idTokenClaimsToOwnerHook (unknown at :2:59)\n    at <main> (unknown at :1:25)"
                     )
                 })
             )
+        }
+
+        #[tokio::test]
+        async fn fail_gracefully_if_script_does_not_return_a_value() {
+            let (_temp_js_file, config) = config_with_claims_to_owner_hook(Some(
+                r#"
+                function idTokenClaimsToOwnerHook(claims) {
+                }
+                "#,
+            ));
+            let hook = Hooks::new(&config);
+
+            let mut name = LocalizedClaim::new();
+            name.insert(None, EndUserName::new(String::from("Some Person")));
+            let result = hook
+                .apply_id_token_claims_to_owner_hook(User::Oidc {
+                    id_token_claims: IdTokenClaims::new(
+                        IssuerUrl::new(String::from("https://github.com")).unwrap(),
+                        Vec::new(),
+                        chrono::Utc::now(),
+                        chrono::Utc::now(),
+                        StandardClaims::new(SubjectIdentifier::new(String::from("github-user")))
+                            .set_name(Some(name)),
+                        AdditionalClaims::with_claims(serde_json::json!({ "user_id": "user-id" })),
+                    ),
+                })
+                .await;
+
+            assert_eq!(result, Err(HooksError::UserToOwnerReturnedNothing))
         }
     }
 }

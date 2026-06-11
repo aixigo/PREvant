@@ -32,24 +32,24 @@ use crate::infrastructure::{
 use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
-use bollard::Docker;
-use bollard::auth::DockerCredentials;
-use bollard::container::LogOutput;
-use bollard::errors::Error as BollardError;
-use bollard::query_parameters::{
-    CreateContainerOptions, CreateImageOptions, InspectContainerOptions, ListContainersOptions,
-    ListNetworksOptions, ListVolumesOptions, LogsOptionsBuilder, RemoveContainerOptions,
-    RemoveImageOptions, RemoveVolumeOptions, StartContainerOptions, StopContainerOptions,
-    UploadToContainerOptions,
-};
-use bollard::secret::{
-    NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest, Port,
-    VolumeCreateOptions,
-};
-use bollard::service::{
-    ContainerCreateResponse, ContainerInspectResponse, ContainerStateStatusEnum, ContainerSummary,
-    CreateImageInfo, EndpointSettings, HostConfig, RestartPolicy, RestartPolicyNameEnum,
-    VolumeListResponse,
+use bollard::plugin::{NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest, PortSummary};
+use bollard::{
+    Docker,
+    auth::DockerCredentials,
+    container::LogOutput,
+    errors::Error as BollardError,
+    plugin::VolumeCreateRequest,
+    query_parameters::{
+        CreateContainerOptions, CreateImageOptions, InspectContainerOptions, ListContainersOptions,
+        ListNetworksOptions, ListVolumesOptions, LogsOptionsBuilder, RemoveContainerOptions,
+        RemoveImageOptions, RemoveVolumeOptions, StartContainerOptions, StopContainerOptions,
+        UploadToContainerOptions,
+    },
+    service::{
+        ContainerCreateResponse, ContainerInspectResponse, ContainerStateStatusEnum,
+        ContainerSummary, CreateImageInfo, EndpointSettings, HostConfig, RestartPolicy,
+        RestartPolicyNameEnum, VolumeListResponse,
+    },
 };
 use chrono::{DateTime, FixedOffset, Utc};
 use domain::{
@@ -208,7 +208,7 @@ impl DockerInfrastructure {
             .connect_network(
                 network_id,
                 NetworkConnectRequest {
-                    container: Some(traefik_id.to_string()),
+                    container: traefik_id.to_string(),
                     ..Default::default()
                 },
             )
@@ -239,7 +239,7 @@ impl DockerInfrastructure {
                 .disconnect_network(
                     network_id,
                     NetworkDisconnectRequest {
-                        container: Some(id),
+                        container: id,
                         ..Default::default()
                     },
                 )
@@ -398,7 +398,7 @@ impl DockerInfrastructure {
             .connect_network(
                 network_id,
                 NetworkConnectRequest {
-                    container: Some(container_id.clone()),
+                    container: container_id.clone(),
                     endpoint_config: Some(EndpointSettings {
                         aliases: Some(vec![service_name.to_string()]),
                         ..Default::default()
@@ -625,7 +625,7 @@ impl DockerInfrastructure {
         );
 
         docker
-            .create_volume(VolumeCreateOptions {
+            .create_volume(VolumeCreateRequest {
                 labels: Some(labels),
                 ..Default::default()
             })
@@ -1243,7 +1243,7 @@ async fn inspect(container: ContainerSummary) -> Result<ContainerInspectResponse
 }
 
 fn find_port(
-    ports: &[Port],
+    ports: &[PortSummary],
     labels: &Option<HashMap<String, String>>,
 ) -> Result<u16, DockerInfrastructureError> {
     if let Some(port) = labels
@@ -1464,11 +1464,6 @@ mod tests {
                 mount_label: Some("".to_string()),
                 name: Some("".to_string()),
                 network_settings: Some(NetworkSettings {
-                    bridge: Some("".to_string()),
-                    gateway: Some("".to_string()),
-                    ip_address: Some("".to_string()),
-                    ip_prefix_len: Some(0),
-                    mac_address: Some("".to_string()),
                     ports: None,
                     networks: None,
                     ..Default::default()
@@ -1490,7 +1485,6 @@ mod tests {
                     started_at: Some(chrono::Utc::now().to_rfc3339()),
                     ..Default::default()
                 }),
-                created: Some(chrono::Utc::now()),
                 mounts: Some(vec![]),
                 ..Default::default()
             }
