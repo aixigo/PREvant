@@ -90,6 +90,17 @@ body {
    grid-row: 4;
 }
 
+// Chromium-based browsers trigger a full-document style recalculation on every resize
+// pixel due to vw-based font-size rules in Bootstrap/MDB CSS.
+// content-visibility: auto skips style recalculation, layout and paint for off-screen
+// cards entirely, so only the visible cards are included in each recalculation.
+// contain-intrinsic-size provides a placeholder height for off-screen cards so the
+// scrollbar and page layout remain approximately correct while they are skipped.
+.list-complete-item {
+   content-visibility: auto;
+   contain-intrinsic-size: 0 300px;
+}
+
 .ra-apps {
    display: grid;
 
