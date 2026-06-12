@@ -76,9 +76,11 @@ use log::{debug, error, warn};
 use regex::Regex;
 use secstr::SecUtf8;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::convert::{From, TryFrom};
-use std::str::FromStr;
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    convert::{From, TryFrom},
+    str::FromStr,
+};
 
 #[derive(Clone)]
 pub struct KubernetesInfrastructure {
@@ -232,7 +234,7 @@ impl KubernetesInfrastructure {
     async fn create_namespace_if_necessary(
         &self,
         app_name: &AppName,
-        user_defined_parameters: &Option<UserDefinedParameters>,
+        user_defined_parameters: Option<&UserDefinedParameters>,
         owners: &HashSet<Owner>,
     ) -> Result<NamespaceCreationResponse, KubernetesInfrastructureError> {
         let namespace = app_name.to_rfc1123_namespace_id();
@@ -672,7 +674,7 @@ impl Infrastructure for KubernetesInfrastructure {
         let namespace_creation_response = self
             .create_namespace_if_necessary(
                 &deployment_unit.app_name,
-                &deployment_unit.user_defined_parameters,
+                deployment_unit.user_defined_parameters.as_ref(),
                 &deployment_unit.owners,
             )
             .await?;

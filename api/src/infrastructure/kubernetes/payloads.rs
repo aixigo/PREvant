@@ -63,8 +63,7 @@ use kube::core::ObjectMeta;
 use multimap::MultiMap;
 use secstr::SecUtf8;
 use serde_json::{Map, Value};
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, hash_map::DefaultHasher};
 use std::hash::Hasher;
 use std::iter::FromIterator;
 use std::path::Component;
@@ -496,7 +495,7 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
 pub fn namespace_payload(
     app_name: &AppName,
     config: &Config,
-    user_defined_parameters: &Option<UserDefinedParameters>,
+    user_defined_parameters: Option<&UserDefinedParameters>,
     owners: &HashSet<Owner>,
 ) -> V1Namespace {
     V1Namespace {
@@ -515,7 +514,7 @@ pub fn namespace_payload(
 
 pub fn namespace_annotations(
     config: &Config,
-    user_defined_parameters: &Option<UserDefinedParameters>,
+    user_defined_parameters: Option<&UserDefinedParameters>,
     owners: &HashSet<Owner>,
 ) -> Option<BTreeMap<String, String>> {
     let annotations = match &config.runtime {
@@ -1903,7 +1902,7 @@ mod tests {
         let namespace = namespace_payload(
             &AppName::from_str("MY-APP").unwrap(),
             &Default::default(),
-            &None,
+            None,
             &HashSet::new(),
         );
 
@@ -1938,7 +1937,7 @@ mod tests {
         let namespace = namespace_payload(
             &AppName::from_str("myapp").unwrap(),
             &config,
-            &None,
+            None,
             &HashSet::new(),
         );
 

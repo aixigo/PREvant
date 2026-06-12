@@ -13,6 +13,7 @@ use crate::{
 };
 use handlebars::RenderError;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     marker::PhantomData,
@@ -544,6 +545,107 @@ impl WithResolvedApps {
         );
         Owner::normalize(owners)
     }
+
+    /// Provides the merged [`UserDefinedParameters`] of the
+    /// [user provided](`Initialized::user_defined_parameters`), running and replicated application.
+    pub fn user_defined_parameters<'a>(&'a self) -> Option<Cow<'a, UserDefinedParameters>> {
+        let user_udp = self
+            .with_static_companions
+            .initialized
+            .user_defined_parameters
+            .as_ref();
+        let running_udp = self
+            .running_app
+            .as_ref()
+            .and_then(|app| app.user_defined_parameters.as_ref());
+        let udp_to_replicate = self
+            .running_app_to_replicate_from
+            .as_ref()
+            .and_then(|app| app.user_defined_parameters.as_ref());
+
+        match (user_udp, running_udp, udp_to_replicate) {
+            (None, None, None) => None,
+            (user_udp, None, None) => user_udp.map(Cow::Borrowed),
+            (None, running_udp, None) => running_udp.map(Cow::Borrowed),
+            (None, None, udp_to_replicate) => udp_to_replicate.map(Cow::Borrowed),
+            (None, Some(running_udp), Some(udp_to_replicate)) => Some(Cow::Owned(
+                running_udp.clone().merge(udp_to_replicate.clone()),
+            )),
+            (Some(user_udp), None, Some(udp_to_replicate)) => {
+                Some(Cow::Owned(udp_to_replicate.clone().merge(user_udp.clone())))
+            }
+            (Some(user_udp), Some(running_udp), None) => {
+                Some(Cow::Owned(running_udp.clone().merge(user_udp.clone())))
+            }
+            (Some(user_udp), Some(running_udp), Some(udp_to_replicate)) => Some(Cow::Owned(
+                running_udp
+                    .clone()
+                    .merge(udp_to_replicate.clone())
+                    .merge(user_udp.clone()),
+            )),
+        }
+    }
+
+    /// Provides the merged [`ServiceConfig`] of the [user provided](`Initialized::configs`),
+    /// running and replicated application.
+    pub fn blueprint_configs<'a, 'b: 'a>(
+        &'b self,
+    ) -> HashMap<&'a str, (Cow<'a, ServiceConfig>, &'a ContainerType)> {
+        let mut configs = HashMap::new();
+
+        if let Some(running_app) = self.running_app_to_replicate_from.as_ref() {
+            for service in running_app.services.iter().filter(|service| {
+                matches!(
+                    service.service_type,
+                    ContainerType::Instance | ContainerType::Replica
+                )
+            }) {
+                configs.insert(
+                    service.blueprint_config.service_name.as_str(),
+                    (
+                        Cow::Borrowed(&service.blueprint_config),
+                        &ContainerType::Replica,
+                    ),
+                );
+            }
+        }
+
+        if let Some(replicated_app) = self.running_app.as_ref() {
+            for service in replicated_app.services.iter().filter(|service| {
+                matches!(
+                    service.service_type,
+                    ContainerType::Instance | ContainerType::Replica
+                )
+            }) {
+                configs
+                    .entry(service.blueprint_config.service_name.as_str())
+                    .and_modify(|(c, t)| {
+                        *c = Cow::Owned(
+                            c.as_ref()
+                                .clone()
+                                .merge_with(service.blueprint_config.clone()),
+                        );
+                        *t = &service.service_type;
+                    })
+                    .or_insert_with(|| {
+                        (
+                            Cow::Borrowed(&service.blueprint_config),
+                            &service.service_type,
+                        )
+                    });
+            }
+        }
+
+        for config in self.with_static_companions.initialized.configs.iter() {
+            // user payload wins over running or replicated configs
+            configs.insert(
+                config.service_name.as_str(),
+                (Cow::Borrowed(config), &ContainerType::Instance),
+            );
+        }
+
+        configs
+    }
 }
 
 impl AppDeploymentBuilder<WithResolvedApps> {
@@ -745,7 +847,7 @@ pub struct WithInfrastructureTemplateData {
 impl WithInfrastructureTemplateData {
     fn base_template_data<'a, 'b: 'a>(
         &'b self,
-        merged_user_defined_parameters: &'a Option<UserDefinedParameters>,
+        merged_user_defined_parameters: Option<&'a UserDefinedParameters>,
         base_url: Option<&'a Url>,
     ) -> TemplateData<'a> {
         TemplateData {
@@ -759,58 +861,9 @@ impl WithInfrastructureTemplateData {
                     .app_name,
                 base_url,
             },
-            user_defined_parameters: merged_user_defined_parameters
-                .as_ref()
-                .map(|udp| udp.as_value()),
+            user_defined_parameters: merged_user_defined_parameters.map(|udp| udp.as_value()),
             infrastructure: self.infrastructure_template_data.as_ref(),
             ..Default::default()
-        }
-    }
-
-    fn merged_user_defined_parameters(&self) -> Option<UserDefinedParameters> {
-        let user_udp = self
-            .with_base_route
-            .with_resolved_images
-            .with_resolved_apps
-            .with_static_companions
-            .initialized
-            .user_defined_parameters
-            .as_ref();
-        let running_udp = self
-            .with_base_route
-            .with_resolved_images
-            .with_resolved_apps
-            .running_app
-            .as_ref()
-            .and_then(|app| app.user_defined_parameters.as_ref());
-        let udp_to_replicate = self
-            .with_base_route
-            .with_resolved_images
-            .with_resolved_apps
-            .running_app_to_replicate_from
-            .as_ref()
-            .and_then(|app| app.user_defined_parameters.as_ref());
-
-        match (user_udp, running_udp, udp_to_replicate) {
-            (None, None, None) => None,
-            (user_udp, None, None) => user_udp.cloned(),
-            (None, running_udp, None) => running_udp.cloned(),
-            (None, None, udp_to_replicate) => udp_to_replicate.cloned(),
-            (None, Some(running_udp), Some(udp_to_replicate)) => {
-                Some(running_udp.clone().merge(udp_to_replicate.clone()))
-            }
-            (Some(user_udp), None, Some(udp_to_replicate)) => {
-                Some(udp_to_replicate.clone().merge(user_udp.clone()))
-            }
-            (Some(user_udp), Some(running_udp), None) => {
-                Some(running_udp.clone().merge(user_udp.clone()))
-            }
-            (Some(user_udp), Some(running_udp), Some(udp_to_replicate)) => Some(
-                running_udp
-                    .clone()
-                    .merge(udp_to_replicate.clone())
-                    .merge(user_udp.clone()),
-            ),
         }
     }
 }
@@ -818,7 +871,7 @@ impl WithInfrastructureTemplateData {
 #[derive(Debug)]
 pub struct BootstrapCompanionsWithRawElementsContext<'a> {
     pub app_name: &'a AppName,
-    pub user_defined_parameters: &'a Option<UserDefinedParameters>,
+    pub user_defined_parameters: Option<&'a UserDefinedParameters>,
     pub owners: &'a HashSet<Owner>,
 }
 
@@ -926,7 +979,12 @@ impl AppDeploymentBuilder<WithInfrastructureTemplateData> {
     where
         P: BootstrapCompanions<Error = E> + 'bc,
     {
-        let merged_user_defined_parameters = self.stage.merged_user_defined_parameters();
+        let merged_user_defined_parameters = self
+            .stage
+            .with_base_route
+            .with_resolved_images
+            .with_resolved_apps
+            .user_defined_parameters();
         let base_url = self.stage.with_base_route.application_base_route().to_url();
 
         let template_data = TemplateData {
@@ -940,9 +998,12 @@ impl AppDeploymentBuilder<WithInfrastructureTemplateData> {
                         self.stage.with_base_route.with_resolved_images.port(image)
                     }),
             },
-            ..self
-                .stage
-                .base_template_data(&merged_user_defined_parameters, base_url.as_ref())
+            ..self.stage.base_template_data(
+                merged_user_defined_parameters
+                    .as_ref()
+                    .map(|udp| udp.as_ref()),
+                base_url.as_ref(),
+            )
         };
 
         let owners = self
@@ -961,7 +1022,9 @@ impl AppDeploymentBuilder<WithInfrastructureTemplateData> {
                 .with_static_companions
                 .initialized
                 .app_name,
-            user_defined_parameters: &merged_user_defined_parameters,
+            user_defined_parameters: merged_user_defined_parameters
+                .as_ref()
+                .map(|udp| udp.as_ref()),
             owners: &owners,
         };
 
@@ -1271,7 +1334,7 @@ where
 
     fn build_services_from_application_companions(
         &self,
-        merged_user_defined_parameters: &Option<UserDefinedParameters>,
+        merged_user_defined_parameters: Option<&'_ UserDefinedParameters>,
     ) -> Result<impl Iterator<Item = DeployableService>, BuildDeploymentUintBuildError> {
         let mut services = BTreeMap::<String, DeployableService>::new();
 
@@ -1305,9 +1368,12 @@ where
         };
 
         let instance_or_replica_configs = self
-            .instances_and_replicas_iter()
-            .map(|(c, t)| (c.service_name.as_str(), (c, t)))
-            .collect::<HashMap<_, _>>();
+            .stage
+            .with_infrastructure_template_data
+            .with_base_route
+            .with_resolved_images
+            .with_resolved_apps
+            .blueprint_configs();
 
         for app_companion in self
             .stage
@@ -1389,61 +1455,9 @@ where
         Ok(services.into_values())
     }
 
-    fn instances_and_replicas_iter(
-        &self,
-    ) -> impl Iterator<Item = (&ServiceConfig, &ContainerType)> {
-        // TODO: make sure that there is no overlap in service_name from the different sources
-        self.stage
-            .with_infrastructure_template_data
-            .with_base_route
-            .with_resolved_images
-            .with_resolved_apps
-            .with_static_companions
-            .initialized
-            .configs
-            .iter()
-            .map(|config| (config, &ContainerType::Instance))
-            .chain(
-                self.stage
-                    .with_infrastructure_template_data
-                    .with_base_route
-                    .with_resolved_images
-                    .with_resolved_apps
-                    .running_app
-                    .iter()
-                    .flat_map(|app| app.services.iter())
-                    // TODO: double check if the filtering should be done
-                    .filter(|service| {
-                        matches!(
-                            service.service_type,
-                            ContainerType::Replica | ContainerType::Instance
-                        )
-                    })
-                    .map(|service| (&service.blueprint_config, &service.service_type)),
-            )
-            .chain(
-                self.stage
-                    .with_infrastructure_template_data
-                    .with_base_route
-                    .with_resolved_images
-                    .with_resolved_apps
-                    .running_app_to_replicate_from
-                    .iter()
-                    .flat_map(|app| app.services.iter())
-                    // TODO: double check if the filtering should be done
-                    .filter(|service| {
-                        matches!(
-                            service.service_type,
-                            ContainerType::Replica | ContainerType::Instance
-                        )
-                    })
-                    .map(|service| (&service.blueprint_config, &service.service_type)),
-            )
-    }
-
     fn build_services_from_service_companions(
         &self,
-        merged_user_defined_parameters: &Option<UserDefinedParameters>,
+        merged_user_defined_parameters: Option<&'_ UserDefinedParameters>,
     ) -> Result<Vec<DeployableService>, BuildDeploymentUintBuildError> {
         let mut deployable_services = BTreeMap::<String, DeployableService>::new();
 
@@ -1459,9 +1473,18 @@ where
             .with_infrastructure_template_data
             .base_template_data(merged_user_defined_parameters, base_url.as_ref());
 
+        let blueprint_configs = self
+            .stage
+            .with_infrastructure_template_data
+            .with_base_route
+            .with_resolved_images
+            .with_resolved_apps
+            .blueprint_configs();
+
         // First pass of templating: check if the resulting companion matches to an instance or
         // replica.
-        for (instance_or_replica_config, container_type) in self.instances_and_replicas_iter() {
+        for (service_name, (instance_or_replica_config, container_type)) in blueprint_configs.iter()
+        {
             for service_companion in self
                 .stage
                 .with_infrastructure_template_data
@@ -1477,7 +1500,7 @@ where
                 } = &service_companion;
                 data.service_or_services = ServiceOrServices::Service {
                     service: ServiceTemplateData {
-                        name: &instance_or_replica_config.service_name,
+                        name: service_name,
                         image: &instance_or_replica_config.image,
                         port: self
                             .stage
@@ -1500,6 +1523,7 @@ where
 
                 if blueprint_service.service_name == instance_or_replica_config.service_name {
                     let blueprint_service = instance_or_replica_config
+                        .as_ref()
                         .clone()
                         .merge_with(blueprint_service.clone());
 
@@ -1518,7 +1542,8 @@ where
         }
 
         // Second pass: now apply it for the remaining services that won't match.
-        for (instance_or_replica_config, container_type) in self.instances_and_replicas_iter() {
+        for (service_name, (instance_or_replica_config, container_type)) in blueprint_configs.iter()
+        {
             for service_companion in self
                 .stage
                 .with_infrastructure_template_data
@@ -1535,7 +1560,7 @@ where
 
                 data.service_or_services = ServiceOrServices::Service {
                     service: ServiceTemplateData {
-                        name: &instance_or_replica_config.service_name,
+                        name: service_name,
                         image: &instance_or_replica_config.image,
                         port: self
                             .stage
@@ -1571,48 +1596,6 @@ where
         Ok(deployable_services.into_values().collect())
     }
 
-    fn build_deployable_services_from_app(
-        &self,
-        app: &app_instance::App,
-        service_type_override: Option<ContainerType>,
-    ) -> Result<Vec<DeployableService>, TraefikIngressRouteMergeError> {
-        app.services
-            .iter()
-            .filter(|service| {
-                matches!(
-                    service.service_type,
-                    ContainerType::Replica | ContainerType::Instance
-                )
-            })
-            .cloned()
-            .map(|service| {
-                let port = self
-                    .stage
-                    .with_infrastructure_template_data
-                    .with_base_route
-                    .with_resolved_images
-                    .port(&service.blueprint_config.image);
-                let ingress_route = self.service_route(&service.blueprint_config.service_name)?;
-
-                Ok(DeployableService {
-                    blueprint_service: service.blueprint_config,
-                    service_type: service_type_override.unwrap_or(service.service_type),
-                    // As we are filtering by ContainerType::Instance and ContainerType::Replica
-                    // (see above), the service must be always deployed.
-                    strategy: app_deployment::DeploymentStrategy::Always,
-                    ingress_route,
-                    declared_volumes: Vec::new(),
-                    // TODO: we should put the standard labels from api/src/infrastructure/mod.rs
-                    // here
-                    labels: HashMap::new(),
-                    port,
-                    bootstrapped_companion_elements: Vec::new(),
-                    phantom_data: PhantomData,
-                })
-            })
-            .collect()
-    }
-
     /// This method finishes a [`DeploymentUnit`] so that it follows the rules in [the PREvant
     /// paper, see Section 4](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5). For
     /// example, replication of services, applying template variables, etc.
@@ -1630,99 +1613,32 @@ where
         let user_defined_parameters = self
             .stage
             .with_infrastructure_template_data
-            .merged_user_defined_parameters();
+            .with_base_route
+            .with_resolved_images
+            .with_resolved_apps
+            .user_defined_parameters();
 
-        #[derive(Debug)]
-        enum DeployableServiceOrigin {
-            ServiceCompanion,
-            ApplicationCompanion,
-            ReplicatedFromRunningApp,
-            AlreadyRunningApp,
-            InitializedStage,
-        }
-
-        let mut services: HashMap<String, (DeployableService, DeployableServiceOrigin)> = self
-            .build_services_from_application_companions(&user_defined_parameters)?
+        let mut services: HashMap<String, DeployableService> = self
+            .build_services_from_application_companions(
+                user_defined_parameters.as_ref().map(|udp| udp.as_ref()),
+            )?
             .map(|deployable_service| {
                 (
                     deployable_service.blueprint_service.service_name.clone(),
-                    (
-                        deployable_service,
-                        DeployableServiceOrigin::ApplicationCompanion,
-                    ),
+                    deployable_service,
                 )
             })
             .collect::<HashMap<_, _>>();
 
-        if let Some(running_app_to_replicate_from) = self
-            .stage
-            .with_infrastructure_template_data
-            .with_base_route
-            .with_resolved_images
-            .with_resolved_apps
-            .running_app_to_replicate_from
-            .as_ref()
-        {
-            for deployable_service in self
-                .build_deployable_services_from_app(
-                    running_app_to_replicate_from,
-                    Some(ContainerType::Replica),
-                )?
-                .into_iter()
-            {
-                services
-                    .entry(deployable_service.blueprint_service.service_name.clone())
-                    .and_modify(|(existing_deployable_service, _)| {
-                        // TODO: double check that in combination with the TODO four lines above
-                        //
-                        // This line is triggered when we have a app_to_replicate_from and an
-                        // already running application. We want to keep the service that is running
-                        // as is or do we need to merge it too?
-                        existing_deployable_service.service_type = ContainerType::Replica
-                    })
-                    .or_insert((
-                        deployable_service,
-                        DeployableServiceOrigin::ReplicatedFromRunningApp,
-                    ));
-            }
-        }
-
-        if let Some(running_app) = self
-            .stage
-            .with_infrastructure_template_data
-            .with_base_route
-            .with_resolved_images
-            .with_resolved_apps
-            .running_app
-            .as_ref()
-        {
-            for ds in self.build_deployable_services_from_app(running_app, None)? {
-                // TODO: make sure that this will replace companions
-                services
-                    .entry(ds.blueprint_service.service_name.clone())
-                    .and_modify(|(ods, _)| {
-                        // TODO: double check that in combination with the TODO four lines above
-                        //
-                        // This line is triggered when we have a app_to_replicate_from and an
-                        // already running application. We want to keep the service that is running
-                        // as is or do we need to merge it too?
-                        ods.service_type = ds.service_type;
-                    })
-                    .or_insert((ds, DeployableServiceOrigin::AlreadyRunningApp));
-            }
-        };
-
-        let deployable_companions =
-            self.build_services_from_service_companions(&user_defined_parameters)?;
+        let deployable_companions = self.build_services_from_service_companions(
+            user_defined_parameters.as_ref().map(|udp| udp.as_ref()),
+        )?;
 
         for deployable_service in deployable_companions.into_iter() {
             services
                 .entry(deployable_service.blueprint_service.service_name.clone())
                 .and_modify(|_| todo!())
-                .or_insert((
-                    deployable_service,
-                    DeployableServiceOrigin::ServiceCompanion,
-                ));
+                .or_insert(deployable_service);
         }
 
         let base_url = self
@@ -1735,16 +1651,17 @@ where
         let template_data = self
             .stage
             .with_infrastructure_template_data
-            .base_template_data(&user_defined_parameters, base_url.as_ref());
-        for config in self
+            .base_template_data(
+                user_defined_parameters.as_ref().map(|udp| udp.as_ref()),
+                base_url.as_ref(),
+            );
+        for (_service_name, (config, service_type)) in self
             .stage
             .with_infrastructure_template_data
             .with_base_route
             .with_resolved_images
             .with_resolved_apps
-            .with_static_companions
-            .initialized
-            .configs
+            .blueprint_configs()
             .iter()
         {
             // TODO: do I have to set service?
@@ -1779,38 +1696,23 @@ where
 
             services
                 .entry(config.service_name.clone())
-                .and_modify(|(service, origin)| {
-                    service.service_type = app_instance::ContainerType::Instance;
-
-                    service.blueprint_service = match origin {
-                        DeployableServiceOrigin::ApplicationCompanion
-                        | DeployableServiceOrigin::ServiceCompanion
-                        | DeployableServiceOrigin::ReplicatedFromRunningApp => {
-                            service.blueprint_service.clone().merge_with(config.clone())
-                        }
-                        DeployableServiceOrigin::AlreadyRunningApp => config.clone(),
-                        DeployableServiceOrigin::InitializedStage => unreachable!(
-                            "Can only be reached if services with muiltiple names are passed"
-                        ),
-                    };
+                .and_modify(|service| {
+                    service.service_type = **service_type;
                 })
                 .or_insert_with(|| {
-                    (
-                        super::DeployableService {
-                            blueprint_service: config.clone(),
-                            strategy: super::DeploymentStrategy::Always,
-                            service_type: app_instance::ContainerType::Instance,
-                            ingress_route,
-                            declared_volumes: Vec::new(),
-                            // TODO: we should put the standard labels from api/src/infrastructure/mod.rs
-                            // here
-                            labels: HashMap::new(),
-                            port,
-                            bootstrapped_companion_elements: Vec::new(),
-                            phantom_data: PhantomData,
-                        },
-                        DeployableServiceOrigin::InitializedStage,
-                    )
+                    super::DeployableService {
+                        blueprint_service: config.clone(),
+                        strategy: super::DeploymentStrategy::Always,
+                        service_type: **service_type,
+                        ingress_route,
+                        declared_volumes: Vec::new(),
+                        // TODO: we should put the standard labels from api/src/infrastructure/mod.rs
+                        // here
+                        labels: HashMap::new(),
+                        port,
+                        bootstrapped_companion_elements: Vec::new(),
+                        phantom_data: PhantomData,
+                    }
                 });
         }
 
@@ -1820,10 +1722,7 @@ where
             .with_base_route
             .application_base_route();
 
-        let mut services = services
-            .into_values()
-            .map(|(service, _)| service)
-            .collect::<Vec<_>>();
+        let mut services = services.into_values().collect::<Vec<_>>();
         services.sort_by(|a, b| {
             // TODO: should we sort by service_type too??? I saw something, somewhere that indicates
             // this.
@@ -1856,6 +1755,7 @@ where
             None => self.stage.bootstrapped_companion_elements,
         };
 
+        let user_defined_parameters = user_defined_parameters.map(|udp| udp.into_owned());
         Ok(DeploymentUnit {
             app_name: self
                 .stage
@@ -2988,41 +2888,35 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn overwrite_service_type_if_replica_is_also_contained_in_payload() -> Result<()> {
-            let deployment_unit = AppDeploymentBuilder::init(
-                AppName::from_str("other").unwrap(),
-                wordpress_configs(),
-                None,
-            )
-            .with_app_to_replicate_from(Some(AppName::master()))
-            .with_static_companions(std::iter::empty())
-            .resolve_apps::<anyhow::Error, _>(|app_name| {
-                if app_name == AppName::master() {
-                    Ok(Some(App::new(
-                        vec![app_instance::Service {
-                            id: String::from("id"),
-                            status: app_instance::ServiceStatus::Running {
-                                started_at: Utc::now(),
-                            },
-                            service_type: ContainerType::Instance,
-                            blueprint_config: blueprint_service!(mariadb_config(), env = (
-                                    "MARIADB_AUTO_UPGRADE" => "true"
-                            )),
-                        }],
-                        HashSet::new(),
-                        None,
-                        None,
-                    )))
-                } else {
-                    Ok(None)
-                }
-            })
-            .await?
-            .resolve_image_manifests::<anyhow::Error, _>(async |_images| Ok(HashMap::new()))
-            .await?
-            .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
-            .await?
-            .finish()?;
+        async fn overwrite_service_if_replica_is_also_contained_in_payload() -> Result<()> {
+            let deployment_unit =
+                AppDeploymentBuilder::init(AppName::from_str("other")?, wordpress_configs(), None)
+                    .with_app_to_replicate_from(Some(AppName::master()))
+                    .with_static_companions(std::iter::empty())
+                    .resolve_apps::<anyhow::Error, _>(|app_name: AppName| match app_name.as_str() {
+                        "master" => Ok(Some(App::new(
+                            vec![app_instance::Service {
+                                id: String::from("id"),
+                                status: app_instance::ServiceStatus::Running {
+                                    started_at: Utc::now(),
+                                },
+                                service_type: ContainerType::Instance,
+                                blueprint_config: blueprint_service!(mariadb_config(), env = (
+                                        "MARIADB_AUTO_UPGRADE" => "true"
+                                )),
+                            }],
+                            HashSet::new(),
+                            None,
+                            None,
+                        ))),
+                        _ => Ok(None),
+                    })
+                    .await?
+                    .resolve_image_manifests::<anyhow::Error, _>(async |_images| Ok(HashMap::new()))
+                    .await?
+                    .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
+                    .await?
+                    .finish()?;
 
             assert_eq!(
                 vec![
@@ -3052,8 +2946,7 @@ mod tests {
                                 "MARIADB_ROOT_PASSWORD" => "example",
                                 "MARIADB_USER" => "example-user",
                                 "MARIADB_PASSWORD" => "my_cool_secret",
-                                "MARIADB_DATABASE" => "example-database",
-                                "MARIADB_AUTO_UPGRADE" => "true"
+                                "MARIADB_DATABASE" => "example-database"
                             )
                         ),
                     ),
@@ -3145,14 +3038,14 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn running_services_of_replicated_but_running_app_take_precedence_over_second_replicas()
+        async fn running_services_of_replicated_and_also_running_app_take_precedence_over_second_pass_replication()
         -> Result<()> {
             let deployment_unit = AppDeploymentBuilder::init(
-                AppName::from_str("other").unwrap(),
+                AppName::from_str("already-running")?,
                 wordpress_configs(),
                 None,
             )
-            .with_app_to_replicate_from(Some(AppName::master()))
+            .with_app_to_replicate_from(Some(AppName::from_str("replicated-app")?))
             .with_static_companions(std::iter::empty())
             .resolve_apps::<anyhow::Error, _>(|app_name: AppName| {
                 Ok(Some(App::new(
@@ -3163,10 +3056,7 @@ mod tests {
                         },
                         service_type: ContainerType::Instance,
                         blueprint_config: blueprint_service!(mariadb_config(), env = (
-                                "MARIADB_AUTO_UPGRADE" => match app_name.as_str() {
-                                    "other" => "false",
-                                    _ => "true"
-                                }
+                            "MARIADB_AUTO_UPGRADE" => format!("value from {app_name} will be deleted")
                         )),
                     }],
                     HashSet::new(),
@@ -3209,8 +3099,7 @@ mod tests {
                                 "MARIADB_ROOT_PASSWORD" => "example",
                                 "MARIADB_USER" => "example-user",
                                 "MARIADB_PASSWORD" => "my_cool_secret",
-                                "MARIADB_DATABASE" => "example-database",
-                                "MARIADB_AUTO_UPGRADE" => "true"
+                                "MARIADB_DATABASE" => "example-database"
                             )
                         ),
                     ),
@@ -3325,18 +3214,15 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn replicate_running_application_with_companions() -> Result<()> {
+        async fn replicate_none_existing_application_but_with_companions() -> Result<()> {
             let deployment_unit =
                 AppDeploymentBuilder::init(AppName::from_str("other").unwrap(), vec![], None)
                     .with_app_to_replicate_from(Some(AppName::master()))
                     .with_static_companions(std::iter::once(StaticCompanion::service_companion(
                         blueprint_service!("db1-{{userDefined.name}}", "postgres:16.1"),
                     )))
-                    .resolve_apps::<anyhow::Error, _>(|app_name| {
-                        if app_name != AppName::master() {
-                            return Ok(None);
-                        }
-                        Ok(Some(App::new(
+                    .resolve_apps::<anyhow::Error, _>(|app_name: AppName| match app_name.as_str() {
+                        "master" => Ok(Some(App::new(
                             vec![
                                 app_instance::Service {
                                     id: String::from("id"),
@@ -3365,7 +3251,8 @@ mod tests {
                                 }))
                             }),
                             None,
-                        )))
+                        ))),
+                        _ => Ok(None),
                     })
                     .await?
                     .resolve_image_manifests::<anyhow::Error, _>(async |_images| Ok(HashMap::new()))
@@ -5079,6 +4966,225 @@ mod tests {
                     &Image::from_str("adminer:5.0.0").unwrap(),
                     &blueprint_service!("adminer", "adminer:5.0.0"),
                     &ContainerType::Replica,
+                    &vec![RawInfrastructureElement::from(
+                        serde_json::json!({"opaque": "adminer:nginx:"})
+                    )]
+                ),],
+                deployment_unit
+                    .services
+                    .iter()
+                    .filter(|service| service.blueprint_service.service_name == "adminer")
+                    .map(|service| (
+                        service.blueprint_service.service_name.as_str(),
+                        &service.blueprint_service.image,
+                        &service.blueprint_service,
+                        &service.service_type,
+                        &service.bootstrapped_companion_elements
+                    ))
+                    .collect::<Vec<_>>(),
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn update_bootstrapped_companion_from_replicated_app_and_merge_config_of_already_running()
+        -> Result<()> {
+            let deployment_unit = AppDeploymentBuilder::init(AppName::from_str("other")?, Vec::new(), None)
+                .with_app_to_replicate_from(Some(AppName::from_str("replicated-app")?))
+                .with_static_companions(std::iter::empty())
+                .resolve_apps::<anyhow::Error, _>(|app_name: AppName| match app_name.as_str() {
+                    "replicated-app" => Ok(Some(App::new(
+                        vec![app_instance::Service {
+                            id: String::from("id"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+                        },
+                        app_instance::Service {
+                            id: String::from("adminer"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!("adminer", "adminer:5.0.0"),
+                        }],
+                        HashSet::new(),
+                        None,
+                        None,
+                    ))),
+                    "other" => Ok(Some(App::new(
+                        vec![app_instance::Service {
+                            id: String::from("id"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+                        },
+                        app_instance::Service {
+                            id: String::from("adminer"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!(
+                                "adminer",
+                                "adminer:3.0.0",
+                                env = ("ADMINER_PLUGINS" => "tables-filter tinymce")
+                            ),
+                        }],
+                        HashSet::new(),
+                        None,
+                        None,
+                    ))),
+                    _ => Ok(None),
+                })
+                .await?
+                .resolve_image_manifests::<anyhow::Error, _>(async |_images| Ok(HashMap::new()))
+                .await?
+                .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
+                .await?
+                .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| Ok(None))
+                .await?
+                .bootstrap_companions(Box::new(
+                    |_: &BootstrapCompanionsWithRawElementsContext, data: &TemplateData<'_>| {
+                        Ok::<_, anyhow::Error>(BootstrappedCompanions {
+                            bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                                blueprint_service!(
+                                    "adminer",
+                                    "adminer:4.8.1",
+                                    env = ("ADMINER_DESIGN" => "nette")
+                                ),
+                                vec![RawInfrastructureElement::from(serde_json::json!({
+                                    "opaque": data.as_handlerbars().render("{{#each services}}{{name}}:{{/each}}")?
+                                }))],
+                            )],
+                            ..Default::default()
+                        })
+                    },
+                ))
+                .await?
+                .finish()?;
+
+            assert_eq!(
+                vec![(
+                    "adminer",
+                    &Image::from_str("adminer:5.0.0").unwrap(),
+                    &blueprint_service!(
+                        "adminer",
+                        "adminer:5.0.0",
+                        env = (
+                            "ADMINER_DESIGN" => "nette",
+                            "ADMINER_PLUGINS" => "tables-filter tinymce"
+                        )
+                    ),
+                    &ContainerType::Instance,
+                    &vec![RawInfrastructureElement::from(
+                        serde_json::json!({"opaque": "adminer:nginx:"})
+                    )]
+                ),],
+                deployment_unit
+                    .services
+                    .iter()
+                    .filter(|service| service.blueprint_service.service_name == "adminer")
+                    .map(|service| (
+                        service.blueprint_service.service_name.as_str(),
+                        &service.blueprint_service.image,
+                        &service.blueprint_service,
+                        &service.service_type,
+                        &service.bootstrapped_companion_elements
+                    ))
+                    .collect::<Vec<_>>(),
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn update_bootstrapped_companion_from_user_request() -> Result<()> {
+            let deployment_unit = AppDeploymentBuilder::init(AppName::from_str("other")?, vec![
+                blueprint_service!(
+                    "adminer",
+                    "adminer:6.0.0",
+                    env = ("ADMINER_PLUGINS" => "login-servers")
+                )
+            ], None)
+                .with_app_to_replicate_from(Some(AppName::from_str("replicated-app")?))
+                .with_static_companions(std::iter::empty())
+                .resolve_apps::<anyhow::Error, _>(|app_name: AppName| match app_name.as_str() {
+                    "replicated-app" => Ok(Some(App::new(
+                        vec![app_instance::Service {
+                            id: String::from("id"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+                        },
+                        app_instance::Service {
+                            id: String::from("adminer"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!("adminer", "adminer:5.0.0"),
+                        }],
+                        HashSet::new(),
+                        None,
+                        None,
+                    ))),
+                    "other" => Ok(Some(App::new(
+                        vec![app_instance::Service {
+                            id: String::from("id"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!("nginx", "nginx:latest"),
+                        },
+                        app_instance::Service {
+                            id: String::from("adminer"),
+                            status: app_instance::ServiceStatus::Paused,
+                            service_type: ContainerType::Instance,
+                            blueprint_config: blueprint_service!(
+                                "adminer",
+                                "adminer:3.0.0",
+                                env = ("ADMINER_PLUGINS" => "tables-filter tinymce")
+                            ),
+                        }],
+                        HashSet::new(),
+                        None,
+                        None,
+                    ))),
+                    _ => Ok(None),
+                })
+                .await?
+                .resolve_image_manifests::<anyhow::Error, _>(async |_images| Ok(HashMap::new()))
+                .await?
+                .resolve_base_route::<anyhow::Error, _>(async || Ok(None))
+                .await?
+                .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| Ok(None))
+                .await?
+                .bootstrap_companions(Box::new(
+                    |_: &BootstrapCompanionsWithRawElementsContext, data: &TemplateData<'_>| {
+                        Ok::<_, anyhow::Error>(BootstrappedCompanions {
+                            bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                                blueprint_service!(
+                                    "adminer",
+                                    "adminer:4.8.1",
+                                    env = ("ADMINER_DESIGN" => "nette")
+                                ),
+                                vec![RawInfrastructureElement::from(serde_json::json!({
+                                    "opaque": data.as_handlerbars().render("{{#each services}}{{name}}:{{/each}}")?
+                                }))],
+                            )],
+                            ..Default::default()
+                        })
+                    },
+                ))
+                .await?
+                .finish()?;
+
+            assert_eq!(
+                vec![(
+                    "adminer",
+                    &Image::from_str("adminer:6.0.0").unwrap(),
+                    &blueprint_service!(
+                        "adminer",
+                        "adminer:6.0.0",
+                        env = (
+                            "ADMINER_PLUGINS" => "login-servers",
+                            "ADMINER_DESIGN" => "nette"
+                        )
+                    ),
+                    &ContainerType::Instance,
                     &vec![RawInfrastructureElement::from(
                         serde_json::json!({"opaque": "adminer:nginx:"})
                     )]

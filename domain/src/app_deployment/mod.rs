@@ -13,7 +13,7 @@ pub use builder::{
     BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions,
     BuildDeploymentUintBuildError, Initialized, MergeRawElementsContext, ResolveApps,
     ResolveAppsError, ServiceCompanion, StaticCompanion, StaticCompanionDeploymentStrategy,
-    StaticCompanionStorageStrategy, WithResolvedImages, WithStaticCompanions,
+    StaticCompanionStorageStrategy, WithResolvedApps, WithResolvedImages, WithStaticCompanions,
 };
 use std::{
     collections::{HashMap, HashSet},
