@@ -96,9 +96,9 @@ body {
 // cards entirely, so only the visible cards are included in each recalculation.
 // contain-intrinsic-size provides a placeholder height for off-screen cards so the
 // scrollbar and page layout remain approximately correct while they are skipped.
-.list-complete-item {
+.ra-apps .card-body {
    content-visibility: auto;
-   contain-intrinsic-size: 0 300px;
+   contain-intrinsic-size: 0 200px;
 }
 
 .ra-apps {
