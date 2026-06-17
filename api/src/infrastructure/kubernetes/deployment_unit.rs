@@ -16,9 +16,7 @@ use crate::{
 use anyhow::Result;
 use domain::{
     AppName, Image, RawInfrastructureElement,
-    app_deployment::{
-        ApplicationCompanion, BootstrappedCompanions, MergeRawElementsContext,
-    },
+    app_deployment::{ApplicationCompanion, BootstrappedCompanions, MergeRawElementsContext},
     app_instance::ContainerType,
 };
 use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt, TryStreamExt};
@@ -30,7 +28,7 @@ use k8s_openapi::{
         batch::v1::Job,
         core::v1::{
             ConfigMap, Container, LocalObjectReference, PersistentVolumeClaim, Pod, PodSpec,
-            Secret, Service, ServiceAccount,
+            Secret, SecretVolumeSource, Service, ServiceAccount, Volume, VolumeMount,
         },
         networking::v1::{Ingress, NetworkPolicy},
         rbac::v1::{Role, RoleBinding},
@@ -39,7 +37,7 @@ use k8s_openapi::{
 };
 use kube::{
     Api, Client, ResourceExt,
-    api::{LogParams, Patch, PatchParams, PostParams, WatchParams},
+    api::{ListParams, LogParams, Patch, PatchParams, PostParams, WatchParams},
     core::{DynamicObject, ObjectMeta, WatchEvent},
 };
 use log::{debug, error, trace, warn};
@@ -48,6 +46,8 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
 };
+
+static BOOTSTRAPPED_SECRET: &str = "com.aixigo.preview.servant.bootstrapped-secret";
 
 #[derive(Default)]
 pub(super) struct K8sDeploymentUnit {
@@ -156,7 +156,10 @@ macro_rules! parse_from_dynamic_object {
                 }
 
                 match $dyn_obj.clone().try_parse::<Secret>() {
-                    Ok(secret) => {
+                    Ok(mut secret) => {
+                        if let Some(labels) = secret.metadata.labels.as_mut() {
+                            labels.insert(BOOTSTRAPPED_SECRET.to_string(), String::new());
+                        }
                         $secrets.push(secret);
                     }
                     Err(e) => {
@@ -428,6 +431,11 @@ impl K8sDeploymentUnit {
             None => None,
         };
 
+        let api = Api::<Secret>::namespaced(client, &app_name.to_rfc1123_namespace_id());
+        let lp = ListParams::default().labels(BOOTSTRAPPED_SECRET);
+        let existing_secrets = api.list(&lp).await?;
+        let client = api.into_client();
+
         if log::log_enabled!(log::Level::Debug) {
             log::debug!(
                 "Bootstrapping {app_name} with {}",
@@ -448,6 +456,24 @@ impl K8sDeploymentUnit {
                     image: Some(bc.image.to_string()),
                     image_pull_policy: Some(bc.image_pull_policy.to_string()),
                     args: Some(bc.args.clone()),
+                    volume_mounts: if existing_secrets.iter().next().is_none() {
+                        None
+                    } else {
+                        Some(
+                            existing_secrets
+                                .iter()
+                                .map(|secret| {
+                                    let name = secret.metadata.name.as_deref().unwrap_or_default();
+                                    VolumeMount {
+                                        name: name.to_string(),
+                                        mount_path: format!("/run/secrets/{name}/",),
+                                        read_only: Some(true),
+                                        ..Default::default()
+                                    }
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    },
                     ..Default::default()
                 })
             })
@@ -473,6 +499,31 @@ impl K8sDeploymentUnit {
                 containers,
                 image_pull_secrets,
                 restart_policy: Some(String::from("Never")),
+                volumes: if existing_secrets.iter().next().is_none() {
+                    None
+                } else {
+                    Some(
+                        existing_secrets
+                            .iter()
+                            .map(|secret| {
+                                let name = secret
+                                    .metadata
+                                    .name
+                                    .as_deref()
+                                    .unwrap_or_default()
+                                    .to_string();
+                                Volume {
+                                    name: name.clone(),
+                                    secret: Some(SecretVolumeSource {
+                                        secret_name: Some(name),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                },
                 ..Default::default()
             }),
             ..Default::default()
@@ -539,8 +590,8 @@ impl K8sDeploymentUnit {
                 _ = interval_timer.tick() => {
                     let pod = api.get_status(pod_name).await?;
 
-                    if let Some(phase) = pod.status.and_then(|status| status.phase) {
-                        match phase.as_str() {
+                    if let Some(phase) = pod.status.as_ref().and_then(|status| status.phase.as_deref()) {
+                        match phase {
                             "Running" | "Succeeded" => {
                                 return Ok(());
                             }
@@ -1373,7 +1424,8 @@ impl K8sDeploymentUnit {
     /// [`assert_json_diff::assert_json_include!`].
     #[cfg(test)]
     pub(super) fn without_date_annotations(mut self) -> Self {
-        for metadata in self.deployments
+        for metadata in self
+            .deployments
             .iter_mut()
             .flat_map(|d| d.spec.as_mut())
             .map(|d| &mut d.template)
@@ -1863,7 +1915,8 @@ mod tests {
                     "name": "secret-tls",
                     "namespace": "master",
                     "labels": {
-                        APP_NAME_LABEL: "master"
+                        APP_NAME_LABEL: "master",
+                        BOOTSTRAPPED_SECRET: ""
                     }
                 },
                 "type": "kubernetes.io/tls",
@@ -3445,7 +3498,7 @@ spec:
             port:
               number: 2001
 ---
-r#"apiVersion: v1
+apiVersion: v1
 kind: Service
 metadata:
   name: whoami
@@ -3481,34 +3534,126 @@ spec:
                 actual: payload,
                 expected: serde_json::json!([
                     {
-                      "apiVersion": "traefik.containo.us/v1alpha1",
-                      "kind": "IngressRoute",
-                      "metadata": {
-                        "annotations": {
-                          "com.aixigo.preview.servant.app-name": "master",
-                          "traefik.ingress.kubernetes.io/router.entrypoints": "web"
+                        "apiVersion": "v1",
+                        "kind": "Service",
+                        "spec": {
+                            "selector": {
+                                "app": "whoami"
+                            },
+                            "ports": [{
+                                "port": 2001,
+                                "targetPort": 2001
+                            }]
+                        }
+                    },
+                    {
+                        "apiVersion": "traefik.containo.us/v1alpha1",
+                        "kind": "IngressRoute",
+                        "metadata": {
+                            "annotations": {
+                                "com.aixigo.preview.servant.app-name": "master",
+                                "traefik.ingress.kubernetes.io/router.entrypoints": "web"
+                            },
+                            "name": "whoami",
+                            "namespace": "master"
                         },
-                        "name": "whoami",
-                        "namespace": "master"
-                      },
-                      "spec": {
-                        "routes": [
-                          {
-                            "kind": "Rule",
-                            "match": "Host(`example.com`) && PathPrefix(`/some-route/master/my-route/`)",
-                            "services": [
-                              {
-                                "kind": "Service",
-                                "name": "whoami",
-                                "port": 2001
-                              }
+                        "spec": {
+                            "routes": [
+                            {
+                                "kind": "Rule",
+                                "match": "Host(`example.com`) && PathPrefix(`/some-route/master/my-route/`)",
+                                "services": [
+                                {
+                                    "kind": "Service",
+                                    "name": "whoami",
+                                    "port": 2001
+                                }
+                                ]
+                            }
                             ]
-                          }
-                        ]
-                      }
+                        }
                     }
                 ])
             );
+        }
+    }
+
+    mod bootstrapping {
+        use super::*;
+        use crate::{
+            config::ImagePullPolicy,
+            infrastructure::kubernetes::{infrastructure::K3sRuntime, payloads::namespace_payload},
+        };
+        use assert_json_diff::assert_json_eq;
+        use k8s_openapi::api::core::v1::Namespace;
+        use kube::{Config, config::Kubeconfig};
+        use uuid::Uuid;
+
+        #[test]
+        fn with_idempontent_secret_generation() -> Result<()> {
+            let script = r#"echo "
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dotfile-secret
+data:
+  .secret-file: $(if [ -f /run/secrets/dotfile-secret/.secret-file ]; then cat /run/secrets/dotfile-secret/.secret-file | base64 ; else </dev/urandom tr -dc A-Za-z0-9 | head -c 22 | base64 ; fi)
+                                ""#;
+
+            K3sRuntime::run(async |config_path| {
+                let config = tokio::fs::read_to_string(&config_path).await?;
+                let config = Config::from_custom_kubeconfig(
+                    Kubeconfig::deserialize(serde_norway::Deserializer::from_str(&config))?,
+                    &Default::default(),
+                )
+                .await?;
+                let client = Client::try_from(config)?;
+
+                let app_name = AppName::from_str(&Uuid::new_v4().to_string())?;
+                let api = Api::<Namespace>::all(client);
+                api.create(
+                    &Default::default(),
+                    &namespace_payload(&app_name, &Default::default(), None, &HashSet::new()),
+                )
+                .await?;
+
+                let client = api.into_client();
+                let unit_without_existing_secret = K8sDeploymentUnit::bootstrap(
+                    client.clone(),
+                    &app_name,
+                    &[BootstrappingContainer {
+                        image: Image::from_str("busybox")?,
+                        image_pull_policy: ImagePullPolicy::IfNotPresent,
+                        args: vec![String::from("sh"), String::from("-c"), String::from(script)],
+                    }],
+                    None,
+                )
+                .await?;
+
+                let payload_without_existing_secret = unit_without_existing_secret.to_json_vec();
+                unit_without_existing_secret
+                    .deploy(client.clone(), &app_name)
+                    .await?;
+
+                let unit_with_existing_secret = K8sDeploymentUnit::bootstrap(
+                    client.clone(),
+                    &app_name,
+                    &[BootstrappingContainer {
+                        image: Image::from_str("busybox")?,
+                        image_pull_policy: ImagePullPolicy::IfNotPresent,
+                        args: vec![String::from("sh"), String::from("-c"), String::from(script)],
+                    }],
+                    None,
+                )
+                .await?;
+
+                assert_json_eq!(
+                    payload_without_existing_secret,
+                    unit_with_existing_secret.to_json_vec()
+                );
+
+                Ok(())
+            })
         }
     }
 }

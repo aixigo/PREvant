@@ -251,6 +251,36 @@ and the container image:
 Additionally, check out the [builtin extra helpers][builtin-extra-helpers]
 PREvant offers via the [Handlebars Rust library][handlebars-rust].
 
+### Random Secret Generation (Kubernetes)
+
+In some cases, the bootstrapping infrastructure may generate random secrets.
+For example, if an OpenID provider and API is provided by the bootstrapping
+container, they may share an OpenID client secret so that each of them trust
+each other. The generation of the secret may be random, e.g. in Helm template
+functions such as
+[`randNumeric`](https://helm.sh/docs/chart_template_guide/function_list/#randalphanum-randalpha-randnumeric-and-randascii).
+However, updating the application with a second bootstrapping run, will
+generate a new random secret that may be cause issues in the deployments.
+
+In order to prevent issues, PREvant will provide the secrets from previous
+bootstrapping runs, to the second bootstrapping run. For example, if a
+bootstrapping container generates following secret, in which `$(</dev/urandom
+…)` is placeholder for randomness (shell variable expansion), in the second
+bootstrapping run, PREvant will mount the existing secret under
+`/run/secrets/dotfile-secret/.secret-file` (the pattern is
+`/run/secrets/<secret-name>/<secret-data-key>`).
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dotfile-secret
+data:
+  .secret-file: $(</dev/urandom tr -dc A-Za-z0-9 | head -c 22 | base64)
+```
+
+
+
 [docker-compose]: https://docs.docker.com/compose/
 [handlebars]: https://handlebarsjs.com/
 [handlebars-rust]: https://github.com/sunng87/handlebars-rust/
