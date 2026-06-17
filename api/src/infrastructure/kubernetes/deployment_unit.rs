@@ -23,7 +23,7 @@ use domain::{
         BootstrappedCompanion, BootstrappedCompanions, MergeBootstrappedElementsContext,
     },
 };
-use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt, TryStreamExt};
+use futures::{AsyncReadExt, StreamExt, TryStreamExt};
 use handlebars::RenderError;
 use k8s_openapi::{
     DeepMerge, Metadata,
@@ -32,7 +32,7 @@ use k8s_openapi::{
         batch::v1::Job,
         core::v1::{
             ConfigMap, Container, LocalObjectReference, PersistentVolumeClaim, Pod, PodSpec,
-            Secret, Service, ServiceAccount,
+            Secret, SecretVolumeSource, Service, ServiceAccount, Volume, VolumeMount,
         },
         networking::v1::NetworkPolicy,
         rbac::v1::{Role, RoleBinding},
@@ -40,16 +40,19 @@ use k8s_openapi::{
     apimachinery::pkg::apis::meta::v1::LabelSelector,
 };
 use kube::{
-    Api, Client,
-    api::{LogParams, Patch, PatchParams, PostParams, WatchParams},
+    Api, Client, ResourceExt,
+    api::{ListParams, LogParams, Patch, PatchParams, PostParams, WatchParams},
     core::{ObjectMeta, WatchEvent},
 };
 use log::{debug, trace, warn};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     str::FromStr,
 };
+
+static BOOTSTRAPPED_SECRET: &str = "com.aixigo.preview.servant.bootstrapped-secret";
 
 #[derive(Default)]
 pub(super) struct K8sDeploymentUnit {
@@ -219,6 +222,46 @@ impl FromIterator<K8sElement> for K8sDeploymentUnit {
     }
 }
 
+pub(super) struct BootstrappingLogStream<'a> {
+    pub(super) bootstrapping_container: &'a BootstrappingContainer,
+    pub(super) log_stream: Box<dyn futures::AsyncBufRead + Unpin + Send>,
+}
+
+/// A small helper type to make sure that bootstrapping labels (see [`BOOTSTRAPPED_SECRET`]) are
+/// generate according to the Kubernetes spec
+#[derive(Eq, Hash, PartialEq)]
+struct BootstrappedSecretMarker<'a>(&'a BootstrappingContainer);
+
+impl<'a> std::fmt::Display for BootstrappedSecretMarker<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut hasher = Sha256::new();
+        hasher.update(self.0.image.to_string());
+        for arg in &self.0.args {
+            hasher.update(arg);
+        }
+
+        let image_name = self.0.image.to_string();
+        let image_name = image_name
+            .chars()
+            .map(|c| match c {
+                '-' | 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '.' => c,
+                _ => '_',
+            })
+            .take(46)
+            .collect::<String>();
+
+        let hash256 = hasher.finalize();
+        write!(
+            f,
+            "{image_name}-{}",
+            (hash256[0..8])
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        )
+    }
+}
+
 impl K8sDeploymentUnit {
     fn sorted(self) -> Self {
         let Self {
@@ -278,12 +321,32 @@ impl K8sDeploymentUnit {
         }
     }
 
-    async fn start_bootstrapping_pods(
+    async fn fetch_bootstrapped_secrets<'a>(
+        client: Client,
+        app_name: &AppName,
+        bootstrapping_containers: &'a [BootstrappingContainer],
+    ) -> Result<HashMap<&'a BootstrappingContainer, Vec<Secret>>> {
+        let mut secrets = HashMap::new();
+
+        let api = Api::<Secret>::namespaced(client, &app_name.to_rfc1123_namespace_id());
+
+        for bc in bootstrapping_containers {
+            let marker = BootstrappedSecretMarker(bc);
+            let lp = ListParams::default().labels(&format!("{BOOTSTRAPPED_SECRET}={marker}"));
+
+            let existing_secrets = api.list(&lp).await?;
+            secrets.insert(bc, existing_secrets.into_iter().collect::<Vec<_>>());
+        }
+
+        Ok(secrets)
+    }
+
+    async fn start_bootstrapping_pods<'a>(
         app_name: &AppName,
         client: Client,
-        bootstrapping_containers: &[BootstrappingContainer],
+        bootstrapping_containers: &'a [BootstrappingContainer],
         image_pull_secret: Option<Secret>,
-    ) -> Result<(String, Vec<impl AsyncBufReadExt + use<>>)> {
+    ) -> Result<(String, Vec<BootstrappingLogStream<'a>>)> {
         let image_pull_secrets = match image_pull_secret {
             Some(image_pull_secret) => {
                 let image_pull_secrets = vec![LocalObjectReference {
@@ -294,6 +357,10 @@ impl K8sDeploymentUnit {
             }
             None => None,
         };
+
+        let existing_secrets =
+            Self::fetch_bootstrapped_secrets(client.clone(), app_name, bootstrapping_containers)
+                .await?;
 
         if log::log_enabled!(log::Level::Debug) {
             log::debug!(
@@ -315,6 +382,20 @@ impl K8sDeploymentUnit {
                     image: Some(bc.image.to_string()),
                     image_pull_policy: Some(bc.image_pull_policy.to_string()),
                     args: Some(bc.args.clone()),
+                    volume_mounts: existing_secrets.get(bc).map(|existing_secrets| {
+                        existing_secrets
+                            .iter()
+                            .map(|secret| {
+                                let name = secret.metadata.name.as_deref().unwrap_or_default();
+                                VolumeMount {
+                                    name: name.to_string(),
+                                    mount_path: format!("/run/secrets/{name}/",),
+                                    read_only: Some(true),
+                                    ..Default::default()
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    }),
                     ..Default::default()
                 })
             })
@@ -340,6 +421,32 @@ impl K8sDeploymentUnit {
                 containers,
                 image_pull_secrets,
                 restart_policy: Some(String::from("Never")),
+                volumes: if existing_secrets.is_empty() {
+                    None
+                } else {
+                    Some(
+                        existing_secrets
+                            .values()
+                            .flat_map(|secrets| secrets.iter())
+                            .map(|secret| {
+                                let name = secret
+                                    .metadata
+                                    .name
+                                    .as_deref()
+                                    .unwrap_or_default()
+                                    .to_string();
+                                Volume {
+                                    name: name.clone(),
+                                    secret: Some(SecretVolumeSource {
+                                        secret_name: Some(name),
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                },
                 ..Default::default()
             }),
             ..Default::default()
@@ -374,18 +481,21 @@ impl K8sDeploymentUnit {
 
         let mut log_streams = Vec::with_capacity(bootstrapping_containers.len());
 
-        for i in 0..bootstrapping_containers.len() {
-            log_streams.push(
-                api.log_stream(
-                    &pod_name,
-                    &LogParams {
-                        container: Some(format!("bootstrap-{i}")),
-                        follow: true,
-                        ..Default::default()
-                    },
-                )
-                .await?,
-            );
+        for (i, bc) in bootstrapping_containers.iter().enumerate() {
+            log_streams.push(BootstrappingLogStream {
+                bootstrapping_container: bc,
+                log_stream: Box::new(
+                    api.log_stream(
+                        &pod_name,
+                        &LogParams {
+                            container: Some(format!("bootstrap-{i}")),
+                            follow: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await?,
+                ),
+            });
         }
 
         Ok((pod_name, log_streams))
@@ -406,8 +516,8 @@ impl K8sDeploymentUnit {
                 _ = interval_timer.tick() => {
                     let pod = api.get_status(pod_name).await?;
 
-                    if let Some(phase) = pod.status.and_then(|status| status.phase) {
-                        match phase.as_str() {
+                    if let Some(phase) = pod.status.as_ref().and_then(|status| status.phase.as_deref()) {
+                        match phase {
                             "Running" | "Succeeded" => {
                                 return Ok(());
                             }
@@ -448,7 +558,7 @@ impl K8sDeploymentUnit {
             return Ok(Default::default());
         }
 
-        let (bootstrapping_pod_name, mut log_streams) = Self::start_bootstrapping_pods(
+        let (bootstrapping_pod_name, log_streams) = Self::start_bootstrapping_pods(
             app_name,
             client.clone(),
             bootstrapping_container,
@@ -456,7 +566,7 @@ impl K8sDeploymentUnit {
         )
         .await?;
 
-        let result = Self::parse_from_log_streams(app_name, &mut log_streams).await;
+        let result = Self::parse_from_log_streams(app_name, log_streams).await;
 
         let pod_api: Api<Pod> = Api::namespaced(client, &app_name.to_rfc1123_namespace_id());
         pod_api
@@ -466,14 +576,12 @@ impl K8sDeploymentUnit {
         result
     }
 
-    pub(super) async fn parse_from_log_streams<L>(
+    pub(super) async fn parse_from_log_streams<'a, L>(
         app_name: &AppName,
         log_streams: L,
     ) -> Result<Self>
     where
-        L: IntoIterator,
-        <L as IntoIterator>::Item: AsyncBufReadExt,
-        <L as IntoIterator>::Item: Unpin,
+        L: IntoIterator<Item = BootstrappingLogStream<'a>>,
     {
         let mut roles = Vec::new();
         let mut role_bindings = Vec::new();
@@ -493,7 +601,7 @@ impl K8sDeploymentUnit {
 
         for mut log_stream in log_streams.into_iter() {
             let mut stdout = String::new();
-            log_stream.read_to_string(&mut stdout).await?;
+            log_stream.log_stream.read_to_string(&mut stdout).await?;
 
             if log::log_enabled!(log::Level::Trace) {
                 trace!(
@@ -530,7 +638,14 @@ impl K8sDeploymentUnit {
                     K8sElement::RoleBinding(role_binding) => role_bindings.push(role_binding),
                     K8sElement::StatefulSet(stateful_set) => stateful_sets.push(stateful_set),
                     K8sElement::ConfigMap(config_map) => config_maps.push(config_map),
-                    K8sElement::Secret(secret) => secrets.push(secret),
+                    K8sElement::Secret(mut secret) => {
+                        let marker = BootstrappedSecretMarker(log_stream.bootstrapping_container);
+                        secret
+                            .labels_mut()
+                            .insert(BOOTSTRAPPED_SECRET.to_string(), format!("{marker}"));
+
+                        secrets.push(secret);
+                    }
                     K8sElement::PVC(persistent_volume_claim) => pvcs.push(persistent_volume_claim),
                     K8sElement::Service(service) => services.push(service),
                     K8sElement::Pod(pod) => pods.push(pod),
@@ -1609,7 +1724,15 @@ mod tests {
     };
 
     async fn parse_unit_from_log_stream(stdout: &'static str) -> K8sDeploymentUnit {
-        let log_streams = vec![stdout.as_bytes()];
+        let bootstrapping_container = BootstrappingContainer {
+            image: Image::from_str("aixigo/bootstrap-example:latest").unwrap(),
+            image_pull_policy: Default::default(),
+            args: Vec::new(),
+        };
+        let log_streams = vec![BootstrappingLogStream {
+            bootstrapping_container: &bootstrapping_container,
+            log_stream: Box::new(stdout.as_bytes()),
+        }];
 
         K8sDeploymentUnit::parse_from_log_streams(&AppName::master(), log_streams)
             .await
@@ -1661,7 +1784,8 @@ mod tests {
                     "name": "secret-tls",
                     "namespace": "master",
                     "labels": {
-                        APP_NAME_LABEL: "master"
+                        APP_NAME_LABEL: "master",
+                        BOOTSTRAPPED_SECRET: "docker.io_aixigo_bootstrap-example_latest-3985b5ed774584e8"
                     }
                 },
                 "type": "kubernetes.io/tls",
@@ -3251,7 +3375,7 @@ spec:
             port:
               number: 2001
 ---
-r#"apiVersion: v1
+apiVersion: v1
 kind: Service
 metadata:
   name: whoami
@@ -3287,34 +3411,166 @@ spec:
                 actual: payload,
                 expected: serde_json::json!([
                     {
-                      "apiVersion": "traefik.containo.us/v1alpha1",
-                      "kind": "IngressRoute",
-                      "metadata": {
-                        "annotations": {
-                          "com.aixigo.preview.servant.app-name": "master",
-                          "traefik.ingress.kubernetes.io/router.entrypoints": "web"
+                        "apiVersion": "v1",
+                        "kind": "Service",
+                        "spec": {
+                            "selector": {
+                                "app": "whoami"
+                            },
+                            "ports": [{
+                                "port": 2001,
+                                "targetPort": 2001
+                            }]
+                        }
+                    },
+                    {
+                        "apiVersion": "traefik.containo.us/v1alpha1",
+                        "kind": "IngressRoute",
+                        "metadata": {
+                            "annotations": {
+                                "com.aixigo.preview.servant.app-name": "master",
+                                "traefik.ingress.kubernetes.io/router.entrypoints": "web"
+                            },
+                            "name": "whoami",
+                            "namespace": "master"
                         },
-                        "name": "whoami",
-                        "namespace": "master"
-                      },
-                      "spec": {
-                        "routes": [
-                          {
-                            "kind": "Rule",
-                            "match": "Host(`example.com`) && PathPrefix(`/some-route/master/my-route/`)",
-                            "services": [
-                              {
-                                "kind": "Service",
-                                "name": "whoami",
-                                "port": 2001
-                              }
+                        "spec": {
+                            "routes": [
+                            {
+                                "kind": "Rule",
+                                "match": "Host(`example.com`) && PathPrefix(`/some-route/master/my-route/`)",
+                                "services": [
+                                {
+                                    "kind": "Service",
+                                    "name": "whoami",
+                                    "port": 2001
+                                }
+                                ]
+                            }
                             ]
-                          }
-                        ]
-                      }
+                        }
                     }
                 ])
             );
+        }
+    }
+
+    mod bootstrapping {
+        use super::*;
+        use crate::{
+            config::ImagePullPolicy,
+            infrastructure::kubernetes::{
+                create_cluster_and_expose_k8s_config, payloads::namespace_payload,
+            },
+        };
+        use assert_json_diff::assert_json_eq;
+        use k8s_openapi::api::core::v1::Namespace;
+        use kube::{Config, config::Kubeconfig};
+        use uuid::Uuid;
+
+        /// This tests bootstraps at first a secret with a random value because
+        /// /run/secrets/dotfile-secret/.secret-file isn't present in the bootstrapping container.
+        /// In the second bootstrapping run, this preexisting secret should be mounted into the
+        /// bootstrapping container and the bootstrapping script reuses this value so that the
+        /// assertion checks that both payloads are equal.
+        #[tokio::test]
+        async fn with_idempontent_secret_generation() -> Result<()> {
+            let script = r#"echo "
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dotfile-secret
+data:
+  .secret-file: $(if [ -f /run/secrets/dotfile-secret/.secret-file ]; then cat /run/secrets/dotfile-secret/.secret-file | base64 ; else </dev/urandom tr -dc A-Za-z0-9 | head -c 22 | base64 ; fi)
+                                ""#;
+
+            let (_k3s, config_path, _tempdir) = create_cluster_and_expose_k8s_config().await?;
+
+            let config = tokio::fs::read_to_string(&config_path).await?;
+            let config = Config::from_custom_kubeconfig(
+                Kubeconfig::deserialize(serde_norway::Deserializer::from_str(&config))?,
+                &Default::default(),
+            )
+            .await?;
+            let client = Client::try_from(config)?;
+
+            let app_name = AppName::from_str(&Uuid::new_v4().to_string())?;
+            let api = Api::<Namespace>::all(client);
+            api.create(
+                &Default::default(),
+                &namespace_payload(&app_name, &Default::default(), None, &HashSet::new()),
+            )
+            .await?;
+
+            let client = api.into_client();
+            let unit_without_existing_secret = K8sDeploymentUnit::bootstrap(
+                client.clone(),
+                &app_name,
+                &[BootstrappingContainer {
+                    image: Image::from_str("busybox")?,
+                    image_pull_policy: ImagePullPolicy::IfNotPresent,
+                    args: vec![String::from("sh"), String::from("-c"), String::from(script)],
+                }],
+                None,
+            )
+            .await?;
+
+            let payload_without_existing_secret = unit_without_existing_secret.to_json_vec();
+            unit_without_existing_secret
+                .deploy(client.clone(), &app_name)
+                .await?;
+
+            let unit_with_existing_secret = K8sDeploymentUnit::bootstrap(
+                client.clone(),
+                &app_name,
+                &[BootstrappingContainer {
+                    image: Image::from_str("busybox")?,
+                    image_pull_policy: ImagePullPolicy::IfNotPresent,
+                    args: vec![String::from("sh"), String::from("-c"), String::from(script)],
+                }],
+                None,
+            )
+            .await?;
+
+            assert_json_eq!(
+                payload_without_existing_secret,
+                unit_with_existing_secret.to_json_vec()
+            );
+
+            Ok(())
+        }
+    }
+
+    mod bootstrapped_secret_marker {
+        use super::super::*;
+
+        #[test]
+        fn display_kubernetes_valid_chars() {
+            let marker = BootstrappedSecretMarker(&BootstrappingContainer {
+                image: Image::from_str("aixigo/bootstrap-example:latest").unwrap(),
+                image_pull_policy: Default::default(),
+                args: Vec::new(),
+            });
+
+            assert_eq!(
+                String::from("docker.io_aixigo_bootstrap-example_latest-3985b5ed774584e8"),
+                marker.to_string()
+            )
+        }
+
+        #[test]
+        fn cut_too_long_image_name() {
+            let marker = BootstrappedSecretMarker(&BootstrappingContainer {
+                image: Image::from_str("registry.gitlab.com/my-very-secret-group/with-a-very-long-projey-name/bootstrap-image-version-3141").unwrap(),
+                image_pull_policy: Default::default(),
+                args: Vec::new(),
+            });
+
+            assert_eq!(
+                String::from("registry.gitlab.com_my-very-secret-group_with--f42d6dd4b6d4304e"),
+                marker.to_string()
+            );
+            assert_eq!(63, marker.to_string().len())
         }
     }
 }

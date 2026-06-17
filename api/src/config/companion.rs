@@ -115,7 +115,7 @@ struct Bootstrapping {
     containers: Vec<RawBootstrappingContainer>,
 }
 
-#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Eq,  Hash)]
 pub enum ImagePullPolicy {
     #[default]
     Always,
@@ -143,6 +143,7 @@ struct RawBootstrappingContainer {
     args: Vec<String>,
 }
 
+#[derive(Eq, Hash, PartialEq)]
 pub struct BootstrappingContainer {
     pub image: Image,
     pub image_pull_policy: ImagePullPolicy,

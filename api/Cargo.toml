@@ -58,6 +58,7 @@ serde_derive = { workspace = true }
 serde_json = { workspace = true }
 serde_norway = "0.9"
 serde_regex = "1.2"
+sha2 = { workspace = true }
 sqlx = { version = "0.9", features = ["tls-rustls", "runtime-tokio", "postgres", "uuid", "chrono"] }
 tar = "0.4"
 thiserror = { workspace = true }
@@ -73,7 +74,6 @@ assert-json-diff = { workspace = true }
 figment = { version = "0.10", features = ["test"] }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
-sha2 = { workspace = true }
 tempfile = "3.27"
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }

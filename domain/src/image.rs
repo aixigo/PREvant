@@ -141,7 +141,6 @@ impl Image {
         }
     }
 
-    #[cfg(test)]
     pub fn name(&self) -> Option<String> {
         match &self {
             Image::Digest { .. } => None,
