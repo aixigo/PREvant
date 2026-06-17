@@ -27,8 +27,9 @@
 pub use self::applications::{
     ApplicationCleanUpPolicy, Applications, ReplicateApplicationCondition, RouterMetricsProvider,
 };
-pub use self::companion::BootstrappingContainer;
-pub use self::companion::Companions;
+#[cfg(test)]
+pub use self::companion::ImagePullPolicy;
+pub use self::companion::{BootstrappingContainer, Companions};
 pub use self::container::ContainerConfig;
 pub use self::runtime::Runtime;
 use clap::Parser;

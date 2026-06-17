@@ -719,7 +719,7 @@ impl Infrastructure for Kubernetes {
                         .iter()
                         .flat_map(|service| service.bootstrapped_companion_elements.iter()),
                 )
-                .cloned()
+                .cloned(),
         );
 
         for deployable_service in &deployment_unit.services {
@@ -1171,7 +1171,13 @@ impl From<ContainerTypeParseError> for KubernetesInfrastructureError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{apps::AppsError, config::runtime::KubernetesRuntimeConfig};
+    use crate::{
+        apps::AppsError,
+        config::{BootstrappingContainer, runtime::KubernetesRuntimeConfig},
+        infrastructure::kubernetes::{
+            create_cluster_and_expose_k8s_config, deployment_unit::BootstrappingLogStream,
+        },
+    };
     use domain::{
         app_deployment::{AppDeploymentBuilder, MergeBootstrappedElementsContext},
         app_instance::ContainerType,
@@ -1179,48 +1185,12 @@ mod tests {
     };
     use std::convert::Infallible;
     use tempfile::TempDir;
-    use testcontainers::{
-        ContainerAsync, ImageExt,
-        core::{WaitFor, logs::consumer::logging_consumer::LoggingConsumer},
-        runners::AsyncRunner,
-    };
-    use testcontainers_modules::k3s::{K3s, KUBE_SECURE_PORT};
+    use testcontainers::ContainerAsync;
+    use testcontainers_modules::k3s::K3s;
 
     async fn create_cluster_and_infra() -> (ContainerAsync<K3s>, Kubernetes, TempDir) {
-        let _ = env_logger::builder().is_test(true).try_init();
-
-        let tempdir = tempfile::tempdir().unwrap();
-        let config_mount = tempdir.path().to_path_buf();
-
-        let k3s_instance = K3s::default()
-                .with_conf_mount(&config_mount)
-                .with_privileged(true)
-                .with_ready_conditions(vec![WaitFor::message_on_stderr(
-                        r#""QuotaMonitor created object count evaluator" resource="ingressroutetcps.traefik.io""#,
-                )])
-                .with_startup_timeout(std::time::Duration::from_mins(2))
-                .with_log_consumer(
-                    LoggingConsumer::new()
-                    .with_stdout_level(log::Level::Trace)
-                    .with_stderr_level(log::Level::Trace),
-                )
-                .start()
-                .await
-                .unwrap();
-
-        let mapped_port = k3s_instance
-            .get_host_port_ipv4(KUBE_SECURE_PORT.as_u16())
-            .await
-            .unwrap();
-
-        let config = k3s_instance.image().read_kube_config().unwrap();
-
-        let config_file = tempdir.path().join("k3s-mapped.yaml");
-        let config = config.replace(
-            "server: https://127.0.0.1:6443",
-            &format!("server: https://127.0.0.1:{mapped_port}"),
-        );
-        std::fs::write(&config_file, config).unwrap();
+        let (k3s_instance, config_file, tempdir) =
+            create_cluster_and_expose_k8s_config().await.unwrap();
 
         let infra = Kubernetes::new(PREvantConfig {
             runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
@@ -1794,9 +1764,15 @@ mod tests {
             context: BootstrapCompanionsContext<'_>,
             _template_data: &TemplateData,
         ) -> Result<BootstrappedCompanions<Self::BootstrappedElement>, Self::Error> {
-            let output = [
-                if self.generate_whoami_deployment {
-                    r#"
+            let outputs = [
+                (
+                    BootstrappingContainer {
+                        image: Image::from_str("bash").unwrap(),
+                        image_pull_policy: Default::default(),
+                        args: Vec::new(),
+                    },
+                    if self.generate_whoami_deployment {
+                        r#"
                         apiVersion: apps/v1
                         kind: Deployment
                         metadata:
@@ -1818,13 +1794,20 @@ mod tests {
                                 - --name=iamfoo
                                 ports:
                                 - containerPort: 2001
-                    "#
-                } else {
-                    ""
-                }
-                .as_bytes(),
-                if self.generate_whoami_deployment {
-                    r#"
+                        "#
+                    } else {
+                        ""
+                    }
+                    .as_bytes(),
+                ),
+                (
+                    BootstrappingContainer {
+                        image: Image::from_str("ksh").unwrap(),
+                        image_pull_policy: Default::default(),
+                        args: Vec::new(),
+                    },
+                    if self.generate_whoami_deployment {
+                        r#"
                         apiVersion: v1
                         kind: Service
                         metadata:
@@ -1835,12 +1818,19 @@ mod tests {
                           ports:
                           - port: 2001
                             targetPort: 2001
-                    "#
-                } else {
-                    ""
-                }
-                .as_bytes(),
-                r#"
+                        "#
+                    } else {
+                        ""
+                    }
+                    .as_bytes(),
+                ),
+                (
+                    BootstrappingContainer {
+                        image: Image::from_str("busybox").unwrap(),
+                        image_pull_policy: Default::default(),
+                        args: Vec::new(),
+                    },
+                    r#"
                     apiVersion: networking.k8s.io/v1
                     kind: Ingress
                     metadata:
@@ -1860,12 +1850,20 @@ mod tests {
                                 name: whoami
                                 port:
                                   number: 2001
-                "#
-                .as_bytes(),
+                    "#
+                    .as_bytes(),
+                ),
             ];
 
+            let log_streams = outputs
+                .iter()
+                .map(|(bootstrapping_container, output)| BootstrappingLogStream {
+                    log_stream: Box::new(*output),
+                    bootstrapping_container,
+                })
+                .collect::<Vec<_>>();
             let k8s_deployment_unit =
-                K8sDeploymentUnit::parse_from_log_streams(context.app_name, output).await?;
+                K8sDeploymentUnit::parse_from_log_streams(context.app_name, log_streams).await?;
 
             Ok(BootstrappedCompanions::try_from(k8s_deployment_unit)?)
         }
