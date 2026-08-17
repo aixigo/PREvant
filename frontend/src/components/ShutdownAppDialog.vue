@@ -2,7 +2,7 @@
  * ========================LICENSE_START=================================
  * PREvant Frontend
  * %%
- * Copyright (C) 2018 - 2026 aixigo AG
+ * Copyright (C) 2018 - 2019 aixigo AG
  * %%
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,7 +31,7 @@
       :expected-value="appName"
       confirm-label="Confirm"
       auth-message="You need to be logged in to shutdown apps."
-      button-class="btn btn-outline-danger"
+      confirm-color="danger"
       @confirm="deleteApp">
       <template #description>
          <p>Do you really want to shutdown <b>{{ appName }}</b>? Confirm by typing in the app:</p>
@@ -44,7 +44,7 @@
    import { useStore } from 'vuex';
    import ConfirmationDialog from './ConfirmationDialog.vue';
 
-   defineProps({
+   const props = defineProps({
       appName: { type: String, required: true }
    });
 

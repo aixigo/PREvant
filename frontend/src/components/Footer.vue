@@ -1,34 +1,48 @@
 <template>
-   <footer class="footer fixed-bottom text-light bg-dark" v-if="isAnySectionAvailable">
-      <div class="container-fluid text-center text-md-left">
-         <div class="row">
-            <div class="col-md-12">
-               <div class="text-center py-3">
-                  <RouterLink :to="getLinkTo('my-previews')" v-if="ownedApps.length > 0">
-                     My Previews ({{ ownedApps.length }})
-                  </RouterLink>
-                  <RouterLink :to="getLinkTo('apps-without-tickets')" v-if="appsWithoutTicket.length > 0">
-                     Previews ({{ appsWithoutTicket.length }})
-                  </RouterLink>
-                  <RouterLink :to="getLinkTo('apps-with-tickets')" v-if="appsWithTicket.length > 0">
-                       Features ({{ appsWithTicket.length }})
-                  </RouterLink>
-                  <RouterLink :to="getLinkTo('backed-up-apps')" v-if="appBackups.length > 0">
-                       Backups ({{ appBackups.length }})
-                  </RouterLink>
-                  <span v-if="appNameFilter != ''">
-                     <font-awesome-icon icon="exclamation"/> Filtered by <em>{{ appNameFilter }}</em>
-                  </span>
-               </div>
-            </div>
-         </div>
-      </div>
-   </footer>
+   <MDBFooter v-if="isAnySectionAvailable" bg="dark" text="light" class="fixed-bottom ra-footer border-top border-secondary-subtle">
+      <MDBContainer fluid class="py-2">
+         <MDBRow center class="g-2 align-items-center">
+            <MDBCol auto v-for="section in visibleSections" :key="section.heading">
+               <RouterLink class="ra-footer__link" :to="getLinkTo(section.heading)">
+                  <span>{{ section.label }}</span>
+                  <MDBBadge color="light" pill class="ra-footer__count ms-1 text-dark">
+                     {{ section.count }}
+                  </MDBBadge>
+               </RouterLink>
+            </MDBCol>
+            <MDBCol auto v-if="hasFilter" class="ra-footer__filter">
+               <MDBIcon icon="triangle-exclamation" class="me-1" />
+               <span>Filtered by <em>{{ appNameFilter }}</em></span>
+            </MDBCol>
+         </MDBRow>
+      </MDBContainer>
+   </MDBFooter>
 </template>
 
 <style scoped>
-footer a {
-   padding: 0.5em;
+.ra-footer__link {
+   align-items: center;
+   border-radius: 0.5rem;
+   color: inherit;
+   display: inline-flex;
+   padding: 0.35rem 0.5rem;
+   text-decoration: none;
+}
+
+.ra-footer__link:hover,
+.ra-footer__link:focus-visible {
+   background-color: rgba(255, 255, 255, 0.12);
+   color: inherit;
+}
+
+.ra-footer__count {
+   text-align: center;
+}
+
+.ra-footer__filter {
+   margin-left: 2rem;
+   font-size: 0.875rem;
+   opacity: 0.95;
 }
 </style>
 
@@ -36,6 +50,7 @@ footer a {
    import { computed } from 'vue';
    import { useStore } from 'vuex';
    import { useRoute } from "vue-router";
+   import { MDBBadge, MDBCol, MDBContainer, MDBFooter, MDBIcon, MDBRow } from 'mdb-vue-ui-kit';
 
    const store = useStore();
    const route = useRoute();
@@ -45,10 +60,20 @@ footer a {
    const appBackups = computed(() => store.getters.appBackups);
    const ownedApps = computed(() => store.getters.ownedApps);
    const appNameFilter = computed(() => store.getters.appNameFilter);
+   const hasFilter = computed(() => appNameFilter.value != null && appNameFilter.value.trim() !== '');
 
-   const isAnySectionAvailable = computed(() => {
-      return store.getters.ownedApps.length > 0 || store.getters.appsWithTicket.length > 0 || store.getters.appsWithoutTicket.length > 0 || store.getters.appBackups.length > 0;
-   })
+   const sections = computed(() => {
+      return [
+         { heading: 'my-previews', label: 'My Previews', count: ownedApps.value.length },
+         { heading: 'apps-without-tickets', label: 'Previews', count: appsWithoutTicket.value.length },
+         { heading: 'apps-with-tickets', label: 'Features', count: appsWithTicket.value.length },
+         { heading: 'backed-up-apps', label: 'Backups', count: appBackups.value.length }
+      ];
+   });
+
+   const visibleSections = computed(() => sections.value.filter((section) => section.count > 0));
+
+   const isAnySectionAvailable = computed(() => visibleSections.value.length > 0);
 
    function getLinkTo(heading) {
       return { query: route.query, params: { heading } };

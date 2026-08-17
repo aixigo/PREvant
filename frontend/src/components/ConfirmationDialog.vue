@@ -36,7 +36,7 @@
       :confirm-label="confirmLabel"
       :auth-message="authMessage"
       :input-placeholder="inputPlaceholder"
-      :button-class="buttonClass"
+      :confirm-color="confirmColor"
       @confirm="forwardConfirm">
       <template v-if="$slots.description" #description>
          <slot name="description"></slot>
@@ -57,7 +57,7 @@
       confirmLabel: { type: String, required: true },
       authMessage: { type: String, default: undefined },
       inputPlaceholder: { type: String, default: 'Enter app name' },
-      buttonClass: { type: String, default: 'btn btn-outline-primary' },
+      confirmColor: { type: String, default: 'primary' },
    });
 
    const emit = defineEmits(['confirm']);

@@ -23,50 +23,28 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-// Bootstrap material design library
-import $ from 'jquery';
-import 'popper.js';
-import 'bootstrap-material-design/dist/css/bootstrap-material-design.css';
-import 'bootstrap-material-design/dist/js/bootstrap-material-design.js';
-
-$(document).ready(() => {
-     $('body').bootstrapMaterialDesign();
-});
-
 import { createApp, } from 'vue';
 import { createRouter, createWebHashHistory } from 'vue-router';
-
+import '@fontsource/roboto/latin-300.css';
+import '@fontsource/roboto/latin-400.css';
+import '@fontsource/roboto/latin-500.css';
+import '@fontsource/roboto/latin-700.css';
+import '@fortawesome/fontawesome-free/css/fontawesome.min.css';
+import '@fortawesome/fontawesome-free/css/solid.min.css';
+import '@fortawesome/fontawesome-free/css/regular.min.css';
+import 'mdb-vue-ui-kit/css/mdb.min.css';
 import './scss/theme.scss';
 import Main from './Main.vue';
 import Apps from './views/Apps.vue';
-import AsyncApiUI from './views/AsyncApiUI.vue';
-import OpenApiUI from './views/OpenApiUI.vue';
-import LogsDialog from './views/LogsDialog.vue';
-
-import {library} from '@fortawesome/fontawesome-svg-core';
-import {faClipboard, faCode, faCopy, faServer, faSpinner, faTerminal, faTrash, faWindowClose, faDownload, faExclamation} from '@fortawesome/free-solid-svg-icons';
-import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome';
 import { createStore } from './store';
-
-library.add(faClipboard);
-library.add(faCode);
-library.add(faCopy);
-library.add(faDownload);
-library.add(faServer);
-library.add(faSpinner);
-library.add(faTerminal);
-library.add(faTrash);
-library.add(faWindowClose);
-library.add(faExclamation);
-
+import mdbTooltipDirective from './directives/mdb-tooltip';
 export const router = createRouter({
    history: createWebHashHistory(),
-   // It is currently not possible to use lazy loading for routes because of bootstrap v4 and jquery
    routes: [
       { path: '/:heading?', component: Apps, query: { appNameFilter: { type: String } } },
-      { path: '/open-api-ui/:url', name: 'open-api-ui', component: OpenApiUI },
-      { path: '/async-api-ui/:url', name: 'async-api-ui', component: AsyncApiUI },
-      { path: '/logs/:app/:service', name: 'logs', component: LogsDialog }
+      { path: '/open-api-ui/:url', name: 'open-api-ui', component: () => import('./views/OpenApiUI.vue') },
+      { path: '/async-api-ui/:url', name: 'async-api-ui', component: () => import('./views/AsyncApiUI.vue') },
+      { path: '/logs/:app/:service', name: 'logs', component: () => import('./views/LogsDialog.vue') }
    ]
 });
 
@@ -74,9 +52,10 @@ export const router = createRouter({
 const store = createStore(router, me, issuers);
 store.dispatch('fetchData');
 
-createApp(Main)
-   .component('font-awesome-icon', FontAwesomeIcon)
+const app = createApp(Main);
+
+app.directive('mdb-tooltip', mdbTooltipDirective);
+app
    .use(store)
    .use(router)
-   .mount('#main')
-
+   .mount('#main');

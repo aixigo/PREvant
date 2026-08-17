@@ -34,6 +34,7 @@
       @confirm="duplicateApp" />
 </template>
 
+
 <script setup>
    import { useTemplateRef } from 'vue';
    import { useStore } from 'vuex';

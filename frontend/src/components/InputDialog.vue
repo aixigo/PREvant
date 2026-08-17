@@ -25,44 +25,59 @@
  */
 
 <template>
-   <Dialog ref="dialog" :title="title" @opened="focusInput">
-      <template #body>
-         <slot name="description">
-            <p v-if="description">{{ description }}</p>
-         </slot>
+   <MDBModal v-model="visible" centered @shown="focusInput">
+      <MDBModalHeader class="px-4 pt-4 pb-3">
+         <MDBModalTitle>
+            {{ title }}
+         </MDBModalTitle>
+      </MDBModalHeader>
 
-         <div class="form-group">
-            <input
-               ref="inputElement"
-               type="name"
-               class="form-control"
-               :placeholder="inputPlaceholder"
-               v-model="inputValue"
-               :disabled="!isActionAllowed"
-               @keyup.enter="confirm">
+      <MDBModalBody class="px-4 py-4">
+         <div v-if="$slots.description || description" class="mb-4">
+            <slot name="description">
+               <p class="mb-0">{{ description }}</p>
+            </slot>
          </div>
 
-         <div v-if="requiresWritePermissions && !hasWritePermissions && authMessage != null" class="alert alert-warning text-center" role="alert">
+         <MDBInput
+            ref="inputElement"
+            v-model="inputValue"
+            size="lg"
+            :label="inputPlaceholder"
+            :disabled="!isActionAllowed"
+            @keyup.enter="confirm" />
+
+         <BootstrapAlert v-if="requiresWritePermissions && !hasWritePermissions && authMessage != null" type="warning" class="mt-4 mb-0">
             {{ authMessage }}
-         </div>
-      </template>
+         </BootstrapAlert>
+      </MDBModalBody>
 
-      <template #footer>
-         <button
+      <MDBModalFooter class="px-4 pt-0 pb-4 border-0">
+         <MDBBtn
+            class="px-4"
             type="button"
-            :class="buttonClass"
+            :outline="confirmColor"
             @click="confirm()"
             :disabled="!canConfirm">
             {{ confirmLabel }}
-         </button>
-      </template>
-   </Dialog>
+         </MDBBtn>
+      </MDBModalFooter>
+   </MDBModal>
 </template>
 
 <script setup>
    import { computed, ref, useTemplateRef } from 'vue';
+   import {
+      MDBModal,
+      MDBModalHeader,
+      MDBModalTitle,
+      MDBModalBody,
+      MDBModalFooter,
+      MDBBtn,
+      MDBInput
+   } from 'mdb-vue-ui-kit';
    import { useAuth } from '../composables/useAuth';
-   import Dialog from './Dialog.vue';
+   import BootstrapAlert from './bootstrap/BootstrapAlert.vue';
 
    const { hasWritePermissions } = useAuth();
 
@@ -76,13 +91,13 @@
       confirmLabel: { type: String, required: true },
       authMessage: { type: String, default: undefined },
       inputPlaceholder: { type: String, default: 'Enter app name' },
-      buttonClass: { type: String, default: 'btn btn-outline-primary' },
+      confirmColor: { type: String, default: 'primary' },
    });
 
    const emit = defineEmits(['confirm']);
 
-   const dialog = useTemplateRef('dialog');
    const inputElement = useTemplateRef('inputElement');
+   const visible = ref(false);
    const inputValue = ref('');
 
    const normalizedInput = computed(() => {
@@ -105,13 +120,11 @@
 
    function open() {
       inputValue.value = '';
-      dialog.value.open();
+      visible.value = true;
    }
 
    function focusInput() {
-      if (inputElement.value && !inputElement.value.disabled) {
-         inputElement.value.focus();
-      }
+      inputElement.value?.inputRef?.focus();
    }
 
    function confirm() {
@@ -120,7 +133,7 @@
       }
 
       emit('confirm', normalizedInput.value);
-      dialog.value.close();
+      visible.value = false;
    }
 
    defineExpose({

@@ -25,16 +25,17 @@
  */
 
 <template>
-   <div class="container" id="app">
+   <MDBContainer id="app">
 
-      <spinner v-if="isFetchInProgress" />
-
-      <div v-if="errors.length > 0" class="alert alert-danger" role="alert">
-         <p v-for="error in errors">
-            <b>{{ error.title }}</b>: {{ error.detail }}
-         </p>
+      <div v-if="isFetchInProgress" class="d-flex justify-content-center align-items-center ra-fetch-spinner">
+         <MDBSpinner class="ra-fetch-spinner__icon" color="primary" />
       </div>
-      <h1 v-else-if="reviewApps.length === 0" class="ra-container__title--preview">
+
+      <BootstrapAlert v-if="errors.length > 0" v-for="error in errors" type="danger">
+         <b>{{ error.title }}</b>: {{ error.detail }}
+      </BootstrapAlert>
+        
+      <h1 v-else-if="reviewApps.length === 0" class="ra-container__title ra-container__title--preview">
          No apps to review.
       </h1>
 
@@ -81,12 +82,23 @@
             v-on:changeState="changeServiceState"
             class="list-complete-item"/>
       </transition-group>
-   </div>
+   </MDBContainer>
 </template>
 
 <style>
    .list-complete-item {
       transition: all 1s;
+   }
+
+   .ra-fetch-spinner {
+      margin-top: 1rem;
+      min-height: 2.5rem;
+   }
+
+   .ra-fetch-spinner .ra-fetch-spinner__icon {
+      --mdb-spinner-width: 3rem;
+      --mdb-spinner-height: 3rem;
+      --mdb-spinner-border-width: 0.35rem;
    }
 
    .list-complete-enter, .list-complete-leave-to
@@ -99,20 +111,13 @@
    .list-complete-leave-active {
       position: absolute;
    }
-
-   .alert > p {
-      margin-bottom: 0;
-      text-align: center;
-   }
-   .alert > p + p {
-      margin-top: 1rem;
-   }
 </style>
 
 <script>
    import { mapGetters } from 'vuex';
+   import { MDBContainer, MDBSpinner } from 'mdb-vue-ui-kit';
+   import BootstrapAlert from '../components/bootstrap/BootstrapAlert.vue';
    import ReviewAppCard from '../components/ReviewAppCard.vue';
-   import Spinner from '../components/Spinner.vue';
 
    export default {
       data() {
@@ -121,8 +126,10 @@
          };
       },
       components: {
-         'review-app-card': ReviewAppCard,
-         'spinner': Spinner
+         MDBContainer,
+         MDBSpinner,
+         BootstrapAlert,
+         'review-app-card': ReviewAppCard
       },
       computed: {
          ...mapGetters([

@@ -28,6 +28,9 @@
 
 :root {
    font-size: 13px;
+   --ra-navbar-height: 56px;
+   --ra-footer-height: 52px;
+   --ra-page-content-gap: 1rem;
 
    @media (max-width: 576px) {
       font-size: 10px;
@@ -35,9 +38,17 @@
 }
 
 body {
-   padding: 7rem 0;
+   padding: var(--ra-navbar-height, 56px) 0 calc(var(--ra-footer-height, 52px) + var(--ra-page-content-gap, 1rem));
 
    background-color: colors.$app-background-color;
+}
+
+.ra-navbar {
+   min-height: var(--ra-navbar-height, 56px);
+}
+
+.ra-footer {
+   min-height: var(--ra-footer-height, 52px);
 }
 
 .container {
@@ -52,7 +63,9 @@ body {
    }
 }
 .ra-container__title {
-   scroll-margin-top: 100px;
+   --ra-title-margin-top: 0.67em;
+   scroll-margin-top: calc(var(--ra-navbar-height, 0px) + (var(--ra-title-margin-top) * 0.5));
+   margin-top: var(--ra-title-margin-top);
 }
 
 .ra-container__title--preview {
@@ -66,7 +79,7 @@ body {
 }
 
 .ra-container__title--feature {
-   margin-top: 3rem;
+   --ra-title-margin-top: 3rem;
 
    grid-column: 1/2;
    grid-row: 3;
@@ -75,6 +88,17 @@ body {
 .ra-container__apps--feature {
    grid-column: 1/2;
    grid-row: 4;
+}
+
+// Chromium-based browsers trigger a full-document style recalculation on every resize
+// pixel due to vw-based font-size rules in Bootstrap/MDB CSS.
+// content-visibility: auto skips style recalculation, layout and paint for off-screen
+// cards entirely, so only the visible cards are included in each recalculation.
+// contain-intrinsic-size provides a placeholder height for off-screen cards so the
+// scrollbar and page layout remain approximately correct while they are skipped.
+.ra-apps .card-body {
+   content-visibility: auto;
+   contain-intrinsic-size: 0 200px;
 }
 
 .ra-apps {

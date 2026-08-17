@@ -29,7 +29,7 @@
 .ra-container {
    display: flex;
 
-   padding: .5em 0;
+   padding: .375em 0;
 
    & + & {
       border-top: 1px solid colors.$silver;
@@ -51,7 +51,8 @@
 }
 
 .ra-build-infos {
-   margin-top: .25rem;
+   margin-top: .125rem;
+   font-size: .8125rem;
 
    color: colors.$dusty-gray;
 
@@ -61,13 +62,13 @@
    }
 
    a + a {
-      margin-left: .5rem;
+      margin-left: .4rem;
    }
 }
 
 
 .ra-build-infos__wrapper {
-   margin-top: .5rem;
+   margin-top: .35rem;
 }
 
 .ra-container__type {
@@ -95,11 +96,12 @@
 .ra-container__change-status {
    padding: 0;
    margin: 0;
-   height: 20px;
+   cursor: pointer;
 }
 
 .ra-icons {
-   font-size: 1.5rem;
+   font-size: 1.125rem;
+   line-height: 1;
 
    opacity: .5;
 
@@ -107,18 +109,22 @@
 }
 
 .ra-icon--expander {
-   font-size: 1rem;
+   font-size: .875rem;
 
    position: absolute;
    top: 50%;
-   left: -1rem;
+   left: -.875rem;
    transform: translateY(-50%);
 
    display: flex;
    align-items: center;
 
-   width: 1rem;
+   width: .875rem;
    height: 1.5rem;
+}
+
+.ra-container__expandable .ra-container__type > .ra-icons:not(.ra-icon--expander) {
+   margin-left: .125rem;
 }
 
 .ra-container__infos {
@@ -126,6 +132,7 @@
 
    flex-grow: 1;
    flex-shrink: 1;
+   min-width: 0;
 }
 
 .ra-container__tags {

@@ -1,7 +1,33 @@
 /* @vitest-environment jsdom */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import { nextTick } from "vue";
+
+vi.mock("mdb-vue-ui-kit", () => {
+  const stub = { template: "<div><slot /></div>" };
+  const inputStub = { template: "<input />" };
+
+  return {
+    MDBDropdown: stub,
+    MDBDropdownItem: stub,
+    MDBDropdownMenu: stub,
+    MDBDropdownToggle: stub,
+    MDBIcon: stub,
+    MDBCard: stub,
+    MDBCardHeader: stub,
+    MDBCardBody: stub,
+    MDBCardFooter: stub,
+    MDBBadge: stub,
+    MDBModal: stub,
+    MDBModalHeader: stub,
+    MDBModalTitle: stub,
+    MDBModalBody: stub,
+    MDBModalFooter: stub,
+    MDBBtn: stub,
+    MDBInput: inputStub,
+  };
+});
+
 import ReviewAppCard from "./ReviewAppCard.vue";
 
 function createReviewApp(containerOverrides = {}, appOverrides = {}) {
@@ -36,8 +62,11 @@ function mountCard(reviewApp) {
       showOwners: false,
     },
     global: {
+      renderStubDefaultSlot: true,
+      directives: {
+        "mdb-tooltip": {},
+      },
       stubs: {
-        "font-awesome-icon": true,
         "router-link": RouterLinkStub,
       },
     },

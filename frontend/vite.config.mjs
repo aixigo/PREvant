@@ -1,5 +1,4 @@
 import { defineConfig } from 'vite'
-import inject from "@rollup/plugin-inject";
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 import path from 'path';
@@ -9,9 +8,11 @@ import fs from 'fs';
 let cookie = null;
 
 export default defineConfig({
-   transpileDependencies: ["bootstrap-material-design"],
    build: {
       commonjsOptions: { transformMixedEsModules: true },
+   },
+   css: {
+      devSourcemap: true,
    },
    plugins: [
       vue(),
@@ -130,18 +131,6 @@ export default defineConfig({
             });
          },
       },
-
-      inject({
-         $: 'jquery',
-         jQuery: 'jquery',
-         Popper: ['popper.js', 'default'],
-
-         // Exclude CSS files, especially those imported by Swagger UI (swagger-ui.css),
-         // because rollup-plugin-inject tries to parse all files as JavaScript.
-         // Parsing CSS as JS causes warnings like:
-         //   "rollup-plugin-inject: failed to parse ...swagger-ui.css?... Consider restricting the plugin"
-         exclude: ['**/*.css']
-      })
    ],
    server: {
       port: 9001,
