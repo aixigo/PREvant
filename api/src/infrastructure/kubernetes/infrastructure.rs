@@ -130,8 +130,9 @@ impl KubernetesInfrastructure {
 
     async fn client(&self) -> Result<Client, KubernetesInfrastructureError> {
         let configuration = match &self.config.runtime {
-            Runtime::Kubernetes(k8s_config) if k8s_config.kube_config.is_some() => {
-                let config_file = k8s_config.kube_config.as_ref().unwrap();
+            Runtime::Kubernetes(k8s_config)
+                if let Some(config_file) = k8s_config.kube_config.as_ref() =>
+            {
                 let config = tokio::fs::read_to_string(&config_file)
                     .await
                     .map_err(
@@ -1154,9 +1155,123 @@ impl From<ContainerTypeParseError> for KubernetesInfrastructureError {
 }
 
 #[cfg(test)]
+pub struct K3sRuntime {
+    runtime: tokio::runtime::Runtime,
+    k3s_instance: testcontainers::ContainerAsync<testcontainers_modules::k3s::K3s>,
+    config_path: std::path::PathBuf,
+    tempdir: tempfile::TempDir,
+    count: std::sync::atomic::AtomicU8,
+}
+
+#[cfg(test)]
+static K3S: std::sync::OnceLock<K3sRuntime> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+impl K3sRuntime {
+    fn new() -> Result<Self> {
+        let _ = env_logger::builder().is_test(true).try_init();
+        // TODO: double check if that is conflicting with other threads because each test is
+        // started on a thread
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+
+        let tempdir = tempfile::tempdir()?;
+        let config_mount = tempdir.path().to_path_buf();
+
+        let (k3s_instance, config_path) = runtime.block_on(async {
+            use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+
+            let k3s_instance = testcontainers_modules::k3s::K3s::default()
+                .with_conf_mount(&config_mount)
+                .with_privileged(true)
+                .with_ready_conditions(vec![testcontainers::core::WaitFor::message_on_stderr(
+                        r#""QuotaMonitor created object count evaluator" resource="ingressroutetcps.traefik.io""#,
+                )])
+                .with_startup_timeout(std::time::Duration::from_mins(2))
+                .with_log_consumer(
+                    testcontainers::core::logs::consumer::logging_consumer::LoggingConsumer::new()
+                    .with_stdout_level(log::Level::Trace)
+                    .with_stderr_level(log::Level::Trace),
+                )
+                .start()
+                .await?;
+
+            let mapped_port = k3s_instance
+                .get_host_port_ipv4(testcontainers_modules::k3s::KUBE_SECURE_PORT.as_u16())
+                .await?;
+
+            let config = k3s_instance.image().read_kube_config()?;
+
+            let config_path = tempdir.path().join("k3s-mapped.yaml");
+            let config = config.replace(
+                "server: https://127.0.0.1:6443",
+                &format!("server: https://127.0.0.1:{mapped_port}"),
+            );
+            std::fs::write(&config_path, config)?;
+
+            Ok::<_, anyhow::Error>((k3s_instance, config_path))
+        })?;
+
+        Ok(Self {
+            count: std::sync::atomic::AtomicU8::new(0),
+            k3s_instance,
+            config_path,
+            tempdir,
+            runtime,
+        })
+    }
+
+    pub fn run<H>(test_case: H) -> Result<()>
+    where
+        H: AsyncFnOnce(std::path::PathBuf) -> Result<()>,
+    {
+        let k3s = K3S.get_or_init(|| K3sRuntime::new().unwrap());
+
+        k3s.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            k3s.runtime
+                .block_on(async { test_case(k3s.config_path.clone()).await })
+        }));
+
+        let previous_count = k3s.count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        if previous_count == 1 {
+            log::info!("Shutting down cluster");
+            if let Err(err) = k3s.runtime.block_on(async {
+                k3s.k3s_instance
+                    .stop_with_timeout(None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Cannot stop cluster: {e}"))?;
+                testcontainers::core::client::docker_client_instance()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Get docker client: {e}"))?
+                    .remove_container(k3s.k3s_instance.id(), None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Cannot remove cluster container: {e}"))
+            }) {
+                log::error!("Cannot delete cluster: {err}");
+            }
+
+            if let Err(err) = std::fs::remove_dir_all(k3s.tempdir.path()) {
+                log::error!("Cannot delete tempdir: {err}");
+            }
+        }
+
+        match result {
+            Ok(ok) => ok,
+            Err(err) => std::panic::resume_unwind(err),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{apps::AppsError, config::runtime::KubernetesRuntimeConfig};
+    use crate::{
+        apps::AppsError, config::runtime::KubernetesRuntimeConfig,
+        infrastructure::kubernetes::deployment_unit::BootstrappingLogStream,
+    };
     use domain::{
         RawInfrastructureElement,
         app_deployment::{AppDeploymentBuilder, MergeRawElementsContext},
@@ -1164,171 +1279,123 @@ mod tests {
         blueprint_service,
     };
     use std::convert::Infallible;
-    use tempfile::TempDir;
-    use testcontainers::{
-        ContainerAsync, ImageExt,
-        core::{WaitFor, logs::consumer::logging_consumer::LoggingConsumer},
-        runners::AsyncRunner,
-    };
-    use testcontainers_modules::k3s::{K3s, KUBE_SECURE_PORT};
+    use uuid::Uuid;
 
-    async fn create_cluster_and_infra() -> (ContainerAsync<K3s>, KubernetesInfrastructure, TempDir)
-    {
-        let _ = env_logger::builder().is_test(true).try_init();
-
-        let tempdir = tempfile::tempdir().unwrap();
-        let config_mount = tempdir.path().to_path_buf();
-
-        let k3s_instance = K3s::default()
-                .with_conf_mount(&config_mount)
-                .with_privileged(true)
-                .with_ready_conditions(vec![WaitFor::message_on_stderr(
-                        r#""QuotaMonitor created object count evaluator" resource="ingressroutetcps.traefik.io""#,
-                )])
-                .with_startup_timeout(std::time::Duration::from_mins(2))
-                .with_log_consumer(
-                    LoggingConsumer::new()
-                    .with_stdout_level(log::Level::Trace)
-                    .with_stderr_level(log::Level::Trace),
-                )
-                .start()
-                .await
-                .unwrap();
-
-        let mapped_port = k3s_instance
-            .get_host_port_ipv4(KUBE_SECURE_PORT.as_u16())
-            .await
-            .unwrap();
-
-        let config = k3s_instance.image().read_kube_config().unwrap();
-
-        let config_file = tempdir.path().join("k3s-mapped.yaml");
-        let config = config.replace(
-            "server: https://127.0.0.1:6443",
-            &format!("server: https://127.0.0.1:{mapped_port}"),
-        );
-        std::fs::write(&config_file, config).unwrap();
-
-        let infra = KubernetesInfrastructure::new(PREvantConfig {
-            runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
-                kube_config: Some(config_file),
+    #[test]
+    fn fetch_backed_up_app() -> Result<()> {
+        K3sRuntime::run(async |config_path| {
+            let infra = KubernetesInfrastructure::new(PREvantConfig {
+                runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
+                    kube_config: Some(config_path),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            });
 
-        (k3s_instance, infra, tempdir)
-    }
-
-    #[tokio::test]
-    async fn fetch_backed_up_app() {
-        let _ = env_logger::builder().is_test(true).try_init();
-
-        let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
-
-        let app_name = AppName::master();
-        let unit = AppDeploymentBuilder::init(
-            app_name.clone(),
-            vec![blueprint_service!("http1", "nginx")],
-            None,
-        )
-        .finish()
-        .unwrap();
-
-        let deploy_result = infra
-            .deploy_services(&unit, &Default::default())
-            .await
-            .map_err(AppsError::from);
-        assert_eq!(
-            deploy_result.map(|app| app
-                .services
-                .into_iter()
-                .map(|s| s.blueprint_config)
-                .collect()),
-            Ok(vec![blueprint_service!("http1", "nginx")])
-        );
-
-        let backup_payload = infra
-            .fetch_app_as_backup_based_infrastructure_payload(&app_name)
-            .await
-            .unwrap()
-            .unwrap();
-        infra
-            .delete_infrastructure_objects_partially(&app_name, &backup_payload)
-            .await
+            let app_name = AppName::from_str(&Uuid::new_v4().to_string())?;
+            let unit = AppDeploymentBuilder::init(
+                app_name.clone(),
+                vec![blueprint_service!("http1", "nginx")],
+                None,
+            )
+            .finish()
             .unwrap();
 
-        let fetch_result = infra.fetch_apps().await.map_err(AppsError::from);
-        assert_eq!(
-            fetch_result
-                .as_ref()
-                .map(|apps| { apps.values().filter_map(|app| app.created_at).count() }),
-            Ok(1)
-        );
-        assert_eq!(
-            fetch_result
-                .and_then(move |mut apps| apps.remove(&app_name).ok_or_else(|| {
-                    AppsError::AppNotFound {
-                        app_name: app_name.clone(),
-                    }
-                }))
-                .map(|app| app.services),
-            Ok(vec![]),
-        );
-    }
-
-    #[tokio::test]
-    async fn fetch_regular_apps() {
-        let _ = env_logger::builder().is_test(true).try_init();
-
-        let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
-
-        let app_name = AppName::master();
-        let unit = AppDeploymentBuilder::init(
-            app_name.clone(),
-            vec![blueprint_service!("http1", "nginx")],
-            None,
-        )
-        .finish()
-        .unwrap();
-
-        let deploy_result = infra
-            .deploy_services(&unit, &Default::default())
-            .await
-            .map_err(AppsError::from);
-        assert_eq!(
-            deploy_result.map(|app| app
-                .services
-                .into_iter()
-                .map(|s| s.blueprint_config)
-                .collect()),
-            Ok(vec![blueprint_service!("http1", "nginx")])
-        );
-
-        let fetch_result = infra.fetch_apps().await.map_err(AppsError::from);
-        assert_eq!(
-            fetch_result
-                .as_ref()
-                .map(|apps| { apps.values().filter_map(|app| app.created_at).count() }),
-            Ok(1)
-        );
-        assert_eq!(
-            fetch_result
-                .and_then(move |mut apps| apps.remove(&app_name).ok_or_else(|| {
-                    AppsError::AppNotFound {
-                        app_name: app_name.clone(),
-                    }
-                }))
-                .map(|app| app
+            let deploy_result = infra
+                .deploy_services(&unit, &Default::default())
+                .await
+                .map_err(AppsError::from);
+            assert_eq!(
+                deploy_result.map(|app| app
                     .services
                     .into_iter()
                     .map(|s| s.blueprint_config)
                     .collect()),
-            Ok(vec![blueprint_service!("http1", "nginx")])
-        );
+                Ok(vec![blueprint_service!("http1", "nginx")])
+            );
+
+            let backup_payload = infra
+                .fetch_app_as_backup_based_infrastructure_payload(&app_name)
+                .await?
+                .unwrap();
+            infra
+                .delete_infrastructure_objects_partially(&app_name, &backup_payload)
+                .await
+                .unwrap();
+
+            let mut apps = infra.fetch_apps().await.map_err(AppsError::from)?;
+            let app = apps
+                .remove(&app_name)
+                .ok_or_else(|| AppsError::AppNotFound {
+                    app_name: app_name.clone(),
+                })?;
+
+            assert!(app.created_at.is_some());
+            assert_eq!(
+                app.services
+                    .into_iter()
+                    .map(|s| s.blueprint_config)
+                    .collect::<Vec<_>>(),
+                Vec::new()
+            );
+
+            Ok(())
+        })
     }
 
-    #[tokio::test]
+    #[test]
+    fn fetch_regular_apps() -> Result<()> {
+        K3sRuntime::run(async |config_path| {
+            let infra = KubernetesInfrastructure::new(PREvantConfig {
+                runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
+                    kube_config: Some(config_path),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+
+            let app_name = AppName::from_str(&Uuid::new_v4().to_string())?;
+            let unit = AppDeploymentBuilder::init(
+                app_name.clone(),
+                vec![blueprint_service!("http1", "nginx")],
+                None,
+            )
+            .finish()
+            .unwrap();
+
+            let deploy_result = infra
+                .deploy_services(&unit, &Default::default())
+                .await
+                .map_err(AppsError::from);
+            assert_eq!(
+                deploy_result.map(|app| app
+                    .services
+                    .into_iter()
+                    .map(|s| s.blueprint_config)
+                    .collect()),
+                Ok(vec![blueprint_service!("http1", "nginx")])
+            );
+
+            let mut apps = infra.fetch_apps().await.map_err(AppsError::from)?;
+            let app = apps
+                .remove(&app_name)
+                .ok_or_else(|| AppsError::AppNotFound {
+                    app_name: app_name.clone(),
+                })?;
+
+            assert!(app.created_at.is_some());
+            assert_eq!(
+                app.services
+                    .into_iter()
+                    .map(|s| s.blueprint_config)
+                    .collect::<Vec<_>>(),
+                vec![blueprint_service!("http1", "nginx")]
+            );
+
+            Ok(())
+        })
+    }
+
     #[rstest::rstest]
     #[case::only_bootstrapping(
         vec![],
@@ -1338,370 +1405,394 @@ mod tests {
         vec![blueprint_service!("whoami", "traefik/whoami:v1.11.0")],
         (ContainerType::Instance, Image::from_str("traefik/whoami:v1.11.0").unwrap())
     )]
-    async fn bootstrap_application(
+    fn bootstrap_application(
         #[case] service_configs: Vec<domain::app_blueprints::ServiceConfig>,
         #[case] (expected_container_type, expected_image): (ContainerType, Image),
     ) -> Result<()> {
-        let _ = env_logger::builder().is_test(true).try_init();
+        K3sRuntime::run(async |config_path| {
+            let infra = KubernetesInfrastructure::new(PREvantConfig {
+                runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
+                    kube_config: Some(config_path),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
 
-        let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
+            let app_name = AppName::from_str(&Uuid::new_v4().to_string())?;
+            let (unit, _) = StaticBootstrapCompanion {
+                app_name: app_name.clone(),
+                service_configs,
+                ..Default::default()
+            }
+            .bootstrap(&infra)
+            .await?;
 
-        let app_name = AppName::master();
-        let (unit, _) = StaticBootstrapCompanion {
-            app_name: app_name.clone(),
-            service_configs,
-            ..Default::default()
-        }
-        .bootstrap(&infra)
-        .await?;
+            let app = infra.fetch_app(&app_name).await?;
 
-        let app = infra.fetch_app(&app_name).await?;
+            assert_eq!(
+                Some(vec![("whoami", &expected_container_type, &expected_image)]),
+                app.as_ref().map(|app| {
+                    app.services
+                        .iter()
+                        .map(|service| {
+                            (
+                                service.blueprint_config.service_name.as_str(),
+                                &service.service_type,
+                                &service.blueprint_config.image,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            );
 
-        assert_eq!(
-            Some(vec![("whoami", &expected_container_type, &expected_image)]),
-            app.as_ref().map(|app| {
-                app.services
-                    .iter()
-                    .map(|service| {
-                        (
-                            service.blueprint_config.service_name.as_str(),
-                            &service.service_type,
-                            &service.blueprint_config.image,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        );
+            let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
+                .await?
+                .without_managed_data()
+                .without_date_annotations()
+                .to_json_vec();
 
-        let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
-
-        assert_json_diff::assert_json_include!(
-            actual: payload,
-            expected: serde_json::json!([
-                {},
-                {},
-                {},
-                {},
-                {
-                  "apiVersion": "traefik.containo.us/v1alpha1",
-                  "kind": "IngressRoute",
-                  "metadata": {
-                    "annotations": {
-                      "com.aixigo.preview.servant.app-name": "master",
-                      "com.aixigo.preview.servant.container-type": expected_container_type,
-                      "com.aixigo.preview.servant.service-name": "whoami",
-                      "traefik.ingress.kubernetes.io/router.entrypoints": "web"
-                    },
-                    "name": "whoami",
-                    "namespace": "master"
-                  },
-                  "spec": {
-                    "routes": [
-                      {
-                        "kind": "Rule",
-                        "match": "PathPrefix(`/master/my-route/`)",
-                        "middlewares": [{
-                            "name": "whoami-middleware",
-                        }],
-                        "services": [
+            assert_json_diff::assert_json_include!(
+                actual: payload,
+                expected: serde_json::json!([
+                    {},
+                    {},
+                    {},
+                    {},
+                    {
+                      "apiVersion": "traefik.containo.us/v1alpha1",
+                      "kind": "IngressRoute",
+                      "metadata": {
+                        "annotations": {
+                          "com.aixigo.preview.servant.app-name": app_name,
+                          "com.aixigo.preview.servant.container-type": expected_container_type,
+                          "com.aixigo.preview.servant.service-name": "whoami",
+                          "traefik.ingress.kubernetes.io/router.entrypoints": "web"
+                        },
+                        "name": "whoami",
+                        "namespace": app_name
+                      },
+                      "spec": {
+                        "routes": [
                           {
-                            "kind": "Service",
-                            "name": "whoami",
-                            "port": 2001
+                            "kind": "Rule",
+                            "match": format!("PathPrefix(`/{app_name}/my-route/`)"),
+                            "middlewares": [{
+                                "name": "whoami-middleware",
+                            }],
+                            "services": [
+                              {
+                                "kind": "Service",
+                                "name": "whoami",
+                                "port": 2001
+                              }
+                            ]
                           }
                         ]
                       }
-                    ]
-                  }
-                },
-                {
-                  "apiVersion": "traefik.containo.us/v1alpha1",
-                  "kind": "Middleware",
-                  "metadata": {
-                    "name": "whoami-middleware",
-                    "namespace": "master"
-                  },
-                  "spec": {
-                    "stripPrefix": {
-                      "prefixes": [
-                        "/master/my-route/"
-                      ]
+                    },
+                    {
+                      "apiVersion": "traefik.containo.us/v1alpha1",
+                      "kind": "Middleware",
+                      "metadata": {
+                        "name": "whoami-middleware",
+                        "namespace": app_name
+                      },
+                      "spec": {
+                        "stripPrefix": {
+                          "prefixes": [
+                            format!("/{app_name}/my-route/")
+                          ]
+                        }
+                      }
                     }
-                  }
-                }
-            ])
-        );
+                ])
+            );
 
-        // Redeploy again to check if the operation is idempotent
-        infra.deploy_services(&unit, &Default::default()).await?;
+            // Redeploy again to check if the operation is idempotent
+            infra.deploy_services(&unit, &Default::default()).await?;
 
-        let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
-        assert_json_diff::assert_json_eq!(payload, payload_2);
+            let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
+                .await?
+                .without_managed_data()
+                .without_date_annotations()
+                .to_json_vec();
+            assert_json_diff::assert_json_eq!(payload, payload_2);
 
-        Ok(())
+            Ok(())
+        })
     }
 
-    #[tokio::test]
-    async fn bootstrap_application_without_deployment() -> Result<()> {
-        let _ = env_logger::builder().is_test(true).try_init();
+    #[test]
+    fn bootstrap_application_without_deployment() -> Result<()> {
+        K3sRuntime::run(async |config_path| {
+            let infra = KubernetesInfrastructure::new(PREvantConfig {
+                runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
+                    kube_config: Some(config_path),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
 
-        let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
+            let app_name = AppName::from_str(&Uuid::new_v4().to_string())?;
+            let (unit, _) = StaticBootstrapCompanion {
+                generate_whoami_deployment: false,
+                app_name: app_name.clone(),
+                ..Default::default()
+            }
+            .bootstrap(&infra)
+            .await?;
 
-        let app_name = AppName::master();
-        let (unit, _) = StaticBootstrapCompanion {
-            generate_whoami_deployment: false,
-            app_name: app_name.clone(),
-            ..Default::default()
-        }
-        .bootstrap(&infra)
-        .await?;
+            let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
+                .await?
+                .without_managed_data()
+                .to_json_vec();
 
-        let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .to_json_vec();
-
-        assert_json_diff::assert_json_include!(
-            actual: payload,
-            expected: serde_json::json!([
-                {},
-                {},
-                {
-                  "apiVersion": "traefik.containo.us/v1alpha1",
-                  "kind": "IngressRoute",
-                  "metadata": {
-                    "annotations": {
-                      "com.aixigo.preview.servant.app-name": "master",
-                      "traefik.ingress.kubernetes.io/router.entrypoints": "web"
-                    },
-                    "name": "whoami",
-                    "namespace": "master"
-                  },
-                  "spec": {
-                    "routes": [
-                      {
-                        "kind": "Rule",
-                        "match": "PathPrefix(`/master/my-route/`)",
-                        "middlewares": [{
-                            "name": "whoami-middleware",
-                        }],
-                        "services": [
+            assert_json_diff::assert_json_include!(
+                actual: payload,
+                expected: serde_json::json!([
+                    {},
+                    {},
+                    {
+                      "apiVersion": "traefik.containo.us/v1alpha1",
+                      "kind": "IngressRoute",
+                      "metadata": {
+                        "annotations": {
+                          "com.aixigo.preview.servant.app-name": app_name,
+                          "traefik.ingress.kubernetes.io/router.entrypoints": "web"
+                        },
+                        "name": "whoami",
+                        "namespace": app_name
+                      },
+                      "spec": {
+                        "routes": [
                           {
-                            "kind": "Service",
-                            "name": "whoami",
-                            "port": 2001
+                            "kind": "Rule",
+                            "match": format!("PathPrefix(`/{app_name}/my-route/`)"),
+                            "middlewares": [{
+                                "name": "whoami-middleware",
+                            }],
+                            "services": [
+                              {
+                                "kind": "Service",
+                                "name": "whoami",
+                                "port": 2001
+                              }
+                            ]
                           }
                         ]
                       }
-                    ]
-                  }
-                },
-                {
-                  "apiVersion": "traefik.containo.us/v1alpha1",
-                  "kind": "Middleware",
-                  "metadata": {
-                    "name": "whoami-middleware",
-                    "namespace": "master"
-                  },
-                  "spec": {
-                    "stripPrefix": {
-                      "prefixes": [
-                        "/master/my-route/"
-                      ]
+                    },
+                    {
+                      "apiVersion": "traefik.containo.us/v1alpha1",
+                      "kind": "Middleware",
+                      "metadata": {
+                        "name": "whoami-middleware",
+                        "namespace": app_name
+                      },
+                      "spec": {
+                        "stripPrefix": {
+                          "prefixes": [
+                            format!("/{app_name}/my-route/")
+                          ]
+                        }
+                      }
                     }
-                  }
-                }
-            ])
-        );
+                ])
+            );
 
-        // Redeploy again to check if the operation is idempotent
-        infra.deploy_services(&unit, &Default::default()).await?;
+            // Redeploy again to check if the operation is idempotent
+            infra.deploy_services(&unit, &Default::default()).await?;
 
-        let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .to_json_vec();
-        assert_json_diff::assert_json_eq!(payload, payload_2);
+            let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
+                .await?
+                .without_managed_data()
+                .to_json_vec();
+            assert_json_diff::assert_json_eq!(payload, payload_2);
 
-        Ok(())
+            Ok(())
+        })
     }
 
-    #[tokio::test]
-    async fn bootstrap_application_and_update() -> Result<()> {
-        let _ = env_logger::builder().is_test(true).try_init();
+    #[test]
+    fn bootstrap_application_and_update() -> Result<()> {
+        K3sRuntime::run(async |config_path| {
+            let infra = KubernetesInfrastructure::new(PREvantConfig {
+                runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
+                    kube_config: Some(config_path),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
 
-        let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
+            let app_name = AppName::from_str(&Uuid::new_v4().to_string())?;
+            StaticBootstrapCompanion {
+                app_name: app_name.clone(),
+                ..Default::default()
+            }
+            .bootstrap(&infra)
+            .await?;
 
-        let app_name = AppName::master();
-        StaticBootstrapCompanion {
-            app_name: app_name.clone(),
-            ..Default::default()
-        }
-        .bootstrap(&infra)
-        .await?;
+            let app = infra.fetch_app(&app_name).await?;
 
-        let app = infra.fetch_app(&app_name).await?;
+            assert_eq!(
+                Some(vec![(
+                    "whoami",
+                    &ContainerType::ApplicationCompanion,
+                    &Image::from_str("traefik/whoami").unwrap()
+                )]),
+                app.as_ref().map(|app| {
+                    app.services
+                        .iter()
+                        .map(|service| {
+                            (
+                                service.blueprint_config.service_name.as_str(),
+                                &service.service_type,
+                                &service.blueprint_config.image,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            );
 
-        assert_eq!(
-            Some(vec![(
-                "whoami",
-                &ContainerType::ApplicationCompanion,
-                &Image::from_str("traefik/whoami").unwrap()
-            )]),
-            app.as_ref().map(|app| {
-                app.services
-                    .iter()
-                    .map(|service| {
-                        (
-                            service.blueprint_config.service_name.as_str(),
-                            &service.service_type,
-                            &service.blueprint_config.image,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        );
+            let (unit, _) = StaticBootstrapCompanion {
+                app_name: app_name.clone(),
+                service_configs: vec![blueprint_service!("whoami", "traefik/whoami:v1.11.0")],
+                ..Default::default()
+            }
+            .bootstrap(&infra)
+            .await?;
 
-        let (unit, _) = StaticBootstrapCompanion {
-            app_name: app_name.clone(),
-            service_configs: vec![blueprint_service!("whoami", "traefik/whoami:v1.11.0")],
-            ..Default::default()
-        }
-        .bootstrap(&infra)
-        .await?;
+            let app = infra.fetch_app(&app_name).await?;
 
-        let app = infra.fetch_app(&app_name).await?;
+            assert_eq!(
+                Some(vec![(
+                    "whoami",
+                    &ContainerType::Instance,
+                    &Image::from_str("traefik/whoami:v1.11.0").unwrap()
+                )]),
+                app.as_ref().map(|app| {
+                    app.services
+                        .iter()
+                        .map(|service| {
+                            (
+                                service.blueprint_config.service_name.as_str(),
+                                &service.service_type,
+                                &service.blueprint_config.image,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            );
 
-        assert_eq!(
-            Some(vec![(
-                "whoami",
-                &ContainerType::Instance,
-                &Image::from_str("traefik/whoami:v1.11.0").unwrap()
-            )]),
-            app.as_ref().map(|app| {
-                app.services
-                    .iter()
-                    .map(|service| {
-                        (
-                            service.blueprint_config.service_name.as_str(),
-                            &service.service_type,
-                            &service.blueprint_config.image,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        );
+            let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
+                .await?
+                .without_managed_data()
+                .without_date_annotations()
+                .to_json_vec();
 
-        let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
+            // Redeploy again to check if the operation is idempotent
+            infra.deploy_services(&unit, &Default::default()).await?;
 
-        // Redeploy again to check if the operation is idempotent
-        infra.deploy_services(&unit, &Default::default()).await?;
+            let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
+                .await?
+                .without_managed_data()
+                .without_date_annotations()
+                .to_json_vec();
+            assert_json_diff::assert_json_eq!(payload, payload_2);
 
-        let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
-        assert_json_diff::assert_json_eq!(payload, payload_2);
-
-        Ok(())
+            Ok(())
+        })
     }
 
-    #[tokio::test]
-    async fn deploy_application_twice() -> Result<()> {
-        let _ = env_logger::builder().is_test(true).try_init();
+    #[test]
+    fn deploy_application_twice() -> Result<()> {
+        K3sRuntime::run(async |config_path| {
+            let infra = KubernetesInfrastructure::new(PREvantConfig {
+                runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
+                    kube_config: Some(config_path),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
 
-        let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
-
-        let app_name = AppName::master();
-        let unit = AppDeploymentBuilder::init(
-            app_name.clone(),
-            vec![
-                blueprint_service!(
-                    "nextcloud",
-                    "nextcloud",
-                    env = (
-                        "MYSQL_DATABASE" => "example",
-                        "MYSQL_USER" => "example-user",
-                        "MYSQL_PASSWORD" => "my_cool_secret",
-                        "MYSQL_HOST" => "db"
-                    )
-                ),
-                blueprint_service!(
-                    "db",
-                    "mariadb",
-                    env = (
-                        "MARIADB_ROOT_PASSWORD" => "example",
-                        "MARIADB_USER" => "example-user",
-                        "MARIADB_PASSWORD" => "my_cool_secret",
-                        "MARIADB_DATABASE" => "example-database"
-                    )
-                ),
-            ],
-            None,
-        )
-        .finish()?;
-
-        infra.deploy_services(&unit, &Default::default()).await?;
-
-        let app = infra.fetch_app(&app_name).await?;
-
-        assert_eq!(
-            Some(vec![
-                (
-                    "db",
-                    &ContainerType::Instance,
-                    &Image::from_str("mariadb").unwrap()
-                ),
-                (
-                    "nextcloud",
-                    &ContainerType::Instance,
-                    &Image::from_str("nextcloud").unwrap()
-                ),
-            ]),
-            app.as_ref().map(|app| {
-                app.services
-                    .iter()
-                    .map(|service| {
-                        (
-                            service.blueprint_config.service_name.as_str(),
-                            &service.service_type,
-                            &service.blueprint_config.image,
+            let app_name = AppName::from_str(&Uuid::new_v4().to_string())?;
+            let unit = AppDeploymentBuilder::init(
+                app_name.clone(),
+                vec![
+                    blueprint_service!(
+                        "nextcloud",
+                        "nextcloud",
+                        env = (
+                            "MYSQL_DATABASE" => "example",
+                            "MYSQL_USER" => "example-user",
+                            "MYSQL_PASSWORD" => "my_cool_secret",
+                            "MYSQL_HOST" => "db"
                         )
-                    })
-                    .collect::<Vec<_>>()
-            }),
-        );
+                    ),
+                    blueprint_service!(
+                        "db",
+                        "mariadb",
+                        env = (
+                            "MARIADB_ROOT_PASSWORD" => "example",
+                            "MARIADB_USER" => "example-user",
+                            "MARIADB_PASSWORD" => "my_cool_secret",
+                            "MARIADB_DATABASE" => "example-database"
+                        )
+                    ),
+                ],
+                None,
+            )
+            .finish()?;
 
-        let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
+            infra.deploy_services(&unit, &Default::default()).await?;
 
-        // Redeploy again to check if the operation is idempotent
-        infra.deploy_services(&unit, &Default::default()).await?;
+            let app = infra.fetch_app(&app_name).await?;
 
-        let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
-        assert_json_diff::assert_json_eq!(payload, payload_2);
+            assert_eq!(
+                Some(vec![
+                    (
+                        "db",
+                        &ContainerType::Instance,
+                        &Image::from_str("mariadb").unwrap()
+                    ),
+                    (
+                        "nextcloud",
+                        &ContainerType::Instance,
+                        &Image::from_str("nextcloud").unwrap()
+                    ),
+                ]),
+                app.as_ref().map(|app| {
+                    app.services
+                        .iter()
+                        .map(|service| {
+                            (
+                                service.blueprint_config.service_name.as_str(),
+                                &service.service_type,
+                                &service.blueprint_config.image,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            );
 
-        Ok(())
+            let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
+                .await?
+                .without_managed_data()
+                .without_date_annotations()
+                .to_json_vec();
+
+            // Redeploy again to check if the operation is idempotent
+            infra.deploy_services(&unit, &Default::default()).await?;
+
+            let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
+                .await?
+                .without_managed_data()
+                .without_date_annotations()
+                .to_json_vec();
+            assert_json_diff::assert_json_eq!(payload, payload_2);
+
+            Ok(())
+        })
     }
 
     /// A fake bootstrapping implementation for testing purposes
@@ -1772,74 +1863,90 @@ mod tests {
             context: BootstrapCompanionsWithRawElementsContext<'_>,
             _template_data: &TemplateData,
         ) -> Result<BootstrappedCompanions, Self::Error> {
+            let image = Image::from_str("busybox").unwrap();
             let output = [
-                if self.generate_whoami_deployment {
-                    r#"
-                        apiVersion: apps/v1
-                        kind: Deployment
-                        metadata:
-                          name: whoami
-                        spec:
-                          selector:
-                            matchLabels:
-                              app: whoami
-                          template:
+                BootstrappingLogStream {
+                    container_image: &image,
+                    log_stream: Box::new(
+                        if self.generate_whoami_deployment {
+                            r#"
+                                apiVersion: apps/v1
+                                kind: Deployment
+                                metadata:
+                                  name: whoami
+                                spec:
+                                  selector:
+                                    matchLabels:
+                                      app: whoami
+                                  template:
+                                    metadata:
+                                      labels:
+                                        app: whoami
+                                    spec:
+                                      containers:
+                                      - name: whoami
+                                        image: traefik/whoami
+                                        args:
+                                        - --port=2001
+                                        - --name=iamfoo
+                                        ports:
+                                        - containerPort: 2001
+                            "#
+                        } else {
+                            ""
+                        }
+                        .as_bytes(),
+                    ),
+                },
+                BootstrappingLogStream {
+                    container_image: &image,
+                    log_stream: Box::new(
+                        if self.generate_whoami_deployment {
+                            r#"
+                                apiVersion: v1
+                                kind: Service
+                                metadata:
+                                  name: whoami
+                                spec:
+                                  selector:
+                                    app: whoami
+                                  ports:
+                                  - port: 2001
+                                    targetPort: 2001
+                            "#
+                        } else {
+                            ""
+                        }
+                        .as_bytes(),
+                    ),
+                },
+                BootstrappingLogStream {
+                    container_image: &image,
+                    log_stream: Box::new(
+                        r#"
+                            apiVersion: networking.k8s.io/v1
+                            kind: Ingress
                             metadata:
-                              labels:
-                                app: whoami
+                              name: whoami
+                              annotations:
+                                nginx.ingress.kubernetes.io/use-regex: true
+                                nginx.ingress.kubernetes.io/rewrite-target: /$2
                             spec:
-                              containers:
-                              - name: whoami
-                                image: traefik/whoami
-                                args:
-                                - --port=2001
-                                - --name=iamfoo
-                                ports:
-                                - containerPort: 2001
-                    "#
-                } else {
-                    ""
-                }
-                .as_bytes(),
-                if self.generate_whoami_deployment {
-                    r#"
-                        apiVersion: v1
-                        kind: Service
-                        metadata:
-                          name: whoami
-                        spec:
-                          selector:
-                            app: whoami
-                          ports:
-                          - port: 2001
-                            targetPort: 2001
-                    "#
-                } else {
-                    ""
-                }
-                .as_bytes(),
-                r#"
-                    apiVersion: networking.k8s.io/v1
-                    kind: Ingress
-                    metadata:
-                      name: whoami
-                      annotations:
-                        nginx.ingress.kubernetes.io/use-regex: true
-                        nginx.ingress.kubernetes.io/rewrite-target: /$2
-                    spec:
-                      ingressClassName: nginx
-                      rules:
-                      - http:
-                          paths:
-                          - path: /my-route
-                            pathType: Prefix
-                            backend:
-                              service:
-                                name: whoami
-                                port:
-                                  number: 2001
-                "#
-                .as_bytes(),
+                              ingressClassName: nginx
+                              rules:
+                              - http:
+                                  paths:
+                                  - path: /my-route
+                                    pathType: Prefix
+                                    backend:
+                                      service:
+                                        name: whoami
+                                        port:
+                                          number: 2001
+                        "#
+                        .as_bytes(),
+                    ),
+                },
             ];
 
             let k8s_deployment_unit =
