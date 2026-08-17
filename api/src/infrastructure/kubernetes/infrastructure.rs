@@ -1268,7 +1268,10 @@ impl K3sRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{apps::AppsError, config::runtime::KubernetesRuntimeConfig};
+    use crate::{
+        apps::AppsError, config::runtime::KubernetesRuntimeConfig,
+        infrastructure::kubernetes::deployment_unit::BootstrappingLogStream,
+    };
     use domain::{
         RawInfrastructureElement,
         app_deployment::{AppDeploymentBuilder, MergeRawElementsContext},
@@ -1860,74 +1863,90 @@ mod tests {
             context: BootstrapCompanionsWithRawElementsContext<'_>,
             _template_data: &TemplateData,
         ) -> Result<BootstrappedCompanions, Self::Error> {
+            let image = Image::from_str("busybox").unwrap();
             let output = [
-                if self.generate_whoami_deployment {
-                    r#"
-                        apiVersion: apps/v1
-                        kind: Deployment
-                        metadata:
-                          name: whoami
-                        spec:
-                          selector:
-                            matchLabels:
-                              app: whoami
-                          template:
+                BootstrappingLogStream {
+                    container_image: &image,
+                    log_stream: Box::new(
+                        if self.generate_whoami_deployment {
+                            r#"
+                                apiVersion: apps/v1
+                                kind: Deployment
+                                metadata:
+                                  name: whoami
+                                spec:
+                                  selector:
+                                    matchLabels:
+                                      app: whoami
+                                  template:
+                                    metadata:
+                                      labels:
+                                        app: whoami
+                                    spec:
+                                      containers:
+                                      - name: whoami
+                                        image: traefik/whoami
+                                        args:
+                                        - --port=2001
+                                        - --name=iamfoo
+                                        ports:
+                                        - containerPort: 2001
+                            "#
+                        } else {
+                            ""
+                        }
+                        .as_bytes(),
+                    ),
+                },
+                BootstrappingLogStream {
+                    container_image: &image,
+                    log_stream: Box::new(
+                        if self.generate_whoami_deployment {
+                            r#"
+                                apiVersion: v1
+                                kind: Service
+                                metadata:
+                                  name: whoami
+                                spec:
+                                  selector:
+                                    app: whoami
+                                  ports:
+                                  - port: 2001
+                                    targetPort: 2001
+                            "#
+                        } else {
+                            ""
+                        }
+                        .as_bytes(),
+                    ),
+                },
+                BootstrappingLogStream {
+                    container_image: &image,
+                    log_stream: Box::new(
+                        r#"
+                            apiVersion: networking.k8s.io/v1
+                            kind: Ingress
                             metadata:
-                              labels:
-                                app: whoami
+                              name: whoami
+                              annotations:
+                                nginx.ingress.kubernetes.io/use-regex: true
+                                nginx.ingress.kubernetes.io/rewrite-target: /$2
                             spec:
-                              containers:
-                              - name: whoami
-                                image: traefik/whoami
-                                args:
-                                - --port=2001
-                                - --name=iamfoo
-                                ports:
-                                - containerPort: 2001
-                    "#
-                } else {
-                    ""
-                }
-                .as_bytes(),
-                if self.generate_whoami_deployment {
-                    r#"
-                        apiVersion: v1
-                        kind: Service
-                        metadata:
-                          name: whoami
-                        spec:
-                          selector:
-                            app: whoami
-                          ports:
-                          - port: 2001
-                            targetPort: 2001
-                    "#
-                } else {
-                    ""
-                }
-                .as_bytes(),
-                r#"
-                    apiVersion: networking.k8s.io/v1
-                    kind: Ingress
-                    metadata:
-                      name: whoami
-                      annotations:
-                        nginx.ingress.kubernetes.io/use-regex: true
-                        nginx.ingress.kubernetes.io/rewrite-target: /$2
-                    spec:
-                      ingressClassName: nginx
-                      rules:
-                      - http:
-                          paths:
-                          - path: /my-route
-                            pathType: Prefix
-                            backend:
-                              service:
-                                name: whoami
-                                port:
-                                  number: 2001
-                "#
-                .as_bytes(),
+                              ingressClassName: nginx
+                              rules:
+                              - http:
+                                  paths:
+                                  - path: /my-route
+                                    pathType: Prefix
+                                    backend:
+                                      service:
+                                        name: whoami
+                                        port:
+                                          number: 2001
+                        "#
+                        .as_bytes(),
+                    ),
+                },
             ];
 
             let k8s_deployment_unit =
