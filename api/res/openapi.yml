@@ -458,6 +458,15 @@ components:
           enum:
             - running
             - paused
+        health:
+          description: >-
+            Result of the container health check (Docker HEALTHCHECK or Kubernetes
+            readiness probe). Absent when no health check is configured.
+          type: string
+          enum:
+            - starting
+            - healthy
+            - unhealthy
     ServiceConfiguration:
       type: object
       properties:

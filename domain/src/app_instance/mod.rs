@@ -2,7 +2,7 @@
 //! deployed onto the infrastructure, this module provides domain objects that describe a running
 //! application.
 
-pub use app::{App, AppWithHostMeta, Service, ServiceStatus, ServiceWithHostMeta};
+pub use app::{App, AppWithHostMeta, HealthStatus, Service, ServiceStatus, ServiceWithHostMeta};
 pub use status::{AppStatus, ContainerType, ContainerTypeParseError};
 pub use web_host_meta::WebHostMeta;
 
