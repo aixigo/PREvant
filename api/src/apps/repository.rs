@@ -286,9 +286,18 @@ impl AppPostgresRepository {
                 (None, Some(err), None, None) => Err(err),
                 (None, None, Some(app), None) => Ok(app.into()),
                 (None, None, None, Some(err)) => Err(err),
-                _ => unreachable!(
-                    "There should be either a result or an error stored in the database"
-                ),
+                // A row was returned (status = 'done') but neither the
+                // task nor the merged-with task carries a result. We've
+                // seen this happen in production when the executor
+                // failed to write the result back (#307). Surface it as
+                // an infrastructure error rather than panicking, so the
+                // caller can return a 500 and the task is left in a
+                // recoverable state.
+                _ => Err(AppsError::InfrastructureError {
+                    error: format!(
+                        "Task {status_id} is marked done but has neither a success nor an error result stored"
+                    ),
+                }),
             }
         })
     }
