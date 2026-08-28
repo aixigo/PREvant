@@ -1,24 +1,27 @@
-use crate::{apps::Apps, config::Config, infrastructure::Infrastructure};
-use domain::{app_instance::App, traefik::TraefikIngressRoute, AppName};
+use crate::{apps::Apps, config::Config, infrastructure::InfrastructureProxy};
+use domain::{AppName, app_instance::App, traefik::TraefikIngressRoute};
 use rocket::{
-    fairing::{Fairing, Info, Kind},
     Build, Orbit, Rocket,
+    fairing::{Fairing, Info, Kind},
 };
 use std::{collections::HashMap, sync::Mutex};
 use tokio::sync::watch::Receiver;
 
 pub struct AppsFairing {
-    infrastructure: Mutex<Option<Box<dyn Infrastructure + Send>>>,
+    infrastructure: Mutex<Option<InfrastructureProxy>>,
     config: Config,
     host_meta_cache: Mutex<Option<super::host_meta_cache::HostMetaCache>>,
     host_meta_crawler: Mutex<Option<super::host_meta_cache::HostMetaCrawler>>,
 }
 
 impl Apps {
-    pub fn fairing(config: Config, infrastructure: Box<dyn Infrastructure>) -> AppsFairing {
+    pub fn fairing<I>(config: Config, infrastructure: I) -> AppsFairing
+    where
+        I: Into<InfrastructureProxy>,
+    {
         let (host_meta_cache, host_meta_crawler) = super::host_meta_crawling(config.clone());
         AppsFairing {
-            infrastructure: Mutex::new(Some(infrastructure)),
+            infrastructure: Mutex::new(Some(infrastructure.into())),
             config,
             host_meta_cache: Mutex::new(Some(host_meta_cache)),
             host_meta_crawler: Mutex::new(Some(host_meta_crawler)),

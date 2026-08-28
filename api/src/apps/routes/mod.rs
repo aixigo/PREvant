@@ -805,8 +805,7 @@ mod tests {
 
         #[tokio::test]
         async fn invalid_service_payload() {
-            let infrastructure = Box::new(Dummy::new());
-            let apps = Apps::new(Default::default(), infrastructure).unwrap();
+            let apps = Apps::new(Default::default(), Dummy::new()).unwrap();
 
             let rocket = rocket::build()
                 .manage(apps)
@@ -967,8 +966,7 @@ mod tests {
                 "#
             );
 
-            let infrastructure = Box::new(Dummy::new());
-            let apps = Apps::new(config.clone(), infrastructure).unwrap();
+            let apps = Apps::new(config.clone(), Dummy::new()).unwrap();
 
             let rocket = rocket::build()
                 .manage(apps)
@@ -1219,8 +1217,8 @@ mod tests {
         async fn create_client() -> Client {
             let config = config_from_str!("");
 
-            let infrastructure = Box::new(Dummy::with_delay(Duration::from_secs(5)));
-            let apps = Apps::new(config.clone(), infrastructure).unwrap();
+            let apps =
+                Apps::new(config.clone(), Dummy::with_delay(Duration::from_secs(5))).unwrap();
 
             let rocket = rocket::build()
                 .manage(config)

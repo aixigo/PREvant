@@ -32,7 +32,7 @@ mod repository;
 mod routes;
 
 use crate::config::{Config, ConfigError, ReplicateApplicationCondition};
-use crate::infrastructure::{HttpForwarder, Infrastructure};
+use crate::infrastructure::{HttpForwarder, Infrastructure, InfrastructureProxy};
 use crate::models::LogChunk;
 use crate::registry::{Registry, RegistryError};
 use chrono::{DateTime, FixedOffset};
@@ -65,7 +65,7 @@ use tokio::sync::watch::Receiver;
 
 pub struct Apps {
     config: Config,
-    infrastructure: Box<dyn Infrastructure>,
+    infrastructure: InfrastructureProxy,
     prevant_base_route: Option<TraefikIngressRoute>,
     app_updates: Mutex<Option<Receiver<HashMap<AppName, App>>>>,
 }
@@ -79,7 +79,7 @@ impl Clone for Apps {
 
         Self {
             config: self.config.clone(),
-            infrastructure: dyn_clone::clone_box(&*self.infrastructure),
+            infrastructure: self.infrastructure.clone(),
             prevant_base_route: self.prevant_base_route.clone(),
             app_updates: Mutex::new(app_updates),
         }
@@ -109,10 +109,13 @@ impl Default for CreateOrUpdateParams {
 }
 
 impl Apps {
-    pub fn new(config: Config, infrastructure: Box<dyn Infrastructure>) -> Result<Apps, AppsError> {
+    pub fn new<I>(config: Config, infrastructure: I) -> Result<Apps, AppsError>
+    where
+        I: Into<InfrastructureProxy>,
+    {
         Ok(Apps {
             config,
-            infrastructure,
+            infrastructure: infrastructure.into(),
             prevant_base_route: None,
             app_updates: Mutex::new(None),
         })
@@ -177,7 +180,7 @@ impl Apps {
             return app_updates.clone();
         }
 
-        let infrastructure = dyn_clone::clone_box(&*self.infrastructure);
+        let infrastructure = self.infrastructure.clone();
         let (tx, rx) = tokio::sync::watch::channel::<HashMap<AppName, App>>(HashMap::new());
 
         // TODO: we should return this and spawn on liftoff
@@ -285,7 +288,7 @@ impl Apps {
                 .with_owners(owners)
                 .with_static_companions(self.config.companions.to_static_companions(&app_name))
                 .resolve_apps::<AppsError, _>(InfrastructureAppResolver {
-                    infrastructure: dyn_clone::clone_box(&*self.infrastructure),
+                    infrastructure: self.infrastructure.clone(),
                 })
                 .await?
                 .resolve_image_manifests(async |images| {
@@ -304,7 +307,7 @@ impl Apps {
                 })
                 .await?
                 .bootstrap_companions::<AppsError, _>(InfrastructureBootstrapCompanions {
-                    infrastructure: dyn_clone::clone_box(&*self.infrastructure),
+                    infrastructure: self.infrastructure.clone(),
                 })
                 .await?
                 .finish()?;
@@ -520,7 +523,7 @@ impl From<hooks::HooksError> for AppsError {
 }
 
 struct InfrastructureAppResolver {
-    infrastructure: Box<dyn Infrastructure>,
+    infrastructure: InfrastructureProxy,
 }
 
 #[async_trait::async_trait]
@@ -533,7 +536,7 @@ impl ResolveApps for InfrastructureAppResolver {
 }
 
 struct InfrastructureBootstrapCompanions {
-    infrastructure: Box<dyn Infrastructure>,
+    infrastructure: InfrastructureProxy,
 }
 
 #[async_trait::async_trait]
@@ -620,7 +623,7 @@ mod tests {
     #[tokio::test]
     async fn should_create_app_for_master() -> Result<(), AppsError> {
         let config = Config::default();
-        let infrastructure = Box::new(Dummy::new());
+        let infrastructure = Dummy::new();
         let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(CreateOrUpdateParams {
@@ -642,8 +645,7 @@ mod tests {
     #[tokio::test]
     async fn replicate_from_master() -> Result<(), AppsError> {
         let config = Config::default();
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
@@ -682,8 +684,7 @@ mod tests {
             replicationCondition = 'replicate-only-when-requested'
             "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
@@ -739,8 +740,7 @@ mod tests {
             replicationCondition = 'never'
             "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
@@ -774,8 +774,7 @@ mod tests {
     #[tokio::test]
     async fn override_replicas_from_master() -> Result<(), AppsError> {
         let config = Config::default();
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
@@ -832,8 +831,7 @@ mod tests {
             "#
         );
 
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
@@ -877,8 +875,7 @@ mod tests {
         "#
         );
 
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::from_str("master-1x").unwrap(),
@@ -908,8 +905,7 @@ mod tests {
     #[tokio::test]
     async fn should_collect_log_chunk_from_infrastructure() -> Result<(), AppsError> {
         let config = Config::default();
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         let app_name = AppName::master();
 
@@ -953,8 +949,7 @@ Log msg 3 of service-a of app master
     #[tokio::test]
     async fn should_stream_logs_from_infrastructure() -> Result<(), AppsError> {
         let config = Config::default();
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         let app_name = AppName::from_str("master").unwrap();
         let services = vec![
@@ -1015,8 +1010,7 @@ Log msg 3 of service-a of app master
             image = 'postgres:16.1'
         "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         let app_name = AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
@@ -1052,8 +1046,7 @@ Log msg 3 of service-a of app master
             image = 'postgres:16.1'
         "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         let app_name = AppName::master();
         let configs = vec![
@@ -1105,8 +1098,7 @@ Log msg 3 of service-a of app master
             'traefik.frontend.priority' = '20000'
         "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         let app_name = AppName::master();
 
@@ -1173,8 +1165,7 @@ Log msg 3 of service-a of app master
         "#
         );
 
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
         let app_name = AppName::master();
 
         apps.create_or_update(CreateOrUpdateParams {
@@ -1218,8 +1209,7 @@ Log msg 3 of service-a of app master
     #[tokio::test]
     async fn should_delete_apps() -> Result<(), AppsError> {
         let config = Config::default();
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         let app_name = AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
@@ -1273,8 +1263,7 @@ Log msg 3 of service-a of app master
             '/etc/mysql2/my.cnf' = 'ABCD'
         "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         let app_name = AppName::master();
         let configs = vec![blueprint_service!("db1"), blueprint_service!("db2")];
@@ -1347,8 +1336,7 @@ Log msg 3 of service-a of app master
 
         let (_temp_js_file, config) = config_with_deployment_hook(script);
         let app_name = &AppName::master();
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: app_name.clone(),
@@ -1373,8 +1361,7 @@ Log msg 3 of service-a of app master
 
     #[tokio::test]
     async fn should_create_app_with_base_ingress_route() -> Result<(), AppsError> {
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(Config::default(), infrastructure)?.with_base_route(Some(
+        let apps = Apps::new(Config::default(), Dummy::new())?.with_base_route(Some(
             TraefikIngressRoute::with_rule(TraefikRouterRule::host_rule(vec![String::from(
                 "example.com",
             )])),
@@ -1391,12 +1378,10 @@ Log msg 3 of service-a of app master
         })
         .await?;
 
-        let services = apps
-            .infrastructure
-            .as_any()
-            .downcast_ref::<Dummy>()
-            .unwrap()
-            .services();
+        let services = match &apps.infrastructure {
+            InfrastructureProxy::Dummy(dummy) => dummy.services(),
+            _ => panic!("Apps must be created with dummy infrastructure"),
+        };
 
         assert!(iters_equal_anyorder(
             services
@@ -1421,8 +1406,7 @@ Log msg 3 of service-a of app master
 
     #[tokio::test]
     async fn should_create_app_without_base_ingress_route() -> Result<(), AppsError> {
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(Config::default(), infrastructure)?;
+        let apps = Apps::new(Config::default(), Dummy::new())?;
 
         let app_name = &AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
@@ -1435,12 +1419,10 @@ Log msg 3 of service-a of app master
         })
         .await?;
 
-        let services = apps
-            .infrastructure
-            .as_any()
-            .downcast_ref::<Dummy>()
-            .unwrap()
-            .services();
+        let services = match &apps.infrastructure {
+            InfrastructureProxy::Dummy(dummy) => dummy.services(),
+            _ => panic!("Apps must be created with dummy infrastructure"),
+        };
 
         assert!(iters_equal_anyorder(
             services
@@ -1473,8 +1455,7 @@ Log msg 3 of service-a of app master
             max = 1
         "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
@@ -1511,8 +1492,7 @@ Log msg 3 of service-a of app master
             max = 1
             "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::from_str("backed-up").unwrap(),
@@ -1550,8 +1530,7 @@ Log msg 3 of service-a of app master
             max = 1
         "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
@@ -1593,8 +1572,7 @@ Log msg 3 of service-a of app master
             properties = { name = { type = "string" } }
         "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         let app_name = AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
@@ -1639,8 +1617,7 @@ Log msg 3 of service-a of app master
             properties = { name = { type = "string" } }
         "#
         );
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         let app_name = AppName::master();
         apps.create_or_update(CreateOrUpdateParams {
@@ -1681,8 +1658,7 @@ Log msg 3 of service-a of app master
     #[tokio::test]
     async fn update_owners() -> Result<(), AppsError> {
         let config = Config::default();
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
@@ -1733,8 +1709,7 @@ Log msg 3 of service-a of app master
     #[tokio::test]
     async fn merge_owners_with_same_sub_issuer() -> Result<(), AppsError> {
         let config = Config::default();
-        let infrastructure = Box::new(Dummy::new());
-        let apps = Apps::new(config, infrastructure)?;
+        let apps = Apps::new(config, Dummy::new())?;
 
         apps.create_or_update(CreateOrUpdateParams {
             app_name: AppName::master(),
@@ -1778,10 +1753,10 @@ Log msg 3 of service-a of app master
     #[tokio::test]
     async fn bootstrap_companions() -> Result<(), AppsError> {
         let config = Config::default();
-        let infrastructure = Box::new(Dummy::new().with_bootstrapping(vec![blueprint_service!(
+        let infrastructure = Dummy::new().with_bootstrapping(vec![blueprint_service!(
             "adminer-{{application.name}}",
             "adminer:5.4.2"
-        )]));
+        )]);
         let apps = Apps::new(config, infrastructure)?;
 
         apps.create_or_update(CreateOrUpdateParams {
