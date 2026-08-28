@@ -32,7 +32,7 @@ extern crate serde_derive;
 use crate::apps::{AppCleanUp, AppRepository, Apps};
 use crate::config::{ApiAccessMode, Config, Runtime};
 use crate::db::DatabasePool;
-use crate::infrastructure::{Docker, Infrastructure, Kubernetes};
+use crate::infrastructure::{Docker, Infrastructure, InfrastructureProxy, Kubernetes};
 use crate::openapi::api_documentation;
 use crate::tickets::TicketsCaching;
 use apps::AppProcessingQueue;
@@ -124,15 +124,15 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
     })?))
 }
 
-fn create_infrastructure(config: &Config) -> Box<dyn Infrastructure> {
+fn create_infrastructure(config: &Config) -> InfrastructureProxy {
     match &config.runtime {
         Runtime::Docker => {
             log::info!("Using Docker backend");
-            Box::new(Docker::new(config.clone()))
+            Docker::new(config.clone()).into()
         }
         Runtime::Kubernetes(_config) => {
             log::info!("Using Kubernetes backend");
-            Box::new(Kubernetes::new(config.clone()))
+            Kubernetes::new(config.clone()).into()
         }
     }
 }

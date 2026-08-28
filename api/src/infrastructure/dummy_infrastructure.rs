@@ -46,7 +46,7 @@ use std::time::Duration;
 
 #[cfg(test)]
 #[derive(Clone, Debug)]
-pub struct DummyInfrastructure {
+pub struct Dummy {
     delay: Option<Duration>,
     deployment_units: Arc<Mutex<HashMap<AppName, DeploymentUnit>>>,
     created_at: Arc<Mutex<HashMap<AppName, DateTime<Utc>>>>,
@@ -54,7 +54,7 @@ pub struct DummyInfrastructure {
 }
 
 #[cfg(test)]
-impl DummyInfrastructure {
+impl Dummy {
     pub fn new() -> Self {
         Self {
             delay: None,
@@ -120,7 +120,7 @@ impl DummyInfrastructure {
 }
 
 #[cfg(test)]
-impl DummyInfrastructure {
+impl Dummy {
     async fn delay_if_configured(&self) {
         if let Some(delay) = &self.delay {
             tokio::time::sleep(*delay).await;
@@ -130,7 +130,7 @@ impl DummyInfrastructure {
 
 #[cfg(test)]
 #[async_trait]
-impl Infrastructure for DummyInfrastructure {
+impl Infrastructure for Dummy {
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let mut apps = HashMap::new();
 
@@ -260,10 +260,6 @@ impl Infrastructure for DummyInfrastructure {
         _status: DesiredServiceStatus,
     ) -> Result<Option<Service>> {
         Ok(None)
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 
     async fn http_forwarder(&self) -> Result<Box<dyn super::HttpForwarder>> {

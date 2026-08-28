@@ -24,13 +24,26 @@
  * =========================LICENSE_END==================================
  */
 
-pub use docker::DockerInfrastructure as Docker;
-use domain::app_blueprints::Environment;
+use chrono::{DateTime, FixedOffset};
+pub use docker::Docker;
+use domain::{
+    AppName, RawInfrastructureElement,
+    app_blueprints::{DesiredServiceStatus, Environment},
+    app_deployment::{
+        BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions, MergeRawElementsContext,
+    },
+    app_instance::{App, Service},
+    templating::TemplateData,
+    traefik::TraefikIngressRoute,
+};
 #[cfg(test)]
-pub use dummy_infrastructure::DummyInfrastructure as Dummy;
+pub use dummy_infrastructure::Dummy;
+use futures::stream::BoxStream;
 pub use infrastructure::{HttpForwarder, Infrastructure};
-pub use kubernetes::KubernetesInfrastructure as Kubernetes;
-use serde_json::{map::Map, Value};
+pub use kubernetes::Kubernetes;
+use regex::Regex;
+use serde_json::{Value, map::Map};
+use std::collections::HashMap;
 
 mod docker;
 #[cfg(test)]
@@ -74,5 +87,159 @@ fn replicated_environment_variable_to_json(env: &Environment) -> Option<Value> {
         Some(Value::Object(replicated_env))
     } else {
         None
+    }
+}
+
+/// This enum is a proxy for any actual infrastructure implementation.
+#[derive(Clone)]
+pub enum InfrastructureProxy {
+    Docker(Docker),
+    Kubernetes(Kubernetes),
+    #[cfg(test)]
+    Dummy(Dummy),
+}
+
+macro_rules! dispatch {
+    ($self:ident, $method:ident $(, $args:expr)*) => {
+        match $self {
+            Self::Docker(d) => d.$method($($args),*),
+            Self::Kubernetes(k) => k.$method($($args),*),
+            #[cfg(test)]
+            Self::Dummy(x) => x.$method($($args),*),
+        }
+    };
+}
+
+#[async_trait::async_trait]
+impl Infrastructure for InfrastructureProxy {
+    async fn fetch_apps(&self) -> anyhow::Result<HashMap<AppName, App>> {
+        dispatch!(self, fetch_apps).await
+    }
+
+    async fn fetch_traefik_router_names(
+        &self,
+        app_names: Vec<AppName>,
+    ) -> anyhow::Result<HashMap<AppName, Vec<Regex>>> {
+        dispatch!(self, fetch_traefik_router_names, app_names).await
+    }
+
+    async fn fetch_app(&self, app_name: &AppName) -> anyhow::Result<Option<App>> {
+        dispatch!(self, fetch_app, app_name).await
+    }
+
+    async fn fetch_app_as_backup_based_infrastructure_payload(
+        &self,
+        app_name: &AppName,
+    ) -> anyhow::Result<Option<Vec<serde_json::Value>>> {
+        dispatch!(
+            self,
+            fetch_app_as_backup_based_infrastructure_payload,
+            app_name
+        )
+        .await
+    }
+
+    async fn deploy_services(
+        &self,
+        deployment_unit: &domain::app_deployment::DeploymentUnit,
+        container_config: &crate::config::ContainerConfig,
+    ) -> anyhow::Result<App> {
+        dispatch!(self, deploy_services, deployment_unit, container_config).await
+    }
+
+    async fn stop_services(&self, app_name: &AppName) -> anyhow::Result<Option<App>> {
+        dispatch!(self, stop_services, app_name).await
+    }
+
+    async fn restore_infrastructure_objects_partially(
+        &self,
+        app_name: &AppName,
+        infrastructure: &[serde_json::Value],
+    ) -> anyhow::Result<Option<App>> {
+        dispatch!(
+            self,
+            restore_infrastructure_objects_partially,
+            app_name,
+            infrastructure
+        )
+        .await
+    }
+
+    async fn delete_infrastructure_objects_partially(
+        &self,
+        app_name: &AppName,
+        infrastructure: &[serde_json::Value],
+    ) -> anyhow::Result<()> {
+        dispatch!(self, delete_infrastructure_objects_partially, app_name, infrastructure).await
+    }
+
+    async fn get_logs<'a>(
+        &'a self,
+        app_name: &'a AppName,
+        service_name: &'a str,
+        from: &'a Option<DateTime<FixedOffset>>,
+        limit: &'a Option<usize>,
+        follow: bool,
+    ) -> BoxStream<'a, anyhow::Result<(DateTime<FixedOffset>, String)>> {
+        dispatch!(self, get_logs, app_name, service_name, from, limit, follow).await
+    }
+
+    async fn change_status(
+        &self,
+        app_name: &AppName,
+        service_name: &str,
+        status: DesiredServiceStatus,
+    ) -> anyhow::Result<Option<Service>> {
+        dispatch!(self, change_status, app_name, service_name, status).await
+    }
+
+    async fn base_traefik_ingress_route(&self) -> anyhow::Result<Option<TraefikIngressRoute>> {
+        dispatch!(self, base_traefik_ingress_route).await
+    }
+
+    async fn resolve_infrastructure_template_data(
+        &self,
+        app_name: &AppName,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        dispatch!(self, resolve_infrastructure_template_data, app_name).await
+    }
+
+    async fn bootstrap_companions_with_raw_elements(
+        &self,
+        context: BootstrapCompanionsWithRawElementsContext<'_>,
+        template_data: &TemplateData,
+    ) -> anyhow::Result<BootstrappedCompanions> {
+        dispatch!(self, bootstrap_companions_with_raw_elements, context, template_data).await
+    }
+
+    fn update_raw_elements_after_merged_blueprint_config(
+        &self,
+        context: MergeRawElementsContext<'_>,
+        raw_elements: Vec<RawInfrastructureElement>,
+    ) -> anyhow::Result<Vec<RawInfrastructureElement>> {
+        dispatch!(self, update_raw_elements_after_merged_blueprint_config, context, raw_elements)
+    }
+
+    async fn http_forwarder(&self) -> anyhow::Result<Box<dyn HttpForwarder>> {
+        dispatch!(self, http_forwarder).await
+    }
+}
+
+impl From<Docker> for InfrastructureProxy {
+    fn from(docker: Docker) -> Self {
+        Self::Docker(docker)
+    }
+}
+
+impl From<Kubernetes> for InfrastructureProxy {
+    fn from(kubernetes: Kubernetes) -> Self {
+        Self::Kubernetes(kubernetes)
+    }
+}
+
+#[cfg(test)]
+impl From<Dummy> for InfrastructureProxy {
+    fn from(dummy: Dummy) -> Self {
+        Self::Dummy(dummy)
     }
 }

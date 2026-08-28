@@ -585,7 +585,7 @@ mod tests {
                 vec![blueprint_service!("nginx")],
                 now - TimeDelta::hours(2) + TimeDelta::minutes(1),
             );
-        let apps = Apps::new(config.clone(), Box::new(dummy_infra)).unwrap();
+        let apps = Apps::new(config.clone(), dummy_infra).unwrap();
         while apps.app_updates().await.borrow_and_update().is_empty() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -619,8 +619,7 @@ mod tests {
             busyHours = { start = "0 0 8 * * Mon-Fri", end = "0 0 16 * * Mon-Fri" }
             "#
         );
-        let dummy_infra = Dummy::new();
-        let apps = Apps::new(config.clone(), Box::new(dummy_infra)).unwrap();
+        let apps = Apps::new(config.clone(), Dummy::new()).unwrap();
         let detector = AutomatedBackUpDetector {
             clean_up_policy: config
                 .applications
@@ -668,8 +667,7 @@ mod tests {
             metricsProvider = { prometheusUrl  = "http://localhost:9090/" }
             "#
         );
-        let dummy_infra = Dummy::new();
-        let apps = Apps::new(config.clone(), Box::new(dummy_infra)).unwrap();
+        let apps = Apps::new(config.clone(), Dummy::new()).unwrap();
         let detector = AutomatedBackUpDetector {
             clean_up_policy: config
                 .applications

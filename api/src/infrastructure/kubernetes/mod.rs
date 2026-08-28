@@ -23,7 +23,7 @@
  * THE SOFTWARE.
  * =========================LICENSE_END==================================
  */
-pub use infrastructure::KubernetesInfrastructure;
+pub use infrastructure::Kubernetes;
 
 mod deployment_unit;
 mod infrastructure;

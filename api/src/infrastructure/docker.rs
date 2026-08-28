@@ -32,13 +32,15 @@ use crate::infrastructure::{
 use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
-use bollard::plugin::{NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest, PortSummary};
 use bollard::{
-    Docker,
+    Docker as DockerAPI,
     auth::DockerCredentials,
     container::LogOutput,
     errors::Error as BollardError,
-    plugin::VolumeCreateRequest,
+    plugin::{
+        NetworkConnectRequest, NetworkCreateRequest, NetworkDisconnectRequest, PortSummary,
+        VolumeCreateRequest,
+    },
     query_parameters::{
         CreateContainerOptions, CreateImageOptions, InspectContainerOptions, ListContainersOptions,
         ListNetworksOptions, ListVolumesOptions, LogsOptionsBuilder, RemoveContainerOptions,
@@ -80,7 +82,7 @@ use super::OWNERS_LABEL;
 static CONTAINER_PORT_LABEL: &str = "traefik.port";
 
 #[derive(Clone)]
-pub struct DockerInfrastructure {
+pub struct Docker {
     config: Config,
 }
 
@@ -104,7 +106,7 @@ pub enum DockerInfrastructureError {
     InvalidContainerImage { container_id: String },
 }
 
-impl DockerInfrastructure {
+impl Docker {
     pub fn new(config: Config) -> Self {
         Self { config }
     }
@@ -114,7 +116,7 @@ impl DockerInfrastructure {
 
         let network_name = format!("{app_name}-net");
 
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
         let network_id = docker
             .list_networks(None::<ListNetworksOptions>)
             .await?
@@ -142,7 +144,7 @@ impl DockerInfrastructure {
     }
 
     async fn traefik_container(&self) -> Result<Option<ContainerInspectResponse>, BollardError> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
 
         let mut containers = docker
             .list_containers(None::<ListContainersOptions>)
@@ -202,7 +204,7 @@ impl DockerInfrastructure {
         traefik_id: &str,
         network_id: &str,
     ) -> Result<(), BollardError> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
 
         if let Err(e) = docker
             .connect_network(
@@ -221,7 +223,7 @@ impl DockerInfrastructure {
     }
 
     async fn disconnect_traefik(&self, network_id: &str) -> Result<(), BollardError> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
         let containers = docker
             .list_containers(None::<ListContainersOptions>)
             .await?;
@@ -252,7 +254,7 @@ impl DockerInfrastructure {
     async fn delete_network(&self, app_name: &AppName) -> Result<(), BollardError> {
         let network_name = format!("{app_name}-net");
 
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
 
         for n in docker
             .list_networks(Some(ListNetworksOptions {
@@ -271,7 +273,7 @@ impl DockerInfrastructure {
     }
 
     async fn delete_volume_mount(&self, app_name: &AppName) -> Result<(), BollardError> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
         for volume in Self::fetch_existing_volumes(app_name)
             .await?
             .volumes
@@ -296,7 +298,7 @@ impl DockerInfrastructure {
         owners: &HashSet<Owner>,
         traefik_version: TraefikVersion,
     ) -> Result<ContainerInspectResponse, DockerInfrastructureError> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
         let service_name = &service.blueprint_service.service_name;
         let service_image = &service.blueprint_service.image;
 
@@ -564,7 +566,7 @@ impl DockerInfrastructure {
             &service_config.service_name
         );
 
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
 
         let mut tar_builder = tar::Builder::new(Vec::new());
 
@@ -600,7 +602,7 @@ impl DockerInfrastructure {
     async fn fetch_existing_volumes(
         app_name: &AppName,
     ) -> Result<VolumeListResponse, BollardError> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
         docker
             .list_volumes(Some(ListVolumesOptions {
                 filters: Some(HashMap::from([(
@@ -615,7 +617,7 @@ impl DockerInfrastructure {
         app_name: &AppName,
         service: &DeployableService,
     ) -> Result<String, BollardError> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
 
         let mut labels = HashMap::new();
         labels.insert(APP_NAME_LABEL.to_string(), app_name.to_string());
@@ -693,7 +695,7 @@ impl DockerInfrastructure {
     async fn get_containers(
         filters: HashMap<String, Vec<String>>,
     ) -> Result<Vec<ContainerSummary>, BollardError> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
 
         let list_options = Some(ListContainersOptions {
             all: true,
@@ -810,7 +812,7 @@ impl DockerInfrastructure {
 }
 
 #[async_trait]
-impl Infrastructure for DockerInfrastructure {
+impl Infrastructure for Docker {
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let mut apps = HashMap::new();
         let container_details = self.get_container_details(None, None).await?;
@@ -900,7 +902,7 @@ impl Infrastructure for DockerInfrastructure {
             return Ok(None);
         };
 
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = DockerAPI::connect_with_socket_defaults()?;
 
         let mut futures = container_details
             .clone()
@@ -977,7 +979,7 @@ impl Infrastructure for DockerInfrastructure {
             {
                 Ok(None) => {}
                 Ok(Some(container)) => {
-                    let docker = Docker::connect_with_socket_defaults()?;
+                    let docker = DockerAPI::connect_with_socket_defaults()?;
                     let container_id = container
                         .id
                         .as_ref()
@@ -1034,7 +1036,7 @@ impl Infrastructure for DockerInfrastructure {
     ) -> Result<Option<Service>> {
         match Self::get_app_container(app_name, service_name).await? {
             Some(container) => {
-                let docker = Docker::connect_with_socket_defaults()?;
+                let docker = DockerAPI::connect_with_socket_defaults()?;
                 let details = docker
                     .inspect_container(
                         container
@@ -1134,8 +1136,7 @@ impl HttpForwarder for DockerHttpForwarder {
         service_name: &str,
         request: http::Request<http_body_util::Empty<bytes::Bytes>>,
     ) -> Result<Option<WebHostMeta>> {
-        let Some(container_details) =
-            DockerInfrastructure::get_app_container(app_name, service_name).await?
+        let Some(container_details) = Docker::get_app_container(app_name, service_name).await?
         else {
             return Ok(None);
         };
@@ -1222,7 +1223,7 @@ async fn pull(image: &Image, config: &Config) -> Result<Vec<CreateImageInfo>, Bo
         None
     };
 
-    let docker = Docker::connect_with_socket_defaults()?;
+    let docker = DockerAPI::connect_with_socket_defaults()?;
     docker
         .create_image(Some(pull_options), None, docker_auth)
         .try_collect()
@@ -1231,7 +1232,7 @@ async fn pull(image: &Image, config: &Config) -> Result<Vec<CreateImageInfo>, Bo
 
 /// Helper function to inspect containers with the aid of futures::future::join_all
 async fn inspect(container: ContainerSummary) -> Result<ContainerInspectResponse, BollardError> {
-    let docker = Docker::connect_with_socket_defaults()?;
+    let docker = DockerAPI::connect_with_socket_defaults()?;
     docker
         .inspect_container(
             &container
@@ -1499,7 +1500,7 @@ mod tests {
             .finish()
             .unwrap();
 
-        let options = DockerInfrastructure::create_container_options(
+        let options = Docker::create_container_options(
             &deployment_unit.app_name,
             &deployment_unit.services[0],
             &ContainerConfig::default(),
@@ -1544,7 +1545,7 @@ mod tests {
             .finish()
             .unwrap();
 
-        let options = DockerInfrastructure::create_container_options(
+        let options = Docker::create_container_options(
             &deployment_unit.app_name,
             &deployment_unit.services[0],
             &ContainerConfig::default(),
@@ -1590,7 +1591,7 @@ mod tests {
             .finish()
             .unwrap();
 
-        let options = DockerInfrastructure::create_container_options(
+        let options = Docker::create_container_options(
             &deployment_unit.app_name,
             &deployment_unit.services[0],
             &ContainerConfig::default(),
@@ -1722,7 +1723,7 @@ mod tests {
             .finish()
             .unwrap();
 
-        let options = DockerInfrastructure::create_container_options(
+        let options = Docker::create_container_options(
             &deployment_unit.app_name,
             &deployment_unit.services[0],
             &ContainerConfig::default(),
@@ -1763,7 +1764,7 @@ mod tests {
             .finish()
             .unwrap();
 
-        let options = DockerInfrastructure::create_container_options(
+        let options = Docker::create_container_options(
             &deployment_unit.app_name,
             &deployment_unit.services[0],
             &ContainerConfig::default(),

@@ -83,7 +83,7 @@ use std::{
 };
 
 #[derive(Clone)]
-pub struct KubernetesInfrastructure {
+pub struct Kubernetes {
     config: PREvantConfig,
 }
 
@@ -123,7 +123,7 @@ impl From<NamespaceCreationResponse> for V1Namespace {
     }
 }
 
-impl KubernetesInfrastructure {
+impl Kubernetes {
     pub fn new(config: PREvantConfig) -> Self {
         Self { config }
     }
@@ -486,7 +486,7 @@ impl KubernetesInfrastructure {
 }
 
 #[async_trait]
-impl Infrastructure for KubernetesInfrastructure {
+impl Infrastructure for Kubernetes {
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let client = self.client().await?;
         let app_names = Api::<V1Namespace>::all(client)
@@ -1085,7 +1085,7 @@ impl HttpForwarder for K8sHttpForwarder {
     where
         Self: Sized,
     {
-        let Some((_deployment, Some(pod))) = KubernetesInfrastructure::get_deployment_and_pod_impl(
+        let Some((_deployment, Some(pod))) = Kubernetes::get_deployment_and_pod_impl(
             self.client.clone(),
             app_name,
             service_name,
@@ -1172,7 +1172,7 @@ mod tests {
     };
     use testcontainers_modules::k3s::{K3s, KUBE_SECURE_PORT};
 
-    async fn create_cluster_and_infra() -> (ContainerAsync<K3s>, KubernetesInfrastructure, TempDir)
+    async fn create_cluster_and_infra() -> (ContainerAsync<K3s>, Kubernetes, TempDir)
     {
         let _ = env_logger::builder().is_test(true).try_init();
 
@@ -1209,7 +1209,7 @@ mod tests {
         );
         std::fs::write(&config_file, config).unwrap();
 
-        let infra = KubernetesInfrastructure::new(PREvantConfig {
+        let infra = Kubernetes::new(PREvantConfig {
             runtime: Runtime::Kubernetes(KubernetesRuntimeConfig {
                 kube_config: Some(config_file),
                 ..Default::default()
@@ -1726,7 +1726,7 @@ mod tests {
     impl StaticBootstrapCompanion {
         async fn bootstrap(
             self,
-            infra: &KubernetesInfrastructure,
+            infra: &Kubernetes,
         ) -> Result<(DeploymentUnit, App)> {
             let unit = AppDeploymentBuilder::init(
                 self.app_name.clone(),

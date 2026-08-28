@@ -487,8 +487,7 @@ mod tests {
         async fn set_up_rocket_with_dummy_infrastructure_and_a_running_app(
             host_meta_cache: HostMetaCache,
         ) -> Result<Client, crate::apps::AppsError> {
-            let infrastructure = Box::new(Dummy::new());
-            let apps = Apps::new(Default::default(), infrastructure).unwrap();
+            let apps = Apps::new(Default::default(), Dummy::new()).unwrap();
             let _result = apps
                 .create_or_update(CreateOrUpdateParams {
                     app_name: AppName::master(),

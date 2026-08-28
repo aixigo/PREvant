@@ -39,13 +39,12 @@ use domain::{
     templating::TemplateData,
     traefik::TraefikIngressRoute,
 };
-use dyn_clone::DynClone;
 use futures::stream::BoxStream;
 use regex::Regex;
 use std::collections::HashMap;
 
 #[async_trait]
-pub trait Infrastructure: Send + Sync + DynClone {
+pub trait Infrastructure: Send + Sync {
     /// Returns a `map` of `app-name` and the details of the deployed applications.
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>>;
 
@@ -153,18 +152,11 @@ pub trait Infrastructure: Send + Sync + DynClone {
     ) -> Result<Vec<RawInfrastructureElement>> {
         Ok(raw_elements)
     }
-
-    #[cfg(test)]
-    fn as_any(&self) -> &dyn std::any::Any {
-        panic!(
-            "This should be only use in test environments with following approach: https://stackoverflow.com/a/33687996/5088458"
-        )
-    }
 }
 
 /// Makes sure that HTTP requests from PREvant will be forwarded to the running services.
 #[async_trait]
-pub trait HttpForwarder: Send + Sync + DynClone {
+pub trait HttpForwarder: Send + Sync + dyn_clone::DynClone {
     async fn request_web_host_meta(
         &self,
         app_name: &AppName,
