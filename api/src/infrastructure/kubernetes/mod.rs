@@ -26,6 +26,7 @@
 pub use infrastructure::Kubernetes;
 
 mod deployment_unit;
+mod element;
 mod infrastructure;
 mod payloads;
 mod traefik_crds;

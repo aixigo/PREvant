@@ -131,6 +131,8 @@ impl Dummy {
 #[cfg(test)]
 #[async_trait]
 impl Infrastructure for Dummy {
+    type BackupPayload = ();
+
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let mut apps = HashMap::new();
 

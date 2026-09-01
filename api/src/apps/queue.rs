@@ -1,7 +1,8 @@
 use crate::apps::repository::AppPostgresRepository;
 use crate::apps::{Apps, AppsError, CreateOrUpdateParams};
+use crate::infrastructure::{Infrastructure, InfrastructureProxy};
 use crate::models::{AppStatusChangeId, AppTask, MergedAppTask};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
 use domain::{
     AppName, Owner,
@@ -151,14 +152,15 @@ impl AppTaskQueueProducer {
     pub async fn enqueue_backup_task(
         &self,
         app_name: AppName,
-        infrastructure_payload: Vec<serde_json::Value>,
+        infrastructure_payload: <InfrastructureProxy as crate::infrastructure::Infrastructure>::BackupPayload,
     ) -> Result<AppStatusChangeId> {
         let status_id = AppStatusChangeId::new();
         self.db
             .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id,
                 app_name,
-                infrastructure_payload_to_back_up: infrastructure_payload,
+                infrastructure_payload_to_back_up: serde_json::to_value(infrastructure_payload)
+                    .context("Cannot convert infrastructure payload to JSON")?,
             })
             .await?;
 
@@ -173,7 +175,7 @@ impl AppTaskQueueProducer {
     pub async fn enqueue_restore_task(
         &self,
         app_name: AppName,
-        infrastructure_payload: Vec<serde_json::Value>,
+        infrastructure_payload: serde_json::Value,
     ) -> Result<AppStatusChangeId> {
         let status_id = AppStatusChangeId::new();
         self.db
@@ -265,9 +267,21 @@ impl AppTaskQueueConsumer {
                             );
                         }
 
-                        apps
-                            .delete_app_partially(app_name, infrastructure_payload_to_back_up)
-                            .await
+                        match serde_json::from_value::<<InfrastructureProxy as Infrastructure>::BackupPayload>(infrastructure_payload_to_back_up.clone()) {
+                            Ok(infrastructure_payload_to_back_up) => {
+                                apps
+                                    .delete_app_partially(app_name, infrastructure_payload_to_back_up)
+                                    .await
+                            }
+                            Err(err) => {
+                                log::error!("Cannot deserialize the infrastructure payload to be restored: {err}");
+                                // TODO: there should be another error that also makes sure to clean
+                                // up the back-up data int the repository. The method execute_tasks
+                                // must have its own error type to deal with these cases in order to
+                                // differentiate between retry and broken (never try again).
+                                Err(AppsError::AppNotFound { app_name: app_name.clone() })
+                            },
+                        }
                     }
                     AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
                         app_name,
@@ -280,12 +294,25 @@ impl AppTaskQueueConsumer {
                             );
                         }
 
-                        apps
-                            .restore_app_partially(app_name, infrastructure_payload_to_restore)
-                            .await
-                            .and_then(|app| app.ok_or_else(|| AppsError::AppNotFound {
-                                app_name: app_name.clone()
-                            }))
+                        match serde_json::from_value::<<InfrastructureProxy as Infrastructure>::BackupPayload>(infrastructure_payload_to_restore.clone()) {
+                            Ok(infrastructure_payload_to_restore) => {
+                                apps
+                                    .restore_app_partially(app_name, infrastructure_payload_to_restore)
+                                    .await
+                                    .and_then(|app| app.ok_or_else(|| AppsError::AppNotFound {
+                                        app_name: app_name.clone()
+                                    }))
+                            }
+                            Err(err) => {
+                                log::error!("Cannot deserialize the infrastructure payload to be restored: {err}");
+                                // TODO: there should be another error that also makes sure to clean
+                                // up the back-up data int the repository. The method execute_tasks
+                                // must have its own error type to deal with these cases in order to
+                                // differentiate between retry and broken (never try again).
+                                Err(AppsError::AppNotFound { app_name: app_name.clone() })
+                            },
+                        }
+
                     },
                     AppTask::CreateOrUpdate {
                         app_name,
@@ -609,7 +636,7 @@ mod tests {
             .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id: AppStatusChangeId::new(),
                 app_name: AppName::master(),
-                infrastructure_payload_to_back_up: vec![serde_json::json!({})],
+                infrastructure_payload_to_back_up: serde_json::json!({}),
             })
             .await
             .unwrap_err();
@@ -622,7 +649,7 @@ mod tests {
             .enqueue_task(AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
                 status_id: AppStatusChangeId::new(),
                 app_name: AppName::master(),
-                infrastructure_payload_to_restore: vec![serde_json::json!({})],
+                infrastructure_payload_to_restore: serde_json::json!({}),
             })
             .await
             .unwrap_err();
@@ -840,10 +867,10 @@ mod tests {
             .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id: status_id_2,
                 app_name: AppName::master(),
-                infrastructure_payload_to_back_up: vec![serde_json::json!({
+                infrastructure_payload_to_back_up: serde_json::json!({
                     "string-key": "test",
                     "array-key": [1, 2, 3]
-                })],
+                }),
             })
             .await
             .unwrap();

@@ -165,7 +165,7 @@ impl Apps {
     pub async fn fetch_app_as_backup_based_infrastructure_payload(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<Vec<serde_json::Value>>, AppsError> {
+    ) -> Result<Option<<InfrastructureProxy as Infrastructure>::BackupPayload>, AppsError> {
         Ok(self
             .infrastructure
             .fetch_app_as_backup_based_infrastructure_payload(app_name)
@@ -327,7 +327,7 @@ impl Apps {
     async fn restore_app_partially(
         &self,
         app_name: &AppName,
-        infrastructure_payload: &[serde_json::Value],
+        infrastructure_payload: <InfrastructureProxy as Infrastructure>::BackupPayload,
     ) -> Result<Option<App>, AppsError> {
         Ok(self
             .infrastructure
@@ -350,7 +350,7 @@ impl Apps {
     async fn delete_app_partially(
         &self,
         app_name: &AppName,
-        infrastructure_payload: &[serde_json::Value],
+        infrastructure_payload: <InfrastructureProxy as Infrastructure>::BackupPayload,
     ) -> Result<App, AppsError> {
         let Some(app) = self.infrastructure.fetch_app(app_name).await? else {
             return Err(AppsError::AppNotFound {
