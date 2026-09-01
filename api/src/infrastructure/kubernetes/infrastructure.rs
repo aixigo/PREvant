@@ -31,6 +31,7 @@ use super::payloads::{
 };
 use super::traefik_crds::{IngressRoute, Middleware};
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
+use crate::infrastructure::kubernetes::element::K8sBackupElement;
 use crate::infrastructure::kubernetes::payloads::kubernetes_object_to_service;
 use crate::infrastructure::{
     HttpForwarder, Infrastructure, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
@@ -487,6 +488,8 @@ impl Kubernetes {
 
 #[async_trait]
 impl Infrastructure for Kubernetes {
+    type BackupPayload = Vec<K8sBackupElement>;
+
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let client = self.client().await?;
         let app_names = Api::<V1Namespace>::all(client)
@@ -655,7 +658,7 @@ impl Infrastructure for Kubernetes {
     async fn fetch_app_as_backup_based_infrastructure_payload(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<Vec<serde_json::Value>>> {
+    ) -> Result<Option<Self::BackupPayload>> {
         let client = self.client().await?;
 
         let unit = K8sDeploymentUnit::fetch(client, app_name).await?;
@@ -663,7 +666,7 @@ impl Infrastructure for Kubernetes {
             return Ok(None);
         }
 
-        Ok(Some(unit.prepare_for_back_up().to_json_vec()))
+        Ok(Some(unit.into_back_up_payload()))
     }
 
     async fn deploy_services(
@@ -687,8 +690,8 @@ impl Infrastructure for Kubernetes {
         // BootstrapCompanions::{bootstrap_companions_with_raw_elements,
         // update_raw_elements_after_merged_blueprint_config} and K8sDeploymentUnit::merge do
         // overlapping things.
-        let mut k8s_deployment_unit = K8sDeploymentUnit::parse_from_json(
-            app_name,
+        // TODO: here we should have a assiociated type
+        let mut k8s_deployment_unit = serde_json::from_value::<K8sDeploymentUnit>(
             deployment_unit
                 .bootstrapped_companion_elements
                 .iter()
@@ -698,7 +701,9 @@ impl Infrastructure for Kubernetes {
                         .iter()
                         .flat_map(|service| service.bootstrapped_companion_elements.iter()),
                 )
-                .map(|raw| raw.as_json()),
+                .map(|e| e.clone())
+                .map(serde_json::Value::from)
+                .collect::<serde_json::Value>(),
         )?;
 
         for deployable_service in &deployment_unit.services {
@@ -755,20 +760,18 @@ impl Infrastructure for Kubernetes {
     async fn delete_infrastructure_objects_partially(
         &self,
         app_name: &AppName,
-        infrastructure_payload: &[serde_json::Value],
+        infrastructure_payload: Self::BackupPayload,
     ) -> Result<()> {
-        let unit = K8sDeploymentUnit::parse_from_json(app_name, infrastructure_payload)?;
-        unit.prepare_for_back_up()
-            .delete(self.client().await?, app_name)
-            .await
+        let unit = K8sDeploymentUnit::from(infrastructure_payload);
+        unit.delete(self.client().await?, app_name).await
     }
 
     async fn restore_infrastructure_objects_partially(
         &self,
         app_name: &AppName,
-        infrastructure_payload: &[serde_json::Value],
+        infrastructure_payload: Self::BackupPayload,
     ) -> Result<Option<App>> {
-        let unit = K8sDeploymentUnit::parse_from_json(app_name, infrastructure_payload)?;
+        let unit = K8sDeploymentUnit::from(infrastructure_payload);
         unit.deploy(self.client().await?, app_name).await?;
         self.fetch_app(app_name).await
     }
@@ -1048,9 +1051,12 @@ impl Infrastructure for Kubernetes {
         context: MergeRawElementsContext<'_>,
         raw_elements: Vec<RawInfrastructureElement>,
     ) -> Result<Vec<RawInfrastructureElement>> {
-        Ok(K8sDeploymentUnit::parse_from_json(
-            &AppName::master(),
-            raw_elements.into_iter().map(serde_json::Value::from),
+        // TODO: here we should have a assiociated type
+        Ok(serde_json::from_value::<K8sDeploymentUnit>(
+            raw_elements
+                .into_iter()
+                .map(serde_json::Value::from)
+                .collect::<_>(),
         )?
         .update_with_merge_context(context)?
         .to_json_vec()
@@ -1085,12 +1091,9 @@ impl HttpForwarder for K8sHttpForwarder {
     where
         Self: Sized,
     {
-        let Some((_deployment, Some(pod))) = Kubernetes::get_deployment_and_pod_impl(
-            self.client.clone(),
-            app_name,
-            service_name,
-        )
-        .await?
+        let Some((_deployment, Some(pod))) =
+            Kubernetes::get_deployment_and_pod_impl(self.client.clone(), app_name, service_name)
+                .await?
         else {
             return Ok(None);
         };
@@ -1172,8 +1175,7 @@ mod tests {
     };
     use testcontainers_modules::k3s::{K3s, KUBE_SECURE_PORT};
 
-    async fn create_cluster_and_infra() -> (ContainerAsync<K3s>, Kubernetes, TempDir)
-    {
+    async fn create_cluster_and_infra() -> (ContainerAsync<K3s>, Kubernetes, TempDir) {
         let _ = env_logger::builder().is_test(true).try_init();
 
         let tempdir = tempfile::tempdir().unwrap();
@@ -1254,7 +1256,7 @@ mod tests {
             .unwrap()
             .unwrap();
         infra
-            .delete_infrastructure_objects_partially(&app_name, &backup_payload)
+            .delete_infrastructure_objects_partially(&app_name, backup_payload)
             .await
             .unwrap();
 
@@ -1724,10 +1726,7 @@ mod tests {
     }
 
     impl StaticBootstrapCompanion {
-        async fn bootstrap(
-            self,
-            infra: &Kubernetes,
-        ) -> Result<(DeploymentUnit, App)> {
+        async fn bootstrap(self, infra: &Kubernetes) -> Result<(DeploymentUnit, App)> {
             let unit = AppDeploymentBuilder::init(
                 self.app_name.clone(),
                 self.service_configs.clone(),
@@ -1853,9 +1852,11 @@ mod tests {
             context: MergeRawElementsContext<'_>,
             raw_elements: Vec<RawInfrastructureElement>,
         ) -> Result<Vec<RawInfrastructureElement>> {
-            Ok(K8sDeploymentUnit::parse_from_json(
-                &self.app_name,
-                raw_elements.into_iter().map(serde_json::Value::from),
+            Ok(serde_json::from_value::<K8sDeploymentUnit>(
+                raw_elements
+                    .into_iter()
+                    .map(serde_json::Value::from)
+                    .collect(),
             )?
             .update_with_merge_context(context)?
             .to_json_vec()

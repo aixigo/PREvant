@@ -45,6 +45,8 @@ use std::collections::HashMap;
 
 #[async_trait]
 pub trait Infrastructure: Send + Sync {
+    type BackupPayload: Send + serde::Serialize + for<'de> serde::Deserialize<'de>;
+
     /// Returns a `map` of `app-name` and the details of the deployed applications.
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>>;
 
@@ -60,7 +62,7 @@ pub trait Infrastructure: Send + Sync {
     async fn fetch_app_as_backup_based_infrastructure_payload(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<Vec<serde_json::Value>>> {
+    ) -> Result<Option<Self::BackupPayload>> {
         anyhow::bail!("Cannot back up {app_name}: not yet implemented for the configured backend")
     }
 
@@ -87,20 +89,22 @@ pub trait Infrastructure: Send + Sync {
     async fn restore_infrastructure_objects_partially(
         &self,
         app_name: &AppName,
-        infrastructure: &[serde_json::Value],
+        _infrastructure: Self::BackupPayload,
     ) -> Result<Option<App>> {
         anyhow::bail!(
-            "Cannot restore {app_name}: not yet implemented for the configured backend to restore {infrastructure:?}"
+            "Cannot restore {app_name}: not yet implemented for the configured backend to restore {}",
+            std::any::type_name::<Self::BackupPayload>()
         )
     }
 
     async fn delete_infrastructure_objects_partially(
         &self,
         app_name: &AppName,
-        infrastructure: &[serde_json::Value],
+        _infrastructure: Self::BackupPayload,
     ) -> Result<()> {
         anyhow::bail!(
-            "Cannot back up {app_name}: not yet implemented for the configured backend to delete {infrastructure:?}"
+            "Cannot back up {app_name}: not yet implemented for the configured backend to delete {}",
+            std::any::type_name::<Self::BackupPayload>()
         )
     }
 

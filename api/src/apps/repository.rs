@@ -94,7 +94,7 @@ impl AppPostgresRepository {
     pub async fn fetch_backup_infrastructure_payload(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<Vec<serde_json::Value>>> {
+    ) -> Result<Option<serde_json::Value>> {
         let mut connection = self.pool.acquire().await?;
 
         let result = sqlx::query_as::<_, (sqlx::types::Json<serde_json::Value>,)>(
@@ -108,12 +108,7 @@ impl AppPostgresRepository {
         .fetch_optional(&mut *connection)
         .await?;
 
-        Ok(result.map(
-            |mut infrastructure_payload| match infrastructure_payload.0.take() {
-                serde_json::Value::Array(values) => values,
-                v => vec![v],
-            },
-        ))
+        Ok(result.map(|mut infrastructure_payload| infrastructure_payload.0.take()))
     }
 
     pub async fn fetch_backup_older_than(
@@ -455,7 +450,7 @@ impl AppPostgresRepository {
                 )
                 .bind(app_name.as_str())
                 .bind(success_result)
-                .bind(serde_json::Value::Array(infrastructure_payload_to_back_up))
+                .bind(infrastructure_payload_to_back_up)
                 .execute(&mut **tx)
                 .await?;
             }
@@ -724,7 +719,7 @@ mod tests {
             .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id,
                 app_name: AppName::master(),
-                infrastructure_payload_to_back_up: vec![serde_json::json!({})],
+                infrastructure_payload_to_back_up: serde_json::json!({}),
             })
             .await
             .unwrap();
@@ -790,7 +785,7 @@ mod tests {
             .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id,
                 app_name: AppName::master(),
-                infrastructure_payload_to_back_up: vec![serde_json::json!({})],
+                infrastructure_payload_to_back_up: serde_json::json!({}),
             })
             .await
             .unwrap();
@@ -1045,7 +1040,7 @@ mod tests {
             .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id: AppStatusChangeId::new(),
                 app_name: AppName::master(),
-                infrastructure_payload_to_back_up: vec![serde_json::json!({})],
+                infrastructure_payload_to_back_up: serde_json::json!({}),
             })
             .await
             .unwrap();

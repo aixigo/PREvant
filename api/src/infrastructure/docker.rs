@@ -813,6 +813,8 @@ impl Docker {
 
 #[async_trait]
 impl Infrastructure for Docker {
+    type BackupPayload = ();
+
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
         let mut apps = HashMap::new();
         let container_details = self.get_container_details(None, None).await?;

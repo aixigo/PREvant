@@ -11,12 +11,12 @@ pub enum AppTask {
     MovePayloadToBackUpAndDeleteFromInfrastructure {
         status_id: AppStatusChangeId,
         app_name: AppName,
-        infrastructure_payload_to_back_up: Vec<serde_json::Value>,
+        infrastructure_payload_to_back_up: serde_json::Value,
     },
     RestoreOnInfrastructureAndDeleteFromBackup {
         status_id: AppStatusChangeId,
         app_name: AppName,
-        infrastructure_payload_to_restore: Vec<serde_json::Value>,
+        infrastructure_payload_to_restore: serde_json::Value,
     },
     CreateOrUpdate {
         app_name: AppName,
@@ -553,19 +553,19 @@ mod tests {
         let t1 = AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
             status_id: AppStatusChangeId::new(),
             app_name: AppName::master(),
-            infrastructure_payload_to_back_up: vec![serde_json::json!({
+            infrastructure_payload_to_back_up: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
         let status_id_2 = AppStatusChangeId::new();
         let t2 = AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
             status_id: status_id_2,
             app_name: AppName::master(),
-            infrastructure_payload_to_back_up: vec![serde_json::json!({
+            infrastructure_payload_to_back_up: serde_json::json!({
                 "string-key": "test-overwrite",
                 "array-key": [4, 5, 6]
-            })],
+            }),
         };
 
         let merged = t1.merge_with(t2);
@@ -575,10 +575,10 @@ mod tests {
             Ok(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id: status_id_2,
                 app_name: AppName::master(),
-                infrastructure_payload_to_back_up: vec![serde_json::json!({
+                infrastructure_payload_to_back_up: serde_json::json!({
                     "string-key": "test-overwrite",
                     "array-key": [4, 5, 6]
-                })],
+                }),
             }),
         );
     }
@@ -588,10 +588,10 @@ mod tests {
         let t1 = AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
             status_id: AppStatusChangeId::new(),
             app_name: AppName::master(),
-            infrastructure_payload_to_back_up: vec![serde_json::json!({
+            infrastructure_payload_to_back_up: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
         let status_id_2 = AppStatusChangeId::new();
         let t2 = AppTask::Delete {
@@ -615,10 +615,10 @@ mod tests {
         let t1 = AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
             status_id: AppStatusChangeId::new(),
             app_name: AppName::master(),
-            infrastructure_payload_to_back_up: vec![serde_json::json!({
+            infrastructure_payload_to_back_up: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
         let status_id_2 = AppStatusChangeId::new();
         let t2 = AppTask::CreateOrUpdate {
@@ -651,19 +651,19 @@ mod tests {
         let t1 = AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
             status_id: status_id_1,
             app_name: AppName::master(),
-            infrastructure_payload_to_back_up: vec![serde_json::json!({
+            infrastructure_payload_to_back_up: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
         let status_id_2 = AppStatusChangeId::new();
         let t2 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
             status_id: status_id_2,
             app_name: AppName::master(),
-            infrastructure_payload_to_restore: vec![serde_json::json!({
+            infrastructure_payload_to_restore: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
 
         let merged = t1.merge_with(t2);
@@ -684,19 +684,19 @@ mod tests {
         let t1 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
             status_id: status_id_1,
             app_name: AppName::master(),
-            infrastructure_payload_to_restore: vec![serde_json::json!({
+            infrastructure_payload_to_restore: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
         let status_id_2 = AppStatusChangeId::new();
         let t2 = AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
             status_id: status_id_2,
             app_name: AppName::master(),
-            infrastructure_payload_to_back_up: vec![serde_json::json!({
+            infrastructure_payload_to_back_up: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
 
         let merged = t1.merge_with(t2);
@@ -717,19 +717,19 @@ mod tests {
         let t1 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
             status_id: status_id_1,
             app_name: AppName::master(),
-            infrastructure_payload_to_restore: vec![serde_json::json!({
+            infrastructure_payload_to_restore: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
         let status_id_2 = AppStatusChangeId::new();
         let t2 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
             status_id: status_id_2,
             app_name: AppName::master(),
-            infrastructure_payload_to_restore: vec![serde_json::json!({
+            infrastructure_payload_to_restore: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
 
         let merged = t1.merge_with(t2);
@@ -739,10 +739,10 @@ mod tests {
             Ok(AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
                 status_id: status_id_2,
                 app_name: AppName::master(),
-                infrastructure_payload_to_restore: vec![serde_json::json!({
+                infrastructure_payload_to_restore: serde_json::json!({
                     "string-key": "test",
                     "array-key": [1, 2, 3]
-                })],
+                }),
             })
         );
     }
@@ -753,10 +753,10 @@ mod tests {
         let t1 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
             status_id: status_id_1,
             app_name: AppName::master(),
-            infrastructure_payload_to_restore: vec![serde_json::json!({
+            infrastructure_payload_to_restore: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
         let status_id_2 = AppStatusChangeId::new();
         let t2 = AppTask::Delete {
@@ -781,10 +781,10 @@ mod tests {
         let t1 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
             status_id: status_id_1,
             app_name: AppName::master(),
-            infrastructure_payload_to_restore: vec![serde_json::json!({
+            infrastructure_payload_to_restore: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
         let status_id_2 = AppStatusChangeId::new();
         let t2 = AppTask::CreateOrUpdate {
@@ -823,10 +823,10 @@ mod tests {
         let t2 = AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
             status_id: status_id_2,
             app_name: AppName::master(),
-            infrastructure_payload_to_back_up: vec![serde_json::json!({
+            infrastructure_payload_to_back_up: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
 
         let merged = t1.merge_with(t2);
@@ -856,10 +856,10 @@ mod tests {
         let t2 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
             status_id: status_id_2,
             app_name: AppName::master(),
-            infrastructure_payload_to_restore: vec![serde_json::json!({
+            infrastructure_payload_to_restore: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
 
         let merged = t1.merge_with(t2);
@@ -885,10 +885,10 @@ mod tests {
         let t2 = AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
             status_id: status_id_2,
             app_name: AppName::master(),
-            infrastructure_payload_to_back_up: vec![serde_json::json!({
+            infrastructure_payload_to_back_up: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
 
         let merged = t1.merge_with(t2);
@@ -914,10 +914,10 @@ mod tests {
         let t2 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
             status_id: status_id_2,
             app_name: AppName::master(),
-            infrastructure_payload_to_restore: vec![serde_json::json!({
+            infrastructure_payload_to_restore: serde_json::json!({
                 "string-key": "test",
                 "array-key": [1, 2, 3]
-            })],
+            }),
         };
 
         let merged = t1.merge_with(t2);
@@ -948,10 +948,10 @@ mod tests {
             let t1 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
                 status_id: status_id_1,
                 app_name: AppName::master(),
-                infrastructure_payload_to_restore: vec![serde_json::json!({
+                infrastructure_payload_to_restore: serde_json::json!({
                     "string-key": "test",
                     "array-key": [1, 2, 3]
-                })],
+                }),
             };
             let status_id_2 = AppStatusChangeId::new();
             let t2 = AppTask::Delete {
@@ -985,10 +985,10 @@ mod tests {
             let t2 = AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
                 status_id: status_id_2,
                 app_name: AppName::master(),
-                infrastructure_payload_to_restore: vec![serde_json::json!({
+                infrastructure_payload_to_restore: serde_json::json!({
                     "string-key": "test",
                     "array-key": [1, 2, 3]
-                })],
+                }),
             };
             let status_id_3 = AppStatusChangeId::new();
             let t3 = AppTask::CreateOrUpdate {

@@ -6,25 +6,25 @@ use super::{
 use crate::{
     config::BootstrappingContainer,
     infrastructure::{
-        APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL,
-        kubernetes::payloads::{
-            convert_k8s_traefik_crds_to_domain_traefik_routes, ingress_route_payload,
-            ingress_route_payload_base, middleware_payload,
+        APP_NAME_LABEL, SERVICE_NAME_LABEL,
+        kubernetes::{
+            element::{K8sBackupElement, K8sElement},
+            payloads::{
+                convert_k8s_traefik_crds_to_domain_traefik_routes, ingress_route_payload,
+                ingress_route_payload_base, middleware_payload,
+            },
         },
     },
 };
 use anyhow::Result;
 use domain::{
     AppName, Image, RawInfrastructureElement,
-    app_deployment::{
-        ApplicationCompanion, BootstrappedCompanions, MergeRawElementsContext,
-    },
-    app_instance::ContainerType,
+    app_deployment::{ApplicationCompanion, BootstrappedCompanions, MergeRawElementsContext},
 };
 use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt, TryStreamExt};
 use handlebars::RenderError;
 use k8s_openapi::{
-    DeepMerge, Metadata, Resource,
+    DeepMerge, Metadata,
     api::{
         apps::v1::{Deployment, StatefulSet},
         batch::v1::Job,
@@ -32,17 +32,17 @@ use k8s_openapi::{
             ConfigMap, Container, LocalObjectReference, PersistentVolumeClaim, Pod, PodSpec,
             Secret, Service, ServiceAccount,
         },
-        networking::v1::{Ingress, NetworkPolicy},
+        networking::v1::NetworkPolicy,
         rbac::v1::{Role, RoleBinding},
     },
     apimachinery::pkg::apis::meta::v1::LabelSelector,
 };
 use kube::{
-    Api, Client, ResourceExt,
+    Api, Client,
     api::{LogParams, Patch, PatchParams, PostParams, WatchParams},
-    core::{DynamicObject, ObjectMeta, WatchEvent},
+    core::{ObjectMeta, WatchEvent},
 };
-use log::{debug, error, trace, warn};
+use log::{debug, trace, warn};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -67,255 +67,14 @@ pub(super) struct K8sDeploymentUnit {
     traefik_middlewares: Vec<TraefikMiddleware>,
 }
 
-macro_rules! parse_from_dynamic_object {
-    (
-        $roles:ident,
-        $role_bindings:ident,
-        $stateful_sets:ident,
-        $config_maps:ident,
-        $secrets:ident,
-        $pvcs:ident,
-        $services:ident,
-        $pods:ident,
-        $deployments:ident,
-        $jobs:ident,
-        $service_accounts:ident,
-        $ingresses:ident,
-        $policies:ident,
-        $traefik_ingresses:ident,
-        $traefik_middlewares:ident,
-        $api_version:ident,
-        $kind:ident,
-        $app_name:ident,
-        $dyn_obj:ident
-    ) => {
-        match ($api_version, $kind) {
-            (Role::API_VERSION, Role::KIND) => match $dyn_obj.clone().try_parse::<Role>()
-            {
-                Ok(role) => {
-                    $roles.push(role);
-                }
-                Err(e) => {
-                    error!("Cannot parse {:?} as Role: {e}", $dyn_obj.metadata.name);
-                }
-            },
-
-            (RoleBinding::API_VERSION, RoleBinding::KIND) => {
-                match $dyn_obj.clone().try_parse::<RoleBinding>() {
-                    Ok(role_binding) => {
-                        $role_bindings.push(role_binding);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as RoleBinding: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            (StatefulSet::API_VERSION, StatefulSet::KIND) => {
-                match $dyn_obj.clone().try_parse::<StatefulSet>() {
-                    Ok(stateful_set) => {
-                        $stateful_sets.push(stateful_set);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as StatefulSet: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            (ConfigMap::API_VERSION, ConfigMap::KIND) => {
-                match $dyn_obj.clone().try_parse::<ConfigMap>() {
-                    Ok(config_map) => {
-                        $config_maps.push(config_map);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as ConfigMap: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            (Secret::API_VERSION, Secret::KIND) => {
-                if let serde_json::Value::Object(obj) = &mut $dyn_obj.data {
-                    obj.entry("data").and_modify(|obj| {
-                        if let serde_json::Value::Object(obj) = obj {
-                            for (_k, v) in obj.iter_mut() {
-                                if let serde_json::Value::String(str) = v {
-                                    // replacing new lines here because it is assumed
-                                    // that the data is base64 encoded and thus there
-                                    // must be no new lines
-                                    *v = str.replace('\n', "").into();
-                                }
-                            }
-                        }
-                    });
-                }
-
-                match $dyn_obj.clone().try_parse::<Secret>() {
-                    Ok(secret) => {
-                        $secrets.push(secret);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as Secret: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            (PersistentVolumeClaim::API_VERSION, PersistentVolumeClaim::KIND) => {
-                match $dyn_obj.clone().try_parse::<PersistentVolumeClaim>() {
-                    Ok(pvc) => {
-                        $pvcs.push(pvc);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as PersistentVolumeClaim: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            (Service::API_VERSION, Service::KIND) => {
-                match $dyn_obj.clone().try_parse::<Service>() {
-                    Ok(service) => {
-                        $services.push(service);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as Service: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            (Deployment::API_VERSION, Deployment::KIND) => {
-                match $dyn_obj.clone().try_parse::<Deployment>() {
-                    Ok(mut deployment) => {
-                        // TODO: eventually we should support that bootstrapped elements support the
-                        // reading of PREvant labels. In this case, the  following code snippet
-                        // should be evaluated.
-                        // let service_name = deployment
-                        //     .labels()
-                        //     .get(SERVICE_NAME_LABEL)
-                        //     .cloned()
-                        //     .unwrap_or_else(|| {
-                        //         deployment.metadata.name.clone().unwrap_or_default()
-                        //     });
-                        let service_name = deployment.metadata.name.clone().unwrap_or_default();
-
-                        deployment.labels_mut().entry(SERVICE_NAME_LABEL.to_string())
-                            .or_insert(service_name);
-                        deployment.labels_mut().entry(CONTAINER_TYPE_LABEL.to_string())
-                            .or_insert(ContainerType::ApplicationCompanion.to_string());
-
-                        $deployments.push(deployment);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as Deployment: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            (Pod::API_VERSION, Pod::KIND) => match $dyn_obj.clone().try_parse::<Pod>() {
-                Ok(pod) => {
-                    $pods.push(pod);
-                }
-                Err(e) => {
-                    error!("Cannot parse {:?} as Pod: {e}", $dyn_obj.metadata.name);
-                }
-            },
-            (Job::API_VERSION, Job::KIND) => match $dyn_obj.clone().try_parse::<Job>() {
-                Ok(job) => {
-                    $jobs.push(job);
-                }
-                Err(e) => {
-                    error!("Cannot parse {:?} as Job: {e}", $dyn_obj.metadata.name);
-                }
-            },
-            (ServiceAccount::API_VERSION, ServiceAccount::KIND) => {
-                match $dyn_obj.clone().try_parse::<ServiceAccount>() {
-                    Ok(service_account) => {
-                        $service_accounts.push(service_account);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as ServiceAccount: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            (Ingress::API_VERSION, Ingress::KIND) => {
-                match $dyn_obj.clone().try_parse::<Ingress>() {
-                    Ok(ingress) => {
-                        $ingresses.push(ingress);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as Ingress: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            (NetworkPolicy::API_VERSION, NetworkPolicy::KIND) => {
-                match $dyn_obj.clone().try_parse::<NetworkPolicy>() {
-                    Ok(policy) => {
-                        $policies.push(policy);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as NetworkPolicy: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            ("traefik.containo.us/v1alpha1", "Middleware") => {
-                match $dyn_obj.clone().try_parse::<TraefikMiddleware>() {
-                    Ok(middleware) => {
-                        $traefik_middlewares.push(middleware);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as Traefik middleware: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            ("traefik.containo.us/v1alpha1", "IngressRoute") => {
-                match $dyn_obj.clone().try_parse::<TraefikIngressRoute>() {
-                    Ok(ingress) => {
-                        $traefik_ingresses.push(ingress);
-                    }
-                    Err(e) => {
-                        error!(
-                            "Cannot parse {:?} as Traefik ingress route: {e}",
-                            $dyn_obj.metadata.name
-                        );
-                    }
-                }
-            }
-            ("", "") => {}
-            _ => {
-                warn!(
-                    "Cannot parse {name} ({api_version}, {kind}) for {app_name} because its kind is unknown",
-                    api_version = $api_version,
-                    kind = $kind,
-                    app_name = $app_name,
-                    name = $dyn_obj.metadata.name.unwrap_or_default()
-                );
-            }
-        }
-    };
+impl<'de> Deserialize<'de> for K8sDeploymentUnit {
+    fn deserialize<D>(deserializer: D) -> Result<K8sDeploymentUnit, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let elements = Vec::<K8sElement>::deserialize(deserializer)?;
+        Ok(K8sDeploymentUnit::from(elements))
+    }
 }
 
 macro_rules! empty_read_only_fields {
@@ -349,6 +108,120 @@ macro_rules! empty_read_only_fields {
                 $( spec.$additional_field_in_spec = None; )*
             }
         }
+    }
+}
+
+impl From<Vec<K8sElement>> for K8sDeploymentUnit {
+    fn from(value: Vec<K8sElement>) -> Self {
+        let mut roles = Vec::new();
+        let mut role_bindings = Vec::new();
+        let mut stateful_sets = Vec::new();
+        let mut config_maps = Vec::new();
+        let mut secrets = Vec::new();
+        let mut pvcs = Vec::new();
+        let mut services = Vec::new();
+        let mut pods = Vec::new();
+        let mut deployments = Vec::new();
+        let mut jobs = Vec::new();
+        let mut service_accounts = Vec::new();
+        let mut ingresses = Vec::new();
+        let mut policies = Vec::new();
+        let mut traefik_ingresses = Vec::new();
+        let mut traefik_middlewares = Vec::new();
+
+        for element in value {
+            match element {
+                K8sElement::Role(role) => roles.push(role),
+                K8sElement::RoleBinding(role_binding) => role_bindings.push(role_binding),
+                K8sElement::StatefulSet(stateful_set) => stateful_sets.push(stateful_set),
+                K8sElement::ConfigMap(config_map) => config_maps.push(config_map),
+                K8sElement::Secret(secret) => secrets.push(secret),
+                K8sElement::PVC(persistent_volume_claim) => pvcs.push(persistent_volume_claim),
+                K8sElement::Service(service) => services.push(service),
+                K8sElement::Pod(pod) => pods.push(pod),
+                K8sElement::Deployment(deployment) => deployments.push(deployment),
+                K8sElement::Job(job) => jobs.push(job),
+                K8sElement::ServiceAccount(service_account) => {
+                    service_accounts.push(service_account)
+                }
+                K8sElement::Ingress(ingress) => ingresses.push(ingress),
+                K8sElement::NetworkPolicy(network_policy) => policies.push(network_policy),
+                K8sElement::TraefikIngressRoute(ingress_route) => {
+                    traefik_ingresses.push(ingress_route)
+                }
+                K8sElement::TraefikMiddleware(middleware) => traefik_middlewares.push(middleware),
+            }
+        }
+
+        Self::sorted(Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        })
+    }
+}
+
+impl From<Vec<K8sBackupElement>> for K8sDeploymentUnit {
+    fn from(value: Vec<K8sBackupElement>) -> Self {
+        let mut roles = Vec::new();
+        let mut role_bindings = Vec::new();
+        let mut stateful_sets = Vec::new();
+        let mut services = Vec::new();
+        let mut pods = Vec::new();
+        let mut deployments = Vec::new();
+        let mut service_accounts = Vec::new();
+        let mut policies = Vec::new();
+        let mut traefik_middlewares = Vec::new();
+        let mut traefik_ingresses = Vec::new();
+
+        for element in value {
+            match element {
+                K8sBackupElement::Role(role) => roles.push(role),
+                K8sBackupElement::RoleBinding(role_binding) => role_bindings.push(role_binding),
+                K8sBackupElement::StatefulSet(stateful_set) => stateful_sets.push(stateful_set),
+                K8sBackupElement::Service(service) => services.push(service),
+                K8sBackupElement::Pod(pod) => pods.push(pod),
+                K8sBackupElement::Deployment(deployment) => deployments.push(deployment),
+                K8sBackupElement::ServiceAccount(service_account) => {
+                    service_accounts.push(service_account)
+                }
+                K8sBackupElement::NetworkPolicy(network_policy) => policies.push(network_policy),
+                K8sBackupElement::TraefikIngressRoute(ingress_route) => {
+                    traefik_ingresses.push(ingress_route)
+                }
+                K8sBackupElement::TraefikMiddleware(middleware) => {
+                    traefik_middlewares.push(middleware)
+                }
+            }
+        }
+
+        Self::sorted(Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps: Vec::new(),
+            secrets: Vec::new(),
+            pvcs: Vec::new(),
+            services,
+            pods,
+            deployments,
+            jobs: Vec::new(),
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        })
     }
 }
 
@@ -636,57 +509,49 @@ impl K8sDeploymentUnit {
             }
 
             for doc in serde_norway::Deserializer::from_str(&stdout) {
-                match DynamicObject::deserialize(doc) {
-                    Ok(mut dy) => {
-                        dy.metadata.namespace = Some(app_name.to_rfc1123_namespace_id());
-                        dy.labels_mut()
-                            .insert(APP_NAME_LABEL.to_string(), app_name.to_string());
-
-                        let api_version = dy
-                            .types
-                            .as_ref()
-                            .map(|t| t.api_version.as_str())
-                            .unwrap_or_default();
-                        let kind = dy
-                            .types
-                            .as_ref()
-                            .map(|t| t.kind.as_str())
-                            .unwrap_or_default();
-
+                let mut element = match K8sElement::deserialize(doc) {
+                    Ok(element) => {
                         if log::log_enabled!(log::Level::Trace) {
+                            let name = element.metadata().name.as_deref().unwrap_or_default();
                             trace!(
-                                "Parsed {} ({api_version}, {kind}) for {app_name} as a bootstrap application element.",
-                                dy.metadata.name.as_deref().unwrap_or_default(),
+                                "Parsed {name} for {app_name} as a bootstrap application element.",
                             );
                         }
-
-                        parse_from_dynamic_object!(
-                            roles,
-                            role_bindings,
-                            stateful_sets,
-                            config_maps,
-                            secrets,
-                            pvcs,
-                            services,
-                            pods,
-                            deployments,
-                            jobs,
-                            service_accounts,
-                            ingresses,
-                            policies,
-                            traefik_ingresses,
-                            traefik_middlewares,
-                            api_version,
-                            kind,
-                            app_name,
-                            dy
-                        );
+                        element
                     }
                     Err(err) => {
+                        // TODO: for debugging of the bootstrapping container we have to known what
+                        // is wrong and we should be able to log the invalid yaml
                         warn!(
-                            "The output of a bootstrap container for {app_name} could not be parsed: {stdout}"
+                            "The output of a bootstrap container for {app_name} could not be parsed: {err}"
                         );
-                        return Err(err.into());
+                        continue;
+                    }
+                };
+
+                element = element.with_prevant_metadata(app_name);
+
+                match element {
+                    K8sElement::Role(role) => roles.push(role),
+                    K8sElement::RoleBinding(role_binding) => role_bindings.push(role_binding),
+                    K8sElement::StatefulSet(stateful_set) => stateful_sets.push(stateful_set),
+                    K8sElement::ConfigMap(config_map) => config_maps.push(config_map),
+                    K8sElement::Secret(secret) => secrets.push(secret),
+                    K8sElement::PVC(persistent_volume_claim) => pvcs.push(persistent_volume_claim),
+                    K8sElement::Service(service) => services.push(service),
+                    K8sElement::Pod(pod) => pods.push(pod),
+                    K8sElement::Deployment(deployment) => deployments.push(deployment),
+                    K8sElement::Job(job) => jobs.push(job),
+                    K8sElement::ServiceAccount(service_account) => {
+                        service_accounts.push(service_account)
+                    }
+                    K8sElement::Ingress(ingress) => ingresses.push(ingress),
+                    K8sElement::NetworkPolicy(network_policy) => policies.push(network_policy),
+                    K8sElement::TraefikIngressRoute(ingress_route) => {
+                        traefik_ingresses.push(ingress_route)
+                    }
+                    K8sElement::TraefikMiddleware(middleware) => {
+                        traefik_middlewares.push(middleware)
                     }
                 }
             }
@@ -1373,7 +1238,8 @@ impl K8sDeploymentUnit {
     /// [`assert_json_diff::assert_json_include!`].
     #[cfg(test)]
     pub(super) fn without_date_annotations(mut self) -> Self {
-        for metadata in self.deployments
+        for metadata in self
+            .deployments
             .iter_mut()
             .flat_map(|d| d.spec.as_mut())
             .map(|d| &mut d.template)
@@ -1391,101 +1257,52 @@ impl K8sDeploymentUnit {
     /// [persistent volumes](https://kubernetes.io/docs/concepts/storage/persistent-volumes/) are
     /// removed from `self` and then `self` can be deleted from the infrastructure with
     /// [`Self::delete`].
-    pub(super) fn prepare_for_back_up(mut self) -> Self {
-        // Clear the volume mounts and keep them on the Kubernetes infrastructure because they
-        // might contain data that a tester of the application crafted for a long time and this
-        // should be preserved.
-        self.config_maps.clear();
-        self.secrets.clear();
-        self.pvcs.clear();
-
-        // The jobs won't be contained in the back-up because “Jobs represent one-off tasks that
-        // run to completion and then stop.” If they are part of the back-up they would restart and
-        // try to the same thing again which might be already done.
-        self.jobs.clear();
-
-        self.without_managed_data()
-    }
-
-    pub fn parse_from_json<'a, I>(app_name: &AppName, payload: I) -> Result<Self>
-    where
-        I: IntoIterator,
-        <I as IntoIterator>::Item: serde::de::Deserializer<'a>,
-    {
-        let mut roles = Vec::new();
-        let mut role_bindings = Vec::new();
-        let mut stateful_sets = Vec::new();
-        let mut config_maps = Vec::new();
-        let mut secrets = Vec::new();
-        let mut pvcs = Vec::new();
-        let mut services = Vec::new();
-        let mut pods = Vec::new();
-        let mut deployments = Vec::new();
-        let mut jobs = Vec::new();
-        let mut service_accounts = Vec::new();
-        let mut ingresses = Vec::new();
-        let mut policies = Vec::new();
-        let mut traefik_middlewares = Vec::new();
-        let mut traefik_ingresses = Vec::new();
-
-        for pa in payload.into_iter() {
-            match DynamicObject::deserialize(pa) {
-                Ok(mut dyn_obj) => {
-                    let api_version = dyn_obj
-                        .types
-                        .as_ref()
-                        .map(|t| t.api_version.as_str())
-                        .unwrap_or_default();
-                    let kind = dyn_obj
-                        .types
-                        .as_ref()
-                        .map(|t| t.kind.as_str())
-                        .unwrap_or_default();
-
-                    parse_from_dynamic_object!(
-                        roles,
-                        role_bindings,
-                        stateful_sets,
-                        config_maps,
-                        secrets,
-                        pvcs,
-                        services,
-                        pods,
-                        deployments,
-                        jobs,
-                        service_accounts,
-                        ingresses,
-                        policies,
-                        traefik_ingresses,
-                        traefik_middlewares,
-                        api_version,
-                        kind,
-                        app_name,
-                        dyn_obj
-                    );
-                }
-                Err(err) => anyhow::bail!("{err}"),
-            }
-        }
-
-        Ok(Self::sorted(Self {
+    pub(super) fn into_back_up_payload(self) -> Vec<K8sBackupElement> {
+        let Self {
             roles,
             role_bindings,
             stateful_sets,
-            config_maps,
-            secrets,
-            pvcs,
+            config_maps: _,
+            secrets: _,
+            pvcs: _,
             services,
             pods,
             deployments,
-            jobs,
+            jobs: _,
             service_accounts,
             policies,
             traefik_ingresses,
             traefik_middlewares,
-        }))
+        } = self.without_managed_data();
+
+        roles
+            .into_iter()
+            .map(K8sBackupElement::Role)
+            .chain(role_bindings.into_iter().map(K8sBackupElement::RoleBinding))
+            .chain(stateful_sets.into_iter().map(K8sBackupElement::StatefulSet))
+            .chain(services.into_iter().map(K8sBackupElement::Service))
+            .chain(pods.into_iter().map(K8sBackupElement::Pod))
+            .chain(deployments.into_iter().map(K8sBackupElement::Deployment))
+            .chain(
+                service_accounts
+                    .into_iter()
+                    .map(K8sBackupElement::ServiceAccount),
+            )
+            .chain(policies.into_iter().map(K8sBackupElement::NetworkPolicy))
+            .chain(
+                traefik_middlewares
+                    .into_iter()
+                    .map(K8sBackupElement::TraefikMiddleware),
+            )
+            .chain(
+                traefik_ingresses
+                    .into_iter()
+                    .map(K8sBackupElement::TraefikIngressRoute),
+            )
+            .collect()
     }
 
+    #[cfg(test)]
     pub fn to_json_vec(&self) -> Vec<serde_json::Value> {
         let Self {
             roles,
@@ -1804,6 +1621,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::CONTAINER_TYPE_LABEL;
     use assert_json_diff::assert_json_include;
     use k8s_openapi::api::{
         apps::v1::DeploymentSpec,
@@ -2850,7 +2668,7 @@ mod tests {
     fn parse_from_json() {
         let json = captured_example_from_k3s();
 
-        let unit = K8sDeploymentUnit::parse_from_json(&AppName::master(), json).unwrap();
+        let unit = serde_json::from_value::<K8sDeploymentUnit>(json.into()).unwrap();
 
         assert_eq!(unit.roles.len(), 0);
         assert_eq!(unit.role_bindings.len(), 0);
@@ -2872,7 +2690,7 @@ mod tests {
     fn to_json_vec() {
         let json = captured_example_from_k3s();
 
-        let unit = K8sDeploymentUnit::parse_from_json(&AppName::master(), json).unwrap();
+        let unit = serde_json::from_value::<K8sDeploymentUnit>(json.into()).unwrap();
 
         assert_json_include!(
             actual: serde_json::Value::Array(unit.to_json_vec()),
@@ -2886,27 +2704,37 @@ mod tests {
         #[test]
         fn clean_system_populations() {
             let unit =
-                K8sDeploymentUnit::parse_from_json(&AppName::master(), captured_example_from_k3s())
+                serde_json::from_value::<K8sDeploymentUnit>(captured_example_from_k3s().into())
                     .unwrap();
 
-            let prepare_for_back_up = unit.prepare_for_back_up();
+            let prepare_for_back_up = unit.into_back_up_payload();
 
-            assert!(
-                prepare_for_back_up.pods.is_empty(),
+            assert_eq!(
+                0,
+                prepare_for_back_up
+                    .iter()
+                    .filter(|e| matches!(e, K8sBackupElement::Pod(_)))
+                    .count(),
                 "Pods should be empty because they are covered by deployments"
             );
             assert!(
                 !prepare_for_back_up
-                    .services
                     .iter()
+                    .filter_map(|e| match e {
+                        K8sBackupElement::Service(service) => Some(service),
+                        _ => None,
+                    })
                     .filter_map(|service| service.spec.as_ref())
                     .any(|spec| spec.cluster_ip.is_some() || spec.cluster_ips.is_some()),
                 "Don't preserve cluster IP(s)"
             );
             assert!(
                 !prepare_for_back_up
-                    .deployments
                     .iter()
+                    .filter_map(|e| match e {
+                        K8sBackupElement::Deployment(deployment) => Some(deployment),
+                        _ => None,
+                    })
                     .any(|deployment| deployment.status.is_some()),
                 "Deployment's status will be set by server"
             );
@@ -2934,9 +2762,9 @@ spec:
 
             assert!(!unit.jobs.is_empty());
 
-            let prepared_for_back_up = unit.prepare_for_back_up();
+            let prepared_for_back_up = unit.into_back_up_payload();
 
-            assert!(prepared_for_back_up.jobs.is_empty());
+            assert_eq!(prepared_for_back_up, Vec::new());
         }
 
         #[tokio::test]
@@ -3006,11 +2834,9 @@ spec:
             assert!(!unit.config_maps.is_empty());
             assert!(!unit.pvcs.is_empty());
 
-            let prepared_for_back_up = unit.prepare_for_back_up();
+            let prepared_for_back_up = unit.into_back_up_payload();
 
-            assert!(prepared_for_back_up.secrets.is_empty());
-            assert!(prepared_for_back_up.config_maps.is_empty());
-            assert!(prepared_for_back_up.pvcs.is_empty());
+            assert_eq!(prepared_for_back_up, Vec::new())
         }
     }
 

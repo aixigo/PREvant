@@ -110,8 +110,18 @@ macro_rules! dispatch {
     };
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BackupPayloadProxy {
+    Kubernetes(<Kubernetes as Infrastructure>::BackupPayload),
+    // must be placed last, otherwise it will always deserialized
+    Unsupported,
+}
+
 #[async_trait::async_trait]
 impl Infrastructure for InfrastructureProxy {
+    type BackupPayload = BackupPayloadProxy;
+
     async fn fetch_apps(&self) -> anyhow::Result<HashMap<AppName, App>> {
         dispatch!(self, fetch_apps).await
     }
@@ -130,13 +140,16 @@ impl Infrastructure for InfrastructureProxy {
     async fn fetch_app_as_backup_based_infrastructure_payload(
         &self,
         app_name: &AppName,
-    ) -> anyhow::Result<Option<Vec<serde_json::Value>>> {
-        dispatch!(
-            self,
-            fetch_app_as_backup_based_infrastructure_payload,
-            app_name
-        )
-        .await
+    ) -> anyhow::Result<Option<Self::BackupPayload>> {
+        match self {
+            Self::Kubernetes(kubernetes) => Ok(kubernetes
+                .fetch_app_as_backup_based_infrastructure_payload(app_name)
+                .await?
+                .map(BackupPayloadProxy::Kubernetes)),
+            _ => {
+                anyhow::bail!("Mismatched backend and backup payload")
+            }
+        }
     }
 
     async fn deploy_services(
@@ -154,23 +167,31 @@ impl Infrastructure for InfrastructureProxy {
     async fn restore_infrastructure_objects_partially(
         &self,
         app_name: &AppName,
-        infrastructure: &[serde_json::Value],
+        payload: Self::BackupPayload,
     ) -> anyhow::Result<Option<App>> {
-        dispatch!(
-            self,
-            restore_infrastructure_objects_partially,
-            app_name,
-            infrastructure
-        )
-        .await
+        match (self, payload) {
+            (Self::Kubernetes(kubernetes), BackupPayloadProxy::Kubernetes(payload)) => {
+                kubernetes
+                    .restore_infrastructure_objects_partially(app_name, payload)
+                    .await
+            }
+            _ => anyhow::bail!("Mismatched backend and backup payload"),
+        }
     }
 
     async fn delete_infrastructure_objects_partially(
         &self,
         app_name: &AppName,
-        infrastructure: &[serde_json::Value],
+        payload: Self::BackupPayload,
     ) -> anyhow::Result<()> {
-        dispatch!(self, delete_infrastructure_objects_partially, app_name, infrastructure).await
+        match (self, payload) {
+            (Self::Kubernetes(kubernetes), BackupPayloadProxy::Kubernetes(payload)) => {
+                kubernetes
+                    .delete_infrastructure_objects_partially(app_name, payload)
+                    .await
+            }
+            _ => anyhow::bail!("Mismatched backend and backup payload"),
+        }
     }
 
     async fn get_logs<'a>(
@@ -209,7 +230,13 @@ impl Infrastructure for InfrastructureProxy {
         context: BootstrapCompanionsWithRawElementsContext<'_>,
         template_data: &TemplateData,
     ) -> anyhow::Result<BootstrappedCompanions> {
-        dispatch!(self, bootstrap_companions_with_raw_elements, context, template_data).await
+        dispatch!(
+            self,
+            bootstrap_companions_with_raw_elements,
+            context,
+            template_data
+        )
+        .await
     }
 
     fn update_raw_elements_after_merged_blueprint_config(
@@ -217,7 +244,12 @@ impl Infrastructure for InfrastructureProxy {
         context: MergeRawElementsContext<'_>,
         raw_elements: Vec<RawInfrastructureElement>,
     ) -> anyhow::Result<Vec<RawInfrastructureElement>> {
-        dispatch!(self, update_raw_elements_after_merged_blueprint_config, context, raw_elements)
+        dispatch!(
+            self,
+            update_raw_elements_after_merged_blueprint_config,
+            context,
+            raw_elements
+        )
     }
 
     async fn http_forwarder(&self) -> anyhow::Result<Box<dyn HttpForwarder>> {
@@ -241,5 +273,62 @@ impl From<Kubernetes> for InfrastructureProxy {
 impl From<Dummy> for InfrastructureProxy {
     fn from(dummy: Dummy) -> Self {
         Self::Dummy(dummy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    mod parse_backup_payload_proxy {
+        use super::super::*;
+
+        #[test]
+        fn k8s() -> anyhow::Result<()> {
+            let deployment = r#"
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: simple-deployment
+  spec:
+    replicas: 3
+    selector:
+      matchLabels:
+        app: simple-app
+    template:
+      metadata:
+        labels:
+          app: simple-app
+      spec:
+        containers:
+        - name: simple-container
+          image: nginx:latest
+          ports:
+          - containerPort: 80
+"#;
+
+            let deployment = serde_norway::from_str::<BackupPayloadProxy>(deployment)?;
+
+            assert!(matches!(deployment, BackupPayloadProxy::Kubernetes(e) if !e.is_empty()));
+            Ok(())
+        }
+
+        #[test]
+        fn unknown_variant() {
+            let deployment = r#"{}"#;
+
+            let result = serde_json::from_str::<BackupPayloadProxy>(deployment);
+
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn unsupported() -> anyhow::Result<()> {
+            let deployment = r#""#;
+
+            let deployment = serde_norway::from_str::<BackupPayloadProxy>(deployment)?;
+
+            assert!(matches!(deployment, BackupPayloadProxy::Unsupported));
+            Ok(())
+        }
     }
 }
