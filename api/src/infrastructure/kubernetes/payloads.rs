@@ -28,6 +28,7 @@ use super::super::{
     STORAGE_TYPE_LABEL,
 };
 use crate::config::{Config, ContainerConfig};
+use crate::infrastructure::kubernetes::element::K8sElement;
 use crate::infrastructure::kubernetes::{
     infrastructure::KubernetesInfrastructureError,
     traefik_crds::{
@@ -557,7 +558,7 @@ pub fn namespace_annotations(
 /// Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 pub fn deployment_payload(
     app_name: &AppName,
-    service: &DeployableService,
+    service: &DeployableService<K8sElement>,
     container_config: &ContainerConfig,
     persistent_volume_map: &Option<HashMap<&String, PersistentVolumeClaim>>,
 ) -> V1Deployment {
@@ -838,7 +839,10 @@ pub fn image_pull_secret_payload(
 }
 
 /// Creates a JSON payload suitable for [Kubernetes' Services](https://kubernetes.io/docs/concepts/services-networking/service/)
-pub fn service_payload(app_name: &AppName, service_config: &DeployableService) -> V1Service {
+pub fn service_payload(
+    app_name: &AppName,
+    service_config: &DeployableService<K8sElement>,
+) -> V1Service {
     serde_json::from_value(serde_json::json!({
       "apiVersion": "v1",
       "kind": "Service",
@@ -1118,7 +1122,7 @@ pub fn pvc_volume_payload(persistent_volume_claim: &PersistentVolumeClaim) -> Vo
 
 pub fn persistent_volume_claim_payload(
     app_name: &AppName,
-    service: &DeployableService,
+    service: &DeployableService<K8sElement>,
     storage_size: &ByteSize,
     storage_class: &str,
     declared_volume: &str,
@@ -1167,7 +1171,8 @@ pub fn persistent_volume_claim_payload(
 mod tests {
     use super::*;
     use domain::{
-        app_blueprints::EnvironmentVariable, app_deployment::AppDeploymentBuilder,
+        app_blueprints::EnvironmentVariable,
+        app_deployment::{AppDeploymentBuilder, DeploymentUnit},
         blueprint_service,
     };
     use std::str::FromStr;
@@ -1210,9 +1215,11 @@ mod tests {
     fn should_create_deployment_payload() {
         let config = blueprint_service!("db", "mariadb:10.3.17");
 
-        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
-            .finish()
-            .unwrap();
+        let deployment_unit = DeploymentUnit::from_unbootstrapped(
+            AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+                .finish()
+                .unwrap(),
+        );
 
         let payload = deployment_payload(
             &deployment_unit.app_name,
@@ -1283,9 +1290,11 @@ mod tests {
                 "MYSQL_ROOT_PASSWORD" => "example"
         ));
 
-        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
-            .finish()
-            .unwrap();
+        let deployment_unit = DeploymentUnit::from_unbootstrapped(
+            AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+                .finish()
+                .unwrap(),
+        );
 
         let payload = deployment_payload(
             &deployment_unit.app_name,
@@ -1359,9 +1368,11 @@ mod tests {
             SecUtf8::from("example"),
         ));
 
-        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
-            .finish()
-            .unwrap();
+        let deployment_unit = DeploymentUnit::from_unbootstrapped(
+            AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+                .finish()
+                .unwrap(),
+        );
 
         let payload = deployment_payload(
             &deployment_unit.app_name,
@@ -1438,10 +1449,11 @@ mod tests {
     fn should_create_deployment_payload_with_app_name_that_is_not_compliant_to_rfc1123() {
         let config = blueprint_service!("db", "mariadb:10.3.17");
 
-        let deployment_unit =
+        let deployment_unit = DeploymentUnit::from_unbootstrapped(
             AppDeploymentBuilder::init(AppName::from_str("MY-APP").unwrap(), vec![config], None)
                 .finish()
-                .unwrap();
+                .unwrap(),
+        );
 
         let payload = deployment_payload(
             &deployment_unit.app_name,
@@ -1696,9 +1708,11 @@ mod tests {
     fn should_create_deployment_payload_with_persistent_volume_claim() {
         let config = blueprint_service!("db", "mariadb:10.3.17");
 
-        let mut deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
-            .finish()
-            .unwrap();
+        let mut deployment_unit = DeploymentUnit::from_unbootstrapped(
+            AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+                .finish()
+                .unwrap(),
+        );
         deployment_unit.services[0]
             .declared_volumes
             .push(String::from("/var/lib/data"));
@@ -1814,9 +1828,11 @@ mod tests {
                   port=3306"
         ));
 
-        let deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
-            .finish()
-            .unwrap();
+        let deployment_unit = DeploymentUnit::from_unbootstrapped(
+            AppDeploymentBuilder::init(AppName::master(), vec![config], None)
+                .finish()
+                .unwrap(),
+        );
 
         let payload = deployment_payload(
             &deployment_unit.app_name,

@@ -33,7 +33,7 @@ use domain::{
     AppName,
     app_blueprints::{DesiredServiceStatus, ServiceConfig},
     app_deployment::{
-        ApplicationCompanion, BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions,
+        BootstrapCompanionsContext, BootstrappedCompanion, BootstrappedCompanions,
         DeployableService, DeploymentUnit,
     },
     app_instance::{App, Service, ServiceStatus},
@@ -48,7 +48,7 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct Dummy {
     delay: Option<Duration>,
-    deployment_units: Arc<Mutex<HashMap<AppName, DeploymentUnit>>>,
+    deployment_units: Arc<Mutex<HashMap<AppName, DeploymentUnit<()>>>>,
     created_at: Arc<Mutex<HashMap<AppName, DateTime<Utc>>>>,
     bootstrapping_configs: Vec<ServiceConfig>,
 }
@@ -73,7 +73,7 @@ impl Dummy {
         }
     }
 
-    pub fn services(&self) -> Vec<DeployableService> {
+    pub fn services(&self) -> Vec<DeployableService<()>> {
         self.deployment_units
             .lock()
             .unwrap()
@@ -94,17 +94,18 @@ impl Dummy {
             let deployment_unit = AppDeploymentBuilder::init(app_name, services, None)
                 .finish()
                 .unwrap();
+            let app_name = deployment_unit.app_name.clone();
 
-            self.deploy_fake_impl(&deployment_unit);
+            self.deploy_fake_impl(deployment_unit);
 
             let mut created_ats = self.created_at.lock().unwrap();
-            created_ats.insert(deployment_unit.app_name.clone(), created_at);
+            created_ats.insert(app_name, created_at);
         }
 
         self
     }
 
-    fn deploy_fake_impl(&self, deployment_unit: &DeploymentUnit) {
+    fn deploy_fake_impl(&self, deployment_unit: DeploymentUnit<()>) {
         let app_name = &deployment_unit.app_name;
 
         {
@@ -131,6 +132,7 @@ impl Dummy {
 #[cfg(test)]
 #[async_trait]
 impl Infrastructure for Dummy {
+    type BootstrappedElement = ();
     type BackupPayload = ();
 
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
@@ -176,18 +178,15 @@ impl Infrastructure for Dummy {
 
     async fn deploy_services(
         &self,
-        deployment_unit: &DeploymentUnit,
+        deployment_unit: DeploymentUnit<Self::BootstrappedElement>,
         _container_config: &ContainerConfig,
     ) -> Result<App> {
         self.delay_if_configured().await;
 
+        let app_name = deployment_unit.app_name.clone();
         self.deploy_fake_impl(deployment_unit);
 
-        Ok(self
-            .fetch_apps()
-            .await?
-            .remove(&deployment_unit.app_name)
-            .unwrap())
+        Ok(self.fetch_apps().await?.remove(&app_name).unwrap())
     }
 
     async fn stop_services(&self, app_name: &AppName) -> Result<Option<App>> {
@@ -270,15 +269,15 @@ impl Infrastructure for Dummy {
 
     async fn bootstrap_companions_with_raw_elements(
         &self,
-        _context: BootstrapCompanionsWithRawElementsContext<'_>,
+        _context: BootstrapCompanionsContext<'_>,
         template_data: &TemplateData,
-    ) -> Result<BootstrappedCompanions> {
+    ) -> Result<BootstrappedCompanions<Self::BootstrappedElement>> {
         Ok(BootstrappedCompanions {
             bootstrapped_companions: self
                 .bootstrapping_configs
                 .iter()
                 .map(|config| {
-                    Ok(ApplicationCompanion::bootstrapped(
+                    Ok(BootstrappedCompanion::bootstrapped(
                         config
                             .templated_clone(template_data)
                             .map_err(|e| anyhow::anyhow!("Cannot template config: {e:?}"))?,

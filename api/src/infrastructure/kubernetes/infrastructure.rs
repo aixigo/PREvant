@@ -31,22 +31,23 @@ use super::payloads::{
 };
 use super::traefik_crds::{IngressRoute, Middleware};
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
-use crate::infrastructure::kubernetes::element::K8sBackupElement;
-use crate::infrastructure::kubernetes::payloads::kubernetes_object_to_service;
 use crate::infrastructure::{
     HttpForwarder, Infrastructure, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
-    kubernetes::payloads::namespace_annotations,
+    kubernetes::{
+        element::{K8sBackupElement, K8sElement},
+        payloads::{kubernetes_object_to_service, namespace_annotations},
+    },
 };
 use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use domain::{
-    AppName, Image, Owner, RawInfrastructureElement,
+    AppName, Image, Owner,
     app_blueprints::{DesiredServiceStatus, UserDefinedParameters},
     app_deployment::{
-        BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions, DeployableService,
-        DeploymentUnit, MergeRawElementsContext,
+        BootstrapCompanionsContext, BootstrappedCompanions, DeployableService, DeploymentUnit,
+        MergeBootstrappedElementsContext,
     },
     app_instance::{App, ContainerTypeParseError, Service, ServiceStatus, WebHostMeta},
     templating::TemplateData,
@@ -313,7 +314,7 @@ impl Kubernetes {
     async fn create_payloads(
         &self,
         app_name: &AppName,
-        deployable_service: &DeployableService,
+        deployable_service: &DeployableService<K8sElement>,
         container_config: &ContainerConfig,
     ) -> Result<
         (
@@ -353,7 +354,7 @@ impl Kubernetes {
     async fn create_persistent_volume_claim<'a>(
         &self,
         app_name: &AppName,
-        service: &'a DeployableService,
+        service: &'a DeployableService<K8sElement>,
     ) -> Result<Option<HashMap<&'a String, PersistentVolumeClaim>>, KubernetesInfrastructureError>
     {
         let client = self.client().await?;
@@ -488,6 +489,7 @@ impl Kubernetes {
 
 #[async_trait]
 impl Infrastructure for Kubernetes {
+    type BootstrappedElement = K8sElement;
     type BackupPayload = Vec<K8sBackupElement>;
 
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
@@ -671,7 +673,7 @@ impl Infrastructure for Kubernetes {
 
     async fn deploy_services(
         &self,
-        deployment_unit: &DeploymentUnit,
+        deployment_unit: DeploymentUnit<K8sElement>,
         container_config: &ContainerConfig,
     ) -> Result<App> {
         let namespace_creation_response = self
@@ -690,8 +692,7 @@ impl Infrastructure for Kubernetes {
         // BootstrapCompanions::{bootstrap_companions_with_raw_elements,
         // update_raw_elements_after_merged_blueprint_config} and K8sDeploymentUnit::merge do
         // overlapping things.
-        // TODO: here we should have a assiociated type
-        let mut k8s_deployment_unit = serde_json::from_value::<K8sDeploymentUnit>(
+        let mut k8s_deployment_unit = K8sDeploymentUnit::from_iter(
             deployment_unit
                 .bootstrapped_companion_elements
                 .iter()
@@ -701,10 +702,8 @@ impl Infrastructure for Kubernetes {
                         .iter()
                         .flat_map(|service| service.bootstrapped_companion_elements.iter()),
                 )
-                .map(|e| e.clone())
-                .map(serde_json::Value::from)
-                .collect::<serde_json::Value>(),
-        )?;
+                .map(|e| e.clone()),
+        );
 
         for deployable_service in &deployment_unit.services {
             let (secret, service, deployment, ingress_route, middlewares) = self
@@ -762,7 +761,8 @@ impl Infrastructure for Kubernetes {
         app_name: &AppName,
         infrastructure_payload: Self::BackupPayload,
     ) -> Result<()> {
-        let unit = K8sDeploymentUnit::from(infrastructure_payload);
+        let unit =
+            K8sDeploymentUnit::from_iter(infrastructure_payload.into_iter().map(K8sElement::from));
         unit.delete(self.client().await?, app_name).await
     }
 
@@ -771,7 +771,8 @@ impl Infrastructure for Kubernetes {
         app_name: &AppName,
         infrastructure_payload: Self::BackupPayload,
     ) -> Result<Option<App>> {
-        let unit = K8sDeploymentUnit::from(infrastructure_payload);
+        let unit =
+            K8sDeploymentUnit::from_iter(infrastructure_payload.into_iter().map(K8sElement::from));
         unit.deploy(self.client().await?, app_name).await?;
         self.fetch_app(app_name).await
     }
@@ -993,9 +994,9 @@ impl Infrastructure for Kubernetes {
 
     async fn bootstrap_companions_with_raw_elements(
         &self,
-        context: BootstrapCompanionsWithRawElementsContext<'_>,
+        context: BootstrapCompanionsContext<'_>,
         template_data: &TemplateData,
-    ) -> Result<BootstrappedCompanions> {
+    ) -> Result<BootstrappedCompanions<K8sElement>> {
         let namespace_creation_response = self
             .create_namespace_if_necessary(
                 context.app_name,
@@ -1048,21 +1049,13 @@ impl Infrastructure for Kubernetes {
 
     fn update_raw_elements_after_merged_blueprint_config(
         &self,
-        context: MergeRawElementsContext<'_>,
-        raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Result<Vec<RawInfrastructureElement>> {
-        // TODO: here we should have a assiociated type
-        Ok(serde_json::from_value::<K8sDeploymentUnit>(
-            raw_elements
-                .into_iter()
-                .map(serde_json::Value::from)
-                .collect::<_>(),
-        )?
-        .update_with_merge_context(context)?
-        .to_json_vec()
-        .into_iter()
-        .map(RawInfrastructureElement::from)
-        .collect::<Vec<_>>())
+        context: MergeBootstrappedElementsContext<'_>,
+        raw_elements: Vec<Self::BootstrappedElement>,
+    ) -> Result<Vec<Self::BootstrappedElement>> {
+        Ok(K8sDeploymentUnit::from_iter(raw_elements)
+            .update_with_merge_context(context)?
+            .into_iter()
+            .collect::<Vec<_>>())
     }
 
     async fn resolve_infrastructure_template_data(
@@ -1161,8 +1154,7 @@ mod tests {
     use super::*;
     use crate::{apps::AppsError, config::runtime::KubernetesRuntimeConfig};
     use domain::{
-        RawInfrastructureElement,
-        app_deployment::{AppDeploymentBuilder, MergeRawElementsContext},
+        app_deployment::{AppDeploymentBuilder, MergeBootstrappedElementsContext},
         app_instance::ContainerType,
         blueprint_service,
     };
@@ -1238,7 +1230,10 @@ mod tests {
         .unwrap();
 
         let deploy_result = infra
-            .deploy_services(&unit, &Default::default())
+            .deploy_services(
+                DeploymentUnit::from_unbootstrapped(unit),
+                &Default::default(),
+            )
             .await
             .map_err(AppsError::from);
         assert_eq!(
@@ -1295,7 +1290,10 @@ mod tests {
         .unwrap();
 
         let deploy_result = infra
-            .deploy_services(&unit, &Default::default())
+            .deploy_services(
+                DeploymentUnit::from_unbootstrapped(unit),
+                &Default::default(),
+            )
             .await
             .map_err(AppsError::from);
         assert_eq!(
@@ -1439,7 +1437,7 @@ mod tests {
         );
 
         // Redeploy again to check if the operation is idempotent
-        infra.deploy_services(&unit, &Default::default()).await?;
+        infra.deploy_services(unit, &Default::default()).await?;
 
         let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
@@ -1525,7 +1523,7 @@ mod tests {
         );
 
         // Redeploy again to check if the operation is idempotent
-        infra.deploy_services(&unit, &Default::default()).await?;
+        infra.deploy_services(unit, &Default::default()).await?;
 
         let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
@@ -1609,7 +1607,7 @@ mod tests {
             .to_json_vec();
 
         // Redeploy again to check if the operation is idempotent
-        infra.deploy_services(&unit, &Default::default()).await?;
+        infra.deploy_services(unit, &Default::default()).await?;
 
         let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
@@ -1655,8 +1653,9 @@ mod tests {
             None,
         )
         .finish()?;
+        let unit = DeploymentUnit::from_unbootstrapped(unit);
 
-        infra.deploy_services(&unit, &Default::default()).await?;
+        infra.deploy_services(unit.clone(), &Default::default()).await?;
 
         let app = infra.fetch_app(&app_name).await?;
 
@@ -1694,7 +1693,7 @@ mod tests {
             .to_json_vec();
 
         // Redeploy again to check if the operation is idempotent
-        infra.deploy_services(&unit, &Default::default()).await?;
+        infra.deploy_services(unit, &Default::default()).await?;
 
         let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
             .await?
@@ -1726,7 +1725,7 @@ mod tests {
     }
 
     impl StaticBootstrapCompanion {
-        async fn bootstrap(self, infra: &Kubernetes) -> Result<(DeploymentUnit, App)> {
+        async fn bootstrap(self, infra: &Kubernetes) -> Result<(DeploymentUnit<K8sElement>, App)> {
             let unit = AppDeploymentBuilder::init(
                 self.app_name.clone(),
                 self.service_configs.clone(),
@@ -1756,7 +1755,7 @@ mod tests {
             .await?
             .finish()?;
 
-            let app = infra.deploy_services(&unit, &Default::default()).await?;
+            let app = infra.deploy_services(unit.clone(), &Default::default()).await?;
 
             Ok((unit, app))
         }
@@ -1764,13 +1763,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl domain::app_deployment::BootstrapCompanions for StaticBootstrapCompanion {
+        type BootstrappedElement = K8sElement;
         type Error = anyhow::Error;
 
-        async fn bootstrap_companions_with_raw_elements(
+        async fn bootstrap_companions(
             &self,
-            context: BootstrapCompanionsWithRawElementsContext<'_>,
+            context: BootstrapCompanionsContext<'_>,
             _template_data: &TemplateData,
-        ) -> Result<BootstrappedCompanions, Self::Error> {
+        ) -> Result<BootstrappedCompanions<Self::BootstrappedElement>, Self::Error> {
             let output = [
                 if self.generate_whoami_deployment {
                     r#"
@@ -1849,20 +1849,13 @@ mod tests {
 
         fn update_raw_elements(
             &self,
-            context: MergeRawElementsContext<'_>,
-            raw_elements: Vec<RawInfrastructureElement>,
-        ) -> Result<Vec<RawInfrastructureElement>> {
-            Ok(serde_json::from_value::<K8sDeploymentUnit>(
-                raw_elements
-                    .into_iter()
-                    .map(serde_json::Value::from)
-                    .collect(),
-            )?
-            .update_with_merge_context(context)?
-            .to_json_vec()
-            .into_iter()
-            .map(RawInfrastructureElement::from)
-            .collect::<Vec<_>>())
+            context: MergeBootstrappedElementsContext<'_>,
+            raw_elements: Vec<Self::BootstrappedElement>,
+        ) -> Result<Vec<Self::BootstrappedElement>> {
+            Ok(K8sDeploymentUnit::from_iter(raw_elements)
+                .update_with_merge_context(context)?
+                .into_iter()
+                .collect::<Vec<_>>())
         }
     }
 }

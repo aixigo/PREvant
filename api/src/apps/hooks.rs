@@ -127,11 +127,14 @@ impl<'a> Hooks<'a> {
         })
     }
 
-    pub async fn apply_deployment_hook(
+    pub async fn apply_deployment_hook<E>(
         &self,
         app_name: &AppName,
-        services: Vec<DeployableService>,
-    ) -> Result<Vec<DeployableService>, HooksError> {
+        services: Vec<DeployableService<E>>,
+    ) -> Result<Vec<DeployableService<E>>, HooksError>
+    where
+        E: Clone + Send + 'static,
+    {
         let Some(deployment_hook_path) = self.config.hook("deployment").cloned() else {
             return Ok(services);
         };
@@ -160,11 +163,14 @@ impl<'a> Hooks<'a> {
         })?
     }
 
-    fn run_deployment_hook(
+    fn run_deployment_hook<E>(
         app_name: AppName,
-        services: Vec<DeployableService>,
+        services: Vec<DeployableService<E>>,
         mut context: Context,
-    ) -> Result<Vec<DeployableService>, HooksError> {
+    ) -> Result<Vec<DeployableService<E>>, HooksError>
+    where
+        E: Clone,
+    {
         Self::register_configs_as_global_property(&mut context, &services);
         context
             .register_global_property(
@@ -217,7 +223,12 @@ impl<'a> Hooks<'a> {
         }
     }
 
-    fn register_configs_as_global_property(context: &mut Context, services: &[DeployableService]) {
+    fn register_configs_as_global_property<E>(
+        context: &mut Context,
+        services: &[DeployableService<E>],
+    ) where
+        E: Clone,
+    {
         let js_configs = services
             .iter()
             .map(JsServiceConfig::from)
@@ -236,12 +247,13 @@ impl<'a> Hooks<'a> {
             .expect("Property registration failed unexpectedly");
     }
 
-    fn parse_service_config<Iter>(
+    fn parse_service_config<Iter, E>(
         services: Iter,
         transformed_configs: serde_json::value::Value,
-    ) -> Result<Vec<DeployableService>, HooksError>
+    ) -> Result<Vec<DeployableService<E>>, HooksError>
     where
-        Iter: IntoIterator<Item = DeployableService>,
+        Iter: IntoIterator<Item = DeployableService<E>>,
+        E: Clone,
     {
         let mut transformed_configs =
             serde_json::from_value::<Vec<JsServiceConfig>>(transformed_configs).map_err(|err| {
@@ -281,7 +293,10 @@ struct JsServiceConfig {
 }
 
 impl JsServiceConfig {
-    fn apply_to(mut self, mut service: DeployableService) -> DeployableService {
+    fn apply_to<E>(mut self, mut service: DeployableService<E>) -> DeployableService<E>
+    where
+        E: Clone,
+    {
         service.blueprint_service.files = Some(self.files);
 
         let env = match service.blueprint_service.env.as_ref().cloned() {
@@ -318,8 +333,11 @@ impl JsServiceConfig {
     }
 }
 
-impl From<&DeployableService> for JsServiceConfig {
-    fn from(config: &DeployableService) -> Self {
+impl<E> From<&DeployableService<E>> for JsServiceConfig
+where
+    E: Clone,
+{
+    fn from(config: &DeployableService<E>) -> Self {
         Self {
             name: config.blueprint_service.service_name.clone(),
             image: config.blueprint_service.image.clone(),

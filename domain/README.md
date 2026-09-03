@@ -3,7 +3,9 @@
 This crate provides the domain objects that shall provide the core application
 logic. Given the example below, the APIs provided in this crate model the
 workflow that is described in [the PREvant paper, see Section
-4](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5).
+4](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5). The main entry
+for building deployments is
+[`AppDeploymentBuilder`](app_deployment::AppDeploymentBuilder).
 
 ```rust
 use domain::{AppName, Image, blueprint_service};
