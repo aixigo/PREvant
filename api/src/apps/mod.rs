@@ -38,11 +38,11 @@ use crate::registry::{Registry, RegistryError};
 use chrono::{DateTime, FixedOffset};
 pub use clean_up::AppCleanUp;
 use domain::{
-    AppName, Owner, RawInfrastructureElement,
+    AppName, Owner,
     app_blueprints::{DesiredServiceStatus, ServiceConfig, UserDefinedParameters},
     app_deployment::{
-        AppDeploymentBuilder, BootstrapCompanions, BootstrapCompanionsWithRawElementsContext,
-        BootstrappedCompanions, BuildDeploymentUintBuildError, MergeRawElementsContext,
+        AppDeploymentBuilder, BootstrapCompanions, BootstrapCompanionsContext,
+        BootstrappedCompanions, BuildDeploymentUintBuildError, MergeBootstrappedElementsContext,
         ResolveApps,
     },
     app_instance::{App, Service},
@@ -318,7 +318,7 @@ impl Apps {
 
         let apps = self
             .infrastructure
-            .deploy_services(&deployment_unit, &self.config.container_config())
+            .deploy_services(deployment_unit, &self.config.container_config())
             .await?;
 
         Ok(apps)
@@ -541,13 +541,14 @@ struct InfrastructureBootstrapCompanions {
 
 #[async_trait::async_trait]
 impl BootstrapCompanions for InfrastructureBootstrapCompanions {
+    type BootstrappedElement = <InfrastructureProxy as Infrastructure>::BootstrappedElement;
     type Error = AppsError;
 
-    async fn bootstrap_companions_with_raw_elements(
+    async fn bootstrap_companions(
         &self,
-        context: BootstrapCompanionsWithRawElementsContext<'_>,
+        context: BootstrapCompanionsContext<'_>,
         template_data: &TemplateData,
-    ) -> Result<BootstrappedCompanions, Self::Error> {
+    ) -> Result<BootstrappedCompanions<Self::BootstrappedElement>, Self::Error> {
         Ok(self
             .infrastructure
             .bootstrap_companions_with_raw_elements(context, template_data)
@@ -556,9 +557,9 @@ impl BootstrapCompanions for InfrastructureBootstrapCompanions {
 
     fn update_raw_elements(
         &self,
-        context: MergeRawElementsContext<'_>,
-        raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Result<Vec<RawInfrastructureElement>, Self::Error> {
+        context: MergeBootstrappedElementsContext<'_>,
+        raw_elements: Vec<Self::BootstrappedElement>,
+    ) -> Result<Vec<Self::BootstrappedElement>, Self::Error> {
         Ok(self
             .infrastructure
             .update_raw_elements_after_merged_blueprint_config(context, raw_elements)?)

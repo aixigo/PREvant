@@ -29,11 +29,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset};
 use domain::{
-    AppName, RawInfrastructureElement,
+    AppName,
     app_blueprints::DesiredServiceStatus,
     app_deployment::{
-        BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions, DeploymentUnit,
-        MergeRawElementsContext,
+        BootstrapCompanionsContext, BootstrappedCompanions, DeploymentUnit,
+        MergeBootstrappedElementsContext,
     },
     app_instance::{App, Service},
     templating::TemplateData,
@@ -45,6 +45,7 @@ use std::collections::HashMap;
 
 #[async_trait]
 pub trait Infrastructure: Send + Sync {
+    type BootstrappedElement: Clone;
     type BackupPayload: Send + serde::Serialize + for<'de> serde::Deserialize<'de>;
 
     /// Returns a `map` of `app-name` and the details of the deployed applications.
@@ -76,7 +77,7 @@ pub trait Infrastructure: Send + Sync {
     ///   must be able to find the corresponding services.
     async fn deploy_services(
         &self,
-        deployment_unit: &DeploymentUnit,
+        deployment_unit: DeploymentUnit<Self::BootstrappedElement>,
         container_config: &ContainerConfig,
     ) -> Result<App>;
 
@@ -143,17 +144,20 @@ pub trait Infrastructure: Send + Sync {
 
     async fn bootstrap_companions_with_raw_elements(
         &self,
-        _context: BootstrapCompanionsWithRawElementsContext<'_>,
+        _context: BootstrapCompanionsContext<'_>,
         _template_data: &TemplateData,
-    ) -> Result<BootstrappedCompanions> {
-        Ok(Default::default())
+    ) -> Result<BootstrappedCompanions<Self::BootstrappedElement>> {
+        Ok(BootstrappedCompanions {
+            bootstrapped_companions: Vec::new(),
+            bootstrapped_companion_elements: Vec::new(),
+        })
     }
 
     fn update_raw_elements_after_merged_blueprint_config(
         &self,
-        _context: MergeRawElementsContext<'_>,
-        raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Result<Vec<RawInfrastructureElement>> {
+        _context: MergeBootstrappedElementsContext<'_>,
+        raw_elements: Vec<Self::BootstrappedElement>,
+    ) -> Result<Vec<Self::BootstrappedElement>> {
         Ok(raw_elements)
     }
 }

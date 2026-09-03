@@ -1,5 +1,5 @@
 use crate::{
-    AppName, Image, ImageInfo, Owner, RawInfrastructureElement,
+    AppName, Image, ImageInfo, Owner,
     app_blueprints::{ServiceConfig, UserDefinedParameters},
     app_deployment::{self, DeployableService, DeploymentUnit},
     app_instance::{self, ContainerType},
@@ -22,8 +22,9 @@ use std::{
 use url::Url;
 
 /// This [TypeState builder](https://www.youtube.com/watch?v=pwmIQzLuYl0) is at the center of the
-/// domain of PREvant: it models the transition from [`crate::app_blueprints`] to
-/// [`crate::app_instance`].
+/// domain of PREvant: it models the transition from [`crate::app_blueprints`] (the user's wish to
+/// create an application) to [`crate::app_instance`] (the actual application to be deployed on the
+/// infrastructure).
 pub struct AppDeploymentBuilder<Stage> {
     stage: Stage,
 }
@@ -140,7 +141,7 @@ impl AppDeploymentBuilder<Initialized> {
     ///
     /// assert_eq!(deployment_unit.services.len(), 2);
     /// ```
-    pub fn finish(self) -> Result<DeploymentUnit, BuildDeploymentUintBuildError> {
+    pub fn finish(self) -> Result<DeploymentUnit<()>, BuildDeploymentUintBuildError> {
         let base_route = TraefikIngressRoute::empty();
 
         AppDeploymentBuilder::<WithBaseRoute> {
@@ -202,20 +203,11 @@ pub struct ApplicationCompanion {
     pub rule_template: Option<String>,
     pub middleware_templates: Option<BTreeMap<String, serde_value::Value>>,
     pub storage_strategy: StaticCompanionStorageStrategy,
-    /// A list of from which the application has been bootstrapped
-    pub raw_elements: Vec<RawInfrastructureElement>,
     phantom_data: PhantomData<()>,
 }
 
 impl ApplicationCompanion {
     pub fn new(blueprint_config: ServiceConfig) -> Self {
-        Self::bootstrapped(blueprint_config, Vec::new())
-    }
-
-    pub fn bootstrapped(
-        blueprint_config: ServiceConfig,
-        raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Self {
         Self {
             blueprint_config,
             labels: HashMap::new(),
@@ -223,7 +215,6 @@ impl ApplicationCompanion {
             rule_template: None,
             middleware_templates: None,
             storage_strategy: StaticCompanionStorageStrategy::NoMountVolumes,
-            raw_elements,
             phantom_data: PhantomData,
         }
     }
@@ -326,8 +317,9 @@ impl StaticCompanion {
 }
 
 enum CompanionRef<'a> {
-    ApplicationCompanion(&'a ApplicationCompanion),
-    ServiceCompanion(&'a ServiceCompanion),
+    Application(&'a ApplicationCompanion),
+    Service(&'a ServiceCompanion),
+    Bootstrapped,
 }
 
 impl CompanionRef<'_> {
@@ -343,42 +335,39 @@ impl CompanionRef<'_> {
         &Option<BTreeMap<String, serde_value::Value>>,
     ) {
         match self {
-            Self::ServiceCompanion(service_companion) => (
+            Self::Service(service_companion) => (
                 &service_companion.rule_template,
                 &service_companion.middleware_templates,
             ),
-            Self::ApplicationCompanion(app_companion) => (
+            Self::Application(app_companion) => (
                 &app_companion.rule_template,
                 &app_companion.middleware_templates,
             ),
+            Self::Bootstrapped => (&None, &None),
         }
     }
 
     fn deployment_strategy(&self) -> &StaticCompanionDeploymentStrategy {
         match self {
-            Self::ServiceCompanion(service_companion) => &service_companion.deployment_strategy,
-            Self::ApplicationCompanion(app_companion) => &app_companion.deployment_strategy,
+            Self::Service(service_companion) => &service_companion.deployment_strategy,
+            Self::Application(app_companion) => &app_companion.deployment_strategy,
+            Self::Bootstrapped => &StaticCompanionDeploymentStrategy::Always,
         }
     }
 
     fn storage_strategy(&self) -> &StaticCompanionStorageStrategy {
         match self {
-            Self::ServiceCompanion(service_companion) => &service_companion.storage_strategy,
-            Self::ApplicationCompanion(app_companion) => &app_companion.storage_strategy,
+            Self::Service(service_companion) => &service_companion.storage_strategy,
+            Self::Application(app_companion) => &app_companion.storage_strategy,
+            Self::Bootstrapped => &StaticCompanionStorageStrategy::NoMountVolumes,
         }
     }
 
-    fn labels(&self) -> &HashMap<String, String> {
+    fn labels<'a>(&'a self) -> Box<dyn Iterator<Item = (&'a String, &'a String)> + 'a> {
         match self {
-            Self::ServiceCompanion(service_companion) => &service_companion.labels,
-            Self::ApplicationCompanion(app_companion) => &app_companion.labels,
-        }
-    }
-
-    fn bootstrapped_companion_elements(&self) -> Option<&Vec<RawInfrastructureElement>> {
-        match self {
-            Self::ServiceCompanion(_) => None,
-            Self::ApplicationCompanion(app_companion) => Some(&app_companion.raw_elements),
+            Self::Service(service_companion) => Box::new(service_companion.labels.iter()),
+            Self::Application(app_companion) => Box::new(app_companion.labels.iter()),
+            Self::Bootstrapped => Box::new(std::iter::empty()),
         }
     }
 }
@@ -421,8 +410,9 @@ impl AppDeploymentBuilder<WithStaticCompanions> {
     /// A shortcut version to build an application just on the [`WithStaticCompanions`] stage.
     ///
     /// This method is not intended to be used in production. It rather provides a convenience
-    /// method to build [`DeploymentUnit`] in testing scenarios.
-    pub fn finish(self) -> Result<DeploymentUnit, BuildDeploymentUintBuildError> {
+    /// method to build [`DeploymentUnit`] in testing scenarios (see also
+    /// [`AppDeploymentBuilder::<Initialized>::finish`].
+    pub fn finish(self) -> Result<DeploymentUnit<()>, BuildDeploymentUintBuildError> {
         let base_route = TraefikIngressRoute::empty();
 
         AppDeploymentBuilder::<WithBaseRoute> {
@@ -527,7 +517,7 @@ impl WithResolvedApps {
                 });
         }
 
-        // TODO: do we have to include service companions too?
+        // TODO: do we have to include all companions too?
 
         let mut template_data = template_data.into_values().collect::<Vec<_>>();
         template_data.sort_by(|a, b| a.name.cmp(b.name));
@@ -828,7 +818,12 @@ impl AppDeploymentBuilder<WithBaseRoute> {
         })
     }
 
-    pub fn finish(self) -> Result<DeploymentUnit, BuildDeploymentUintBuildError> {
+    /// A shortcut version to build an application just on the [`WithBaseRoute`] stage.
+    ///
+    /// This method is not intended to be used in production. It rather provides a convenience
+    /// method to build [`DeploymentUnit`] in testing scenarios (see also
+    /// [`AppDeploymentBuilder::<Initialized>::finish`].
+    pub fn finish(self) -> Result<DeploymentUnit<()>, BuildDeploymentUintBuildError> {
         AppDeploymentBuilder {
             stage: WithInfrastructureTemplateData {
                 with_base_route: self.stage,
@@ -869,7 +864,7 @@ impl WithInfrastructureTemplateData {
 }
 
 #[derive(Debug)]
-pub struct BootstrapCompanionsWithRawElementsContext<'a> {
+pub struct BootstrapCompanionsContext<'a> {
     pub app_name: &'a AppName,
     pub user_defined_parameters: Option<&'a UserDefinedParameters>,
     pub owners: &'a HashSet<Owner>,
@@ -883,32 +878,103 @@ pub struct MergeRawElementServiceConfigContext<'a> {
 }
 
 #[derive(Debug)]
-pub struct MergeRawElementsContext<'a> {
+pub struct MergeBootstrappedElementsContext<'a> {
     pub app_name: &'a AppName,
     pub service_config_context: Option<MergeRawElementServiceConfigContext<'a>>,
     pub base_route: &'a TraefikIngressRoute,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct BootstrappedCompanion<BootstrappedElement>
+where
+    BootstrappedElement: Clone,
+{
+    pub blueprint_config: ServiceConfig,
+    pub opaque_elements: Vec<BootstrappedElement>,
+    phantom_data: PhantomData<()>,
+}
+
+impl<BootstrappedElement> BootstrappedCompanion<BootstrappedElement>
+where
+    BootstrappedElement: Clone,
+{
+    pub fn bootstrapped(
+        blueprint_config: ServiceConfig,
+        opaque_elements: Vec<BootstrappedElement>,
+    ) -> Self {
+        Self {
+            blueprint_config,
+            opaque_elements,
+            phantom_data: PhantomData,
+        }
+    }
+
+    pub fn from_bootstrapped<A>(other: BootstrappedCompanion<A>) -> Self
+    where
+        A: Clone,
+        A: Into<BootstrappedElement>,
+    {
+        Self {
+            blueprint_config: other.blueprint_config,
+            opaque_elements: other
+                .opaque_elements
+                .into_iter()
+                .map(A::into)
+                .collect::<Vec<_>>(),
+            phantom_data: PhantomData,
+        }
+    }
+}
+
 #[derive(Default, Debug)]
-pub struct BootstrappedCompanions {
-    /// The companion that has been bootstrapped. Use [`ApplicationCompanion::bootstrapped`] for
+pub struct BootstrappedCompanions<BootstrappedElement>
+where
+    BootstrappedElement: Clone,
+{
+    /// The companion that has been bootstrapped. Use [`BootstrappedCompanion::bootstrapped`] for
     /// creating these elements.
-    pub bootstrapped_companions: Vec<ApplicationCompanion>,
-    /// These are infrastructure specific payloads, see [`RawInfrastructureElement`], that originate
-    /// from [`BootstrapCompanions::bootstrap_companions_with_raw_elements`] but that cannot be
-    /// mapped to a [`ServiceConfig`].
-    pub bootstrapped_companion_elements: Vec<RawInfrastructureElement>,
+    pub bootstrapped_companions: Vec<BootstrappedCompanion<BootstrappedElement>>,
+    /// These are infrastructure specific, opaque payloads that originate from
+    /// [`BootstrapCompanions::bootstrap_companions`] but that cannot be mapped to
+    /// a [`ServiceConfig`].
+    pub bootstrapped_companion_elements: Vec<BootstrappedElement>,
+}
+
+impl<E> BootstrappedCompanions<E>
+where
+    E: Clone,
+{
+    pub fn from_bootstrapped<A>(other: BootstrappedCompanions<A>) -> Self
+    where
+        A: Clone,
+        A: Into<E>,
+    {
+        Self {
+            bootstrapped_companions: other
+                .bootstrapped_companions
+                .into_iter()
+                .map(BootstrappedCompanion::from_bootstrapped)
+                .collect::<Vec<_>>(),
+            bootstrapped_companion_elements: other
+                .bootstrapped_companion_elements
+                .into_iter()
+                .map(A::into)
+                .collect::<Vec<_>>(),
+        }
+    }
 }
 
 #[async_trait::async_trait]
 pub trait BootstrapCompanions {
+    type BootstrappedElement: Clone;
     type Error;
 
-    async fn bootstrap_companions_with_raw_elements(
+    /// See [`AppDeploymentBuilder::bootstrap_companions`].
+    async fn bootstrap_companions(
         &self,
-        context: BootstrapCompanionsWithRawElementsContext<'_>,
+        context: BootstrapCompanionsContext<'_>,
         template_data: &TemplateData,
-    ) -> Result<BootstrappedCompanions, Self::Error>;
+    ) -> Result<BootstrappedCompanions<Self::BootstrappedElement>, Self::Error>;
 
     /// This callback needs to be implemented by the infrastructure to ensure that the [raw/opaque
     /// elements](`DeployableService::bootstrapped_companion_elements`) will be updated due to
@@ -916,37 +982,39 @@ pub trait BootstrapCompanions {
     /// [`TraefikIngressRoute`] with the dynamic application companion bootstrapping.
     fn update_raw_elements(
         &self,
-        context: MergeRawElementsContext<'_>,
-        raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Result<Vec<RawInfrastructureElement>, Self::Error>;
+        context: MergeBootstrappedElementsContext<'_>,
+        raw_elements: Vec<Self::BootstrappedElement>,
+    ) -> Result<Vec<Self::BootstrappedElement>, Self::Error>;
 }
 
 #[async_trait::async_trait]
-impl<F, E> BootstrapCompanions for F
+impl<F, E, BootstrappedElement> BootstrapCompanions for F
 where
     F: Fn(
-            &BootstrapCompanionsWithRawElementsContext,
+            &BootstrapCompanionsContext,
             &TemplateData,
-        ) -> Result<BootstrappedCompanions, E>
+        ) -> Result<BootstrappedCompanions<BootstrappedElement>, E>
         + Send
         + Sync,
     E: Send + Sync + 'static,
+    BootstrappedElement: Clone,
 {
+    type BootstrappedElement = BootstrappedElement;
     type Error = E;
 
-    async fn bootstrap_companions_with_raw_elements(
+    async fn bootstrap_companions(
         &self,
-        context: BootstrapCompanionsWithRawElementsContext<'_>,
+        context: BootstrapCompanionsContext<'_>,
         template_data: &TemplateData,
-    ) -> Result<BootstrappedCompanions, Self::Error> {
+    ) -> Result<BootstrappedCompanions<Self::BootstrappedElement>, Self::Error> {
         (self)(&context, template_data)
     }
 
     fn update_raw_elements(
         &self,
-        _context: MergeRawElementsContext<'_>,
-        raw_elements: Vec<RawInfrastructureElement>,
-    ) -> Result<Vec<RawInfrastructureElement>, Self::Error> {
+        _context: MergeBootstrappedElementsContext<'_>,
+        raw_elements: Vec<Self::BootstrappedElement>,
+    ) -> Result<Vec<Self::BootstrappedElement>, Self::Error> {
         Ok(raw_elements)
     }
 }
@@ -973,9 +1041,12 @@ impl AppDeploymentBuilder<WithInfrastructureTemplateData> {
     ///                     3.              └───────────────────┘
     ///```
     pub async fn bootstrap_companions<'bc, E, P>(
-        mut self,
+        self,
         bootstrap_companions: P,
-    ) -> Result<AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>>, P::Error>
+    ) -> Result<
+        AppDeploymentBuilder<WithBootstrappedCompanions<'bc, P::BootstrappedElement, E>>,
+        P::Error,
+    >
     where
         P: BootstrapCompanions<Error = E> + 'bc,
     {
@@ -1013,7 +1084,7 @@ impl AppDeploymentBuilder<WithInfrastructureTemplateData> {
             .with_resolved_apps
             .owners();
 
-        let context = BootstrapCompanionsWithRawElementsContext {
+        let context = BootstrapCompanionsContext {
             app_name: &self
                 .stage
                 .with_base_route
@@ -1028,35 +1099,30 @@ impl AppDeploymentBuilder<WithInfrastructureTemplateData> {
             owners: &owners,
         };
 
-        let BootstrappedCompanions {
-            bootstrapped_companions,
-            bootstrapped_companion_elements,
-        } = bootstrap_companions
-            .bootstrap_companions_with_raw_elements(context, &template_data)
+        let bootstrapped_companions = bootstrap_companions
+            .bootstrap_companions(context, &template_data)
             .await?;
 
-        self.stage
-            .with_base_route
-            .with_resolved_images
-            .with_resolved_apps
-            .with_static_companions
-            .app_companions
-            .extend(bootstrapped_companions);
-
         Ok(AppDeploymentBuilder {
-            stage: WithBootstrappedCompanions::<E> {
+            stage: WithBootstrappedCompanions::<P::BootstrappedElement, E> {
                 with_infrastructure_template_data: self.stage,
-                bootstrapped_companion_elements,
+                bootstrapped_companions,
                 bootstrap_companions: Some(Box::new(bootstrap_companions)),
             },
         })
     }
 
-    pub fn finish(self) -> Result<DeploymentUnit, BuildDeploymentUintBuildError> {
+    /// A shortcut version to build an application just on the [`WithInfrastructureTemplateData`]
+    /// stage.
+    ///
+    /// This method is not intended to be used in production. It rather provides a convenience
+    /// method to build [`DeploymentUnit`] in testing scenarios (see also
+    /// [`AppDeploymentBuilder::<Initialized>::finish`].
+    pub fn finish(self) -> Result<DeploymentUnit<()>, BuildDeploymentUintBuildError> {
         AppDeploymentBuilder {
-            stage: WithBootstrappedCompanions::<&'static str> {
+            stage: WithBootstrappedCompanions::<(), &'static str> {
                 with_infrastructure_template_data: self.stage,
-                bootstrapped_companion_elements: Vec::new(),
+                bootstrapped_companions: Default::default(),
                 bootstrap_companions: None,
             },
         }
@@ -1064,15 +1130,22 @@ impl AppDeploymentBuilder<WithInfrastructureTemplateData> {
     }
 }
 
-pub struct WithBootstrappedCompanions<'bc, E> {
+pub struct WithBootstrappedCompanions<'bc, BootstrappedElement, E>
+where
+    BootstrappedElement: Clone,
+{
     with_infrastructure_template_data: WithInfrastructureTemplateData,
-    bootstrapped_companion_elements: Vec<RawInfrastructureElement>,
-    bootstrap_companions: Option<Box<dyn BootstrapCompanions<Error = E> + 'bc>>,
+    bootstrapped_companions: BootstrappedCompanions<BootstrappedElement>,
+    bootstrap_companions: Option<
+        Box<dyn BootstrapCompanions<BootstrappedElement = BootstrappedElement, Error = E> + 'bc>,
+    >,
 }
 
-impl<'bc, E> AppDeploymentBuilder<WithBootstrappedCompanions<'bc, E>>
+impl<'bc, BootstrappedElement, E>
+    AppDeploymentBuilder<WithBootstrappedCompanions<'bc, BootstrappedElement, E>>
 where
     E: Display,
+    BootstrappedElement: Clone,
 {
     fn service_route(
         &self,
@@ -1122,12 +1195,11 @@ where
 
     fn create_deployable_service_for_companion(
         &self,
-        blueprint_config_before: &ServiceConfig,
         blueprint_service: ServiceConfig,
         companion: CompanionRef<'_>,
         template_data: &TemplateData,
         service_type: ContainerType,
-    ) -> Result<DeployableService, BuildDeploymentUintBuildError> {
+    ) -> Result<DeployableService<()>, BuildDeploymentUintBuildError> {
         fn map_render_error(
             service_type: ContainerType,
             e: RenderError,
@@ -1279,45 +1351,9 @@ where
         // here
         let labels = companion
             .labels()
-            .iter()
             .map(|(k, v)| Ok((k.clone(), template_data.as_handlerbars().render(v)?)))
             .collect::<Result<HashMap<_, _>, RenderError>>()
             .map_err(|e| map_render_error(service_type, e))?;
-
-        let bootstrapped_companion_elements = match (
-            &self.stage.bootstrap_companions,
-            companion.bootstrapped_companion_elements(),
-        ) {
-            (Some(bootstrap_companions), Some(raw_elements)) => bootstrap_companions
-                .update_raw_elements(
-                    MergeRawElementsContext {
-                        app_name: &self
-                            .stage
-                            .with_infrastructure_template_data
-                            .with_base_route
-                            .with_resolved_images
-                            .with_resolved_apps
-                            .with_static_companions
-                            .initialized
-                            .app_name,
-                        service_config_context: Some(MergeRawElementServiceConfigContext {
-                            blueprint_config_before,
-                            blueprint_config_after: &blueprint_service,
-                            service_type,
-                        }),
-                        base_route: &self
-                            .stage
-                            .with_infrastructure_template_data
-                            .with_base_route
-                            .application_base_route(),
-                    },
-                    raw_elements.clone(),
-                )
-                .map_err(|e| BuildDeploymentUintBuildError::UpdatingRawElements {
-                    err: e.to_string(),
-                })?,
-            (_, _) => Vec::new(),
-        };
 
         Ok(DeployableService {
             blueprint_service,
@@ -1327,7 +1363,7 @@ where
             declared_volumes,
             labels,
             port,
-            bootstrapped_companion_elements,
+            bootstrapped_companion_elements: Vec::new(),
             phantom_data: PhantomData,
         })
     }
@@ -1335,8 +1371,8 @@ where
     fn build_services_from_application_companions(
         &self,
         merged_user_defined_parameters: Option<&'_ UserDefinedParameters>,
-    ) -> Result<impl Iterator<Item = DeployableService>, BuildDeploymentUintBuildError> {
-        let mut services = BTreeMap::<String, DeployableService>::new();
+    ) -> Result<impl Iterator<Item = DeployableService<()>>, BuildDeploymentUintBuildError> {
+        let mut services = BTreeMap::<String, DeployableService<()>>::new();
 
         let base_url = self
             .stage
@@ -1406,9 +1442,8 @@ where
                 if !services.contains_key(&blueprint_service.service_name) {
                     let service_name = blueprint_service.service_name.clone();
                     let deployable_service = self.create_deployable_service_for_companion(
-                        &app_companion.blueprint_config,
                         blueprint_service,
-                        CompanionRef::ApplicationCompanion(app_companion),
+                        CompanionRef::Application(app_companion),
                         &data,
                         **service_type,
                     )?;
@@ -1442,9 +1477,8 @@ where
             if !services.contains_key(&blueprint_service.service_name) {
                 let service_name = blueprint_service.service_name.clone();
                 let deployable_service = self.create_deployable_service_for_companion(
-                    &app_companion.blueprint_config,
                     blueprint_service,
-                    CompanionRef::ApplicationCompanion(app_companion),
+                    CompanionRef::Application(app_companion),
                     &data,
                     ContainerType::ApplicationCompanion,
                 )?;
@@ -1455,11 +1489,127 @@ where
         Ok(services.into_values())
     }
 
+    fn build_services_from_bootstrapped_companions(
+        &self,
+        merged_user_defined_parameters: Option<&'_ UserDefinedParameters>,
+    ) -> Result<Vec<DeployableService<BootstrappedElement>>, BuildDeploymentUintBuildError> {
+        if self
+            .stage
+            .bootstrapped_companions
+            .bootstrapped_companions
+            .is_empty()
+        {
+            return Ok(Vec::new());
+        }
+
+        let base_url = self
+            .stage
+            .with_infrastructure_template_data
+            .with_base_route
+            .application_base_route()
+            .to_url();
+
+        let data = TemplateData {
+            service_or_services: ServiceOrServices::Services {
+                services: self
+                    .stage
+                    .with_infrastructure_template_data
+                    .with_base_route
+                    .with_resolved_images
+                    .with_resolved_apps
+                    .blueprint_configs_as_template_data(|image| {
+                        self.stage
+                            .with_infrastructure_template_data
+                            .with_base_route
+                            .with_resolved_images
+                            .port(image)
+                    }),
+            },
+            ..self
+                .stage
+                .with_infrastructure_template_data
+                .base_template_data(merged_user_defined_parameters, base_url.as_ref())
+        };
+
+        let instance_or_replica_configs = self
+            .stage
+            .with_infrastructure_template_data
+            .with_base_route
+            .with_resolved_images
+            .with_resolved_apps
+            .blueprint_configs();
+
+        let mut deployable_services = Vec::new();
+        for bootstrapped_companion in &self.stage.bootstrapped_companions.bootstrapped_companions {
+            let (blueprint_service, service_type) = match instance_or_replica_configs.get(
+                bootstrapped_companion
+                    .blueprint_config
+                    .service_name
+                    .as_str(),
+            ) {
+                Some((blueprint_service, service_type)) => (
+                    ServiceConfig::clone(blueprint_service)
+                        .merge_with(bootstrapped_companion.blueprint_config.clone()),
+                    **service_type,
+                ),
+                None => (
+                    bootstrapped_companion.blueprint_config.clone(),
+                    ContainerType::ApplicationCompanion,
+                ),
+            };
+
+            let mut service = DeployableService::from_unbootstrapped(
+                self.create_deployable_service_for_companion(
+                    blueprint_service,
+                    CompanionRef::Bootstrapped,
+                    &data,
+                    service_type,
+                )?,
+            );
+
+            service.bootstrapped_companion_elements = match &self.stage.bootstrap_companions {
+                Some(bootstrap_companions) => bootstrap_companions
+                    .update_raw_elements(
+                        MergeBootstrappedElementsContext {
+                            app_name: &self
+                                .stage
+                                .with_infrastructure_template_data
+                                .with_base_route
+                                .with_resolved_images
+                                .with_resolved_apps
+                                .with_static_companions
+                                .initialized
+                                .app_name,
+                            service_config_context: Some(MergeRawElementServiceConfigContext {
+                                blueprint_config_before: &bootstrapped_companion.blueprint_config,
+                                blueprint_config_after: &service.blueprint_service,
+                                service_type,
+                            }),
+                            base_route: &self
+                                .stage
+                                .with_infrastructure_template_data
+                                .with_base_route
+                                .application_base_route(),
+                        },
+                        bootstrapped_companion.opaque_elements.clone(),
+                    )
+                    .map_err(|e| BuildDeploymentUintBuildError::UpdatingRawElements {
+                        err: e.to_string(),
+                    })?,
+                _ => Vec::new(),
+            };
+
+            deployable_services.push(service);
+        }
+
+        Ok(deployable_services)
+    }
+
     fn build_services_from_service_companions(
         &self,
         merged_user_defined_parameters: Option<&'_ UserDefinedParameters>,
-    ) -> Result<Vec<DeployableService>, BuildDeploymentUintBuildError> {
-        let mut deployable_services = BTreeMap::<String, DeployableService>::new();
+    ) -> Result<Vec<DeployableService<()>>, BuildDeploymentUintBuildError> {
+        let mut deployable_services = BTreeMap::<String, DeployableService<()>>::new();
 
         let base_url = self
             .stage
@@ -1530,9 +1680,8 @@ where
                     deployable_services.insert(
                         blueprint_service.service_name.clone(),
                         self.create_deployable_service_for_companion(
-                            blueprint_config,
                             blueprint_service,
-                            CompanionRef::ServiceCompanion(service_companion),
+                            CompanionRef::Service(service_companion),
                             &data,
                             ContainerType::ServiceCompanion,
                         )?,
@@ -1584,9 +1733,8 @@ where
                 deployable_services
                     .entry(blueprint_service.service_name.clone())
                     .or_insert(self.create_deployable_service_for_companion(
-                        blueprint_config,
                         blueprint_service,
-                        CompanionRef::ServiceCompanion(service_companion),
+                        CompanionRef::Service(service_companion),
                         &data,
                         ContainerType::ServiceCompanion,
                     )?);
@@ -1599,7 +1747,9 @@ where
     /// This method finishes a [`DeploymentUnit`] so that it follows the rules in [the PREvant
     /// paper, see Section 4](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5). For
     /// example, replication of services, applying template variables, etc.
-    pub fn finish(self) -> Result<DeploymentUnit, BuildDeploymentUintBuildError> {
+    pub fn finish(
+        self,
+    ) -> Result<DeploymentUnit<BootstrappedElement>, BuildDeploymentUintBuildError> {
         let app_name = &self
             .stage
             .with_infrastructure_template_data
@@ -1618,7 +1768,7 @@ where
             .with_resolved_apps
             .user_defined_parameters();
 
-        let mut services: HashMap<String, DeployableService> = self
+        let mut services: HashMap<String, DeployableService<BootstrappedElement>> = self
             .build_services_from_application_companions(
                 user_defined_parameters.as_ref().map(|udp| udp.as_ref()),
             )?
@@ -1628,13 +1778,27 @@ where
                     deployable_service,
                 )
             })
+            .map(|(name, ds)| (name, DeployableService::from_unbootstrapped(ds)))
             .collect::<HashMap<_, _>>();
+
+        let bootstrapped_companions = self.build_services_from_bootstrapped_companions(
+            user_defined_parameters.as_ref().map(|udp| udp.as_ref()),
+        )?;
+        for deployable_service in bootstrapped_companions.into_iter() {
+            services
+                .entry(deployable_service.blueprint_service.service_name.clone())
+                .and_modify(|_| todo!())
+                .or_insert(deployable_service);
+        }
 
         let deployable_companions = self.build_services_from_service_companions(
             user_defined_parameters.as_ref().map(|udp| udp.as_ref()),
         )?;
 
-        for deployable_service in deployable_companions.into_iter() {
+        for deployable_service in deployable_companions
+            .into_iter()
+            .map(DeployableService::from_unbootstrapped)
+        {
             services
                 .entry(deployable_service.blueprint_service.service_name.clone())
                 .and_modify(|_| todo!())
@@ -1742,17 +1906,23 @@ where
         let bootstrapped_companion_elements = match self.stage.bootstrap_companions {
             Some(bootstrap_companions) => bootstrap_companions
                 .update_raw_elements(
-                    MergeRawElementsContext {
+                    MergeBootstrappedElementsContext {
                         app_name,
                         service_config_context: None,
                         base_route: &route,
                     },
-                    self.stage.bootstrapped_companion_elements,
+                    self.stage
+                        .bootstrapped_companions
+                        .bootstrapped_companion_elements,
                 )
                 .map_err(|e| BuildDeploymentUintBuildError::UpdatingRawElements {
                     err: e.to_string(),
                 })?,
-            None => self.stage.bootstrapped_companion_elements,
+            None => {
+                self.stage
+                    .bootstrapped_companions
+                    .bootstrapped_companion_elements
+            }
         };
 
         let user_defined_parameters = user_defined_parameters.map(|udp| udp.into_owned());
@@ -1771,13 +1941,6 @@ where
             route,
             user_defined_parameters,
             owners: Owner::normalize(owners),
-            running_application: self
-                .stage
-                .with_infrastructure_template_data
-                .with_base_route
-                .with_resolved_images
-                .with_resolved_apps
-                .running_app,
             phantom_data: PhantomData,
         })
     }
@@ -1845,7 +2008,12 @@ mod tests {
         vec![mariadb_config(), wordpress_config()]
     }
 
-    fn sort_by_name(mut services: Vec<DeployableService>) -> Vec<DeployableService> {
+    fn sort_by_name<BootstrappedElement>(
+        mut services: Vec<DeployableService<BootstrappedElement>>,
+    ) -> Vec<DeployableService<BootstrappedElement>>
+    where
+        BootstrappedElement: Clone,
+    {
         services.sort_by(|a, b| {
             a.blueprint_service
                 .service_name
@@ -1951,7 +2119,6 @@ mod tests {
                 route: TraefikIngressRoute::with_app_only_defaults(&AppName::master()),
                 user_defined_parameters: None,
                 owners: HashSet::new(),
-                running_application: None,
                 phantom_data: PhantomData
             }
         );
@@ -2025,7 +2192,6 @@ mod tests {
                 },
                 user_defined_parameters: None,
                 owners: HashSet::new(),
-                running_application: None,
                 phantom_data: PhantomData
             }
         );
@@ -3824,7 +3990,7 @@ mod tests {
         async fn use_services_in_application_companions_templating(
             #[future]
             #[case]
-            deployment_unit: Result<DeploymentUnit>,
+            deployment_unit: Result<DeploymentUnit<()>>,
         ) -> Result<()> {
             let deployment_unit = deployment_unit.await?;
 
@@ -3875,11 +4041,11 @@ mod tests {
             )
             .with_app_to_replicate_from(AppName::from_str("other").ok())
             .with_static_companions(vec![StaticCompanion::app_companion(blueprint_service!(
-                "api-gateway",
-                "nginx",
-                env = (),
-                files = (
-                    "/etc/nginx/templates/gateway.template" => r#"
+            "api-gateway",
+            "nginx",
+            env = (),
+            files = (
+                "/etc/nginx/templates/gateway.template" => r#"
                                 {{~#each services}}
                                 location /some-prefix/{{name}} {
                                     proxy_pass http://{{name}}:{{port}};
@@ -4654,11 +4820,11 @@ mod tests {
                     })
                     .await?
                     .bootstrap_companions::<anyhow::Error, _>(Box::new(
-                        |_: &BootstrapCompanionsWithRawElementsContext, _: &TemplateData<'_>| {
+                        |_: &BootstrapCompanionsContext, _: &TemplateData<'_>| {
                             Ok::<_, anyhow::Error>(BootstrappedCompanions {
-                                bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                                bootstrapped_companions: vec![BootstrappedCompanion::bootstrapped(
                                     blueprint_service!("adminer", "adminer:4.8.1"),
-                                    vec![RawInfrastructureElement::from(serde_json::json!({}))],
+                                    vec![serde_json::json!({})],
                                 )],
                                 ..Default::default()
                             })
@@ -4705,13 +4871,11 @@ mod tests {
                     })
                     .await?
                     .bootstrap_companions::<anyhow::Error, _>(Box::new(
-                        |_: &BootstrapCompanionsWithRawElementsContext, _: &TemplateData<'_>| {
+                        |_: &BootstrapCompanionsContext, _: &TemplateData<'_>| {
                             Ok::<_, anyhow::Error>(BootstrappedCompanions {
-                                bootstrapped_companion_elements: vec![
-                                    RawInfrastructureElement::from(serde_json::json!({
-                                        "some": "data"
-                                    })),
-                                ],
+                                bootstrapped_companion_elements: vec![serde_json::json!({
+                                    "some": "data"
+                                })],
                                 ..Default::default()
                             })
                         },
@@ -4720,9 +4884,9 @@ mod tests {
                     .finish()?;
 
             assert_eq!(
-                vec![RawInfrastructureElement::from(serde_json::json!({
+                vec![serde_json::json!({
                     "some": "data"
-                }))],
+                })],
                 deployment_unit.bootstrapped_companion_elements
             );
             Ok(())
@@ -4734,19 +4898,19 @@ mod tests {
 
             #[async_trait::async_trait]
             impl BootstrapCompanions for DummyBootstrapCompanions {
+                type BootstrappedElement = serde_json::Value;
                 type Error = anyhow::Error;
 
-                async fn bootstrap_companions_with_raw_elements(
+                async fn bootstrap_companions(
                     &self,
-                    _context: BootstrapCompanionsWithRawElementsContext<'_>,
+                    _context: BootstrapCompanionsContext<'_>,
                     _template_data: &TemplateData,
-                ) -> Result<BootstrappedCompanions, Self::Error> {
+                ) -> Result<BootstrappedCompanions<Self::BootstrappedElement>, Self::Error>
+                {
                     Ok(BootstrappedCompanions {
-                        bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                        bootstrapped_companions: vec![BootstrappedCompanion::bootstrapped(
                             blueprint_service!("adminer", "adminer:4.8.1"),
-                            vec![RawInfrastructureElement::from(
-                                serde_json::json!({"opaque": "value"}),
-                            )],
+                            vec![serde_json::json!({"opaque": "value"})],
                         )],
                         ..Default::default()
                     })
@@ -4755,9 +4919,9 @@ mod tests {
                 /// This callback must be implemented
                 fn update_raw_elements(
                     &self,
-                    context: MergeRawElementsContext<'_>,
-                    raw_elements: Vec<RawInfrastructureElement>,
-                ) -> Result<Vec<RawInfrastructureElement>, Self::Error> {
+                    context: MergeBootstrappedElementsContext<'_>,
+                    raw_elements: Vec<Self::BootstrappedElement>,
+                ) -> Result<Vec<Self::BootstrappedElement>, Self::Error> {
                     if context.service_config_context.is_some() {
                         assert_eq!(
                             context
@@ -4786,7 +4950,6 @@ mod tests {
                             );
                             json
                         })
-                        .map(RawInfrastructureElement::from)
                         .collect::<Vec<_>>())
                 }
             }
@@ -4818,9 +4981,7 @@ mod tests {
                     &Image::from_str("adminer:5.4.2").unwrap(),
                     &blueprint_service!("adminer", "adminer:5.4.2"),
                     &ContainerType::Instance,
-                    &vec![RawInfrastructureElement::from(
-                        serde_json::json!({"opaque": "docker.io/library/adminer:5.4.2"})
-                    )]
+                    &vec![serde_json::json!({"opaque": "docker.io/library/adminer:5.4.2"})]
                 ),],
                 deployment_unit
                     .services
@@ -4864,13 +5025,13 @@ mod tests {
                 .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| Ok(None))
                 .await?
                 .bootstrap_companions(Box::new(
-                    |_: &BootstrapCompanionsWithRawElementsContext, data: &TemplateData<'_>| {
+                    |_: &BootstrapCompanionsContext, data: &TemplateData<'_>| {
                         Ok::<_, anyhow::Error>(BootstrappedCompanions {
-                            bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                            bootstrapped_companions: vec![BootstrappedCompanion::bootstrapped(
                                 blueprint_service!("adminer", "adminer:4.8.1"),
-                                vec![RawInfrastructureElement::from(serde_json::json!({
+                                vec![serde_json::json!({
                                     "opaque": data.as_handlerbars().render("{{#each services}}{{name}}{{/each}}")?
-                                }))],
+                                })],
                             )],
                             ..Default::default()
                         })
@@ -4885,9 +5046,7 @@ mod tests {
                     &Image::from_str("adminer:4.8.1").unwrap(),
                     &blueprint_service!("adminer", "adminer:4.8.1"),
                     &ContainerType::ApplicationCompanion,
-                    &vec![RawInfrastructureElement::from(
-                        serde_json::json!({"opaque": "nginx"})
-                    )]
+                    &vec![serde_json::json!({"opaque": "nginx"})]
                 ),],
                 deployment_unit
                     .services
@@ -4945,13 +5104,13 @@ mod tests {
                 .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| Ok(None))
                 .await?
                 .bootstrap_companions(Box::new(
-                    |_: &BootstrapCompanionsWithRawElementsContext, data: &TemplateData<'_>| {
+                    |_: &BootstrapCompanionsContext, data: &TemplateData<'_>| {
                         Ok::<_, anyhow::Error>(BootstrappedCompanions {
-                            bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                            bootstrapped_companions: vec![BootstrappedCompanion::bootstrapped(
                                 blueprint_service!("adminer", "adminer:4.8.1"),
-                                vec![RawInfrastructureElement::from(serde_json::json!({
+                                vec![serde_json::json!({
                                     "opaque": data.as_handlerbars().render("{{#each services}}{{name}}:{{/each}}")?
-                                }))],
+                                })],
                             )],
                             ..Default::default()
                         })
@@ -4966,9 +5125,7 @@ mod tests {
                     &Image::from_str("adminer:5.0.0").unwrap(),
                     &blueprint_service!("adminer", "adminer:5.0.0"),
                     &ContainerType::Replica,
-                    &vec![RawInfrastructureElement::from(
-                        serde_json::json!({"opaque": "adminer:nginx:"})
-                    )]
+                    &vec![serde_json::json!({"opaque": "adminer:nginx:"})]
                 ),],
                 deployment_unit
                     .services
@@ -5041,17 +5198,17 @@ mod tests {
                 .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| Ok(None))
                 .await?
                 .bootstrap_companions(Box::new(
-                    |_: &BootstrapCompanionsWithRawElementsContext, data: &TemplateData<'_>| {
+                    |_: &BootstrapCompanionsContext, data: &TemplateData<'_>| {
                         Ok::<_, anyhow::Error>(BootstrappedCompanions {
-                            bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                            bootstrapped_companions: vec![BootstrappedCompanion::bootstrapped(
                                 blueprint_service!(
                                     "adminer",
                                     "adminer:4.8.1",
                                     env = ("ADMINER_DESIGN" => "nette")
                                 ),
-                                vec![RawInfrastructureElement::from(serde_json::json!({
+                                vec![serde_json::json!({
                                     "opaque": data.as_handlerbars().render("{{#each services}}{{name}}:{{/each}}")?
-                                }))],
+                                })],
                             )],
                             ..Default::default()
                         })
@@ -5073,9 +5230,7 @@ mod tests {
                         )
                     ),
                     &ContainerType::Instance,
-                    &vec![RawInfrastructureElement::from(
-                        serde_json::json!({"opaque": "adminer:nginx:"})
-                    )]
+                    &vec![serde_json::json!({"opaque": "adminer:nginx:"})]
                 ),],
                 deployment_unit
                     .services
@@ -5153,17 +5308,17 @@ mod tests {
                 .resolve_infrastructure_template_data::<anyhow::Error, _>(async |_app_name| Ok(None))
                 .await?
                 .bootstrap_companions(Box::new(
-                    |_: &BootstrapCompanionsWithRawElementsContext, data: &TemplateData<'_>| {
+                    |_: &BootstrapCompanionsContext, data: &TemplateData<'_>| {
                         Ok::<_, anyhow::Error>(BootstrappedCompanions {
-                            bootstrapped_companions: vec![ApplicationCompanion::bootstrapped(
+                            bootstrapped_companions: vec![BootstrappedCompanion::bootstrapped(
                                 blueprint_service!(
                                     "adminer",
                                     "adminer:4.8.1",
                                     env = ("ADMINER_DESIGN" => "nette")
                                 ),
-                                vec![RawInfrastructureElement::from(serde_json::json!({
+                                vec![serde_json::json!({
                                     "opaque": data.as_handlerbars().render("{{#each services}}{{name}}:{{/each}}")?
-                                }))],
+                                })],
                             )],
                             ..Default::default()
                         })
@@ -5185,9 +5340,7 @@ mod tests {
                         )
                     ),
                     &ContainerType::Instance,
-                    &vec![RawInfrastructureElement::from(
-                        serde_json::json!({"opaque": "adminer:nginx:"})
-                    )]
+                    &vec![serde_json::json!({"opaque": "adminer:nginx:"})]
                 ),],
                 deployment_unit
                     .services

@@ -19,6 +19,7 @@ use kube::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
+#[derive(Clone)]
 pub enum K8sElement {
     Role(Role),
     RoleBinding(RoleBinding),
@@ -35,6 +36,82 @@ pub enum K8sElement {
     NetworkPolicy(NetworkPolicy),
     TraefikIngressRoute(IngressRoute),
     TraefikMiddleware(Middleware),
+}
+
+impl From<Role> for K8sElement {
+    fn from(value: Role) -> Self {
+        Self::Role(value)
+    }
+}
+impl From<RoleBinding> for K8sElement {
+    fn from(value: RoleBinding) -> Self {
+        Self::RoleBinding(value)
+    }
+}
+impl From<StatefulSet> for K8sElement {
+    fn from(value: StatefulSet) -> Self {
+        Self::StatefulSet(value)
+    }
+}
+impl From<ConfigMap> for K8sElement {
+    fn from(value: ConfigMap) -> Self {
+        Self::ConfigMap(value)
+    }
+}
+impl From<Secret> for K8sElement {
+    fn from(value: Secret) -> Self {
+        Self::Secret(value)
+    }
+}
+impl From<PersistentVolumeClaim> for K8sElement {
+    fn from(value: PersistentVolumeClaim) -> Self {
+        Self::PVC(value)
+    }
+}
+impl From<Service> for K8sElement {
+    fn from(value: Service) -> Self {
+        Self::Service(value)
+    }
+}
+impl From<Pod> for K8sElement {
+    fn from(value: Pod) -> Self {
+        Self::Pod(value)
+    }
+}
+impl From<Deployment> for K8sElement {
+    fn from(value: Deployment) -> Self {
+        Self::Deployment(value)
+    }
+}
+impl From<Job> for K8sElement {
+    fn from(value: Job) -> Self {
+        Self::Job(value)
+    }
+}
+impl From<ServiceAccount> for K8sElement {
+    fn from(value: ServiceAccount) -> Self {
+        Self::ServiceAccount(value)
+    }
+}
+impl From<Ingress> for K8sElement {
+    fn from(value: Ingress) -> Self {
+        Self::Ingress(value)
+    }
+}
+impl From<NetworkPolicy> for K8sElement {
+    fn from(value: NetworkPolicy) -> Self {
+        Self::NetworkPolicy(value)
+    }
+}
+impl From<IngressRoute> for K8sElement {
+    fn from(value: IngressRoute) -> Self {
+        Self::TraefikIngressRoute(value)
+    }
+}
+impl From<Middleware> for K8sElement {
+    fn from(value: Middleware) -> Self {
+        Self::TraefikMiddleware(value)
+    }
 }
 
 impl K8sElement {
@@ -411,6 +488,27 @@ impl<'de> Deserialize<'de> for K8sBackupElement {
                 Middleware::api_version(&()),
                 Middleware::kind(&()),
             ))),
+        }
+    }
+}
+
+impl From<K8sBackupElement> for K8sElement {
+    fn from(value: K8sBackupElement) -> Self {
+        match value {
+            K8sBackupElement::Role(role) => Self::Role(role),
+            K8sBackupElement::RoleBinding(role_binding) => Self::RoleBinding(role_binding),
+            K8sBackupElement::StatefulSet(stateful_set) => Self::StatefulSet(stateful_set),
+            K8sBackupElement::Service(service) => Self::Service(service),
+            K8sBackupElement::Pod(pod) => Self::Pod(pod),
+            K8sBackupElement::Deployment(deployment) => Self::Deployment(deployment),
+            K8sBackupElement::ServiceAccount(service_account) => {
+                Self::ServiceAccount(service_account)
+            }
+            K8sBackupElement::NetworkPolicy(network_policy) => Self::NetworkPolicy(network_policy),
+            K8sBackupElement::TraefikIngressRoute(ingress_route) => {
+                Self::TraefikIngressRoute(ingress_route)
+            }
+            K8sBackupElement::TraefikMiddleware(middleware) => Self::TraefikMiddleware(middleware),
         }
     }
 }

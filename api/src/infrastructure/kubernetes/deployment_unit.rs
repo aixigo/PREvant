@@ -18,8 +18,10 @@ use crate::{
 };
 use anyhow::Result;
 use domain::{
-    AppName, Image, RawInfrastructureElement,
-    app_deployment::{ApplicationCompanion, BootstrappedCompanions, MergeRawElementsContext},
+    AppName, Image,
+    app_deployment::{
+        BootstrappedCompanion, BootstrappedCompanions, MergeBootstrappedElementsContext,
+    },
 };
 use futures::{AsyncBufReadExt, AsyncReadExt, StreamExt, TryStreamExt};
 use handlebars::RenderError;
@@ -73,7 +75,7 @@ impl<'de> Deserialize<'de> for K8sDeploymentUnit {
         D: serde::Deserializer<'de>,
     {
         let elements = Vec::<K8sElement>::deserialize(deserializer)?;
-        Ok(K8sDeploymentUnit::from(elements))
+        Ok(K8sDeploymentUnit::from_iter(elements))
     }
 }
 
@@ -111,8 +113,53 @@ macro_rules! empty_read_only_fields {
     }
 }
 
-impl From<Vec<K8sElement>> for K8sDeploymentUnit {
-    fn from(value: Vec<K8sElement>) -> Self {
+impl IntoIterator for K8sDeploymentUnit {
+    type Item = K8sElement;
+    type IntoIter = std::vec::IntoIter<K8sElement>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+        } = self;
+
+        roles
+            .into_iter()
+            .map(K8sElement::from)
+            .chain(role_bindings.into_iter().map(K8sElement::from))
+            .chain(stateful_sets.into_iter().map(K8sElement::from))
+            .chain(config_maps.into_iter().map(K8sElement::from))
+            .chain(secrets.into_iter().map(K8sElement::from))
+            .chain(pvcs.into_iter().map(K8sElement::from))
+            .chain(services.into_iter().map(K8sElement::from))
+            .chain(pods.into_iter().map(K8sElement::from))
+            .chain(deployments.into_iter().map(K8sElement::from))
+            .chain(jobs.into_iter().map(K8sElement::from))
+            .chain(service_accounts.into_iter().map(K8sElement::from))
+            .chain(policies.into_iter().map(K8sElement::from))
+            .chain(traefik_ingresses.into_iter().map(K8sElement::from))
+            .chain(traefik_middlewares.into_iter().map(K8sElement::from))
+            // TODO: once https://doc.rust-lang.org/unstable-book/language-features/type-alias-impl-trait.html
+            // is stabilized this allocation can go away.
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
+impl FromIterator<K8sElement> for K8sDeploymentUnit {
+    fn from_iter<T: IntoIterator<Item = K8sElement>>(iter: T) -> Self {
         let mut roles = Vec::new();
         let mut role_bindings = Vec::new();
         let mut stateful_sets = Vec::new();
@@ -129,7 +176,7 @@ impl From<Vec<K8sElement>> for K8sDeploymentUnit {
         let mut traefik_ingresses = Vec::new();
         let mut traefik_middlewares = Vec::new();
 
-        for element in value {
+        for element in iter {
             match element {
                 K8sElement::Role(role) => roles.push(role),
                 K8sElement::RoleBinding(role_binding) => role_bindings.push(role_binding),
@@ -164,59 +211,6 @@ impl From<Vec<K8sElement>> for K8sDeploymentUnit {
             pods,
             deployments,
             jobs,
-            service_accounts,
-            policies,
-            traefik_ingresses,
-            traefik_middlewares,
-        })
-    }
-}
-
-impl From<Vec<K8sBackupElement>> for K8sDeploymentUnit {
-    fn from(value: Vec<K8sBackupElement>) -> Self {
-        let mut roles = Vec::new();
-        let mut role_bindings = Vec::new();
-        let mut stateful_sets = Vec::new();
-        let mut services = Vec::new();
-        let mut pods = Vec::new();
-        let mut deployments = Vec::new();
-        let mut service_accounts = Vec::new();
-        let mut policies = Vec::new();
-        let mut traefik_middlewares = Vec::new();
-        let mut traefik_ingresses = Vec::new();
-
-        for element in value {
-            match element {
-                K8sBackupElement::Role(role) => roles.push(role),
-                K8sBackupElement::RoleBinding(role_binding) => role_bindings.push(role_binding),
-                K8sBackupElement::StatefulSet(stateful_set) => stateful_sets.push(stateful_set),
-                K8sBackupElement::Service(service) => services.push(service),
-                K8sBackupElement::Pod(pod) => pods.push(pod),
-                K8sBackupElement::Deployment(deployment) => deployments.push(deployment),
-                K8sBackupElement::ServiceAccount(service_account) => {
-                    service_accounts.push(service_account)
-                }
-                K8sBackupElement::NetworkPolicy(network_policy) => policies.push(network_policy),
-                K8sBackupElement::TraefikIngressRoute(ingress_route) => {
-                    traefik_ingresses.push(ingress_route)
-                }
-                K8sBackupElement::TraefikMiddleware(middleware) => {
-                    traefik_middlewares.push(middleware)
-                }
-            }
-        }
-
-        Self::sorted(Self {
-            roles,
-            role_bindings,
-            stateful_sets,
-            config_maps: Vec::new(),
-            secrets: Vec::new(),
-            pvcs: Vec::new(),
-            services,
-            pods,
-            deployments,
-            jobs: Vec::new(),
             service_accounts,
             policies,
             traefik_ingresses,
@@ -595,7 +589,7 @@ impl K8sDeploymentUnit {
 
     pub fn update_with_merge_context(
         mut self,
-        context: MergeRawElementsContext<'_>,
+        context: MergeBootstrappedElementsContext<'_>,
     ) -> Result<Self> {
         let routes = convert_k8s_traefik_crds_to_domain_traefik_routes(
             std::mem::take(&mut self.traefik_ingresses),
@@ -1408,7 +1402,7 @@ fn matches_labels(
     labels.iter().all(|(k, v)| match_labels.get(k) == Some(v))
 }
 
-impl TryFrom<K8sDeploymentUnit> for BootstrappedCompanions {
+impl TryFrom<K8sDeploymentUnit> for BootstrappedCompanions<K8sElement> {
     type Error = anyhow::Error;
 
     fn try_from(value: K8sDeploymentUnit) -> std::result::Result<Self, Self::Error> {
@@ -1510,68 +1504,54 @@ impl TryFrom<K8sDeploymentUnit> for BootstrappedCompanions {
             bootstrapped_companions: deployments
                 .into_iter()
                 .map(|deployment| {
-                    let mut elements = vec![RawInfrastructureElement::from(serde_json::to_value(
-                        &deployment,
-                    )?)];
+                    let service_name = deployment.metadata.name.clone().unwrap_or_default();
+                    let blueprint_service = kubernetes_deployement_to_service_config(&deployment)?;
+                    let mut elements = vec![K8sElement::from(deployment)];
 
                     elements.extend(
                         service_by_deployement
-                            .remove(deployment.metadata.name.as_ref().unwrap().as_str())
+                            .remove(&service_name)
                             .into_iter()
                             .flat_map(|i| i.into_iter())
-                            .map(|i| {
-                                RawInfrastructureElement::from(serde_json::to_value(i).unwrap())
-                            }),
+                            .map(K8sElement::from),
                     );
                     elements.extend(
                         ingress_by_deployement
-                            .remove(deployment.metadata.name.as_ref().unwrap().as_str())
+                            .remove(&service_name)
                             .into_iter()
                             .flat_map(|i| i.into_iter())
-                            .map(|i| {
-                                RawInfrastructureElement::from(serde_json::to_value(i).unwrap())
-                            }),
+                            .map(K8sElement::from),
                     );
                     elements.extend(
                         middlewares_by_deployement
-                            .remove(deployment.metadata.name.as_ref().unwrap().as_str())
+                            .remove(&service_name)
                             .into_iter()
                             .flat_map(|i| i.into_iter())
-                            .map(|i| {
-                                RawInfrastructureElement::from(serde_json::to_value(i).unwrap())
-                            }),
+                            .map(K8sElement::from),
                     );
 
-                    Ok(ApplicationCompanion::bootstrapped(
-                        kubernetes_deployement_to_service_config(&deployment)?,
+                    Ok(BootstrappedCompanion::bootstrapped(
+                        blueprint_service,
                         elements,
                     ))
                 })
-                .collect::<Result<Vec<ApplicationCompanion>>>()?,
+                .collect::<Result<Vec<BootstrappedCompanion<_>>>>()?,
             bootstrapped_companion_elements: roles
                 .into_iter()
-                .map(serde_json::to_value)
-                .chain(role_bindings.into_iter().map(serde_json::to_value))
+                .map(K8sElement::from)
+                .chain(role_bindings.into_iter().map(K8sElement::from))
                 // TODO: compare with merge logic…
-                .chain(stateful_sets.into_iter().map(serde_json::to_value))
-                .chain(config_maps.into_iter().map(serde_json::to_value))
-                .chain(secrets.into_iter().map(serde_json::to_value))
-                .chain(pvcs.into_iter().map(serde_json::to_value))
-                .chain(services.into_iter().map(serde_json::to_value))
-                .chain(pods.into_iter().map(serde_json::to_value))
-                .chain(jobs.into_iter().map(serde_json::to_value))
-                .chain(service_accounts.into_iter().map(serde_json::to_value))
-                .chain(policies.into_iter().map(serde_json::to_value))
-                .chain(traefik_ingresses.into_iter().map(serde_json::to_value))
-                .chain(traefik_middlewares.into_iter().map(serde_json::to_value))
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Should not happen when serializing Kubernetes objects as JSON: {e}"
-                    )
-                })?
-                .into_iter()
-                .map(RawInfrastructureElement::from)
+                .chain(stateful_sets.into_iter().map(K8sElement::from))
+                .chain(config_maps.into_iter().map(K8sElement::from))
+                .chain(secrets.into_iter().map(K8sElement::from))
+                .chain(pvcs.into_iter().map(K8sElement::from))
+                .chain(services.into_iter().map(K8sElement::from))
+                .chain(pods.into_iter().map(K8sElement::from))
+                .chain(jobs.into_iter().map(K8sElement::from))
+                .chain(service_accounts.into_iter().map(K8sElement::from))
+                .chain(policies.into_iter().map(K8sElement::from))
+                .chain(traefik_ingresses.into_iter().map(K8sElement::from))
+                .chain(traefik_middlewares.into_iter().map(K8sElement::from))
                 .collect::<Vec<_>>(),
         })
     }
@@ -3181,7 +3161,7 @@ spec:
             .await;
 
             let payload = unit
-                .update_with_merge_context(MergeRawElementsContext {
+                .update_with_merge_context(MergeBootstrappedElementsContext {
                     app_name: &AppName::master(),
                     service_config_context: None,
                     base_route: &domain::traefik::TraefikIngressRoute::with_rule_and_middlewares(
@@ -3286,7 +3266,7 @@ spec:
             .await;
 
             let payload = unit
-                .update_with_merge_context(MergeRawElementsContext {
+                .update_with_merge_context(MergeBootstrappedElementsContext {
                     app_name: &AppName::master(),
                     service_config_context: None,
                     base_route: &domain::traefik::TraefikIngressRoute::with_rule_and_middlewares(

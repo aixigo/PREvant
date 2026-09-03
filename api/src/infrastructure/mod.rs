@@ -27,10 +27,10 @@
 use chrono::{DateTime, FixedOffset};
 pub use docker::Docker;
 use domain::{
-    AppName, RawInfrastructureElement,
+    AppName,
     app_blueprints::{DesiredServiceStatus, Environment},
     app_deployment::{
-        BootstrapCompanionsWithRawElementsContext, BootstrappedCompanions, MergeRawElementsContext,
+        BootstrapCompanionsContext, BootstrappedCompanions, MergeBootstrappedElementsContext,
     },
     app_instance::{App, Service},
     templating::TemplateData,
@@ -110,6 +110,50 @@ macro_rules! dispatch {
     };
 }
 
+#[derive(Clone)]
+pub enum BootstrappedElementProxy {
+    Kubernetes(<Kubernetes as Infrastructure>::BootstrappedElement),
+    Unit,
+}
+
+impl From<()> for BootstrappedElementProxy {
+    fn from(_value: ()) -> Self {
+        Self::Unit
+    }
+}
+
+impl From<<Kubernetes as Infrastructure>::BootstrappedElement> for BootstrappedElementProxy {
+    fn from(value: <Kubernetes as Infrastructure>::BootstrappedElement) -> Self {
+        Self::Kubernetes(value)
+    }
+}
+
+impl Into<<Kubernetes as Infrastructure>::BootstrappedElement> for BootstrappedElementProxy {
+    fn into(self) -> <Kubernetes as Infrastructure>::BootstrappedElement {
+        match self {
+            BootstrappedElementProxy::Kubernetes(e) => e,
+            other => panic!(
+                "This should never happen: {} must not be converted to {}",
+                std::any::type_name::<()>(),
+                std::any::type_name_of_val(&other)
+            ),
+        }
+    }
+}
+
+impl Into<()> for BootstrappedElementProxy {
+    fn into(self) -> () {
+        match self {
+            BootstrappedElementProxy::Unit => (),
+            other => panic!(
+                "This should never happen: {} must not be converted to {}",
+                std::any::type_name::<()>(),
+                std::any::type_name_of_val(&other)
+            ),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum BackupPayloadProxy {
@@ -120,6 +164,7 @@ pub enum BackupPayloadProxy {
 
 #[async_trait::async_trait]
 impl Infrastructure for InfrastructureProxy {
+    type BootstrappedElement = BootstrappedElementProxy;
     type BackupPayload = BackupPayloadProxy;
 
     async fn fetch_apps(&self) -> anyhow::Result<HashMap<AppName, App>> {
@@ -154,10 +199,36 @@ impl Infrastructure for InfrastructureProxy {
 
     async fn deploy_services(
         &self,
-        deployment_unit: &domain::app_deployment::DeploymentUnit,
+        deployment_unit: domain::app_deployment::DeploymentUnit<Self::BootstrappedElement>,
         container_config: &crate::config::ContainerConfig,
     ) -> anyhow::Result<App> {
-        dispatch!(self, deploy_services, deployment_unit, container_config).await
+        match self {
+            Self::Docker(docker) => {
+                docker
+                    .deploy_services(
+                        domain::app_deployment::DeploymentUnit::from_bootstrapped(deployment_unit),
+                        container_config,
+                    )
+                    .await
+            }
+            Self::Kubernetes(kubernetes) => {
+                kubernetes
+                    .deploy_services(
+                        domain::app_deployment::DeploymentUnit::from_bootstrapped(deployment_unit),
+                        container_config,
+                    )
+                    .await
+            }
+            #[cfg(test)]
+            Self::Dummy(dummy) => {
+                dummy
+                    .deploy_services(
+                        domain::app_deployment::DeploymentUnit::from_bootstrapped(deployment_unit),
+                        container_config,
+                    )
+                    .await
+            }
+        }
     }
 
     async fn stop_services(&self, app_name: &AppName) -> anyhow::Result<Option<App>> {
@@ -227,29 +298,44 @@ impl Infrastructure for InfrastructureProxy {
 
     async fn bootstrap_companions_with_raw_elements(
         &self,
-        context: BootstrapCompanionsWithRawElementsContext<'_>,
+        context: BootstrapCompanionsContext<'_>,
         template_data: &TemplateData,
-    ) -> anyhow::Result<BootstrappedCompanions> {
-        dispatch!(
-            self,
-            bootstrap_companions_with_raw_elements,
-            context,
-            template_data
-        )
-        .await
+    ) -> anyhow::Result<BootstrappedCompanions<Self::BootstrappedElement>> {
+        match self {
+            Self::Docker(docker) => docker
+                .bootstrap_companions_with_raw_elements(context, template_data)
+                .await
+                .map(BootstrappedCompanions::from_bootstrapped),
+            Self::Kubernetes(kubernetes) => kubernetes
+                .bootstrap_companions_with_raw_elements(context, template_data)
+                .await
+                .map(BootstrappedCompanions::from_bootstrapped),
+            #[cfg(test)]
+            Self::Dummy(dummy) => dummy
+                .bootstrap_companions_with_raw_elements(context, template_data)
+                .await
+                .map(BootstrappedCompanions::from_bootstrapped),
+        }
     }
 
     fn update_raw_elements_after_merged_blueprint_config(
         &self,
-        context: MergeRawElementsContext<'_>,
-        raw_elements: Vec<RawInfrastructureElement>,
-    ) -> anyhow::Result<Vec<RawInfrastructureElement>> {
-        dispatch!(
-            self,
-            update_raw_elements_after_merged_blueprint_config,
-            context,
-            raw_elements
-        )
+        context: MergeBootstrappedElementsContext<'_>,
+        raw_elements: Vec<Self::BootstrappedElement>,
+    ) -> anyhow::Result<Vec<Self::BootstrappedElement>> {
+        Ok(match self {
+            Self::Docker(_) => Vec::new(),
+            Self::Kubernetes(kubernetes) => kubernetes
+                .update_raw_elements_after_merged_blueprint_config(
+                    context,
+                    raw_elements.into_iter().map(Into::into).collect(),
+                )?
+                .into_iter()
+                .map(BootstrappedElementProxy::Kubernetes)
+                .collect::<Vec<_>>(),
+            #[cfg(test)]
+            Self::Dummy(_) => Vec::new(),
+        })
     }
 
     async fn http_forwarder(&self) -> anyhow::Result<Box<dyn HttpForwarder>> {

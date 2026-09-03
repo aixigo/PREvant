@@ -292,7 +292,7 @@ impl Docker {
         &self,
         app_name: &AppName,
         network_id: &str,
-        service: &DeployableService,
+        service: &DeployableService<()>,
         container_config: &ContainerConfig,
         existing_volumes: &VolumeListResponse,
         owners: &HashSet<Owner>,
@@ -434,7 +434,7 @@ impl Docker {
 
     fn create_container_options(
         app_name: &AppName,
-        service: &DeployableService,
+        service: &DeployableService<()>,
         container_config: &ContainerConfig,
         host_config_binds: &[String],
         owners: &HashSet<Owner>,
@@ -615,7 +615,7 @@ impl Docker {
 
     async fn create_docker_volume(
         app_name: &AppName,
-        service: &DeployableService,
+        service: &DeployableService<()>,
     ) -> Result<String, BollardError> {
         let docker = DockerAPI::connect_with_socket_defaults()?;
 
@@ -638,7 +638,7 @@ impl Docker {
     async fn create_host_config_binds(
         app_name: &AppName,
         existing_volume: &VolumeListResponse,
-        service: &DeployableService,
+        service: &DeployableService<()>,
     ) -> Result<Vec<String>, BollardError> {
         let mut host_binds = Vec::new();
 
@@ -813,6 +813,7 @@ impl Docker {
 
 #[async_trait]
 impl Infrastructure for Docker {
+    type BootstrappedElement = ();
     type BackupPayload = ();
 
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
@@ -840,7 +841,7 @@ impl Infrastructure for Docker {
 
     async fn deploy_services(
         &self,
-        deployment_unit: &DeploymentUnit,
+        deployment_unit: DeploymentUnit<Self::BootstrappedElement>,
         container_config: &ContainerConfig,
     ) -> Result<App> {
         let app_name = &deployment_unit.app_name;
