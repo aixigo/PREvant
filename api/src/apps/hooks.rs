@@ -680,7 +680,7 @@ mod tests {
                 result,
                 Err(HooksError::InvalidDeploymentHook {
                     err: String::from(
-                        "Cannot execute hook: ReferenceError: undefinedVar is not defined\n    at deploymentHook (unknown at :2:61)\n    at <main> (unknown at :1:15)"
+                        "Cannot execute hook: ReferenceError: undefinedVar is not defined (unknown at :1:15)\n    at deploymentHook (unknown at :2:61)\n    at <main> (unknown at :1:15)"
                     )
                 })
             );
@@ -920,7 +920,7 @@ mod tests {
                 result,
                 Err(HooksError::UserToOwner {
                     err: String::from(
-                        "Cannot execute hook: ReferenceError: undefinedVar is not defined\n    at idTokenClaimsToOwnerHook (unknown at :2:59)\n    at <main> (unknown at :1:25)"
+                        "Cannot execute hook: ReferenceError: undefinedVar is not defined (unknown at :1:25)\n    at idTokenClaimsToOwnerHook (unknown at :2:59)\n    at <main> (unknown at :1:25)"
                     )
                 })
             )

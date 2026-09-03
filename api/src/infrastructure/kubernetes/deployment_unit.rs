@@ -1573,7 +1573,7 @@ where
     let api = Api::namespaced(client.clone(), &app_name.to_rfc1123_namespace_id());
     match api.create(&PostParams::default(), &payload).await {
         Ok(result) => Ok(result),
-        Err(kube::error::Error::Api(kube::error::ErrorResponse { code: 409, .. })) => {
+        Err(kube::error::Error::Api(status)) if status.code == 409 => {
             let name = payload.meta().name.as_deref().unwrap_or_default();
             match api
                 .patch(name, &PatchParams::default(), &Patch::Merge(&payload))

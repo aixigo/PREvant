@@ -65,6 +65,7 @@ use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
     core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
 };
+use k8s_openapi::jiff::Timestamp;
 use kube::api::ObjectMeta;
 use kube::config::Kubeconfig;
 use kube::{Resource, ResourceExt};
@@ -72,7 +73,7 @@ use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     client::Client,
     config::Config,
-    error::{Error as KubeError, ErrorResponse},
+    error::Error as KubeError,
 };
 use log::{debug, error, warn};
 use regex::Regex;
@@ -253,7 +254,7 @@ impl Kubernetes {
                 debug!("Successfully created namespace {namespace} for {app_name}",);
                 Ok(NamespaceCreationResponse::New(result))
             }
-            Err(KubeError::Api(ErrorResponse { code: 409, .. })) => {
+            Err(KubeError::Api(status)) if status.code == 409 => {
                 debug!("Namespace {app_name} already exists.");
 
                 let annotations =
@@ -601,7 +602,10 @@ impl Infrastructure for Kubernetes {
         let created_at = namespace
             .as_ref()
             .and_then(|namespace| namespace.metadata.creation_timestamp.as_ref())
-            .map(|creation_timestamp| creation_timestamp.0);
+            .map(|creation_timestamp| creation_timestamp.0)
+            .and_then(|creation_timestamp| {
+                DateTime::<Utc>::from_timestamp_micros(creation_timestamp.as_microsecond())
+            });
 
         let owners = namespace
             .and_then(|mut namespace| namespace.annotations_mut().remove(OWNERS_LABEL))
@@ -731,7 +735,10 @@ impl Infrastructure for Kubernetes {
             .metadata
             .creation_timestamp
             .as_ref()
-            .map(|creation_timestamp| creation_timestamp.0);
+            .map(|creation_timestamp| creation_timestamp.0)
+            .and_then(|creation_timestamp| {
+                DateTime::<Utc>::from_timestamp_micros(creation_timestamp.as_microsecond())
+            });
 
         Ok(App::new(
             services,
@@ -797,7 +804,8 @@ impl Infrastructure for Kubernetes {
         stream! {
             let p = LogParams {
                 timestamps: true,
-                since_time: from.map(|from| from.with_timezone(&Utc)),
+                since_time: from.map(|from| from.with_timezone(&Utc))
+                    .and_then(|from| Timestamp::from_microsecond(from.timestamp_micros()).ok()),
                 follow,
                 ..Default::default()
             };
@@ -1655,7 +1663,9 @@ mod tests {
         .finish()?;
         let unit = DeploymentUnit::from_unbootstrapped(unit);
 
-        infra.deploy_services(unit.clone(), &Default::default()).await?;
+        infra
+            .deploy_services(unit.clone(), &Default::default())
+            .await?;
 
         let app = infra.fetch_app(&app_name).await?;
 
@@ -1755,7 +1765,9 @@ mod tests {
             .await?
             .finish()?;
 
-            let app = infra.deploy_services(unit.clone(), &Default::default()).await?;
+            let app = infra
+                .deploy_services(unit.clone(), &Default::default())
+                .await?;
 
             Ok((unit, app))
         }

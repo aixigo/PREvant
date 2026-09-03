@@ -13,14 +13,14 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 async-stream = "0.3"
-base64 = "0.22"
-boa_engine = "0.21"
+base64 = "0.23"
+boa_engine = "0.22"
 bollard = { workspace = true }
 bytesize = { version = "2.0", features = ["serde"] }
 bytes = "1.10"
 chrono = { workspace = true }
 clap = { version = "4.6", features = ["derive", "cargo", "help", "usage", "error-context"] }
-cron = "0.16"
+cron = "0.17"
 domain = { path = "../domain" }
 dyn-clone = "1.0"
 env_logger = { workspace = true }
@@ -39,8 +39,8 @@ jira_query = "1.7"
 jsonschema = { workspace = true }
 # If you adjust the feature to increase the supported K8s version, make sure to
 # also adjust the k3d integration job
-k8s-openapi = { version = "0.26", default-features = false, features = ["v1_30"] }
-kube = { version = "2.0", default-features = false, features = ["client", "derive", "rustls-tls", "ws"] }
+k8s-openapi = { version = "0.28", default-features = false, features = ["v1_32"] }
+kube = { version = "4.2", default-features = false, features = ["client", "derive", "rustls-tls", "ws"] }
 lazy_static = "1.5"
 log = { workspace = true }
 multimap = "0.10"
@@ -58,7 +58,7 @@ serde_derive = { workspace = true }
 serde_json = { workspace = true }
 serde_norway = "0.9"
 serde_regex = "1.2"
-sqlx = { version = "0.8", features = ["tls-rustls", "runtime-tokio", "postgres", "uuid", "chrono"] }
+sqlx = { version = "0.9", features = ["tls-rustls", "runtime-tokio", "postgres", "uuid", "chrono"] }
 tar = "0.4"
 thiserror = { workspace = true }
 tokio = { workspace = true }

@@ -39,7 +39,7 @@ use crate::infrastructure::kubernetes::{
 use crate::infrastructure::{OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL};
 use base64::{Engine, engine::general_purpose};
 use bytesize::ByteSize;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use domain::{
     AppName, Image, Owner,
     app_blueprints::{Environment, ServiceConfig, UserDefinedParameters},
@@ -111,7 +111,7 @@ pub fn kubernetes_object_to_service(
         pod.status
             .as_ref()
             .and_then(|s| s.start_time.as_ref())
-            .map(|t| t.0)
+            .and_then(|t| DateTime::<Utc>::from_timestamp_micros(t.0.as_microsecond()))
     });
 
     let status = deployment
