@@ -182,15 +182,15 @@ pub fn kubernetes_deployement_to_service_config(
 
     let mut config = ServiceConfig::new(service_name.clone(), image);
 
-    if let Some(annotations) = &deployment.metadata.annotations {
-        if let Some(replicated_env) = annotations.get(REPLICATED_ENV_LABEL) {
-            let env = serde_json::from_str::<Environment>(replicated_env).map_err(|err| {
-                KubernetesInfrastructureError::UnexpectedError {
-                    err: anyhow::Error::new(err),
-                }
-            })?;
-            config.env = Some(env);
-        }
+    if let Some(replicated_env) = deployment
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.get(REPLICATED_ENV_LABEL))
+    {
+        let env = serde_json::from_str::<Environment>(replicated_env)
+            .map_err(|err| KubernetesInfrastructureError::InvalidEnvironmentLabel { err })?;
+        config.env = Some(env);
     }
 
     Ok(config)

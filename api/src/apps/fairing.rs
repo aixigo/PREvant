@@ -79,7 +79,7 @@ impl Fairing for AppsFairing {
         let http_forwarder = match apps.http_forwarder().await {
             Ok(http_forwarder) => http_forwarder,
             Err(err) => {
-                log::error!("Cannot acquire http forwarder for crawling web host meta: {err}");
+                log::error!("Cannot acquire HTTP forwarder for crawling web host meta: {err}");
                 rocket.shutdown().notify();
                 return;
             }

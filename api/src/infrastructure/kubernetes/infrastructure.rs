@@ -79,6 +79,7 @@ use log::{debug, error, warn};
 use regex::Regex;
 use secstr::SecUtf8;
 use serde::Deserialize;
+use std::path::PathBuf;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     convert::{From, TryFrom},
@@ -92,15 +93,17 @@ pub struct Kubernetes {
 
 #[derive(Debug, thiserror::Error)]
 pub enum KubernetesInfrastructureError {
-    #[error("Failed to create Kubernetes client: {err}")]
-    CannotInitializeClient { err: anyhow::Error },
+    #[error("Failed to create Kubernetes client: {0}")]
+    CannotInitializeClient(CannotInitializeClientError),
     #[error("Unexpected Kubernetes interaction error: {err}")]
-    UnexpectedError { err: anyhow::Error },
+    UnexpectedError { err: KubeError },
     #[error("Unknown service type label {unknown_label}")]
     UnknownServiceType { unknown_label: String },
+    #[error("Cannot parse environment: {err}")]
+    InvalidEnvironmentLabel { err: serde_json::Error },
     #[error("The deployment {deployment_name} does not provide a label for image.")]
     MissingImageLabel { deployment_name: String },
-    #[error("The default storage class is missing in kubernetes.")]
+    #[error("The default storage class is missing in Kubernetes.")]
     MissingDefaultStorageClass,
     #[error("The default storage class contains an empty name")]
     DefaultStorageClassWithoutName,
@@ -108,6 +111,23 @@ pub enum KubernetesInfrastructureError {
     DeploymentWithoutName,
     #[error("Bootstrap pod {pod_name} for {app_name} failed")]
     BootstrapContainerFailed { pod_name: String, app_name: AppName },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CannotInitializeClientError {
+    #[error("{0}")]
+    InferConfigError(kube::config::InferConfigError),
+    #[error("Failed to read Kube configuration from config file {config_file}: {err}")]
+    FailedToReadConfig {
+        config_file: PathBuf,
+        err: std::io::Error,
+    },
+    #[error("{0}")]
+    InvalidKubeConfig(kube::config::KubeconfigError),
+    #[error("{0}")]
+    InvalidYaml(serde_norway::Error),
+    #[error("{0}")]
+    KubeError(KubeError),
 }
 
 enum NamespaceCreationResponse {
@@ -137,48 +157,41 @@ impl Kubernetes {
                 let config_file = k8s_config.kube_config.as_ref().unwrap();
                 let config = tokio::fs::read_to_string(&config_file)
                     .await
-                    .map_err(
-                        |err| KubernetesInfrastructureError::CannotInitializeClient {
-                            err: anyhow::Error::new(err).context(format!(
-                                "Failed to read Kube configuration from config file {config_file}",
-                                config_file = config_file.to_string_lossy(),
-                            )),
-                        },
-                    )?;
+                    .map_err(|err| {
+                        KubernetesInfrastructureError::CannotInitializeClient(
+                            CannotInitializeClientError::FailedToReadConfig {
+                                config_file: config_file.clone(),
+                                err,
+                            },
+                        )
+                    })?;
                 Config::from_custom_kubeconfig(
                     Kubeconfig::deserialize(serde_norway::Deserializer::from_str(&config))
-                        .map_err(
-                            |err| KubernetesInfrastructureError::CannotInitializeClient {
-                                err: anyhow::Error::new(err).context(format!(
-                                    "Failed to deserialize Kube configuration from config file {config_file}",
-                                    config_file = config_file.to_string_lossy(),
-                                )),
-                            },
-                        )?,
+                        .map_err(|err| {
+                            KubernetesInfrastructureError::CannotInitializeClient(
+                                CannotInitializeClientError::InvalidYaml(err),
+                            )
+                        })?,
                     &Default::default(),
                 )
                 .await
-                .map_err(
-                    |err| KubernetesInfrastructureError::CannotInitializeClient {
-                        err: anyhow::Error::new(err).context(format!(
-                            "Failed to initialize Kube configuration from config file {config_file}",
-                            config_file = config_file.to_string_lossy(),
-                        )),
-                    },
-                )?
+                .map_err(|err| {
+                    KubernetesInfrastructureError::CannotInitializeClient(
+                        CannotInitializeClientError::InvalidKubeConfig(err),
+                    )
+                })?
             }
             _ => Config::infer().await.map_err(|err| {
-                KubernetesInfrastructureError::CannotInitializeClient {
-                    err: anyhow::Error::new(err)
-                        .context("Failed to read Kube configuration from cluster env"),
-                }
+                KubernetesInfrastructureError::CannotInitializeClient(
+                    CannotInitializeClientError::InferConfigError(err),
+                )
             })?,
         };
 
         Client::try_from(configuration).map_err(|err| {
-            KubernetesInfrastructureError::CannotInitializeClient {
-                err: anyhow::Error::new(err).context("Failed to create client"),
-            }
+            KubernetesInfrastructureError::CannotInitializeClient(
+                CannotInitializeClientError::KubeError(err),
+            )
         })
     }
 
@@ -420,7 +433,7 @@ impl Kubernetes {
                 if fetched_pvc.len() != 1 {
                     warn!(
                         "Found more than 1 Persistent Volume Claim - {:?} for declared image path {} \n Using the first available Persistent Volume Claim - {:?}",
-                        &fetched_pvc.iter().map(|pvc| &pvc.metadata.name),
+                        fetched_pvc.iter().map(|pvc| &pvc.metadata.name),
                         declared_volume,
                         fetched_pvc.first().unwrap().metadata.name
                     );
@@ -706,7 +719,7 @@ impl Infrastructure for Kubernetes {
                         .iter()
                         .flat_map(|service| service.bootstrapped_companion_elements.iter()),
                 )
-                .map(|e| e.clone()),
+                .cloned()
         );
 
         for deployable_service in &deployment_unit.services {
@@ -1139,9 +1152,7 @@ impl HttpForwarder for K8sHttpForwarder {
 
 impl From<KubeError> for KubernetesInfrastructureError {
     fn from(err: KubeError) -> Self {
-        KubernetesInfrastructureError::UnexpectedError {
-            err: anyhow::Error::new(err),
-        }
+        KubernetesInfrastructureError::UnexpectedError { err }
     }
 }
 
