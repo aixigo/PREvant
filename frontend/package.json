@@ -28,12 +28,12 @@
    "devDependencies": {
       "@playwright/test": "^1.57.0",
       "@vitejs/plugin-vue": "^6.0.3",
-      "@vitest/coverage-v8": "^4.0.16",
-      "@vitest/ui": "^4.0.8",
+      "@vitest/coverage-v8": "^4.1.11",
+      "@vitest/ui": "^4.1.11",
       "@vue/test-utils": "^2.4.6",
       "sass": "1.97.1",
       "vite": "^7.3.0",
       "vite-plugin-vue-devtools": "^8.0.5",
-      "vitest": "^4.0.16"
+      "vitest": "^4.1.11"
    }
 }
