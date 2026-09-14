@@ -15,7 +15,7 @@ use k8s_openapi::{
 };
 use kube::{
     Resource, ResourceExt as _,
-    api::{DynamicObject, ObjectMeta},
+    api::{ApiResource, DynamicObject, ObjectMeta},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -36,6 +36,7 @@ pub enum K8sElement {
     NetworkPolicy(NetworkPolicy),
     TraefikIngressRoute(IngressRoute),
     TraefikMiddleware(Middleware),
+    Other((DynamicObject, ApiResource)),
 }
 
 impl From<Role> for K8sElement {
@@ -113,8 +114,55 @@ impl From<Middleware> for K8sElement {
         Self::TraefikMiddleware(value)
     }
 }
+impl From<(DynamicObject, ApiResource)> for K8sElement {
+    fn from(value: (DynamicObject, ApiResource)) -> Self {
+        Self::Other(value)
+    }
+}
 
 impl K8sElement {
+    pub fn is_well_known(api_resource: &ApiResource) -> bool {
+        match (
+            api_resource.group.as_str(),
+            api_resource.version.as_str(),
+            api_resource.kind.as_str(),
+        ) {
+            (Role::GROUP, Role::VERSION, Role::KIND)
+            | (RoleBinding::GROUP, RoleBinding::VERSION, RoleBinding::KIND)
+            | (StatefulSet::GROUP, StatefulSet::VERSION, StatefulSet::KIND)
+            | (ConfigMap::GROUP, ConfigMap::VERSION, ConfigMap::KIND)
+            | (Secret::GROUP, Secret::VERSION, Secret::KIND)
+            | (
+                PersistentVolumeClaim::GROUP,
+                PersistentVolumeClaim::VERSION,
+                PersistentVolumeClaim::KIND,
+            )
+            | (Service::GROUP, Service::VERSION, Service::KIND)
+            | (Pod::GROUP, Pod::VERSION, Pod::KIND)
+            | (Deployment::GROUP, Deployment::VERSION, Deployment::KIND)
+            | (Job::GROUP, Job::VERSION, Job::KIND)
+            | (ServiceAccount::GROUP, ServiceAccount::VERSION, ServiceAccount::KIND)
+            | (Ingress::GROUP, Ingress::VERSION, Ingress::KIND)
+            | (NetworkPolicy::GROUP, NetworkPolicy::VERSION, NetworkPolicy::KIND) => true,
+
+            (group, version, kind)
+                if group == IngressRoute::group(&())
+                    && version == IngressRoute::version(&())
+                    && kind == IngressRoute::kind(&()) =>
+            {
+                true
+            }
+            (group, version, kind)
+                if group == Middleware::group(&())
+                    && version == Middleware::version(&())
+                    && kind == Middleware::kind(&()) =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn metadata(&self) -> &ObjectMeta {
         match self {
             K8sElement::Role(role) => &role.metadata,
@@ -132,6 +180,7 @@ impl K8sElement {
             K8sElement::NetworkPolicy(network_policy) => &network_policy.metadata,
             K8sElement::TraefikIngressRoute(ingress_route) => &ingress_route.metadata,
             K8sElement::TraefikMiddleware(middleware) => &middleware.metadata,
+            K8sElement::Other((dynamic_object, _)) => &dynamic_object.metadata,
         }
     }
 
@@ -152,6 +201,7 @@ impl K8sElement {
             K8sElement::NetworkPolicy(network_policy) => &mut network_policy.metadata,
             K8sElement::TraefikIngressRoute(ingress_route) => &mut ingress_route.metadata,
             K8sElement::TraefikMiddleware(middleware) => &mut middleware.metadata,
+            K8sElement::Other((dynamic_object, _)) => &mut dynamic_object.metadata,
         };
 
         metadata.namespace = Some(app_name.to_rfc1123_namespace_id());
