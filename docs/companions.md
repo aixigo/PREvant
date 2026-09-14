@@ -198,7 +198,10 @@ infrastructure backend that are expected to generate output on standard out
 underlying infrastructure.
 
 - When PREvant uses Kubernetes as the infrastructure runtime, the bootstrap
-  containers need to output [Kubernetes manifests][k8s-manifest].
+  containers need to output [Kubernetes manifests][k8s-manifest] and PREvant
+  has to be authorized via
+  [RBACs](https://kubernetes.io/docs/reference/access-authn-authz/rbac/) to
+  create, patch and delete these generated Kubernetes manifests.
 
   Make sure to output YAML that is compatible with 1.1 and 1.2
   (For example, bitnami helm charts have been adjusted in part in that regard,
