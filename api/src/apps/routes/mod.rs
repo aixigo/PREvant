@@ -1126,7 +1126,8 @@ mod tests {
                             started_at: Utc::now(),
                         },
                         blueprint_config: domain::blueprint_service!("postgres", "postgres:latest"),
-                        service_type: domain::app_instance::ContainerType::Instance
+                        service_type: domain::app_instance::ContainerType::Instance,
+                        health: None,
                     },
                     Service {
                         id: String::from("some id"),
@@ -1134,7 +1135,8 @@ mod tests {
                             started_at: Utc::now(),
                         },
                         blueprint_config: domain::blueprint_service!("mariadb", "mariadb:latest"),
-                        service_type: domain::app_instance::ContainerType::Instance
+                        service_type: domain::app_instance::ContainerType::Instance,
+                        health: None,
                     }
                 ],
                 HashSet::new(),
@@ -1176,7 +1178,8 @@ mod tests {
                             started_at: Utc::now(),
                         },
                         blueprint_config: domain::blueprint_service!("postgres", "postgres:latest"),
-                        service_type: domain::app_instance::ContainerType::Instance
+                        service_type: domain::app_instance::ContainerType::Instance,
+                        health: None,
                     },
                     Service {
                         id: String::from("some id"),
@@ -1184,7 +1187,8 @@ mod tests {
                             started_at: Utc::now(),
                         },
                         blueprint_config: domain::blueprint_service!("mariadb", "mariadb:latest"),
-                        service_type: domain::app_instance::ContainerType::Instance
+                        service_type: domain::app_instance::ContainerType::Instance,
+                        health: None,
                     }
                 ],
                 HashSet::from([Owner {
