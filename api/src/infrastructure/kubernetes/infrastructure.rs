@@ -719,7 +719,7 @@ impl Infrastructure for Kubernetes {
                         .iter()
                         .flat_map(|service| service.bootstrapped_companion_elements.iter()),
                 )
-                .cloned()
+                .cloned(),
         );
 
         for deployable_service in &deployment_unit.services {
@@ -1865,7 +1865,8 @@ mod tests {
             ];
 
             let k8s_deployment_unit =
-                K8sDeploymentUnit::parse_from_log_streams(context.app_name, output).await?;
+                K8sDeploymentUnit::parse_from_log_streams(context.app_name, HashSet::new(), output)
+                    .await?;
 
             Ok(BootstrappedCompanions::try_from(k8s_deployment_unit)?)
         }

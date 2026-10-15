@@ -40,9 +40,9 @@ use k8s_openapi::{
     apimachinery::pkg::apis::meta::v1::LabelSelector,
 };
 use kube::{
-    Api, Client,
-    api::{LogParams, Patch, PatchParams, PostParams, WatchParams},
-    core::{ObjectMeta, WatchEvent},
+    Api, Client, Resource,
+    api::{ApiResource, LogParams, Patch, PatchParams, PostParams, WatchParams},
+    core::{ObjectMeta, WatchEvent, dynamic},
 };
 use log::{debug, trace, warn};
 use serde::Deserialize;
@@ -67,6 +67,7 @@ pub(super) struct K8sDeploymentUnit {
     policies: Vec<NetworkPolicy>,
     traefik_ingresses: Vec<TraefikIngressRoute>,
     traefik_middlewares: Vec<TraefikMiddleware>,
+    dynamic_objects: Vec<(dynamic::DynamicObject, ApiResource)>,
 }
 
 impl<'de> Deserialize<'de> for K8sDeploymentUnit {
@@ -81,7 +82,7 @@ impl<'de> Deserialize<'de> for K8sDeploymentUnit {
 
 macro_rules! empty_read_only_fields {
     ($field:expr) => {
-        for meta in $field.iter_mut().map(|manifest| &mut manifest.metadata) {
+        for meta in $field.map(|manifest| &mut manifest.metadata) {
             meta.annotations = meta.annotations.take().map(|mut annotations| {
                 annotations.remove(&String::from("deployment.kubernetes.io/revision"));
                 annotations
@@ -98,14 +99,14 @@ macro_rules! empty_read_only_fields {
     ($field:expr, $( $additional_field:ident ),* ) => {
         empty_read_only_fields!($field);
 
-        for manifest in $field.iter_mut() {
+        for manifest in $field {
             $( manifest.$additional_field = None; )*
         }
     };
     ($field:expr, $( $additional_field:ident ),* (spec => $( $additional_field_in_spec:ident ),*)) => {
         empty_read_only_fields!($field, $( $additional_field )*);
 
-        for manifest in $field.iter_mut() {
+        for manifest in $field {
             if let Some(spec) = manifest.spec.as_mut() {
                 $( spec.$additional_field_in_spec = None; )*
             }
@@ -133,6 +134,7 @@ impl IntoIterator for K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects,
         } = self;
 
         roles
@@ -151,6 +153,7 @@ impl IntoIterator for K8sDeploymentUnit {
             .chain(policies.into_iter().map(K8sElement::from))
             .chain(traefik_ingresses.into_iter().map(K8sElement::from))
             .chain(traefik_middlewares.into_iter().map(K8sElement::from))
+            .chain(dynamic_objects.into_iter().map(K8sElement::from))
             // TODO: once https://doc.rust-lang.org/unstable-book/language-features/type-alias-impl-trait.html
             // is stabilized this allocation can go away.
             .collect::<Vec<_>>()
@@ -175,6 +178,7 @@ impl FromIterator<K8sElement> for K8sDeploymentUnit {
         let mut policies = Vec::new();
         let mut traefik_ingresses = Vec::new();
         let mut traefik_middlewares = Vec::new();
+        let mut dynamic_objects = Vec::new();
 
         for element in iter {
             match element {
@@ -197,6 +201,7 @@ impl FromIterator<K8sElement> for K8sDeploymentUnit {
                     traefik_ingresses.push(ingress_route)
                 }
                 K8sElement::TraefikMiddleware(middleware) => traefik_middlewares.push(middleware),
+                K8sElement::Other(dynamic_object) => dynamic_objects.push(dynamic_object),
             }
         }
 
@@ -215,6 +220,7 @@ impl FromIterator<K8sElement> for K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects,
         })
     }
 }
@@ -236,6 +242,7 @@ impl K8sDeploymentUnit {
             mut policies,
             mut traefik_ingresses,
             mut traefik_middlewares,
+            mut dynamic_objects,
         } = self;
 
         fn sort_by<T>(a: &T, b: &T) -> std::cmp::Ordering
@@ -259,6 +266,7 @@ impl K8sDeploymentUnit {
         policies.sort_by(sort_by);
         traefik_ingresses.sort_by(sort_by);
         traefik_middlewares.sort_by(sort_by);
+        dynamic_objects.sort_by(|(a, _), (b, _)| sort_by(a, b));
 
         Self {
             roles,
@@ -275,6 +283,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects,
         }
     }
 
@@ -448,15 +457,21 @@ impl K8sDeploymentUnit {
             return Ok(Default::default());
         }
 
-        let (bootstrapping_pod_name, mut log_streams) = Self::start_bootstrapping_pods(
-            app_name,
-            client.clone(),
-            bootstrapping_container,
-            image_pull_secret,
-        )
-        .await?;
+        let ((bootstrapping_pod_name, mut log_streams), writable_api_resources) = futures::try_join!(
+            async {
+                Self::start_bootstrapping_pods(
+                    app_name,
+                    client.clone(),
+                    bootstrapping_container,
+                    image_pull_secret,
+                )
+                .await
+            },
+            async { Self::fetch_writable_api_resources(client.clone()).await }
+        )?;
 
-        let result = Self::parse_from_log_streams(app_name, &mut log_streams).await;
+        let result =
+            Self::parse_from_log_streams(app_name, writable_api_resources, &mut log_streams).await;
 
         let pod_api: Api<Pod> = Api::namespaced(client, &app_name.to_rfc1123_namespace_id());
         pod_api
@@ -466,8 +481,47 @@ impl K8sDeploymentUnit {
         result
     }
 
+    async fn fetch_writable_api_resources(client: Client) -> Result<HashSet<ApiResource>> {
+        let mut writable_api_resources = HashSet::new();
+
+        let discovery = kube::Discovery::new(client)
+            .run_aggregated()
+            .await?;
+
+        for group in discovery.groups() {
+            for (ar, caps) in group
+                .recommended_resources()
+                .into_iter()
+                .filter(|(ar, _)| !K8sElement::is_well_known(ar))
+                .filter(|(_, caps)| caps.scope == kube::discovery::Scope::Namespaced)
+            {
+                if !caps.supports_operation("create")
+                    || !caps.supports_operation("patch")
+                    || !caps.supports_operation("delete")
+                {
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!(
+                            "Cannot deal with {}/{} : {} because the service account is not capable of creating or deleting the object. Allowed operations: {}",
+                            group.name(),
+                            ar.version,
+                            ar.kind,
+                            caps.operations
+                                .iter()
+                                .fold(String::new(), |a, b| a + ", " + b),
+                        );
+                    }
+                    continue;
+                }
+                writable_api_resources.insert(ar);
+            }
+        }
+
+        Ok(writable_api_resources)
+    }
+
     pub(super) async fn parse_from_log_streams<L>(
         app_name: &AppName,
+        writable_api_resources: HashSet<ApiResource>,
         log_streams: L,
     ) -> Result<Self>
     where
@@ -490,6 +544,7 @@ impl K8sDeploymentUnit {
         let mut policies = Vec::new();
         let mut traefik_ingresses = Vec::new();
         let mut traefik_middlewares = Vec::new();
+        let mut dynamic_objects = Vec::new();
 
         for mut log_stream in log_streams.into_iter() {
             let mut stdout = String::new();
@@ -547,6 +602,21 @@ impl K8sDeploymentUnit {
                     K8sElement::TraefikMiddleware(middleware) => {
                         traefik_middlewares.push(middleware)
                     }
+                    K8sElement::Other((dynamic_object, api_resource))
+                        if writable_api_resources.contains(&api_resource) =>
+                    {
+                        dynamic_objects.push((dynamic_object, api_resource))
+                    }
+                    K8sElement::Other((dynamic_object, api_resource)) => {
+                        log::warn!(
+                            "Cannot create {} because {}/{}:{} is not writable: {}",
+                            dynamic_object.meta().name.as_deref().unwrap_or_default(),
+                            api_resource.group,
+                            api_resource.version,
+                            api_resource.kind,
+                            serde_norway::to_string(&dynamic_object).unwrap_or_default()
+                        );
+                    }
                 }
             }
         }
@@ -584,6 +654,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects,
         }))
     }
 
@@ -855,6 +926,7 @@ impl K8sDeploymentUnit {
         let mut traefik_ingresses = Vec::new();
         let mut traefik_middlewares = Vec::new();
         let mut policies = Vec::new();
+        let mut dynamic_objects = Vec::new();
 
         let namespace = app_name.to_rfc1123_namespace_id();
 
@@ -900,6 +972,25 @@ impl K8sDeploymentUnit {
         let api = Api::<NetworkPolicy>::namespaced(api.into_client(), &namespace);
         policies.extend(api.list(&Default::default()).await?.items);
 
+        let client = api.into_client();
+        let writable_api_resources = Self::fetch_writable_api_resources(client.clone()).await?;
+        let mut client = Some(client);
+        for api_resource in writable_api_resources {
+            let api = Api::<kube::api::DynamicObject>::namespaced_with(
+                client.take().unwrap(),
+                &namespace,
+                &api_resource,
+            );
+            let items = api.list(&Default::default()).await?;
+            dynamic_objects.extend(
+                items
+                    .items
+                    .into_iter()
+                    .map(|item| (item, api_resource.clone())),
+            );
+            client = Some(api.into_client());
+        }
+
         Ok(Self::sorted(Self {
             roles,
             role_bindings,
@@ -915,6 +1006,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects,
         }))
     }
 
@@ -955,6 +1047,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects,
         } = self;
 
         let mut deployed_deployments = Vec::with_capacity(deployments.len());
@@ -1002,6 +1095,10 @@ impl K8sDeploymentUnit {
         for pod in pods {
             create_or_patch(client.clone(), app_name, pod).await?;
         }
+        for (dynamic_object, api_resources) in dynamic_objects {
+            create_or_patch_dynamic_object(client.clone(), app_name, dynamic_object, api_resources)
+                .await?;
+        }
 
         Ok(deployed_deployments)
     }
@@ -1022,6 +1119,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects,
         } = self;
 
         let namespace = app_name.to_rfc1123_namespace_id();
@@ -1156,6 +1254,20 @@ impl K8sDeploymentUnit {
             .await?;
         }
 
+        let client = api.into_client();
+        for (dynamic_object, api_resource) in dynamic_objects {
+            let api = Api::<kube::api::DynamicObject>::namespaced_with(
+                client.clone(),
+                &namespace,
+                &api_resource,
+            );
+            api.delete(
+                dynamic_object.metadata.name.as_deref().unwrap_or_default(),
+                &Default::default(),
+            )
+            .await?;
+        }
+
         Ok(())
     }
 
@@ -1175,6 +1287,7 @@ impl K8sDeploymentUnit {
             mut policies,
             mut traefik_ingresses,
             mut traefik_middlewares,
+            mut dynamic_objects,
         } = self;
 
         // Keep only the pods that aren't created by a deployment
@@ -1188,27 +1301,29 @@ impl K8sDeploymentUnit {
             })
         });
 
-        empty_read_only_fields!(roles);
-        empty_read_only_fields!(role_bindings);
+        empty_read_only_fields!(roles.iter_mut());
+        empty_read_only_fields!(role_bindings.iter_mut());
 
-        empty_read_only_fields!(stateful_sets, status);
+        empty_read_only_fields!(stateful_sets.iter_mut(), status);
 
-        empty_read_only_fields!(config_maps);
-        empty_read_only_fields!(secrets);
-        empty_read_only_fields!(pvcs);
+        empty_read_only_fields!(config_maps.iter_mut());
+        empty_read_only_fields!(secrets.iter_mut());
+        empty_read_only_fields!(pvcs.iter_mut());
 
-        empty_read_only_fields!(services,
+        empty_read_only_fields!(services.iter_mut(),
             status (spec => cluster_ip, cluster_ips)
         );
-        empty_read_only_fields!(pods, status);
-        empty_read_only_fields!(deployments, status);
+        empty_read_only_fields!(pods.iter_mut(), status);
+        empty_read_only_fields!(deployments.iter_mut(), status);
 
-        empty_read_only_fields!(jobs);
+        empty_read_only_fields!(jobs.iter_mut());
 
-        empty_read_only_fields!(service_accounts);
-        empty_read_only_fields!(policies);
-        empty_read_only_fields!(traefik_middlewares);
-        empty_read_only_fields!(traefik_ingresses);
+        empty_read_only_fields!(service_accounts.iter_mut());
+        empty_read_only_fields!(policies.iter_mut());
+        empty_read_only_fields!(traefik_middlewares.iter_mut());
+        empty_read_only_fields!(traefik_ingresses.iter_mut());
+
+        empty_read_only_fields!(dynamic_objects.iter_mut().map(|(d, _)| d));
 
         Self {
             roles,
@@ -1225,6 +1340,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects,
         }
     }
 
@@ -1267,6 +1383,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects: _,
         } = self.without_managed_data();
 
         roles
@@ -1313,6 +1430,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            dynamic_objects,
         } = &self;
 
         let mut json = Vec::with_capacity(
@@ -1373,6 +1491,9 @@ impl K8sDeploymentUnit {
         for pod in pods.iter() {
             json.push(serde_json::to_value(pod).unwrap());
         }
+        for (dynamic_object, _ar) in dynamic_objects.iter() {
+            json.push(serde_json::to_value(dynamic_object).unwrap());
+        }
 
         json
     }
@@ -1421,6 +1542,7 @@ impl TryFrom<K8sDeploymentUnit> for BootstrappedCompanions<K8sElement> {
             policies,
             mut traefik_ingresses,
             mut traefik_middlewares,
+            dynamic_objects,
         } = value;
 
         let mut service_by_deployement = HashMap::new();
@@ -1552,6 +1674,7 @@ impl TryFrom<K8sDeploymentUnit> for BootstrappedCompanions<K8sElement> {
                 .chain(policies.into_iter().map(K8sElement::from))
                 .chain(traefik_ingresses.into_iter().map(K8sElement::from))
                 .chain(traefik_middlewares.into_iter().map(K8sElement::from))
+                .chain(dynamic_objects.into_iter().map(K8sElement::from))
                 .collect::<Vec<_>>(),
         })
     }
@@ -1598,6 +1721,51 @@ where
     }
 }
 
+async fn create_or_patch_dynamic_object(
+    client: Client,
+    app_name: &AppName,
+    payload: dynamic::DynamicObject,
+    api_resources: ApiResource,
+) -> Result<dynamic::DynamicObject> {
+    if log::log_enabled!(log::Level::Trace) {
+        trace!(
+            "Create or patch {} for {app_name}",
+            payload.metadata.name.as_deref().unwrap_or_default()
+        );
+    }
+
+    let api = Api::namespaced_with(
+        client.clone(),
+        &app_name.to_rfc1123_namespace_id(),
+        &api_resources,
+    );
+    match api.create(&PostParams::default(), &payload).await {
+        Ok(result) => Ok(result),
+        Err(kube::error::Error::Api(status)) if status.code == 409 => {
+            let name = payload.metadata.name.as_deref().unwrap_or_default();
+            match api
+                .patch(name, &PatchParams::default(), &Patch::Merge(&payload))
+                .await
+            {
+                Ok(result) => Ok(result),
+                Err(_e) => {
+                    // TODO: how to handle the case? e.g. patching a job may fails
+                    Ok(payload)
+                }
+            }
+        }
+        Err(e) => {
+            if log::log_enabled!(log::Level::Trace) {
+                trace!(
+                    "Cannot create {}: {e}",
+                    payload.metadata.name.as_deref().unwrap_or_default()
+                );
+            }
+            Err(e.into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1611,7 +1779,7 @@ mod tests {
     async fn parse_unit_from_log_stream(stdout: &'static str) -> K8sDeploymentUnit {
         let log_streams = vec![stdout.as_bytes()];
 
-        K8sDeploymentUnit::parse_from_log_streams(&AppName::master(), log_streams)
+        K8sDeploymentUnit::parse_from_log_streams(&AppName::master(), HashSet::new(), log_streams)
             .await
             .unwrap()
     }
