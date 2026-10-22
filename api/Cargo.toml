@@ -44,6 +44,7 @@ kube = { version = "4.2", default-features = false, features = ["client", "deriv
 lazy_static = "1.5"
 log = { workspace = true }
 multimap = "0.10"
+noyalib = { workspace = true, features = ["parallel"] }
 oci-client = { workspace = true }
 openidconnect = { workspace = true }
 regex = { workspace = true }
@@ -56,7 +57,6 @@ serde = { workspace = true }
 serde-value = { workspace = true }
 serde_derive = { workspace = true }
 serde_json = { workspace = true }
-serde_norway = "0.9"
 serde_regex = "1.2"
 sha2 = { workspace = true }
 sqlx = { version = "0.9", features = ["tls-rustls", "runtime-tokio", "postgres", "uuid", "chrono"] }

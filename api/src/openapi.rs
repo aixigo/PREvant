@@ -72,7 +72,7 @@ fn prepare_for_yaml(examples: serde_json::Value) -> HttpResult<serde_json::Value
         Value::Object(map) => Ok(map
             .into_iter()
             .map(|(k, v)| {
-                let yaml = serde_norway::to_string(&v)
+                let yaml = noyalib::to_string(&v)
                     .unwrap()
                     .lines()
                     .map(|line| serde_json::Value::String(format!("{line}\n")))
@@ -97,7 +97,7 @@ async fn read_examples(examples_path: &PathBuf) -> HttpResult<serde_json::Value>
             )
         })?;
 
-    serde_norway::from_str::<serde_json::Value>(&content).map_err(|e| {
+    noyalib::from_str::<serde_json::Value>(&content).map_err(|e| {
         HttpApiError::from(
             HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
                 .detail(e.to_string()),

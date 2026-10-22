@@ -509,7 +509,7 @@ impl K8sDeploymentUnit {
         let interval = std::time::Duration::from_secs(2);
         let mut interval_timer = tokio::time::interval(interval);
         let start_time = tokio::time::Instant::now();
-        let wait_timeout = std::time::Duration::from_secs(60);
+        const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
         loop {
             tokio::select! {
@@ -536,7 +536,7 @@ impl K8sDeploymentUnit {
                         }
                     }
                 }
-                _ = tokio::time::sleep_until(start_time + wait_timeout) => {
+                _ = tokio::time::sleep_until(start_time + WAIT_TIMEOUT) => {
                     log::debug!("Timeout for bootstrapping the application {app_name} reached, stopping querying the pod status");
                     return Err(KubernetesInfrastructureError::BootstrapContainerFailed {
                         pod_name: pod_name.to_string(),
@@ -599,9 +599,14 @@ impl K8sDeploymentUnit {
         let mut traefik_ingresses = Vec::new();
         let mut traefik_middlewares = Vec::new();
 
-        for mut log_stream in log_streams.into_iter() {
+        for log_stream in log_streams.into_iter() {
+            let BootstrappingLogStream {
+                bootstrapping_container,
+                mut log_stream,
+            } = log_stream;
+
             let mut stdout = String::new();
-            log_stream.log_stream.read_to_string(&mut stdout).await?;
+            log_stream.read_to_string(&mut stdout).await?;
 
             if log::log_enabled!(log::Level::Trace) {
                 trace!(
@@ -610,8 +615,11 @@ impl K8sDeploymentUnit {
                 );
             }
 
-            for doc in serde_norway::Deserializer::from_str(&stdout) {
-                let mut element = match K8sElement::deserialize(doc) {
+            for doc in noyalib::parallel::split(&stdout) {
+                let mut element = match noyalib::from_str_with_config::<K8sElement>(
+                    doc,
+                    &noyalib::ParserConfig::new().plain_scalar_strings(true),
+                ) {
                     Ok(element) => {
                         if log::log_enabled!(log::Level::Trace) {
                             let name = element.metadata().name.as_deref().unwrap_or_default();
@@ -622,10 +630,9 @@ impl K8sDeploymentUnit {
                         element
                     }
                     Err(err) => {
-                        // TODO: for debugging of the bootstrapping container we have to known what
-                        // is wrong and we should be able to log the invalid yaml
+                        let rendered_error = err.render_with_options(doc, &Default::default());
                         warn!(
-                            "The output of a bootstrap container for {app_name} could not be parsed: {err}"
+                            "The output of a bootstrap container for {app_name} could not be parsed: {rendered_error}"
                         );
                         continue;
                     }
@@ -639,7 +646,7 @@ impl K8sDeploymentUnit {
                     K8sElement::StatefulSet(stateful_set) => stateful_sets.push(stateful_set),
                     K8sElement::ConfigMap(config_map) => config_maps.push(config_map),
                     K8sElement::Secret(mut secret) => {
-                        let marker = BootstrappedSecretMarker(log_stream.bootstrapping_container);
+                        let marker = BootstrappedSecretMarker(bootstrapping_container);
                         secret
                             .labels_mut()
                             .insert(BOOTSTRAPPED_SECRET.to_string(), format!("{marker}"));
@@ -1724,6 +1731,7 @@ mod tests {
     };
 
     async fn parse_unit_from_log_stream(stdout: &'static str) -> K8sDeploymentUnit {
+        let _ = env_logger::builder().is_test(true).try_init();
         let bootstrapping_container = BootstrappingContainer {
             image: Image::from_str("aixigo/bootstrap-example:latest").unwrap(),
             image_pull_policy: Default::default(),
@@ -1865,6 +1873,37 @@ mod tests {
                 }
             }])
         )
+    }
+
+    #[tokio::test]
+    async fn parse_unit_with_invalid_deployment() {
+        let unit = parse_unit_from_log_stream(
+            r#"
+            apiVersion: apps/v1
+            kind: Deployment
+             metadata:
+              name: nginx
+              labels:
+                app: nginx
+            spec:
+              selector:
+                matchLabels:
+                  app: nginx
+              template:
+                metadata:
+                  labels:
+                    app: nginx
+                spec:
+                  containers:
+                  - name: nginx
+                    image: nginx:1.14.2
+                    ports:
+                    - containerPort: 80
+                        "#,
+        )
+        .await;
+
+        assert!(unit.into_iter().next().is_none());
     }
 
     #[tokio::test]
@@ -3488,7 +3527,7 @@ data:
 
             let config = tokio::fs::read_to_string(&config_path).await?;
             let config = Config::from_custom_kubeconfig(
-                Kubeconfig::deserialize(serde_norway::Deserializer::from_str(&config))?,
+                noyalib::from_str::<Kubeconfig>(&config)?,
                 &Default::default(),
             )
             .await?;
