@@ -1,13 +1,13 @@
 use crate::{
-    apps::{routes::AppNameFromParam, Apps, HostMetaCache},
+    apps::{Apps, HostMetaCache, routes::AppNameFromParam},
     config::Config,
     http_result::HttpResult,
     models::RequestInfo,
 };
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
+use noyalib::Value;
 use rocket::State;
-use serde_norway::Value;
 
 #[rocket::get("/<app_name>/static-open-api-spec/<service_name>", rank = 1)]
 pub(super) async fn static_open_api_spec(
@@ -24,13 +24,12 @@ pub(super) async fn static_open_api_spec(
         return Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into());
     };
 
-    let Some(static_host_config) =
-        config
-            .static_host_meta(&service.blueprint_config.image)
-            .map_err(|e| {
-                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                    .detail(e.to_string())
-            })?
+    let Some(static_host_config) = config
+        .static_host_meta(&service.blueprint_config.image)
+        .map_err(|e| {
+            HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                .detail(e.to_string())
+        })?
     else {
         return Err(HttpApiProblem::with_title_and_type(StatusCode::NOT_FOUND).into());
     };
@@ -71,16 +70,16 @@ pub(super) async fn static_open_api_spec(
                 .detail(e.to_string())
         })?;
 
-    let mut v: Value = serde_norway::from_str(&body).map_err(|e| {
+    let mut v: Value = noyalib::from_str(&body).map_err(|e| {
         HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR).detail(e.to_string())
     })?;
 
-    v["servers"] = serde_norway::from_str(&format!(
+    v["servers"] = noyalib::from_str(&format!(
         r#"
         - url: {public_service_url}
     "#
     ))
     .unwrap();
 
-    Ok(serde_norway::to_string(&v).unwrap())
+    Ok(noyalib::to_string(&v).unwrap())
 }

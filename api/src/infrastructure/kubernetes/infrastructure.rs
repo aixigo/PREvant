@@ -78,7 +78,6 @@ use kube::{
 use log::{debug, error, warn};
 use regex::Regex;
 use secstr::SecUtf8;
-use serde::Deserialize;
 use std::path::PathBuf;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -125,7 +124,7 @@ pub enum CannotInitializeClientError {
     #[error("{0}")]
     InvalidKubeConfig(kube::config::KubeconfigError),
     #[error("{0}")]
-    InvalidYaml(serde_norway::Error),
+    InvalidYaml(noyalib::Error),
     #[error("{0}")]
     KubeError(KubeError),
 }
@@ -166,12 +165,11 @@ impl Kubernetes {
                         )
                     })?;
                 Config::from_custom_kubeconfig(
-                    Kubeconfig::deserialize(serde_norway::Deserializer::from_str(&config))
-                        .map_err(|err| {
-                            KubernetesInfrastructureError::CannotInitializeClient(
-                                CannotInitializeClientError::InvalidYaml(err),
-                            )
-                        })?,
+                    noyalib::from_str::<Kubeconfig>(&config).map_err(|err| {
+                        KubernetesInfrastructureError::CannotInitializeClient(
+                            CannotInitializeClientError::InvalidYaml(err),
+                        )
+                    })?,
                     &Default::default(),
                 )
                 .await
