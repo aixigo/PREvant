@@ -392,7 +392,7 @@ mod tests {
           - containerPort: 80
 "#;
 
-            let deployment = serde_norway::from_str::<BackupPayloadProxy>(deployment)?;
+            let deployment = noyalib::from_str::<BackupPayloadProxy>(deployment)?;
 
             assert!(matches!(deployment, BackupPayloadProxy::Kubernetes(e) if !e.is_empty()));
             Ok(())
@@ -411,7 +411,7 @@ mod tests {
         fn unsupported() -> anyhow::Result<()> {
             let deployment = r#""#;
 
-            let deployment = serde_norway::from_str::<BackupPayloadProxy>(deployment)?;
+            let deployment = noyalib::from_str::<BackupPayloadProxy>(deployment)?;
 
             assert!(matches!(deployment, BackupPayloadProxy::Unsupported));
             Ok(())
