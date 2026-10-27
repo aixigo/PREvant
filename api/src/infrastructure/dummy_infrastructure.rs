@@ -151,6 +151,7 @@ impl Infrastructure for Dummy {
                             .with_timezone(&Utc),
                     },
                     service_type: service.service_type,
+                    health: None,
                 };
 
                 services.push(service);
@@ -208,6 +209,7 @@ impl Infrastructure for Dummy {
                             .with_timezone(&Utc),
                         },
                         service_type: sc.service_type,
+                        health: None,
                     })
                     .collect::<Vec<_>>(),
                 unit.owners,

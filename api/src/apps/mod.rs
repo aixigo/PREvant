@@ -1232,7 +1232,8 @@ Log msg 3 of service-a of app master
                             .unwrap()
                             .with_timezone(&Utc),
                     },
-                    service_type: ContainerType::Instance
+                    service_type: ContainerType::Instance,
+                    health: None,
                 }],
                 HashSet::new(),
                 None,
