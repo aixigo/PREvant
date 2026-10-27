@@ -766,12 +766,35 @@ impl Infrastructure for Kubernetes {
             return Ok(None);
         };
 
-        Api::<V1Namespace>::all(self.client().await?)
-            .delete(
-                &app_name.to_rfc1123_namespace_id(),
-                &DeleteParams::default(),
-            )
-            .await?;
+        let namespace = app_name.to_rfc1123_namespace_id();
+
+        let api = Api::<V1Namespace>::all(self.client().await?);
+        api.delete(&namespace, &DeleteParams::default()).await?;
+
+        const WAIT_DURATION: std::time::Duration = std::time::Duration::from_secs(10);
+        loop {
+            match api.get(&namespace).await {
+                Ok(namespace) => {
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!(
+                            "Namespace deletion still in process for {app_name}: {}",
+                            namespace
+                                .status
+                                .as_ref()
+                                .and_then(|status| status.phase.as_deref())
+                                .unwrap_or_default()
+                        );
+                    }
+                    tokio::time::sleep(WAIT_DURATION).await;
+                }
+                Err(kube::Error::Api(s)) if s.is_not_found() => {
+                    break;
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
+        }
 
         Ok(Some(app))
     }
@@ -1692,6 +1715,61 @@ mod tests {
             .without_date_annotations()
             .to_json_vec();
         assert_json_diff::assert_json_eq!(payload, payload_2);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_for_deletion() -> Result<()> {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
+
+        let app_name = AppName::master();
+        let unit = AppDeploymentBuilder::init(
+            app_name.clone(),
+            vec![
+                blueprint_service!(
+                    "nextcloud",
+                    "nextcloud",
+                    env = (
+                        "MYSQL_DATABASE" => "example",
+                        "MYSQL_USER" => "example-user",
+                        "MYSQL_PASSWORD" => "my_cool_secret",
+                        "MYSQL_HOST" => "db"
+                    )
+                ),
+                blueprint_service!(
+                    "db",
+                    "mariadb",
+                    env = (
+                        "MARIADB_ROOT_PASSWORD" => "example",
+                        "MARIADB_USER" => "example-user",
+                        "MARIADB_PASSWORD" => "my_cool_secret",
+                        "MARIADB_DATABASE" => "example-database"
+                    )
+                ),
+            ],
+            None,
+        )
+        .finish()?;
+        let unit = DeploymentUnit::from_unbootstrapped(unit);
+
+        infra
+            .deploy_services(unit.clone(), &Default::default())
+            .await?;
+
+        let app = infra.fetch_app(&app_name).await?;
+        assert!(app.is_some());
+
+        let deleted_app = infra.stop_services(&app_name).await?;
+        assert_eq!(app, deleted_app);
+
+        let api = Api::<V1Namespace>::all(infra.client().await?);
+        assert!(matches!(
+            api.get(&app_name.to_rfc1123_namespace_id()).await,
+            Err(kube::Error::Api(s)) if s.is_not_found()
+        ));
 
         Ok(())
     }
