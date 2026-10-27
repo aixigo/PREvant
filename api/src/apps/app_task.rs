@@ -1,9 +1,12 @@
 use crate::models::AppStatusChangeId;
 use domain::{
-    app_blueprints::{ServiceConfig, UserDefinedParameters},
     AppName, Owner,
+    app_blueprints::{ServiceConfig, UserDefinedParameters},
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+};
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq)]
 #[serde(untagged)]
@@ -45,7 +48,7 @@ pub enum AppTaskMergeError {
 }
 
 /// Provides a summary of [`AppTask::fold`].
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MergedAppTask {
     pub task_to_work_on: AppTask,
     pub tasks_to_be_marked_as_done: HashSet<AppStatusChangeId>,
@@ -155,7 +158,7 @@ impl AppTask {
                     .sort_unstable_by(|sc1, sc2| sc1.service_name.cmp(&sc2.service_name));
 
                 let mut owners = Owner::normalize(HashSet::from_iter(
-                    owners.into_iter().chain(o_owners.into_iter()),
+                    owners.into_iter().chain(o_owners),
                 ))
                 .into_iter()
                 .collect::<Vec<_>>();
@@ -387,6 +390,50 @@ impl AppTask {
                 status_id_2,
             }),
         }
+    }
+}
+
+impl MergedAppTask {
+    pub fn app_name(&self) -> &AppName {
+        self.task_to_work_on.app_name()
+    }
+}
+
+impl Display for MergedAppTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.task_to_work_on {
+            AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
+                status_id,
+                app_name,
+                ..
+            } => write!(f, "backing up {app_name} (task {status_id}")?,
+            AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
+                status_id,
+                app_name,
+                ..
+            } => write!(f, "restoring {app_name} (task {status_id}")?,
+            AppTask::CreateOrUpdate {
+                app_name,
+                status_id,
+                ..
+            } => write!(f, "creating or updating {app_name} (task {status_id}")?,
+            AppTask::Delete {
+                status_id,
+                app_name,
+            } => write!(f, "deleting {app_name} (task {status_id}")?,
+        };
+
+        if !self.tasks_to_be_marked_as_done.is_empty() {
+            write!(f, ", grouped with ")?;
+            for (i, task_id) in self.tasks_to_be_marked_as_done.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", {task_id}")?;
+                } else {
+                    write!(f, "{task_id}")?;
+                }
+            }
+        }
+        write!(f, ")")
     }
 }
 

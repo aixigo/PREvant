@@ -1,7 +1,9 @@
-use crate::apps::repository::AppPostgresRepository;
-use crate::apps::{Apps, AppsError, CreateOrUpdateParams};
+use crate::apps::{
+    AppTask, Apps, AppsError, CreateOrUpdateParams, MergedAppTask, queue::inmemory::InMemoryQueue,
+    repository::AppPostgresRepository,
+};
 use crate::infrastructure::{Infrastructure, InfrastructureProxy};
-use crate::models::{AppStatusChangeId, AppTask, MergedAppTask};
+use crate::models::AppStatusChangeId;
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
 use domain::{
@@ -13,12 +15,20 @@ use rocket::{
     Build, Orbit, Rocket,
     fairing::{Fairing, Info, Kind},
 };
-use std::collections::HashSet;
-use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
+use std::collections::{BTreeSet, HashSet};
+use std::{future::Future, sync::Arc, time::Duration};
 use tokio::{
-    sync::{Mutex, Notify},
+    sync::Notify,
     time::{sleep, sleep_until, timeout},
 };
+
+mod db;
+mod inmemory;
+
+#[cfg(not(test))]
+const TASK_PROCESSING_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(10);
+#[cfg(test)]
+pub const TASK_PROCESSING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub struct AppProcessingQueue {}
 
@@ -244,9 +254,7 @@ impl AppTaskQueueConsumer {
         }
 
         self.db
-            .execute_tasks(async |tasks, backed_up_apps| {
-                let merged = AppTask::merge_tasks(tasks);
-
+            .execute_tasks(async |merged, backed_up_apps| {
                 if log::log_enabled!(log::Level::Debug) {
                     log::debug!(
                         "Processing task {} for {}.",
@@ -255,7 +263,7 @@ impl AppTaskQueueConsumer {
                     );
                 }
 
-                let result = match &merged.task_to_work_on {
+                match &merged.task_to_work_on {
                     AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                         app_name,
                         infrastructure_payload_to_back_up,
@@ -346,9 +354,7 @@ impl AppTaskQueueConsumer {
                         }
                         apps.delete_app(app_name).await
                     }
-                };
-
-                (merged, result)
+                }
             })
             .await
     }
@@ -359,20 +365,98 @@ impl AppTaskQueueConsumer {
     }
 }
 
-enum AppTaskStatus {
-    New,
-    InProcess,
-    Done((DateTime<Utc>, std::result::Result<App, AppsError>)),
+#[derive(Debug)]
+pub struct ProcessableTasks {
+    pub tasks: Vec<AppTask>,
+    pub backed_up_tasks: HashSet<AppName>,
+    phantom_data: std::marker::PhantomData<()>,
+}
+
+impl ProcessableTasks {
+    pub fn new(
+        tasks: Vec<AppTask>,
+        backed_up_tasks: HashSet<AppName>,
+    ) -> Result<Self, ProcessableTasksError> {
+        let mut it = tasks.iter();
+        let Some(app_name) = it.next().map(|task| task.app_name()) else {
+            return Err(ProcessableTasksError::MustProvideAtLeastOneTask);
+        };
+
+        for task in it {
+            if app_name != task.app_name() {
+                return Err(ProcessableTasksError::AppNamesDoNotMatch {
+                    app_names: tasks
+                        .iter()
+                        .map(|task| task.app_name().clone())
+                        .collect::<BTreeSet<_>>(),
+                });
+            }
+        }
+
+        Ok(Self {
+            tasks,
+            backed_up_tasks,
+            phantom_data: std::marker::PhantomData,
+        })
+    }
+}
+
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum ProcessableTasksError {
+    #[error("At least one task must be provided")]
+    MustProvideAtLeastOneTask,
+    #[error(
+        "Tasks do not refer to the same applications: {}",
+        app_names.iter()
+            .map(|a| a.to_string())
+            .reduce(|a, b| a + ", " + &b)
+            .unwrap_or_default())
+    ]
+    AppNamesDoNotMatch { app_names: BTreeSet<AppName> },
+}
+
+#[async_trait::async_trait]
+pub trait AppTaskQueue {
+    type LockContext<'lc>: Send
+    where
+        Self: 'lc;
+    type Error: std::error::Error;
+
+    async fn enqueue_task(&self, task: AppTask) -> std::result::Result<(), Self::Error>;
+
+    async fn peek_result(
+        &self,
+        status_id: &AppStatusChangeId,
+    ) -> Option<std::result::Result<App, AppsError>>;
+
+    /// Fetches all [`AppTask`]s that are processable in one batch and returns [`Self::LockContext`]
+    /// so that follow-up operations can be performed atomically.
+    async fn fetch_processable_tasks<'lc, 'a: 'lc>(
+        &'a self,
+    ) -> std::result::Result<Option<(ProcessableTasks, Self::LockContext<'lc>)>, Self::Error>;
+
+    async fn store_result<'lc>(
+        &self,
+        lock_ctx: Self::LockContext<'lc>,
+        result: std::result::Result<App, AppsError>,
+        done_timestamp: DateTime<Utc>,
+        merged: &MergedAppTask,
+    ) -> std::result::Result<(), Self::Error>;
+
+    async fn clean_up_done_tasks(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> std::result::Result<usize, Self::Error>;
 }
 
 enum AppTaskQueueDB {
-    InMemory(Mutex<VecDeque<(AppTask, AppTaskStatus)>>),
+    InMemory(InMemoryQueue),
     DB(AppPostgresRepository),
 }
 
 impl AppTaskQueueDB {
     fn inmemory() -> Self {
-        Self::InMemory(Mutex::new(VecDeque::new()))
+        Self::InMemory(InMemoryQueue::new())
     }
 
     fn db(repository: AppPostgresRepository) -> Self {
@@ -381,20 +465,7 @@ impl AppTaskQueueDB {
 
     pub async fn enqueue_task(&self, task: AppTask) -> Result<()> {
         match self {
-            AppTaskQueueDB::InMemory(mutex) => {
-                if matches!(
-                    task,
-                    AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { .. }
-                        | AppTask::RestoreOnInfrastructureAndDeleteFromBackup { .. }
-                ) {
-                    anyhow::bail!(
-                        "Backup or restore is not supported by in-memory app queue processing."
-                    );
-                }
-
-                let mut queue = mutex.lock().await;
-                queue.push_back((task, AppTaskStatus::New));
-            }
+            AppTaskQueueDB::InMemory(inmemory) => inmemory.enqueue_task(task).await?,
             AppTaskQueueDB::DB(db) => {
                 db.enqueue_task(task).await?;
             }
@@ -409,119 +480,81 @@ impl AppTaskQueueDB {
     ) -> Option<std::result::Result<App, AppsError>> {
         log::debug!("Checking for results for {status_id}.");
         match self {
-            AppTaskQueueDB::InMemory(mutex) => {
-                let queue = mutex.lock().await;
-
-                for (task, status) in queue.iter() {
-                    if task.status_id() == status_id {
-                        if let AppTaskStatus::Done((_, result)) = status {
-                            return Some(result.clone());
-                        }
-                    }
-                }
-                None
-            }
+            AppTaskQueueDB::InMemory(inmemory) => inmemory.peek_result(status_id).await,
             AppTaskQueueDB::DB(db) => db.peek_result(status_id).await,
         }
     }
 
     async fn execute_tasks<F, Fut>(&self, executor: F) -> Result<()>
     where
-        F: FnOnce(Vec<AppTask>, HashSet<AppName>) -> Fut,
-        Fut: Future<Output = (MergedAppTask, std::result::Result<App, AppsError>)>,
+        F: FnOnce(MergedAppTask, HashSet<AppName>) -> Fut,
+        Fut: Future<Output = std::result::Result<App, AppsError>>,
     {
-        match self {
-            AppTaskQueueDB::InMemory(mutex) => {
-                let tasks = {
-                    let mut queue = mutex.lock().await;
+        enum LockContext<'lc> {
+            InMemory(<InMemoryQueue as AppTaskQueue>::LockContext<'lc>),
+            DB(<AppPostgresRepository as AppTaskQueue>::LockContext<'lc>),
+        }
 
-                    let mut iter = queue.iter_mut();
-
-                    let mut tasks = Vec::new();
-                    let mut app_name = None;
-                    for (task, s) in iter.by_ref() {
-                        app_name = match (&s, app_name.take()) {
-                            (AppTaskStatus::New, current_app_name) => {
-                                if current_app_name.is_some()
-                                    && Some(task.app_name()) != current_app_name
-                                {
-                                    break;
-                                }
-                                *s = AppTaskStatus::InProcess;
-                                tasks.push(task.clone());
-                                Some(task.app_name())
-                            }
-                            (AppTaskStatus::InProcess, None) => {
-                                log::warn!(
-                                    "Trying to find tasks to be process but there is currently {} in process",
-                                    task.app_name()
-                                );
-                                tasks.clear();
-                                break;
-                            }
-                            (AppTaskStatus::InProcess, Some(app_name)) => {
-                                log::error!(
-                                    "The interior queue status seem to be messed up while searching for tasks for {app_name} we found a in-process task for {}",
-                                    task.app_name()
-                                );
-                                tasks.clear();
-                                break;
-                            }
-                            (AppTaskStatus::Done(_), _) => continue,
-                        }
-                    }
-
-                    tasks
-                };
-
-                if tasks.is_empty() {
+        let (processable_tasks, lock) = match self {
+            AppTaskQueueDB::InMemory(inmemory) => match inmemory.fetch_processable_tasks().await {
+                Ok(Some((processable_tasks, lock))) => {
+                    (processable_tasks, LockContext::InMemory(lock))
+                }
+                Ok(None) => {
                     return Ok(());
                 }
-
-                let (merged, result) = executor(tasks, HashSet::new()).await;
-                let done_timestamp = Utc::now();
-
-                let mut queue = mutex.lock().await;
-                let task_worked_on = merged.task_to_work_on;
-                let status_id = task_worked_on.status_id();
-
-                let Some(task) = queue
-                    .iter_mut()
-                    .find(|(task, _)| task.status_id() == status_id)
-                else {
-                    anyhow::bail!("Cannot update {status_id} in queue which should be present");
-                };
-
-                task.1 = AppTaskStatus::Done((done_timestamp, result.clone()));
-
-                for (task, s) in queue.iter_mut() {
-                    if merged.tasks_to_be_marked_as_done.contains(task.status_id()) {
-                        *s = AppTaskStatus::Done((done_timestamp, result.clone()));
-                    }
-                    if merged.tasks_to_stay_untouched.contains(task.status_id()) {
-                        *s = AppTaskStatus::New;
-                    }
+                Err(err) => return Err(err.into()),
+            },
+            AppTaskQueueDB::DB(db) => match db.fetch_processable_tasks().await {
+                Ok(Some((processable_tasks, lock))) => (processable_tasks, LockContext::DB(lock)),
+                Ok(None) => {
+                    return Ok(());
                 }
+                Err(err) => return Err(err.into()),
+            },
+        };
 
-                Ok(())
+        let merged = AppTask::merge_tasks(processable_tasks.tasks);
+        let result = match tokio::time::timeout(
+            TASK_PROCESSING_TIMEOUT,
+            executor(merged.clone(), processable_tasks.backed_up_tasks),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                log::error!("Processing of “{merged}” timed out");
+                Err(AppsError::TaskProcessingTimedout {
+                    duration: TASK_PROCESSING_TIMEOUT,
+                    app_name: merged.app_name().clone(),
+                })
             }
-            AppTaskQueueDB::DB(db) => db.lock_queued_tasks_and_perform_executor(executor).await,
+        };
+        let done_timestamp = Utc::now();
+
+        match (self, lock) {
+            (AppTaskQueueDB::InMemory(inmemory), LockContext::InMemory(lock)) => {
+                inmemory
+                    .store_result(lock, result, done_timestamp, &merged)
+                    .await?;
+            }
+            (AppTaskQueueDB::DB(db), LockContext::DB(lock)) => {
+                db.store_result(lock, result, done_timestamp, &merged)
+                    .await?;
+            }
+            _ => {
+                unreachable!("This case must not ever happen")
+            }
         }
+        Ok(())
     }
 
     async fn clean_up_done_tasks(&self, older_than: DateTime<Utc>) -> Result<usize> {
         match self {
-            AppTaskQueueDB::InMemory(mutex) => {
-                let mut queue = mutex.lock().await;
-
-                let before = queue.len();
-                queue.retain(
-                    |(_, status)| !matches!(status, AppTaskStatus::Done((timestamp, _)) if timestamp < &older_than),
-                );
-
-                Ok(before - queue.len())
+            AppTaskQueueDB::InMemory(inmemory) => {
+                Ok(inmemory.clean_up_done_tasks(older_than).await?)
             }
-            AppTaskQueueDB::DB(db) => db.clean_up_done_tasks(older_than).await,
+            AppTaskQueueDB::DB(db) => Ok(db.clean_up_done_tasks(older_than).await?),
         }
     }
 }
@@ -530,6 +563,7 @@ impl AppTaskQueueDB {
 mod tests {
     use super::*;
     use crate::db::DatabasePool;
+    use domain::blueprint_service;
     use rstest::rstest;
     use std::collections::HashSet;
     use testcontainers_modules::{
@@ -537,14 +571,17 @@ mod tests {
         testcontainers::{ContainerAsync, runners::AsyncRunner},
     };
 
-    enum TestQueue {
-        InMemory(Box<AppTaskQueueDB>),
-        DB(Box<(ContainerAsync<postgres::Postgres>, AppTaskQueueDB)>),
+    struct TestQueue {
+        queue: AppTaskQueueDB,
+        _test_container: Option<ContainerAsync<postgres::Postgres>>,
     }
 
     impl TestQueue {
         fn inmemory() -> Self {
-            Self::InMemory(Box::new(AppTaskQueueDB::inmemory()))
+            Self {
+                queue: AppTaskQueueDB::inmemory(),
+                _test_container: None,
+            }
         }
 
         async fn postgres_queue() -> Self {
@@ -563,63 +600,25 @@ mod tests {
                 .unwrap();
             sqlx::migrate!().run(&pool).await.unwrap();
 
-            Self::DB(Box::new((
-                postgres_instance,
-                AppTaskQueueDB::db(AppPostgresRepository::new(pool)),
-            )))
-        }
-
-        async fn enqueue_task(&self, task: AppTask) -> Result<()> {
-            match self {
-                TestQueue::InMemory(queue) => queue.enqueue_task(task).await,
-                TestQueue::DB(b) => b.1.enqueue_task(task).await,
-            }
-        }
-
-        async fn execute_tasks<F, Fut>(&self, executor: F) -> Result<()>
-        where
-            F: FnOnce(Vec<AppTask>, HashSet<AppName>) -> Fut,
-            Fut: Future<Output = (MergedAppTask, std::result::Result<App, AppsError>)>,
-        {
-            match self {
-                TestQueue::InMemory(queue) => queue.execute_tasks(executor).await,
-                TestQueue::DB(b) => b.1.execute_tasks(executor).await,
-            }
-        }
-
-        async fn peek_result(
-            &self,
-            status_id: &AppStatusChangeId,
-        ) -> Option<std::result::Result<App, AppsError>> {
-            match self {
-                TestQueue::InMemory(queue) => queue.peek_result(status_id).await,
-                TestQueue::DB(b) => b.1.peek_result(status_id).await,
-            }
-        }
-
-        async fn clean_up_done_tasks(&self, older_than: DateTime<Utc>) -> Result<usize> {
-            match self {
-                TestQueue::InMemory(queue) => queue.clean_up_done_tasks(older_than).await,
-                TestQueue::DB(b) => b.1.clean_up_done_tasks(older_than).await,
+            Self {
+                queue: AppTaskQueueDB::db(AppPostgresRepository::new(pool)),
+                _test_container: Some(postgres_instance),
             }
         }
     }
 
-    fn simulate_result(tasks: Vec<AppTask>) -> (MergedAppTask, Result<App, AppsError>) {
-        (
-            AppTask::merge_tasks(tasks),
-            Ok(App::new(
-                vec![domain::app_instance::Service {
-                    id: String::from("nginx-1234"),
-                    status: domain::app_instance::ServiceStatus::Paused,
-                    blueprint_config: domain::blueprint_service!("nginx"),
-                    service_type: domain::app_instance::ContainerType::Instance,
-                }],
-                HashSet::new(),
-                None,
-                None,
-            )),
-        )
+    fn simulate_result(task: MergedAppTask) -> Result<App, AppsError> {
+        Ok(App::new(
+            vec![domain::app_instance::Service {
+                id: task.task_to_work_on.status_id().to_string(),
+                status: domain::app_instance::ServiceStatus::Paused,
+                blueprint_config: domain::blueprint_service!("nginx"),
+                service_type: domain::app_instance::ContainerType::Instance,
+            }],
+            HashSet::new(),
+            None,
+            None,
+        ))
     }
 
     #[rstest]
@@ -633,6 +632,7 @@ mod tests {
         let queue = queue.await;
 
         let err = queue
+            .queue
             .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id: AppStatusChangeId::new(),
                 app_name: AppName::master(),
@@ -642,10 +642,11 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "Backup or restore is not supported by in-memory app queue processing."
+            "Back-up & restore is not supported by in-memory app queue processing."
         );
 
         let err = queue
+            .queue
             .enqueue_task(AppTask::RestoreOnInfrastructureAndDeleteFromBackup {
                 status_id: AppStatusChangeId::new(),
                 app_name: AppName::master(),
@@ -655,7 +656,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "Backup or restore is not supported by in-memory app queue processing."
+            "Back-up & restore is not supported by in-memory app queue processing."
         );
     }
 
@@ -671,6 +672,7 @@ mod tests {
         let queue = queue.await;
 
         let result = queue
+            .queue
             .execute_tasks(async |_tasks, _| {
                 unreachable!("Empty queue shouldn't trigger this code")
             })
@@ -680,10 +682,97 @@ mod tests {
     }
 
     #[rstest]
+    #[case::inmemory(async { TestQueue::inmemory() }, Ok(App::new(
+        vec![domain::app_instance::Service {
+            id: String::from("nginx-1234"),
+            status: domain::app_instance::ServiceStatus::Paused,
+            blueprint_config: blueprint_service!("nginx"),
+            service_type: domain::app_instance::ContainerType::ApplicationCompanion,
+        }],
+        HashSet::new(),
+        None,
+        None,
+    )))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Ok(App::new(
+        vec![domain::app_instance::Service {
+            id: String::from("nginx-1234"),
+            status: domain::app_instance::ServiceStatus::Paused,
+            blueprint_config: blueprint_service!("nginx"),
+            service_type: domain::app_instance::ContainerType::ApplicationCompanion,
+        }],
+        HashSet::new(),
+        None,
+        None,
+    )))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Ok(App::new(
+        vec![domain::app_instance::Service {
+            id: String::from("nginx-1234"),
+            status: domain::app_instance::ServiceStatus::Paused,
+            blueprint_config: domain::blueprint_service!("nginx"),
+            service_type: domain::app_instance::ContainerType::ApplicationCompanion,
+        }],
+        HashSet::new(),
+        UserDefinedParameters::new(
+            serde_json::json!("v0"),
+            &jsonschema::Validator::new(&serde_json::json!({"type": "string"})).unwrap(),
+        )
+        .ok(),
+        None,
+    )))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Err(AppsError::AppNotFound { app_name: AppName::master() }))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Err(AppsError::AppLimitExceeded { limit: 10 }))]
+    #[case::inmemory(async { TestQueue::inmemory() }, Err(AppsError::BaseRouteNotMergeable { error: String::from("error") }))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Err(AppsError::BaseRouteNotMergeable { error: String::from("error") }))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Err(AppsError::InfrastructureError { error: String::from("error") }))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Err(AppsError::InvalidServerConfiguration { error: String::from("error") }))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Err(AppsError::TemplatingIssue {
+        error: crate::apps::DeploymentTemplatingError::TemplateRenderingError { err: String::from("error") }
+    }))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Err(AppsError::UnableToResolveImage {
+        error: crate::registry::RegistryError::ImageNotFound { image: String::from("nginx") }
+    }))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Err(AppsError::UnapplicableHook {
+        err: crate::apps::hooks::HooksError::Unexpected { err: String::from("error") }
+    }))]
+    #[case::postgres(async { TestQueue::postgres_queue().await }, Err(AppsError::InvalidUserDefinedParameters { err: String::from("error") }))]
+    #[tokio::test]
+    async fn enqueue_and_execute_single_task(
+        #[future]
+        #[case]
+        queue: TestQueue,
+        #[case] task_result: Result<App, AppsError>,
+    ) {
+        let queue = queue.await;
+
+        let status_id = AppStatusChangeId::new();
+        queue
+            .queue
+            .enqueue_task(AppTask::Delete {
+                status_id,
+                app_name: AppName::master(),
+            })
+            .await
+            .unwrap();
+
+        let task_result_clone = task_result.clone();
+        queue
+            .queue
+            .execute_tasks(async |_, _| task_result_clone)
+            .await
+            .unwrap();
+
+        let result = queue.queue.peek_result(&status_id).await;
+        assert_eq!(result, Some(task_result));
+
+        let cleaned = queue.queue.clean_up_done_tasks(Utc::now()).await.unwrap();
+        assert_eq!(cleaned, 1);
+    }
+
+    #[rstest]
     #[case::inmemory(async { TestQueue::inmemory() })]
     #[case::postgres(async { TestQueue::postgres_queue().await })]
     #[tokio::test]
-    async fn enqueue_and_execute_single_task(
+    async fn handle_timeout(
         #[future]
         #[case]
         queue: TestQueue,
@@ -692,6 +781,7 @@ mod tests {
 
         let status_id = AppStatusChangeId::new();
         queue
+            .queue
             .enqueue_task(AppTask::Delete {
                 status_id,
                 app_name: AppName::master(),
@@ -700,14 +790,24 @@ mod tests {
             .unwrap();
 
         queue
-            .execute_tasks(async |tasks, _| simulate_result(tasks))
+            .queue
+            .execute_tasks(async |tasks, _| {
+                tokio::time::sleep(TASK_PROCESSING_TIMEOUT * 3).await;
+                simulate_result(tasks)
+            })
             .await
             .unwrap();
 
-        let result = queue.peek_result(&status_id).await;
-        assert!(matches!(result, Some(Ok(_))));
+        let result = queue.queue.peek_result(&status_id).await;
+        assert_eq!(
+            result,
+            Some(Err(AppsError::TaskProcessingTimedout {
+                duration: TASK_PROCESSING_TIMEOUT,
+                app_name: AppName::master(),
+            }))
+        );
 
-        let cleaned = queue.clean_up_done_tasks(Utc::now()).await.unwrap();
+        let cleaned = queue.queue.clean_up_done_tasks(Utc::now()).await.unwrap();
         assert_eq!(cleaned, 1);
     }
 
@@ -724,6 +824,7 @@ mod tests {
 
         let status_id_1 = AppStatusChangeId::new();
         queue
+            .queue
             .enqueue_task(AppTask::Delete {
                 status_id: status_id_1,
                 app_name: AppName::master(),
@@ -732,6 +833,7 @@ mod tests {
             .unwrap();
         let status_id_2 = AppStatusChangeId::new();
         queue
+            .queue
             .enqueue_task(AppTask::Delete {
                 status_id: status_id_2,
                 app_name: AppName::master(),
@@ -740,16 +842,17 @@ mod tests {
             .unwrap();
 
         queue
+            .queue
             .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
 
-        let result = queue.peek_result(&status_id_1).await;
+        let result = queue.queue.peek_result(&status_id_1).await;
         assert!(matches!(result, Some(Ok(_))));
-        let result = queue.peek_result(&status_id_2).await;
+        let result = queue.queue.peek_result(&status_id_2).await;
         assert!(matches!(result, Some(Ok(_))));
 
-        let cleaned = queue.clean_up_done_tasks(Utc::now()).await.unwrap();
+        let cleaned = queue.queue.clean_up_done_tasks(Utc::now()).await.unwrap();
         assert_eq!(cleaned, 2);
     }
 
@@ -768,6 +871,7 @@ mod tests {
 
         let status_id_1 = AppStatusChangeId::new();
         queue
+            .queue
             .enqueue_task(AppTask::Delete {
                 status_id: status_id_1,
                 app_name: AppName::master(),
@@ -777,6 +881,7 @@ mod tests {
 
         let status_id_2 = AppStatusChangeId::new();
         queue
+            .queue
             .enqueue_task(AppTask::Delete {
                 status_id: status_id_2,
                 app_name: AppName::from_str("other").unwrap(),
@@ -785,13 +890,14 @@ mod tests {
             .unwrap();
 
         queue
+            .queue
             .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
 
-        let result = queue.peek_result(&status_id_1).await;
+        let result = queue.queue.peek_result(&status_id_1).await;
         assert!(matches!(result, Some(Ok(_))));
-        let result = queue.peek_result(&status_id_2).await;
+        let result = queue.queue.peek_result(&status_id_2).await;
         assert!(result.is_none());
     }
 
@@ -810,6 +916,7 @@ mod tests {
 
         let status_id_1 = AppStatusChangeId::new();
         queue
+            .queue
             .enqueue_task(AppTask::Delete {
                 status_id: status_id_1,
                 app_name: AppName::master(),
@@ -819,6 +926,7 @@ mod tests {
 
         let status_id_2 = AppStatusChangeId::new();
         queue
+            .queue
             .enqueue_task(AppTask::Delete {
                 status_id: status_id_2,
                 app_name: AppName::from_str("other").unwrap(),
@@ -827,17 +935,19 @@ mod tests {
             .unwrap();
 
         queue
+            .queue
             .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
         queue
+            .queue
             .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
 
-        let result = queue.peek_result(&status_id_1).await;
+        let result = queue.queue.peek_result(&status_id_1).await;
         assert!(matches!(result, Some(Ok(_))));
-        let result = queue.peek_result(&status_id_2).await;
+        let result = queue.queue.peek_result(&status_id_2).await;
         assert!(matches!(result, Some(Ok(_))));
     }
 
@@ -855,6 +965,7 @@ mod tests {
 
         let status_id_1 = AppStatusChangeId::new();
         queue
+            .queue
             .enqueue_task(AppTask::Delete {
                 status_id: status_id_1,
                 app_name: AppName::master(),
@@ -864,6 +975,7 @@ mod tests {
 
         let status_id_2 = AppStatusChangeId::new();
         queue
+            .queue
             .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
                 status_id: status_id_2,
                 app_name: AppName::master(),
@@ -876,13 +988,58 @@ mod tests {
             .unwrap();
 
         queue
+            .queue
             .execute_tasks(async |tasks, _| simulate_result(tasks))
             .await
             .unwrap();
 
-        let result = queue.peek_result(&status_id_1).await;
+        let result = queue.queue.peek_result(&status_id_1).await;
         assert!(matches!(result, Some(Ok(_))));
-        let result = queue.peek_result(&status_id_2).await;
+        let result = queue.queue.peek_result(&status_id_2).await;
         assert!(result.is_none());
+    }
+
+    mod processable_tasks {
+        use super::super::*;
+        use std::str::FromStr;
+
+        #[test]
+        fn fail_to_create_because_of_no_tasks_provided() {
+            let error = ProcessableTasks::new(Vec::new(), Default::default()).unwrap_err();
+
+            assert_eq!(error, ProcessableTasksError::MustProvideAtLeastOneTask)
+        }
+
+        #[test]
+        fn fail_to_create_because_of_different_task_names() {
+            let error = ProcessableTasks::new(
+                vec![
+                    AppTask::Delete {
+                        status_id: AppStatusChangeId::new(),
+                        app_name: AppName::master(),
+                    },
+                    AppTask::CreateOrUpdate {
+                        status_id: AppStatusChangeId::new(),
+                        app_name: AppName::from_str("other").unwrap(),
+                        replicate_from: None,
+                        service_configs: vec![],
+                        owners: Default::default(),
+                        user_defined_parameters: None,
+                    },
+                ],
+                Default::default(),
+            )
+            .unwrap_err();
+
+            assert_eq!(
+                error,
+                ProcessableTasksError::AppNamesDoNotMatch {
+                    app_names: BTreeSet::from_iter([
+                        AppName::master(),
+                        AppName::from_str("other").unwrap()
+                    ])
+                }
+            )
+        }
     }
 }

@@ -3,7 +3,7 @@ use std::ops::Deref;
 use std::str::{FromStr, Utf8Error};
 use std::sync::OnceLock;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub struct AppName(String);
 
 impl AppName {
