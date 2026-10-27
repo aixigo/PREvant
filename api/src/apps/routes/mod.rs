@@ -602,6 +602,7 @@ impl From<AppsError> for HttpApiError {
             },
             AppsError::AppNotFound { .. } => StatusCode::NOT_FOUND,
             AppsError::InfrastructureError { .. }
+            | AppsError::TaskProcessingTimedout { .. }
             | AppsError::BaseRouteNotMergeable { .. }
             | AppsError::InvalidServerConfiguration { .. }
             | AppsError::TemplatingIssue { .. }
@@ -1215,10 +1216,17 @@ mod tests {
         use std::time::Duration;
 
         async fn create_client() -> Client {
+            let _ = env_logger::builder().is_test(true).try_init();
+
             let config = config_from_str!("");
 
-            let apps =
-                Apps::new(config.clone(), Dummy::with_delay(Duration::from_secs(5))).unwrap();
+            let apps = Apps::new(
+                config.clone(),
+                Dummy::with_delay(Duration::from_secs(
+                    crate::apps::queue::TASK_PROCESSING_TIMEOUT.as_secs() / 2,
+                )),
+            )
+            .unwrap();
 
             let rocket = rocket::build()
                 .manage(config)
@@ -1345,6 +1353,61 @@ mod tests {
             let response = client.delete("/master").dispatch().await;
 
             assert_eq!(response.status(), Status::Ok);
+        }
+
+        #[tokio::test]
+        async fn run_into_timeout() {
+            let _ = env_logger::builder().is_test(true).try_init();
+            let config = config_from_str!("");
+
+            let apps = Apps::new(
+                config.clone(),
+                Dummy::with_delay(crate::apps::queue::TASK_PROCESSING_TIMEOUT * 10),
+            )
+            .unwrap();
+
+            let rocket = rocket::build()
+                .manage(config)
+                .manage(apps)
+                .mount(
+                    "/",
+                    routes![
+                        crate::apps::routes::create_app_v1,
+                        crate::apps::routes::delete_app_v1,
+                        crate::apps::routes::status_change_v1,
+                    ],
+                )
+                .attach(AppProcessingQueue::fairing());
+
+            let client = Client::tracked(rocket).await.expect("valid rocket");
+
+            let response = client
+                .post("/master")
+                .body(
+                    serde_json::json!({
+                        "services": [{
+                            "serviceName": "db",
+                            "image": "postgres"
+                        }],
+                    })
+                    .to_string(),
+                )
+                .header(ContentType::JSON)
+                .dispatch()
+                .await;
+
+            assert_eq!(response.status(), Status::InternalServerError);
+
+            let body = response.into_string().await.unwrap();
+            assert_json_include!(
+                actual: serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                expected: serde_json::json!({
+                    "detail": "Task processing for master timedout in 2 seconds.",
+                    "status": 500,
+                    "title": "Internal Server Error",
+                    "type": "https://httpstatuses.com/500"
+                })
+            );
         }
     }
 }

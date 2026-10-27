@@ -1,8 +1,7 @@
 use crate::{
-    apps::AppsError,
-    models::{AppStatusChangeId, AppTask, MergedAppTask},
+    apps::{AppTask, AppsError},
+    models::AppStatusChangeId,
 };
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use domain::{
     AppName, Owner,
@@ -83,6 +82,14 @@ pub struct AppPostgresRepository {
     pool: PgPool,
 }
 
+pub struct QueueLockContext<'lc>(Transaction<'lc, Postgres>);
+
+impl<'lc> QueueLockContext<'lc> {
+    pub async fn commit(self) -> std::result::Result<(), sqlx::Error> {
+        self.0.commit().await
+    }
+}
+
 pub struct BackupUpdateReceiver(pub Receiver<HashMap<AppName, App>>);
 struct BackupPoller(std::pin::Pin<Box<dyn Future<Output = ()> + Send>>);
 
@@ -94,7 +101,7 @@ impl AppPostgresRepository {
     pub async fn fetch_backup_infrastructure_payload(
         &self,
         app_name: &AppName,
-    ) -> Result<Option<serde_json::Value>> {
+    ) -> Result<Option<serde_json::Value>, sqlx::Error> {
         let mut connection = self.pool.acquire().await?;
 
         let result = sqlx::query_as::<_, (sqlx::types::Json<serde_json::Value>,)>(
@@ -114,7 +121,7 @@ impl AppPostgresRepository {
     pub async fn fetch_backup_older_than(
         &self,
         older_than: DateTime<Utc>,
-    ) -> Result<Vec<(AppName, DateTime<Utc>)>> {
+    ) -> Result<Vec<(AppName, DateTime<Utc>)>, sqlx::Error> {
         let mut connection = self.pool.acquire().await?;
 
         let result = sqlx::query_as::<_, (String, DateTime<Utc>)>(
@@ -174,7 +181,10 @@ impl AppPostgresRepository {
         (poller, rx)
     }
 
-    pub async fn fetch_backed_up_app(&self, app_name: &AppName) -> Result<Option<App>> {
+    pub async fn fetch_backed_up_app(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<App>, sqlx::Error> {
         let mut connection = self.pool.acquire().await?;
 
         let result = sqlx::query_as::<_, (String, sqlx::types::Json<RawApp>)>(
@@ -191,13 +201,15 @@ impl AppPostgresRepository {
         Ok(result.map(|(_app_name, app)| App::from(app.0)))
     }
 
-    pub async fn fetch_backed_up_apps(&self) -> Result<HashMap<AppName, App>> {
+    pub async fn fetch_backed_up_apps(&self) -> Result<HashMap<AppName, App>, sqlx::Error> {
         let mut connection = self.pool.acquire().await?;
 
         Self::fetch_backed_up_apps_inner(&mut *connection).await
     }
 
-    async fn fetch_backed_up_apps_inner<'a, E>(executor: E) -> Result<HashMap<AppName, App>>
+    async fn fetch_backed_up_apps_inner<'a, E>(
+        executor: E,
+    ) -> Result<HashMap<AppName, App>, sqlx::Error>
     where
         E: sqlx::Executor<'a, Database = Postgres>,
     {
@@ -216,7 +228,7 @@ impl AppPostgresRepository {
             .collect::<HashMap<_, _>>())
     }
 
-    pub async fn enqueue_task(&self, task: AppTask) -> Result<()> {
+    pub async fn enqueue_task(&self, task: AppTask) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query(
@@ -288,14 +300,9 @@ impl AppPostgresRepository {
         })
     }
 
-    /// All queued tasks will be locked by a new transaction (see [PostgreSQL as message
-    /// queue](https://www.svix.com/resources/guides/postgres-message-queue/#why-use-postgresql-as-a-message-queue))
-    /// and the `executor`'s result will be stored for the tasks that could be executed at once.
-    pub async fn lock_queued_tasks_and_perform_executor<F, Fut>(&self, executor: F) -> Result<()>
-    where
-        F: FnOnce(Vec<AppTask>, HashSet<AppName>) -> Fut,
-        Fut: Future<Output = (MergedAppTask, std::result::Result<App, AppsError>)>,
-    {
+    pub async fn lock_queued_tasks<'lc, 'b: 'lc>(
+        &'b self,
+    ) -> Result<Option<(Vec<AppTask>, HashSet<AppName>, QueueLockContext<'lc>)>, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
         let tasks = sqlx::query_as::<_, (sqlx::types::Uuid, sqlx::types::Json<AppTask>)>(
@@ -327,15 +334,15 @@ impl AppPostgresRepository {
         .await?;
 
         let tasks_to_work_on = tasks
-            .iter()
+            .into_iter()
             .map(|task_to_work_on| task_to_work_on.1.0.clone())
             .collect::<Vec<_>>();
 
         if tasks_to_work_on.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
-        let backed_up_apss = sqlx::query_as::<_, (String,)>(
+        let backed_up_apps = sqlx::query_as::<_, (String,)>(
             r#"
             SELECT app_name
             FROM app_backup
@@ -350,30 +357,21 @@ impl AppPostgresRepository {
                 .collect::<HashSet<_>>()
         })?;
 
-        let (merged_tasks, result) = executor(tasks_to_work_on, backed_up_apss).await;
-
-        Self::store_result(
-            &mut tx,
-            merged_tasks.task_to_work_on,
-            result,
-            merged_tasks.tasks_to_be_marked_as_done,
-        )
-        .await?;
-
-        Self::move_untouched_tasks_back_into_queue(&mut tx, merged_tasks.tasks_to_stay_untouched)
-            .await?;
-
-        tx.commit().await?;
-
-        Ok(())
+        Ok(Some((
+            tasks_to_work_on,
+            backed_up_apps,
+            QueueLockContext(tx),
+        )))
     }
 
-    async fn store_result(
-        tx: &mut Transaction<'_, Postgres>,
-        tasked_worked_on: AppTask,
+    pub async fn store_result(
+        lock_context: &mut QueueLockContext<'_>,
+        tasked_worked_on: &AppTask,
         result: Result<App, AppsError>,
-        tasks_to_be_marked_as_done: HashSet<AppStatusChangeId>,
-    ) -> Result<()> {
+        tasks_to_be_marked_as_done: &HashSet<AppStatusChangeId>,
+    ) -> Result<(), sqlx::Error> {
+        let tx = &mut lock_context.0;
+
         let is_success = result.is_ok();
         let is_failed_deletion_due_to_app_not_found = result
             .as_ref()
@@ -504,10 +502,12 @@ impl AppPostgresRepository {
         Ok(())
     }
 
-    async fn move_untouched_tasks_back_into_queue(
-        tx: &mut Transaction<'_, Postgres>,
-        tasks_to_stay_untouched: HashSet<AppStatusChangeId>,
-    ) -> Result<()> {
+    pub async fn move_untouched_tasks_back_into_queue(
+        lock_context: &mut QueueLockContext<'_>,
+        tasks_to_stay_untouched: &HashSet<AppStatusChangeId>,
+    ) -> Result<(), sqlx::Error> {
+        let tx = &mut lock_context.0;
+
         for task_id in tasks_to_stay_untouched {
             sqlx::query(
                 r#"
@@ -524,7 +524,10 @@ impl AppPostgresRepository {
         Ok(())
     }
 
-    pub async fn clean_up_done_tasks(&self, older_than: DateTime<Utc>) -> Result<usize> {
+    pub async fn clean_up_done_tasks(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<usize, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
         let affected_rows = sqlx::query(
@@ -594,11 +597,7 @@ impl From<RawService> for Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        apps::{DeploymentTemplatingError, hooks::HooksError},
-        db::DatabasePool,
-        registry::RegistryError,
-    };
+    use crate::{apps::queue::AppTaskQueue, db::DatabasePool};
     use domain::{app_instance::ContainerType, blueprint_service};
     use sqlx::postgres::PgConnectOptions;
     use std::{str::FromStr, time::Duration};
@@ -623,76 +622,6 @@ mod tests {
         sqlx::migrate!().run(&pool).await.unwrap();
 
         (postgres_instance, AppPostgresRepository { pool })
-    }
-
-    #[tokio::test]
-    #[rstest::rstest]
-    #[case(Ok(App::new(
-        vec![Service {
-            id: String::from("nginx-1234"),
-            status: ServiceStatus::Paused,
-            blueprint_config: blueprint_service!("nginx"),
-            service_type: ContainerType::ApplicationCompanion,
-        }],
-        HashSet::new(),
-        None,
-        None,
-    )))]
-    #[case(Ok(App::new(
-        vec![Service {
-            id: String::from("nginx-1234"),
-            status: ServiceStatus::Paused,
-            blueprint_config: blueprint_service!("nginx"),
-            service_type: ContainerType::ApplicationCompanion,
-        }],
-        HashSet::new(),
-        UserDefinedParameters::new(
-            serde_json::json!("v0"),
-            &jsonschema::Validator::new(&serde_json::json!({"type": "string"})).unwrap(),
-        )
-        .ok(),
-        None,
-    )))]
-    #[case(Err(AppsError::AppNotFound { app_name: AppName::master() }))]
-    #[case(Err(AppsError::AppLimitExceeded { limit: 10 }))]
-    #[case(Err(AppsError::BaseRouteNotMergeable { error: String::from("error") }))]
-    #[case(Err(AppsError::InfrastructureError { error: String::from("error") }))]
-    #[case(Err(AppsError::InvalidServerConfiguration { error: String::from("error") }))]
-    #[case(Err(AppsError::TemplatingIssue {
-        error: DeploymentTemplatingError::TemplateRenderingError { err: String::from("error") }
-    }))]
-    #[case(Err(AppsError::UnableToResolveImage {
-        error: RegistryError::ImageNotFound { image: String::from("nginx") }
-    }))]
-    #[case(Err(AppsError::UnapplicableHook {
-        err: HooksError::Unexpected { err: String::from("error") }
-    }))]
-    #[case(Err(AppsError::InvalidUserDefinedParameters { err: String::from("error") }))]
-    async fn enqueue_and_execute_successfully(#[case] task_result: Result<App, AppsError>) {
-        let (_postgres_instance, repository) = create_repository().await;
-
-        let status_id = AppStatusChangeId::new();
-        repository
-            .enqueue_task(AppTask::Delete {
-                status_id,
-                app_name: AppName::master(),
-            })
-            .await
-            .unwrap();
-
-        let task_result_clone = task_result.clone();
-        repository
-            .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                (AppTask::merge_tasks(tasks), task_result_clone)
-            })
-            .await
-            .unwrap();
-
-        let result = repository.peek_result(&status_id).await;
-        assert_eq!(result, Some(task_result));
-
-        let cleaned = repository.clean_up_done_tasks(Utc::now()).await.unwrap();
-        assert_eq!(cleaned, 1);
     }
 
     #[tokio::test]
@@ -724,31 +653,30 @@ mod tests {
             .await
             .unwrap();
 
+        let (processable_tasks, tx) = repository.fetch_processable_tasks().await.unwrap().unwrap();
+        let merged = AppTask::merge_tasks(processable_tasks.tasks);
+        assert!(matches!(
+            merged.task_to_work_on,
+            AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { .. }
+        ));
+
         repository
-            .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                assert_eq!(tasks.len(), 1);
-
-                let merged = AppTask::merge_tasks(tasks);
-                assert!(matches!(
-                    merged.task_to_work_on,
-                    AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { .. }
-                ));
-
-                (
-                    merged,
-                    Ok(App::new(
-                        vec![Service {
-                            id: String::from("nginx-1234"),
-                            status: ServiceStatus::Paused,
-                            blueprint_config: blueprint_service!("nginx"),
-                            service_type: ContainerType::ApplicationCompanion,
-                        }],
-                        HashSet::new(),
-                        None,
-                        None,
-                    )),
-                )
-            })
+            .store_result(
+                tx,
+                Ok(App::new(
+                    vec![Service {
+                        id: String::from("nginx-1234"),
+                        status: ServiceStatus::Paused,
+                        blueprint_config: blueprint_service!("nginx"),
+                        service_type: ContainerType::ApplicationCompanion,
+                    }],
+                    HashSet::new(),
+                    None,
+                    None,
+                )),
+                Utc::now(),
+                &merged,
+            )
             .await
             .unwrap();
 
@@ -760,15 +688,14 @@ mod tests {
             })
             .await
             .unwrap();
+
+        let (processable_tasks, tx) = repository.fetch_processable_tasks().await.unwrap().unwrap();
+        assert_eq!(processable_tasks.tasks.len(), 1);
+        assert!(matches!(processable_tasks.tasks[0], AppTask::Delete { .. }));
+
+        let merged = AppTask::merge_tasks(processable_tasks.tasks);
         repository
-            .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                assert_eq!(tasks.len(), 1);
-                assert!(matches!(tasks[0], AppTask::Delete { .. }));
-
-                let merged = AppTask::merge_tasks(tasks);
-
-                (merged, delete_task_result)
-            })
+            .store_result(tx, delete_task_result, Utc::now(), &merged)
             .await
             .unwrap();
 
@@ -790,31 +717,33 @@ mod tests {
             .await
             .unwrap();
 
+        let (processable_tasks, tx) = repository.fetch_processable_tasks().await.unwrap().unwrap();
+
+        assert_eq!(processable_tasks.tasks.len(), 1);
+
+        let merged = AppTask::merge_tasks(processable_tasks.tasks);
+        assert!(matches!(
+            merged.task_to_work_on,
+            AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { .. }
+        ));
+
         repository
-            .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                assert_eq!(tasks.len(), 1);
-
-                let merged = AppTask::merge_tasks(tasks);
-                assert!(matches!(
-                    merged.task_to_work_on,
-                    AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { .. }
-                ));
-
-                (
-                    merged,
-                    Ok(App::new(
-                        vec![Service {
-                            id: String::from("nginx-1234"),
-                            status: ServiceStatus::Paused,
-                            blueprint_config: blueprint_service!("nginx"),
-                            service_type: ContainerType::Instance,
-                        }],
-                        HashSet::new(),
-                        None,
-                        None,
-                    )),
-                )
-            })
+            .store_result(
+                tx,
+                Ok(App::new(
+                    vec![Service {
+                        id: String::from("nginx-1234"),
+                        status: ServiceStatus::Paused,
+                        blueprint_config: blueprint_service!("nginx"),
+                        service_type: ContainerType::Instance,
+                    }],
+                    HashSet::new(),
+                    None,
+                    None,
+                )),
+                Utc::now(),
+                &merged,
+            )
             .await
             .unwrap();
 
@@ -826,20 +755,20 @@ mod tests {
             })
             .await
             .unwrap();
+        let (processable_tasks, tx) = repository.fetch_processable_tasks().await.unwrap().unwrap();
+        assert_eq!(processable_tasks.tasks.len(), 1);
+        assert!(matches!(processable_tasks.tasks[0], AppTask::Delete { .. }));
+
+        let merged = AppTask::merge_tasks(processable_tasks.tasks);
         repository
-            .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                assert_eq!(tasks.len(), 1);
-                assert!(matches!(tasks[0], AppTask::Delete { .. }));
-
-                let merged = AppTask::merge_tasks(tasks);
-
-                (
-                    merged,
-                    Err(AppsError::InfrastructureError {
-                        error: String::from("unexpected"),
-                    }),
-                )
-            })
+            .store_result(
+                tx,
+                Err(AppsError::InfrastructureError {
+                    error: String::from("unexpected"),
+                }),
+                Utc::now(),
+                &merged,
+            )
             .await
             .unwrap();
 
@@ -892,11 +821,14 @@ mod tests {
         };
         let spawn_handle_1 = tokio::spawn(async move {
             rx.await.unwrap();
-            spawned_repository
-                .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                    unreachable!("There should be no task to be executed here because the spawned task should have blocked it: {tasks:?}")
-                })
-                .await
+
+            let tasks = spawned_repository.fetch_processable_tasks().await.unwrap();
+
+            assert!(
+                tasks.is_none(),
+                "There should be no task to be executed here because the spawned task should have blocked it: {:?}",
+                tasks.map(|t| t.0)
+            );
         });
 
         let spawned_repository = AppPostgresRepository {
@@ -904,29 +836,34 @@ mod tests {
         };
 
         let spawn_handle_2 = tokio::spawn(async move {
-            spawned_repository
-                .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                    tx.send(()).unwrap();
-
-                    tokio::time::sleep(Duration::from_secs(4)).await;
-
-                    let merged = AppTask::merge_tasks(tasks);
-                    (
-                        merged,
-                        Ok(App::new(
-                            vec![Service {
-                                id: String::from("nginx-1234"),
-                                status: ServiceStatus::Paused,
-                                blueprint_config: blueprint_service!("nginx"),
-                                service_type: ContainerType::Instance,
-                            }],
-                            HashSet::new(),
-                            None,
-                            None,
-                        )),
-                    )
-                })
+            let (processable_tasks, lc) = spawned_repository
+                .fetch_processable_tasks()
                 .await
+                .unwrap()
+                .unwrap();
+
+            tx.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(4)).await;
+
+            spawned_repository
+                .store_result(
+                    lc,
+                    Ok(App::new(
+                        vec![Service {
+                            id: String::from("nginx-1234"),
+                            status: ServiceStatus::Paused,
+                            blueprint_config: blueprint_service!("nginx"),
+                            service_type: ContainerType::Instance,
+                        }],
+                        HashSet::new(),
+                        None,
+                        None,
+                    )),
+                    Utc::now(),
+                    &AppTask::merge_tasks(processable_tasks.tasks),
+                )
+                .await
+                .unwrap();
         });
 
         let result_1 = spawn_handle_1.await;
@@ -988,10 +925,19 @@ mod tests {
         ));
         let result_1_clone = result_1.clone();
         let spawn_handle_1 = tokio::spawn(async move {
+            let (processable_tasks, tx) = spawned_repository
+                .fetch_processable_tasks()
+                .await
+                .unwrap()
+                .unwrap();
+
             spawned_repository
-                .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                    (AppTask::merge_tasks(tasks), result_1_clone)
-                })
+                .store_result(
+                    tx,
+                    result_1_clone,
+                    Utc::now(),
+                    &AppTask::merge_tasks(processable_tasks.tasks),
+                )
                 .await
                 .unwrap();
         });
@@ -1012,10 +958,19 @@ mod tests {
         ));
         let result_2_clone = result_2.clone();
         let spawn_handle_2 = tokio::spawn(async move {
+            let (processable_tasks, tx) = spawned_repository
+                .fetch_processable_tasks()
+                .await
+                .unwrap()
+                .unwrap();
+
             spawned_repository
-                .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                    (AppTask::merge_tasks(tasks), result_2_clone)
-                })
+                .store_result(
+                    tx,
+                    result_2_clone,
+                    Utc::now(),
+                    &AppTask::merge_tasks(processable_tasks.tasks),
+                )
                 .await
                 .unwrap();
         });
@@ -1045,31 +1000,32 @@ mod tests {
             .await
             .unwrap();
 
+        let (processable_tasks, tx) = repository.fetch_processable_tasks().await.unwrap().unwrap();
+        assert_eq!(processable_tasks.tasks.len(), 1);
+
+        let merged = AppTask::merge_tasks(processable_tasks.tasks);
+        assert!(matches!(
+            merged.task_to_work_on,
+            AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { .. }
+        ));
+
         repository
-            .lock_queued_tasks_and_perform_executor(async |tasks, _| {
-                assert_eq!(tasks.len(), 1);
-
-                let merged = AppTask::merge_tasks(tasks);
-                assert!(matches!(
-                    merged.task_to_work_on,
-                    AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure { .. }
-                ));
-
-                (
-                    merged,
-                    Ok(App::new(
-                        vec![Service {
-                            id: String::from("nginx-1234"),
-                            status: ServiceStatus::Paused,
-                            blueprint_config: blueprint_service!("nginx"),
-                            service_type: ContainerType::Instance,
-                        }],
-                        HashSet::new(),
-                        None,
-                        None,
-                    )),
-                )
-            })
+            .store_result(
+                tx,
+                Ok(App::new(
+                    vec![Service {
+                        id: String::from("nginx-1234"),
+                        status: ServiceStatus::Paused,
+                        blueprint_config: blueprint_service!("nginx"),
+                        service_type: ContainerType::Instance,
+                    }],
+                    HashSet::new(),
+                    None,
+                    None,
+                )),
+                Utc::now(),
+                &merged,
+            )
             .await
             .unwrap();
 
@@ -1085,31 +1041,12 @@ mod tests {
             .await
             .unwrap();
 
-        let result = repository
-            .lock_queued_tasks_and_perform_executor(async |tasks, backed_up_apss| {
-                assert!(
-                    backed_up_apss == HashSet::from([AppName::master()]),
-                    "We are expecting a specific set of backed up apps here"
-                );
-                let merged = AppTask::merge_tasks(tasks);
-                (
-                    merged,
-                    Ok(App::new(
-                        vec![Service {
-                            id: String::from("nginx-1234"),
-                            status: ServiceStatus::Paused,
-                            blueprint_config: blueprint_service!("nginx"),
-                            service_type: ContainerType::Instance,
-                        }],
-                        HashSet::new(),
-                        None,
-                        None,
-                    )),
-                )
-            })
-            .await;
-
-        assert!(result.is_ok());
+        let (processable_tasks, _tx) = repository.fetch_processable_tasks().await.unwrap().unwrap();
+        assert_eq!(
+            processable_tasks.backed_up_tasks,
+            HashSet::from([AppName::master()]),
+            "We are expecting a specific set of backed up apps here"
+        );
     }
 
     #[tokio::test]
