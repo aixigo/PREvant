@@ -443,7 +443,9 @@ impl AppPostgresRepository {
                 sqlx::query(
                     r#"
                     INSERT INTO app_backup (app_name, app, infrastructure_payload)
-                    VALUES ($1, $2, $3);
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (app_name)
+                    DO UPDATE SET infrastructure_payload = $3;
                     "#,
                 )
                 .bind(app_name.as_str())
@@ -532,9 +534,16 @@ impl AppPostgresRepository {
 
         let affected_rows = sqlx::query(
             r#"
-            DELETE FROM app_task
+            DELETE FROM app_task AS a
             WHERE status = 'done'
               AND created_at <= $1
+              AND (executed_and_merged_with IS NULL OR NOT EXISTS (
+                  SELECT *
+                  FROM app_task AS b
+                  WHERE a.executed_and_merged_with = b.id
+                    AND b.created_at > $1
+                    AND b.status = 'done'
+              ))
             "#,
         )
         .bind(older_than)
@@ -1103,5 +1112,120 @@ mod tests {
                 None,
             )))
         );
+    }
+
+    #[tokio::test]
+    async fn do_not_clean_up_tasks_that_have_been_merged_with_newer_tasks() -> anyhow::Result<()> {
+        let (_postgres_instance, repository) = create_repository().await;
+
+        let status_id_1 = AppStatusChangeId::new();
+        repository
+            .enqueue_task(AppTask::Delete {
+                status_id: status_id_1,
+                app_name: AppName::master(),
+            })
+            .await?;
+
+        let time_snapshot = Utc::now();
+
+        let status_id_2 = AppStatusChangeId::new();
+        repository
+            .enqueue_task(AppTask::Delete {
+                status_id: status_id_2,
+                app_name: AppName::master(),
+            })
+            .await?;
+        let status_id_3 = AppStatusChangeId::new();
+        repository
+            .enqueue_task(AppTask::Delete {
+                status_id: status_id_3,
+                app_name: AppName::master(),
+            })
+            .await?;
+
+        let (processable_tasks, tx) = repository
+            .fetch_processable_tasks()
+            .await?
+            .expect("some processable tasks");
+        let merged = AppTask::merge_tasks(processable_tasks.tasks);
+
+        repository
+            .store_result(
+                tx,
+                Ok(App::new(
+                    vec![Service {
+                        id: String::from("nginx-1234"),
+                        status: ServiceStatus::Paused,
+                        blueprint_config: blueprint_service!("nginx"),
+                        service_type: ContainerType::ApplicationCompanion,
+                    }],
+                    HashSet::new(),
+                    None,
+                    None,
+                )),
+                Utc::now(),
+                &merged,
+            )
+            .await?;
+
+        let cleaned = repository.clean_up_done_tasks(time_snapshot).await?;
+        assert_eq!(cleaned, 0);
+
+        let peek1 = repository.peek_result(&status_id_1).await.unwrap()?;
+        let peek2 = repository.peek_result(&status_id_2).await.unwrap();
+        let peek3 = repository.peek_result(&status_id_3).await.unwrap();
+
+        assert_eq!(Ok(peek1), peek2);
+        assert_eq!(peek2, peek3);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn overwrite_with_latest_backup() -> anyhow::Result<()> {
+        let (_postgres_instance, repository) = create_repository().await;
+
+        for i in 0..3 {
+            repository
+                .enqueue_task(AppTask::MovePayloadToBackUpAndDeleteFromInfrastructure {
+                    status_id: AppStatusChangeId::new(),
+                    app_name: AppName::master(),
+                    infrastructure_payload_to_back_up: serde_json::json!({"v": i}),
+                })
+                .await?;
+
+            let (processable_tasks, tx) = repository
+                .fetch_processable_tasks()
+                .await?
+                .expect("some processable tasks");
+            let merged = AppTask::merge_tasks(processable_tasks.tasks);
+
+            repository
+                .store_result(
+                    tx,
+                    Ok(App::new(
+                        vec![Service {
+                            id: String::from("nginx-1234"),
+                            status: ServiceStatus::Paused,
+                            blueprint_config: blueprint_service!("nginx"),
+                            service_type: ContainerType::ApplicationCompanion,
+                        }],
+                        HashSet::new(),
+                        None,
+                        None,
+                    )),
+                    Utc::now(),
+                    &merged,
+                )
+                .await?;
+        }
+
+        let backup = repository.fetch_backed_up_app(&AppName::master()).await?;
+        assert!(backup.is_some());
+
+        let cleaned = repository.clean_up_done_tasks(Utc::now()).await?;
+        assert_eq!(cleaned, 3);
+
+        Ok(())
     }
 }
