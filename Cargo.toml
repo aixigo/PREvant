@@ -6,7 +6,7 @@ members = ["domain", "api", "api-tests"]
 async-trait = "0.1"
 anyhow = "1.0"
 assert-json-diff = "2.0"
-bollard = { version = "0.20", features = ["chrono"] }
+bollard = { version = "0.21", features = ["chrono"] }
 chrono = { version = "0.4", features = ["serde"] }
 env_logger = "0.11"
 futures = "0.3"
@@ -27,8 +27,12 @@ serde_derive = "1.0"
 serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0"
-testcontainers = { version = "0.27", features = ["docker-compose"] }
-testcontainers-modules = { version = "0.15", features = ["k3s", "postgres"] }
+testcontainers = { version = "0.28", features = ["docker-compose"] }
+testcontainers-modules = {
+   git = "https://github.com/schrieveslaach/testcontainers-rs-modules-community.git",
+   branch = "k3d-fixes",
+   features = ["k3s", "postgres"]
+}
 tokio = { version = "1.47", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "0.9"
