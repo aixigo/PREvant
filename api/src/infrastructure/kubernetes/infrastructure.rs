@@ -1938,8 +1938,12 @@ mod tests {
                     bootstrapping_container,
                 })
                 .collect::<Vec<_>>();
-            let k8s_deployment_unit =
-                K8sDeploymentUnit::parse_from_log_streams(context.app_name, log_streams).await?;
+            let k8s_deployment_unit = K8sDeploymentUnit::parse_from_log_streams(
+                context.app_name,
+                HashSet::new(),
+                log_streams,
+            )
+            .await?;
 
             Ok(BootstrappedCompanions::try_from(k8s_deployment_unit)?)
         }
