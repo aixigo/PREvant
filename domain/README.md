@@ -1,7 +1,11 @@
 # PREvant Domain Objects
 
 This crate provides the domain objects that shall provide the core application
-logic. Given the example below, the APIs provided in this crate model the
+logic.
+
+## Application Creation
+
+Given the example below, the APIs provided in [`app_deployment`] model the
 workflow that is described in [the PREvant paper, see Section
 4](http://dx.doi.org/10.4230/OASIcs.Microservices.2017-2019.5). The main entry
 for building deployments is
@@ -65,5 +69,277 @@ let deployment_unit = AppDeploymentBuilder::init(app_name, configs, None)
 // use deployment_unit to create or update the services on the backend
 // infrastructure, e.g. Docker or Kubernetes
 assert_eq!(deployment_unit.services.len(), 2);
+# })
+```
+
+## Application Life Cycle
+
+A [running application](`app_instance::RuntimeInfrastructure`) can be
+transitioned into different states.
+
+### Moving from running to backed-up
+
+```rust
+use domain::AppName;
+use domain::app_instance::{App, BackedUpApp, RuntimeInfrastructure};
+use domain::app_life_cycle::{BackupRepository, LifecycleInfrastructure};
+# use either::Either;
+# use std::convert::Infallible;
+# use std::{collections::HashMap, str::FromStr};
+#
+# let runtime = tokio::runtime::Runtime::new().unwrap();
+# runtime.block_on(async {
+
+type BackedUpElement = // …
+# ();
+
+// Create an instance of `RuntimeInfrastructure` to fetch applications from the
+// infrastructure (here it is mock).
+let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackedUpElement = BackedUpElement, Error = Infallible>> = Box::new(|| {
+   // simulate the fetching services, … from the infra
+#  Ok(HashMap::from([(AppName::master(), Either::Left(App::new(
+#     Vec::new(), Default::default(), None, None,
+#  )))]))
+});
+
+let Some(Either::Left(app)) = runtime_infrastructure.fetch_app(AppName::master()).await.unwrap() else {
+   # panic!()
+};
+
+/// A fake implementation for storing the applications infrastructure payload,
+/// such a Kubernetes manifests.
+struct NoOpBackupRepository;
+#[async_trait::async_trait]
+impl BackupRepository for NoOpBackupRepository {
+    // Implement the trait
+    type BackedUpElement = BackedUpElement;
+    type Error = Infallible;
+#
+#    async fn store_elements_for_backup(
+#        &mut self,
+#        app_name: &AppName,
+#        backed_up_elements: Vec<Self::BackedUpElement>,
+#    ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
+#      Ok(backed_up_elements)
+#    }
+#
+#    async fn delete_restored_elements(
+#        &mut self,
+#        app_name: &AppName,
+#        restored_elements: Vec<Self::BackedUpElement>,
+#    ) -> Result<(), Self::Error> {
+#      Ok(())
+#    }
+}
+
+/// A fake implementation for snapshoting, deleting and restoring the
+/// applications infrastructure payload, such a Kubernetes manifests.
+struct NoOpLifecycleInfrastructure;
+#[async_trait::async_trait]
+impl LifecycleInfrastructure for NoOpLifecycleInfrastructure {
+    // Implement the trait
+    type BackedUpElement = BackedUpElement;
+    type Error = Infallible;
+#
+#    async fn snapshot_for_backup(
+#        &self,
+#        app_name: &AppName,
+#    ) -> Result<Option<Vec<Self::BackedUpElement>>, Self::Error> {
+#       Ok(Some(vec![()]))
+#    }
+#
+#    async fn suspend_backed_up_elements(
+#        &mut self,
+#        app_name: &AppName,
+#        backed_up_elements: &[Self::BackedUpElement],
+#    ) -> Result<(), Self::Error> {
+#      Ok(())
+#    }
+#
+#    async fn restore_from_backup(
+#        &mut self,
+#        app_name: &AppName,
+#        backed_up_elements: Vec<Self::BackedUpElement>,
+#    ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
+#      Ok(backed_up_elements)
+#    }
+}
+
+let mut lifecycle_infrastructure = NoOpLifecycleInfrastructure;
+let mut backup_repository = NoOpBackupRepository;
+
+// Perform the backup with the aid of infrastructure and repository.
+let backed_up_app: BackedUpApp<BackedUpElement> = app.backup(
+   &AppName::master(),
+   &mut lifecycle_infrastructure,
+   &mut backup_repository
+).await.unwrap();
+# })
+```
+
+As the [`app_instance::RuntimeInfrastructure`] may return a [running
+application](`app_instance::App`) or a [backed-up
+application](`app_instance::BackedUpApp`) the surrounding use case must deal
+with the cases.
+
+```rust
+use domain::AppName;
+use domain::app_instance::{App, RuntimeInfrastructure};
+use domain::app_life_cycle::{BackupRepository, LifecycleInfrastructure};
+# use either::Either;
+# use std::convert::Infallible;
+# use std::{collections::HashMap, str::FromStr};
+#
+# let runtime = tokio::runtime::Runtime::new().unwrap();
+# runtime.block_on(async {
+
+let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackedUpElement = (), Error = Infallible>> =
+# Box::new(|| {
+#   Ok(HashMap::from([(AppName::master(), Either::Left(App::new(
+#      Vec::new(), Default::default(), None, None,
+#   )))]))
+# });
+
+match runtime_infrastructure.fetch_app(AppName::master()).await.unwrap() {
+   Some(Either::Left(app)) => {
+      // ready to be back up the application
+   }
+   Some(Either::Right(backed_up_app)) => {
+      // already backed-up, cannot backup again.
+   }
+#   None => {}
+};
+# })
+```
+
+### Moving from backed-up to running
+
+```rust
+use domain::AppName;
+use domain::app_instance::{App, BackedUpApp, RuntimeInfrastructure};
+use domain::app_life_cycle::{BackupRepository, LifecycleInfrastructure};
+# use either::Either;
+# use std::convert::Infallible;
+# use std::{collections::HashMap, str::FromStr};
+#
+# let runtime = tokio::runtime::Runtime::new().unwrap();
+# runtime.block_on(async {
+
+// Create an instance of `RuntimeInfrastructure` to fetch applications from the
+// infrastructure (here it is mock).
+let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackedUpElement = (), Error = Infallible>> = Box::new(|| {
+    // simulate the fetching services, … from the infra
+#   Ok(HashMap::from([(AppName::master(), Either::Right(BackedUpApp::with_app_and_elements(App::new(
+#      Vec::new(), Default::default(), None, None,
+#   ), vec![()]).unwrap()))]))
+});
+
+let Some(Either::Right(backed_up_app)) = runtime_infrastructure.fetch_app(AppName::master()).await.unwrap() else {
+   # panic!()
+};
+
+/// A fake implementation for storing the applications infrastructure payload,
+/// such a Kubernetes manifests.
+struct NoOpBackupRepository;
+#[async_trait::async_trait]
+impl BackupRepository for NoOpBackupRepository {
+    // Implement the trait
+#    type BackedUpElement = ();
+#    type Error = Infallible;
+#
+#    async fn store_elements_for_backup(
+#        &mut self,
+#        app_name: &AppName,
+#        backed_up_elements: Vec<Self::BackedUpElement>,
+#    ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
+#      Ok(backed_up_elements)
+#    }
+#
+#    async fn delete_restored_elements(
+#        &mut self,
+#        app_name: &AppName,
+#        restored_elements: Vec<Self::BackedUpElement>,
+#    ) -> Result<(), Self::Error> {
+#      Ok(())
+#    }
+}
+
+/// A fake implementation for snapshoting, deleting and restoring the
+/// applications infrastructure payload, such a Kubernetes manifests.
+struct NoOpLifecycleInfrastructure;
+#[async_trait::async_trait]
+impl LifecycleInfrastructure for NoOpLifecycleInfrastructure {
+    // Implement the trait
+#    type BackedUpElement = ();
+#    type Error = Infallible;
+#
+#    async fn snapshot_for_backup(
+#        &self,
+#        app_name: &AppName,
+#    ) -> Result<Option<Vec<Self::BackedUpElement>>, Self::Error> {
+#       Ok(Some(vec![()]))
+#    }
+#
+#    async fn suspend_backed_up_elements(
+#        &mut self,
+#        app_name: &AppName,
+#        backed_up_elements: &[Self::BackedUpElement],
+#    ) -> Result<(), Self::Error> {
+#      Ok(())
+#    }
+#
+#    async fn restore_from_backup(
+#        &mut self,
+#        app_name: &AppName,
+#        backed_up_elements: Vec<Self::BackedUpElement>,
+#    ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
+#      Ok(backed_up_elements)
+#    }
+}
+
+let mut lifecycle_infrastructure = NoOpLifecycleInfrastructure;
+let mut backup_repository = NoOpBackupRepository;
+
+// Perform the backup with the aid of infrastructure and repository.
+let app: App = backed_up_app.restore(
+   &AppName::master(),
+   &mut lifecycle_infrastructure,
+   &mut backup_repository
+).await.unwrap();
+# })
+```
+
+As the [`app_instance::RuntimeInfrastructure`] may return a [running
+application](`app_instance::App`) or a [backed-up
+application](`app_instance::BackedUpApp`) the surrounding use case must deal
+with the cases.
+
+```rust
+use domain::AppName;
+use domain::app_instance::{App, RuntimeInfrastructure};
+use domain::app_life_cycle::{BackupRepository, LifecycleInfrastructure};
+# use either::Either;
+# use std::convert::Infallible;
+# use std::{collections::HashMap, str::FromStr};
+#
+# let runtime = tokio::runtime::Runtime::new().unwrap();
+# runtime.block_on(async {
+
+let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackedUpElement = (), Error = Infallible>> =
+# Box::new(|| {
+#   Ok(HashMap::from([(AppName::master(), Either::Left(App::new(
+#      Vec::new(), Default::default(), None, None,
+#   )))]))
+# });
+
+match runtime_infrastructure.fetch_app(AppName::master()).await.unwrap() {
+   Some(Either::Left(app)) => {
+      // already running, cannot restore again
+   }
+   Some(Either::Right(backed_up_app)) => {
+      // ready to restore the application
+   }
+#   None => {}
+};
 # })
 ```
