@@ -129,121 +129,307 @@ impl<E> BackedUpApp<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockall::{mock, predicate};
 
-    struct DummyLifecycleInfrastructure {
-        snapshot_for_backup: Result<Option<Vec<()>>, &'static str>,
-    }
+    mock! {
+        pub LifecycleInfra {}
+        #[async_trait::async_trait]
+        impl LifecycleInfrastructure for LifecycleInfra {
+            type BackedUpElement = ();
+            type Error = &'static str;
 
-    impl Default for DummyLifecycleInfrastructure {
-        fn default() -> Self {
-            Self {
-                snapshot_for_backup: Ok(Some(vec![()])),
-            }
+            async fn snapshot_for_backup(
+                &self,
+                app_name: &AppName,
+            ) -> Result<Option<Vec<()>>, &'static str>;
+
+            async fn suspend_backed_up_elements(
+                &mut self,
+                app_name: &AppName,
+                backed_up_elements: &[()],
+            ) -> Result<(), &'static str>;
+
+            async fn restore_from_backup(
+                &mut self,
+                app_name: &AppName,
+                backed_up_elements: Vec<()>,
+            ) -> Result<Vec<()>, &'static str>;
         }
     }
 
-    #[async_trait::async_trait]
-    impl LifecycleInfrastructure for DummyLifecycleInfrastructure {
-        type BackedUpElement = ();
-        type Error = &'static str;
+    mock! {
+        pub Repo {}
+        #[async_trait::async_trait]
+        impl BackupRepository for Repo {
+            type BackedUpElement = ();
+            type Error = &'static str;
 
-        async fn snapshot_for_backup(
-            &self,
-            _app_name: &AppName,
-        ) -> Result<Option<Vec<Self::BackedUpElement>>, Self::Error> {
-            dbg!(self.snapshot_for_backup.clone())
-        }
+            async fn store_elements_for_backup(
+                &mut self,
+                app_name: &AppName,
+                backed_up_elements: Vec<()>,
+            ) -> Result<Vec<()>, &'static str>;
 
-        async fn suspend_backed_up_elements(
-            &mut self,
-            app_name: &AppName,
-            backed_up_elements: &[Self::BackedUpElement],
-        ) -> Result<(), Self::Error> {
-            todo!()
-        }
-
-        async fn restore_from_backup(
-            &mut self,
-            app_name: &AppName,
-            backed_up_elements: Vec<Self::BackedUpElement>,
-        ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
-            todo!()
+            async fn delete_restored_elements(
+                &mut self,
+                app_name: &AppName,
+                restored_elements: Vec<()>,
+            ) -> Result<(), &'static str>;
         }
     }
 
-    #[derive(Default)]
-    struct DummyBackupRepository {
-        store_elements_for_backup_err: Option<&'static str>,
-    }
+    mod restore {
+        use super::*;
 
-    #[async_trait::async_trait]
-    impl BackupRepository for DummyBackupRepository {
-        type BackedUpElement = ();
-        type Error = &'static str;
+        #[tokio::test]
+        async fn restore() -> anyhow::Result<()> {
+            let backed_up_app = BackedUpApp::with_app_and_elements(
+                App::new(Default::default(), Default::default(), None, None),
+                vec![()],
+            )?;
 
-        async fn store_elements_for_backup(
-            &mut self,
-            _app_name: &AppName,
-            backed_up_elements: Vec<Self::BackedUpElement>,
-        ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
-            match self.store_elements_for_backup_err {
-                Some(err) => Err(err),
-                None => Ok(backed_up_elements),
-            }
+            let mut lifecycle_infrastructure = MockLifecycleInfra::new();
+            lifecycle_infrastructure
+                .expect_restore_from_backup()
+                .with(predicate::eq(AppName::master()), predicate::eq(vec![()]))
+                .return_const(Ok(vec![()]));
+            let mut repository = MockRepo::new();
+            repository
+                .expect_delete_restored_elements()
+                .with(predicate::eq(AppName::master()), predicate::eq(vec![()]))
+                .return_const(Ok(()));
+
+            let app = backed_up_app
+                .restore(
+                    &AppName::master(),
+                    &mut lifecycle_infrastructure,
+                    &mut repository,
+                )
+                .await?;
+
+            assert_eq!(
+                app,
+                App::new(Default::default(), Default::default(), None, None),
+            );
+
+            Ok(())
         }
 
-        async fn delete_restored_elements(
-            &mut self,
-            app_name: &AppName,
-            restored_elements: Vec<Self::BackedUpElement>,
-        ) -> Result<(), Self::Error> {
-            todo!()
+        #[tokio::test]
+        async fn fail_to_restore_due_to_infra_error() -> anyhow::Result<()> {
+            let backed_up_app = BackedUpApp::with_app_and_elements(
+                App::new(Default::default(), Default::default(), None, None),
+                vec![()],
+            )?;
+
+            let mut lifecycle_infrastructure = MockLifecycleInfra::new();
+            lifecycle_infrastructure
+                .expect_restore_from_backup()
+                .with(predicate::eq(AppName::master()), predicate::eq(vec![()]))
+                .return_const(Err("restore error"));
+            let mut repository = MockRepo::new();
+
+            let result = backed_up_app
+                .restore(
+                    &AppName::master(),
+                    &mut lifecycle_infrastructure,
+                    &mut repository,
+                )
+                .await;
+
+            assert_eq!(
+                result,
+                Err(AppLifeCycleError::LifecycleInfrastructure("restore error"))
+            );
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn fail_to_restore_due_to_repository_error() -> anyhow::Result<()> {
+            let backed_up_app = BackedUpApp::with_app_and_elements(
+                App::new(Default::default(), Default::default(), None, None),
+                vec![()],
+            )?;
+
+            let mut lifecycle_infrastructure = MockLifecycleInfra::new();
+            lifecycle_infrastructure
+                .expect_restore_from_backup()
+                .with(predicate::eq(AppName::master()), predicate::eq(vec![()]))
+                .return_const(Ok(vec![()]));
+            let mut repository = MockRepo::new();
+            repository
+                .expect_delete_restored_elements()
+                .with(predicate::eq(AppName::master()), predicate::eq(vec![()]))
+                .return_const(Err("sql error"));
+
+            let result = backed_up_app
+                .restore(
+                    &AppName::master(),
+                    &mut lifecycle_infrastructure,
+                    &mut repository,
+                )
+                .await;
+
+            assert_eq!(
+                result,
+                Err(AppLifeCycleError::BackupRepository("sql error"))
+            );
+
+            Ok(())
         }
     }
 
-    #[tokio::test]
-    #[rstest::rstest]
-    #[case(Some(Vec::new()))]
-    #[case(None)]
-    async fn fail_to_backup_due_to_no_elements(#[case] snapshot_for_backup: Option<Vec<()>>) {
-        let app = App::new(Default::default(), Default::default(), None, None);
+    mod backup {
+        use super::*;
 
-        let mut lifecycle_infrastructure = DummyLifecycleInfrastructure {
-            snapshot_for_backup: Ok(snapshot_for_backup),
-        };
-        let mut repository = DummyBackupRepository::default();
+        #[tokio::test]
+        async fn backup() -> anyhow::Result<()> {
+            let app = App::new(Default::default(), Default::default(), None, None);
 
-        let result = app
-            .backup(
-                &AppName::master(),
-                &mut lifecycle_infrastructure,
-                &mut repository,
-            )
-            .await;
+            let mut lifecycle_infrastructure = MockLifecycleInfra::new();
+            lifecycle_infrastructure
+                .expect_snapshot_for_backup()
+                .with(predicate::eq(AppName::master()))
+                .return_const(Ok(Some(vec![()])));
+            let mut repository = MockRepo::new();
+            repository
+                .expect_store_elements_for_backup()
+                .with(predicate::eq(AppName::master()), predicate::always())
+                .return_const(Ok(vec![()]));
+            lifecycle_infrastructure
+                .expect_suspend_backed_up_elements()
+                .with(predicate::eq(AppName::master()), predicate::eq(vec![()]))
+                .return_const(Ok(()));
 
-        assert_eq!(result, Err(AppLifeCycleError::NoBackUpSnapshotAvailable));
-    }
+            let backed_up_app = app
+                .backup(
+                    &AppName::master(),
+                    &mut lifecycle_infrastructure,
+                    &mut repository,
+                )
+                .await?;
 
-    #[tokio::test]
-    async fn fail_to_backup_due_to_failed_repository() {
-        let app = App::new(Default::default(), Default::default(), None, None);
+            assert_eq!(
+                backed_up_app,
+                BackedUpApp::with_app_and_elements(
+                    App::new(Default::default(), Default::default(), None, None),
+                    vec![()],
+                )?,
+            );
 
-        let mut lifecycle_infrastructure = DummyLifecycleInfrastructure::default();
-        let mut repository = DummyBackupRepository {
-            store_elements_for_backup_err: Some("sql error"),
-        };
+            Ok(())
+        }
 
-        let result = app
-            .backup(
-                &AppName::master(),
-                &mut lifecycle_infrastructure,
-                &mut repository,
-            )
-            .await;
+        #[tokio::test]
+        #[rstest::rstest]
+        #[case(Some(Vec::new()))]
+        #[case(None)]
+        async fn fail_to_backup_due_to_no_elements(#[case] snapshot_for_backup: Option<Vec<()>>) {
+            let app = App::new(Default::default(), Default::default(), None, None);
 
-        assert_eq!(
-            result,
-            Err(AppLifeCycleError::BackupRepository("sql error"))
-        );
+            let mut lifecycle_infrastructure = MockLifecycleInfra::new();
+            lifecycle_infrastructure
+                .expect_snapshot_for_backup()
+                .with(predicate::eq(AppName::master()))
+                .return_const(Ok(snapshot_for_backup));
+            let mut repository = MockRepo::new();
+
+            let result = app
+                .backup(
+                    &AppName::master(),
+                    &mut lifecycle_infrastructure,
+                    &mut repository,
+                )
+                .await;
+
+            assert_eq!(result, Err(AppLifeCycleError::NoBackUpSnapshotAvailable));
+        }
+        #[tokio::test]
+        async fn fail_to_backup_due_to_snapshot_error() {
+            let app = App::new(Default::default(), Default::default(), None, None);
+
+            let mut lifecycle_infrastructure = MockLifecycleInfra::new();
+            lifecycle_infrastructure
+                .expect_snapshot_for_backup()
+                .with(predicate::eq(AppName::master()))
+                .return_const(Err("snapshot error"));
+            let mut repository = MockRepo::new();
+
+            let result = app
+                .backup(
+                    &AppName::master(),
+                    &mut lifecycle_infrastructure,
+                    &mut repository,
+                )
+                .await;
+
+            assert_eq!(
+                result,
+                Err(AppLifeCycleError::LifecycleInfrastructure("snapshot error"))
+            );
+        }
+
+        #[tokio::test]
+        async fn fail_to_backup_due_to_failed_repository() {
+            let app = App::new(Default::default(), Default::default(), None, None);
+
+            let mut lifecycle_infrastructure = MockLifecycleInfra::new();
+            lifecycle_infrastructure
+                .expect_snapshot_for_backup()
+                .with(predicate::eq(AppName::master()))
+                .return_const(Ok(Some(vec![()])));
+            let mut repository = MockRepo::new();
+            repository
+                .expect_store_elements_for_backup()
+                .with(predicate::eq(AppName::master()), predicate::always())
+                .return_const(Err("sql error"));
+
+            let result = app
+                .backup(
+                    &AppName::master(),
+                    &mut lifecycle_infrastructure,
+                    &mut repository,
+                )
+                .await;
+
+            assert_eq!(
+                result,
+                Err(AppLifeCycleError::BackupRepository("sql error"))
+            );
+        }
+
+        #[tokio::test]
+        async fn fail_to_backup_due_to_failed_suspend_on_infra() {
+            let app = App::new(Default::default(), Default::default(), None, None);
+
+            let mut lifecycle_infrastructure = MockLifecycleInfra::new();
+            lifecycle_infrastructure
+                .expect_snapshot_for_backup()
+                .with(predicate::eq(AppName::master()))
+                .return_const(Ok(Some(vec![()])));
+            let mut repository = MockRepo::new();
+            repository
+                .expect_store_elements_for_backup()
+                .with(predicate::eq(AppName::master()), predicate::always())
+                .return_const(Ok(vec![()]));
+            lifecycle_infrastructure
+                .expect_suspend_backed_up_elements()
+                .with(predicate::eq(AppName::master()), predicate::eq(vec![()]))
+                .return_const(Err("suspend error"));
+
+            let result = app
+                .backup(
+                    &AppName::master(),
+                    &mut lifecycle_infrastructure,
+                    &mut repository,
+                )
+                .await;
+
+            assert_eq!(
+                result,
+                Err(AppLifeCycleError::LifecycleInfrastructure("suspend error"))
+            );
+        }
     }
 }
