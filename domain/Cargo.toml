@@ -8,6 +8,7 @@ path = "src/lib.rs"
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
+either = "1.19"
 handlebars = { workspace = true }
 jsonschema = { workspace = true }
 oci-client = { workspace = true }
