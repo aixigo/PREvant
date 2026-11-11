@@ -24,7 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
-use crate::config::{Config, ContainerConfig};
+use crate::config::{Config, ContainerConfig, Runtime};
 use crate::infrastructure::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, HttpForwarder, IMAGE_LABEL, Infrastructure,
     REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
@@ -49,8 +49,8 @@ use bollard::{
     },
     service::{
         ContainerCreateResponse, ContainerInspectResponse, ContainerStateStatusEnum,
-        ContainerSummary, CreateImageInfo, EndpointSettings, HostConfig, RestartPolicy,
-        RestartPolicyNameEnum, VolumeListResponse,
+        ContainerSummary, EndpointSettings, HostConfig, RestartPolicy, RestartPolicyNameEnum,
+        VolumeListResponse,
     },
 };
 use chrono::{DateTime, FixedOffset, Utc};
@@ -64,7 +64,7 @@ use domain::{
     traefik::TraefikVersion,
 };
 use futures::{
-    StreamExt, TryStreamExt,
+    StreamExt,
     stream::{BoxStream, FuturesUnordered},
 };
 use http_body_util::BodyExt;
@@ -111,12 +111,24 @@ impl Docker {
         Self { config }
     }
 
-    async fn create_or_get_network_id(&self, app_name: &AppName) -> Result<String, BollardError> {
+    fn docker_api(&self) -> Result<DockerAPI, BollardError> {
+        match &self.config.runtime {
+            Runtime::Docker => DockerAPI::connect_with_socket_defaults(),
+            Runtime::Podman => DockerAPI::connect_with_podman_defaults(),
+            Runtime::Kubernetes(_) => {
+                unreachable!("This code path should not be reachable with Kubernetes config")
+            }
+        }
+    }
+
+    async fn create_or_get_network_id(
+        docker: &DockerAPI,
+        app_name: &AppName,
+    ) -> Result<String, BollardError> {
         trace!("Resolve network id for {app_name}");
 
         let network_name = format!("{app_name}-net");
 
-        let docker = DockerAPI::connect_with_socket_defaults()?;
         let network_id = docker
             .list_networks(None::<ListNetworksOptions>)
             .await?
@@ -143,9 +155,9 @@ impl Docker {
         Ok(network_id)
     }
 
-    async fn traefik_container(&self) -> Result<Option<ContainerInspectResponse>, BollardError> {
-        let docker = DockerAPI::connect_with_socket_defaults()?;
-
+    async fn traefik_container(
+        docker: &DockerAPI,
+    ) -> Result<Option<ContainerInspectResponse>, BollardError> {
         let mut containers = docker
             .list_containers(None::<ListContainersOptions>)
             .await?
@@ -185,10 +197,9 @@ impl Docker {
                 .config
                 .as_ref()
                 .and_then(|config| config.env.as_ref())
+                && let Some(_cpn) = env.iter().find(|e| *e == &compose_project_name)
             {
-                if let Some(_cpn) = env.iter().find(|e| *e == &compose_project_name) {
-                    return Ok(Some(inspection));
-                }
+                return Ok(Some(inspection));
             }
         }
 
@@ -204,7 +215,7 @@ impl Docker {
         traefik_id: &str,
         network_id: &str,
     ) -> Result<(), BollardError> {
-        let docker = DockerAPI::connect_with_socket_defaults()?;
+        let docker = self.docker_api()?;
 
         if let Err(e) = docker
             .connect_network(
@@ -223,7 +234,7 @@ impl Docker {
     }
 
     async fn disconnect_traefik(&self, network_id: &str) -> Result<(), BollardError> {
-        let docker = DockerAPI::connect_with_socket_defaults()?;
+        let docker = self.docker_api()?;
         let containers = docker
             .list_containers(None::<ListContainersOptions>)
             .await?;
@@ -254,7 +265,7 @@ impl Docker {
     async fn delete_network(&self, app_name: &AppName) -> Result<(), BollardError> {
         let network_name = format!("{app_name}-net");
 
-        let docker = DockerAPI::connect_with_socket_defaults()?;
+        let docker = self.docker_api()?;
 
         for n in docker
             .list_networks(Some(ListNetworksOptions {
@@ -272,9 +283,11 @@ impl Docker {
         Ok(())
     }
 
-    async fn delete_volume_mount(&self, app_name: &AppName) -> Result<(), BollardError> {
-        let docker = DockerAPI::connect_with_socket_defaults()?;
-        for volume in Self::fetch_existing_volumes(app_name)
+    async fn delete_volume_mount(
+        docker: &DockerAPI,
+        app_name: &AppName,
+    ) -> Result<(), BollardError> {
+        for volume in Self::fetch_existing_volumes(docker, app_name)
             .await?
             .volumes
             .into_iter()
@@ -298,7 +311,7 @@ impl Docker {
         owners: &HashSet<Owner>,
         traefik_version: TraefikVersion,
     ) -> Result<ContainerInspectResponse, DockerInfrastructureError> {
-        let docker = DockerAPI::connect_with_socket_defaults()?;
+        let docker = self.docker_api()?;
         let service_name = &service.blueprint_service.service_name;
         let service_image = &service.blueprint_service.image;
 
@@ -307,7 +320,9 @@ impl Docker {
                 .await?;
         }
         let mut image_to_delete = None;
-        if let Some(ref container_info) = Self::get_app_container(app_name, service_name).await? {
+        if let Some(ref container_info) =
+            Self::get_app_container(&docker, app_name, service_name).await?
+        {
             let container_details = docker
                 .inspect_container(
                     container_info
@@ -371,7 +386,7 @@ impl Docker {
         );
 
         let host_config_binds =
-            Self::create_host_config_binds(app_name, existing_volumes, service).await?;
+            Self::create_host_config_binds(&docker, app_name, existing_volumes, service).await?;
 
         let options = Self::create_container_options(
             app_name,
@@ -461,7 +476,7 @@ impl Docker {
                 if let Some(route) = service.ingress_route.routes().iter().next() {
                     let router_name = format!(
                         "{app_name}-{service_name}",
-                        service_name = &service.blueprint_service.service_name
+                        service_name = service.blueprint_service.service_name
                     );
                     labels.insert(
                         format!("traefik.http.routers.{router_name}.rule",),
@@ -563,10 +578,10 @@ impl Docker {
 
         debug!(
             "Copy data to container: {container_info:?} (service = {})",
-            &service_config.service_name
+            service_config.service_name
         );
 
-        let docker = DockerAPI::connect_with_socket_defaults()?;
+        let docker = self.docker_api()?;
 
         let mut tar_builder = tar::Builder::new(Vec::new());
 
@@ -600,9 +615,9 @@ impl Docker {
     }
 
     async fn fetch_existing_volumes(
+        docker: &DockerAPI,
         app_name: &AppName,
     ) -> Result<VolumeListResponse, BollardError> {
-        let docker = DockerAPI::connect_with_socket_defaults()?;
         docker
             .list_volumes(Some(ListVolumesOptions {
                 filters: Some(HashMap::from([(
@@ -614,11 +629,10 @@ impl Docker {
     }
 
     async fn create_docker_volume(
+        docker: &DockerAPI,
         app_name: &AppName,
         service: &DeployableService<()>,
     ) -> Result<String, BollardError> {
-        let docker = DockerAPI::connect_with_socket_defaults()?;
-
         let mut labels = HashMap::new();
         labels.insert(APP_NAME_LABEL.to_string(), app_name.to_string());
         labels.insert(
@@ -636,6 +650,7 @@ impl Docker {
     }
 
     async fn create_host_config_binds(
+        docker: &DockerAPI,
         app_name: &AppName,
         existing_volume: &VolumeListResponse,
         service: &DeployableService<()>,
@@ -659,7 +674,7 @@ impl Docker {
 
         let volume_name = match service_volume {
             Some(name) => name,
-            None => Self::create_docker_volume(app_name, service).await?,
+            None => Self::create_docker_volume(docker, app_name, service).await?,
         };
 
         for declared_volume in &service.declared_volumes {
@@ -674,18 +689,38 @@ impl Docker {
         app_name: &AppName,
         config: &ServiceConfig,
     ) -> Result<(), BollardError> {
+        let image = &config.image;
         info!(
             "Pulling {image} for {service_name} of app {app_name}",
-            image = &config.image,
-            service_name = &config.service_name,
+            service_name = config.service_name,
         );
 
-        let pull_results = pull(&config.image, &self.config).await?;
+        let pull_options = CreateImageOptions {
+            from_image: Some(image.to_string()),
+            ..Default::default()
+        };
+        let docker_auth = if let Some(registry) = image.registry() {
+            if let Some((username, password)) = self.config.registry_credentials(&registry) {
+                Some(DockerCredentials {
+                    username: Some(username.to_string()),
+                    password: Some(password.unsecure().to_string()),
+                    ..Default::default()
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-        for pull_result in pull_results {
+        let mut pull_results =
+            self.docker_api()?
+                .create_image(Some(pull_options), None, docker_auth);
+
+        while let Some(pull_result) = pull_results.next().await {
             trace!(
                 "Pull for {app_name}/{service_name} {pull_result:?}",
-                service_name = &config.service_name
+                service_name = config.service_name
             );
         }
 
@@ -693,10 +728,9 @@ impl Docker {
     }
 
     async fn get_containers(
+        docker: &DockerAPI,
         filters: HashMap<String, Vec<String>>,
     ) -> Result<Vec<ContainerSummary>, BollardError> {
-        let docker = DockerAPI::connect_with_socket_defaults()?;
-
         let list_options = Some(ListContainersOptions {
             all: true,
             filters: Some(filters),
@@ -707,6 +741,7 @@ impl Docker {
     }
 
     async fn get_app_containers(
+        docker: &DockerAPI,
         app_name: Option<&AppName>,
         service_name: Option<&str>,
     ) -> Result<Vec<ContainerSummary>, BollardError> {
@@ -727,30 +762,31 @@ impl Docker {
                 .push(service_name_filter);
         }
 
-        Self::get_containers(filters).await
+        Self::get_containers(docker, filters).await
     }
 
     async fn get_app_container(
+        docker: &DockerAPI,
         app_name: &AppName,
         service_name: &str,
     ) -> Result<Option<ContainerSummary>, BollardError> {
-        Self::get_app_containers(Some(app_name), Some(service_name))
+        Self::get_app_containers(docker, Some(app_name), Some(service_name))
             .await
             .map(|list| list.into_iter().next())
     }
 
     async fn get_container_details(
-        &self,
+        docker: &DockerAPI,
         app_name: Option<&AppName>,
         service_name: Option<&str>,
     ) -> Result<MultiMap<AppName, ContainerInspectResponse>, DockerInfrastructureError> {
         debug!("Resolve container details for app {app_name:?}");
 
-        let container_list = Self::get_app_containers(app_name, service_name).await?;
+        let container_list = Self::get_app_containers(docker, app_name, service_name).await?;
 
         let mut container_details = MultiMap::new();
         for container in container_list.into_iter() {
-            if let Some(details) = not_found_to_none(inspect(container).await)? {
+            if let Some(details) = not_found_to_none(inspect(docker, container).await)? {
                 let app_name = match app_name {
                     Some(app_name) => app_name.clone(),
                     None => match details.config.as_ref().and_then(|con| {
@@ -817,8 +853,9 @@ impl Infrastructure for Docker {
     type BackupPayload = ();
 
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>> {
+        let docker = self.docker_api()?;
         let mut apps = HashMap::new();
-        let container_details = self.get_container_details(None, None).await?;
+        let container_details = Docker::get_container_details(&docker, None, None).await?;
 
         for (app_name, details_vec) in container_details.into_iter() {
             apps.insert(app_name, Self::to_app(details_vec));
@@ -828,7 +865,9 @@ impl Infrastructure for Docker {
     }
 
     async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>> {
-        let mut container_details = self.get_container_details(Some(app_name), None).await?;
+        let docker = self.docker_api()?;
+        let mut container_details =
+            Docker::get_container_details(&docker, Some(app_name), None).await?;
 
         if container_details.is_empty() {
             return Ok(None);
@@ -844,11 +883,12 @@ impl Infrastructure for Docker {
         deployment_unit: DeploymentUnit<Self::BootstrappedElement>,
         container_config: &ContainerConfig,
     ) -> Result<App> {
+        let docker = self.docker_api()?;
         let app_name = &deployment_unit.app_name;
         let services = &deployment_unit.services;
-        let network_id = self.create_or_get_network_id(app_name).await?;
+        let network_id = Self::create_or_get_network_id(&docker, app_name).await?;
 
-        let traefik_container = self.traefik_container().await?;
+        let traefik_container = Self::traefik_container(&docker).await?;
         if let Some(traefik_container) = traefik_container.as_ref() {
             self.connect_traefik(
                 traefik_container
@@ -870,7 +910,7 @@ impl Infrastructure for Docker {
                 .unwrap_or(TraefikVersion::V1)
         });
 
-        let existing_volumes = Self::fetch_existing_volumes(app_name).await?;
+        let existing_volumes = Self::fetch_existing_volumes(&docker, app_name).await?;
         let mut futures = services
             .iter()
             .map(|service| {
@@ -897,15 +937,15 @@ impl Infrastructure for Docker {
 
     /// Deletes all services for the given `app_name`.
     async fn stop_services(&self, app_name: &AppName) -> Result<Option<App>> {
-        let Some(container_details) = self
-            .get_container_details(Some(app_name), None)
+        let docker = self.docker_api()?;
+        let Some(container_details) = Self::get_container_details(&docker, Some(app_name), None)
             .await?
             .remove(app_name)
         else {
             return Ok(None);
         };
 
-        let docker = DockerAPI::connect_with_socket_defaults()?;
+        let docker = self.docker_api()?;
 
         let mut futures = container_details
             .clone()
@@ -962,7 +1002,7 @@ impl Infrastructure for Docker {
         }
 
         self.delete_network(app_name).await?;
-        self.delete_volume_mount(app_name).await?;
+        Self::delete_volume_mount(&docker, app_name).await?;
 
         Ok(Some(Self::to_app(responses)))
     }
@@ -976,13 +1016,14 @@ impl Infrastructure for Docker {
         follow: bool,
     ) -> BoxStream<'a, Result<(DateTime<FixedOffset>, String)>> {
         stream! {
+            let docker = self.docker_api()?;
             match Self::
-                get_app_container(&AppName::from_str(app_name).unwrap(), service_name)
+                get_app_container(&docker, app_name, service_name)
                 .await
             {
                 Ok(None) => {}
                 Ok(Some(container)) => {
-                    let docker = DockerAPI::connect_with_socket_defaults()?;
+                    let docker = self.docker_api()?;
                     let container_id = container
                         .id
                         .as_ref()
@@ -1037,9 +1078,9 @@ impl Infrastructure for Docker {
         service_name: &str,
         status: DesiredServiceStatus,
     ) -> Result<Option<Service>> {
-        match Self::get_app_container(app_name, service_name).await? {
+        let docker = self.docker_api()?;
+        match Self::get_app_container(&docker, app_name, service_name).await? {
             Some(container) => {
-                let docker = DockerAPI::connect_with_socket_defaults()?;
                 let details = docker
                     .inspect_container(
                         container
@@ -1124,12 +1165,16 @@ impl Infrastructure for Docker {
     }
 
     async fn http_forwarder(&self) -> Result<Box<dyn HttpForwarder>> {
-        Ok(Box::new(DockerHttpForwarder {}))
+        Ok(Box::new(DockerHttpForwarder {
+            docker: self.docker_api()?,
+        }))
     }
 }
 
 #[derive(Clone)]
-struct DockerHttpForwarder;
+struct DockerHttpForwarder {
+    docker: DockerAPI,
+}
 
 #[async_trait]
 impl HttpForwarder for DockerHttpForwarder {
@@ -1139,7 +1184,8 @@ impl HttpForwarder for DockerHttpForwarder {
         service_name: &str,
         request: http::Request<http_body_util::Empty<bytes::Bytes>>,
     ) -> Result<Option<WebHostMeta>> {
-        let Some(container_details) = Docker::get_app_container(app_name, service_name).await?
+        let Some(container_details) =
+            Docker::get_app_container(&self.docker, app_name, service_name).await?
         else {
             return Ok(None);
         };
@@ -1206,36 +1252,11 @@ fn not_found_to_none<T>(result: Result<T, BollardError>) -> Result<Option<T>, Bo
     }
 }
 
-/// Helper function to pull images
-async fn pull(image: &Image, config: &Config) -> Result<Vec<CreateImageInfo>, BollardError> {
-    let pull_options = CreateImageOptions {
-        from_image: Some(image.to_string()),
-        ..Default::default()
-    };
-    let docker_auth = if let Some(registry) = image.registry() {
-        if let Some((username, password)) = config.registry_credentials(&registry) {
-            Some(DockerCredentials {
-                username: Some(username.to_string()),
-                password: Some(password.unsecure().to_string()),
-                ..Default::default()
-            })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let docker = DockerAPI::connect_with_socket_defaults()?;
-    docker
-        .create_image(Some(pull_options), None, docker_auth)
-        .try_collect()
-        .await
-}
-
 /// Helper function to inspect containers with the aid of futures::future::join_all
-async fn inspect(container: ContainerSummary) -> Result<ContainerInspectResponse, BollardError> {
-    let docker = DockerAPI::connect_with_socket_defaults()?;
+async fn inspect(
+    docker: &DockerAPI,
+    container: ContainerSummary,
+) -> Result<ContainerInspectResponse, BollardError> {
     docker
         .inspect_container(
             &container
@@ -1364,12 +1385,11 @@ impl From<BollardError> for DockerInfrastructureError {
             status_code,
             message,
         } = &err
+            && status_code == &404u16
         {
-            if status_code == &404u16 {
-                return DockerInfrastructureError::ImageNotFound {
-                    internal_message: message.clone(),
-                };
-            }
+            return DockerInfrastructureError::ImageNotFound {
+                internal_message: message.clone(),
+            };
         }
         DockerInfrastructureError::UnexpectedError {
             err: anyhow::Error::new(err),

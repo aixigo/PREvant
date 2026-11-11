@@ -33,6 +33,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 pub enum Runtime {
     #[default]
     Docker,
+    Podman,
     Kubernetes(KubernetesRuntimeConfig),
 }
 
@@ -105,6 +106,17 @@ mod tests {
         let runtime = toml::de::from_str::<Runtime>(runtime_toml).unwrap();
 
         assert_eq!(runtime, Runtime::Docker);
+    }
+
+    #[test]
+    fn parse_from_minimal_config_as_podman_runtime() {
+        let runtime_toml = r#"
+        type = 'Podman'
+        "#;
+
+        let runtime = toml::de::from_str::<Runtime>(runtime_toml).unwrap();
+
+        assert_eq!(runtime, Runtime::Podman);
     }
 
     #[test]

@@ -126,8 +126,8 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
 
 fn create_infrastructure(config: &Config) -> InfrastructureProxy {
     match &config.runtime {
-        Runtime::Docker => {
-            log::info!("Using Docker backend");
+        Runtime::Docker | Runtime::Podman => {
+            log::info!("Using Docker/Podman backend");
             Docker::new(config.clone()).into()
         }
         Runtime::Kubernetes(_config) => {

@@ -3537,7 +3537,7 @@ data:
             let api = Api::<Namespace>::all(client);
             api.create(
                 &Default::default(),
-                &namespace_payload(&app_name, &Default::default(), None, &HashSet::new()),
+                &namespace_payload(&app_name, Default::default(), None, &HashSet::new()),
             )
             .await?;
 

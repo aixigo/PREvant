@@ -27,7 +27,7 @@ use super::super::{
     APP_NAME_LABEL, CONTAINER_TYPE_LABEL, IMAGE_LABEL, REPLICATED_ENV_LABEL, SERVICE_NAME_LABEL,
     STORAGE_TYPE_LABEL,
 };
-use crate::config::{Config, ContainerConfig};
+use crate::config::ContainerConfig;
 use crate::infrastructure::kubernetes::element::K8sElement;
 use crate::infrastructure::kubernetes::{
     infrastructure::KubernetesInfrastructureError,
@@ -495,14 +495,18 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
 /// Namespaces](https://kubernetes.io/docs/tasks/administer-cluster/namespaces/)
 pub fn namespace_payload(
     app_name: &AppName,
-    config: &Config,
+    static_namespace_annotations: BTreeMap<String, String>,
     user_defined_parameters: Option<&UserDefinedParameters>,
     owners: &HashSet<Owner>,
 ) -> V1Namespace {
     V1Namespace {
         metadata: ObjectMeta {
             name: Some(app_name.to_rfc1123_namespace_id()),
-            annotations: namespace_annotations(config, user_defined_parameters, owners),
+            annotations: namespace_annotations(
+                static_namespace_annotations,
+                user_defined_parameters,
+                owners,
+            ),
             labels: Some(BTreeMap::from([(
                 APP_NAME_LABEL.to_string(),
                 app_name.to_string(),
@@ -514,43 +518,29 @@ pub fn namespace_payload(
 }
 
 pub fn namespace_annotations(
-    config: &Config,
+    static_namespace_annotations: BTreeMap<String, String>,
     user_defined_parameters: Option<&UserDefinedParameters>,
     owners: &HashSet<Owner>,
 ) -> Option<BTreeMap<String, String>> {
-    let annotations = match &config.runtime {
-        crate::config::Runtime::Docker => None,
-        crate::config::Runtime::Kubernetes(runtime) => {
-            let annotations = &runtime.annotations.namespace;
-
-            if annotations.is_empty() {
-                None
-            } else {
-                Some(annotations.clone())
-            }
-        }
-    };
-
-    let annotations = if let Some(user_defined_parameters) = user_defined_parameters {
-        let mut annotations = annotations.unwrap_or_default();
+    let mut annotations = static_namespace_annotations;
+    if let Some(user_defined_parameters) = user_defined_parameters {
         annotations.insert(
             USER_DEFINED_PARAMETERS_LABEL.to_string(),
             serde_json::to_string(user_defined_parameters).unwrap(),
         );
-        Some(annotations)
-    } else {
-        annotations
-    };
+    }
 
     if !owners.is_empty() {
-        let mut annotations = annotations.unwrap_or_default();
         annotations.insert(
             OWNERS_LABEL.to_string(),
             serde_json::to_string(&owners).unwrap(),
         );
-        Some(annotations)
+    }
+
+    if annotations.is_empty() {
+        None
     } else {
-        annotations
+        Some(annotations)
     }
 }
 
@@ -1917,7 +1907,7 @@ mod tests {
     fn create_namespace_with_screaming_snake_case() {
         let namespace = namespace_payload(
             &AppName::from_str("MY-APP").unwrap(),
-            &Default::default(),
+            Default::default(),
             None,
             &HashSet::new(),
         );
@@ -1940,19 +1930,12 @@ mod tests {
 
     #[test]
     fn create_namespace_payload_with_annotations() {
-        let config = toml::de::from_str::<Config>(
-            r#"
-            [runtime]
-            type = 'Kubernetes'
-            [runtime.annotations.namespace]
-            'field.cattle.io/projectId' = 'rancher-project-id'
-            "#,
-        )
-        .unwrap();
-
         let namespace = namespace_payload(
             &AppName::from_str("myapp").unwrap(),
-            &config,
+            BTreeMap::from([(
+                String::from("field.cattle.io/projectId"),
+                String::from("rancher-project-id"),
+            )]),
             None,
             &HashSet::new(),
         );

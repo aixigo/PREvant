@@ -82,17 +82,19 @@ pub struct CliArgs {
 #[derive(Clone)]
 enum RuntimeTypeCliFlag {
     Docker,
+    Podman,
     Kubernetes,
 }
 
 impl FromStr for RuntimeTypeCliFlag {
-    type Err = &'static str;
+    type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Docker" => Ok(Self::Docker),
+            "Podman" => Ok(Self::Podman),
             "Kubernetes" => Ok(Self::Kubernetes),
-            _ => Err("Unknown type"),
+            unknown => Err(format!("Unknown type {unknown}")),
         }
     }
 }
@@ -100,8 +102,9 @@ impl FromStr for RuntimeTypeCliFlag {
 impl Display for RuntimeTypeCliFlag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            RuntimeTypeCliFlag::Docker => write!(f, "Docker"),
-            RuntimeTypeCliFlag::Kubernetes => write!(f, "Kubernetes"),
+            Self::Docker => write!(f, "Docker"),
+            Self::Podman => write!(f, "Podman"),
+            Self::Kubernetes => write!(f, "Kubernetes"),
         }
     }
 }
@@ -308,10 +311,10 @@ impl Config {
     }
 
     pub fn add_secrets_to(&self, service_config: &mut ServiceConfig, app_name: &AppName) {
-        if let Some(services) = &self.services {
-            if let Some(service) = services.get(&service_config.service_name) {
-                service.add_secrets_to(service_config, app_name);
-            }
+        if let Some(services) = &self.services
+            && let Some(service) = services.get(&service_config.service_name)
+        {
+            service.add_secrets_to(service_config, app_name);
         }
     }
 
@@ -681,16 +684,22 @@ mod tests {
         assert_eq!(&config.runtime, &Runtime::Docker);
     }
 
-    #[test]
-    fn should_convert_cli_to_config_via_figment() {
-        let args = CliArgs::parse_from(["", "--runtime-type", "Kubernetes"]);
+    #[rstest::rstest]
+    #[case("Kubernetes", Runtime::Kubernetes(Default::default()))]
+    #[case("Podman", Runtime::Podman)]
+    #[case("Docker", Runtime::Docker)]
+    fn should_convert_cli_to_config_via_figment(
+        #[case] cli_flag: &str,
+        #[case] expected_runtime: Runtime,
+    ) {
+        let args = CliArgs::parse_from(["", "--runtime-type", cli_flag]);
 
         let config = figment::Figment::new()
             .merge(args)
             .extract::<Config>()
             .unwrap();
 
-        assert_eq!(&config.runtime, &Runtime::Kubernetes(Default::default()));
+        assert_eq!(&config.runtime, &expected_runtime);
     }
 
     #[test]

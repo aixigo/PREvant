@@ -253,11 +253,25 @@ impl Kubernetes {
     ) -> Result<NamespaceCreationResponse, KubernetesInfrastructureError> {
         let namespace = app_name.to_rfc1123_namespace_id();
 
+        let static_namespace_annotations = match &self.config.runtime {
+            Runtime::Kubernetes(kubernetes_runtime_config) => {
+                kubernetes_runtime_config.annotations.namespace.clone()
+            }
+            other => {
+                unreachable!("This code path should not be reachable with {other:?} config")
+            }
+        };
+
         let api = Api::all(self.client().await?);
         match api
             .create(
                 &PostParams::default(),
-                &namespace_payload(app_name, &self.config, user_defined_parameters, owners),
+                &namespace_payload(
+                    app_name,
+                    static_namespace_annotations.clone(),
+                    user_defined_parameters,
+                    owners,
+                ),
             )
             .await
         {
@@ -268,8 +282,11 @@ impl Kubernetes {
             Err(KubeError::Api(status)) if status.code == 409 => {
                 debug!("Namespace {app_name} already exists.");
 
-                let annotations =
-                    namespace_annotations(&self.config, user_defined_parameters, owners);
+                let annotations = namespace_annotations(
+                    static_namespace_annotations,
+                    user_defined_parameters,
+                    owners,
+                );
                 if annotations.is_some() {
                     debug!("Patching namespace {app_name} with user defined parameters.");
                     Ok(NamespaceCreationResponse::Updated(
