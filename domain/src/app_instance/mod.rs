@@ -3,10 +3,7 @@
 //! deployment of an application.
 
 use crate::AppName;
-pub use app::{
-    App, AppWithHostMeta, BackedUpApp, BackedUpAppError, Service, ServiceStatus,
-    ServiceWithHostMeta,
-};
+pub use app::{App, AppWithHostMeta, BackedUpApp, Service, ServiceStatus, ServiceWithHostMeta};
 use either::Either;
 pub use status::{AppStatus, ContainerType, ContainerTypeParseError};
 use std::collections::HashMap;
@@ -18,20 +15,20 @@ mod web_host_meta;
 
 #[async_trait::async_trait]
 pub trait RuntimeInfrastructure {
-    type BackedUpElement: Clone;
+    type BackupPayload: Clone;
     type Error;
 
     /// Returns a `map` of `app-name` and the details of [the deployed applications](`App`) (or
     /// [backed up application](`BackedUpApp`)).
     async fn fetch_apps(
         &self,
-    ) -> Result<HashMap<AppName, Either<App, BackedUpApp<Self::BackedUpElement>>>, Self::Error>;
+    ) -> Result<HashMap<AppName, Either<App, BackedUpApp<Self::BackupPayload>>>, Self::Error>;
 
     /// Fetches the [`App`] (or [`BackedUpApp`]) for a particular [`AppName`].
     async fn fetch_app(
         &self,
         app_name: AppName,
-    ) -> Result<Option<Either<App, BackedUpApp<Self::BackedUpElement>>>, Self::Error>;
+    ) -> Result<Option<Either<App, BackedUpApp<Self::BackupPayload>>>, Self::Error>;
 }
 
 #[async_trait::async_trait]
@@ -40,20 +37,19 @@ where
     F: Fn() -> Result<HashMap<AppName, Either<App, BackedUpApp<B>>>, E> + Send + Sync,
     B: Clone,
 {
-    type BackedUpElement = B;
+    type BackupPayload = B;
     type Error = E;
 
     async fn fetch_apps(
         &self,
-    ) -> Result<HashMap<AppName, Either<App, BackedUpApp<Self::BackedUpElement>>>, Self::Error>
-    {
+    ) -> Result<HashMap<AppName, Either<App, BackedUpApp<Self::BackupPayload>>>, Self::Error> {
         (self)()
     }
 
     async fn fetch_app(
         &self,
         app_name: AppName,
-    ) -> Result<Option<Either<App, BackedUpApp<Self::BackedUpElement>>>, Self::Error> {
+    ) -> Result<Option<Either<App, BackedUpApp<Self::BackupPayload>>>, Self::Error> {
         Ok(self.fetch_apps().await?.remove(&app_name))
     }
 }

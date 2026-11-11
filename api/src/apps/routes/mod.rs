@@ -24,6 +24,7 @@
  * =========================LICENSE_END==================================
  */
 
+use crate::apps::runtime::RuntimeInfrastructureAdapter;
 use crate::apps::{
     AppTaskQueueProducer, Apps, AppsError, HostMetaCache, hooks::Hooks,
     repository::AppPostgresRepository,
@@ -34,6 +35,7 @@ use crate::http_result::{HttpApiError, HttpResult};
 use crate::models::{AppStatusChangeId, AppStatusChangeIdError, RequestInfo};
 use create_app_payload::CreateAppPayload;
 use domain::app_blueprints::DesiredServiceStatus;
+use domain::app_instance::RuntimeInfrastructure;
 use domain::{
     AppName, Owner,
     app_instance::{App, AppStatus, AppWithHostMeta, Service, ServiceStatus, ServiceWithHostMeta},
@@ -382,7 +384,7 @@ pub struct AppStatesInput {
 #[rocket::put("/<app_name>/states", format = "application/json", data = "<payload>")]
 pub async fn change_app_status(
     app_name: Result<AppNameFromParam, HttpApiProblem>,
-    apps: &State<Apps>,
+    runtime_infrastructure: &State<RuntimeInfrastructureAdapter>,
     app_queue: &State<AppTaskQueueProducer>,
     app_repository: &State<Option<AppPostgresRepository>>,
     user: Result<UserValidatedByAccessMode, HttpApiProblem>,
@@ -426,31 +428,31 @@ pub async fn change_app_status(
                 })?
         }
         AppStatus::BackedUp => {
-            if let Some(backup) = app_repository
-                .fetch_backed_up_app(&app_name)
+            let Some(app) = runtime_infrastructure
+                .fetch_app(app_name.clone())
                 .await
                 .map_err(|e| {
                     HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
                         .detail(e.to_string())
                 })?
-            {
-                return Ok(AsyncCompletion::Ready(Json(AppV2::BackedUp(backup))));
-            }
-
-            let Some(infrastructure_payload) = apps
-                .fetch_app_as_backup_based_infrastructure_payload(&app_name)
-                .await?
             else {
                 return Err(AppsError::AppNotFound { app_name }.into());
             };
 
-            app_queue
-                .enqueue_backup_task(app_name.clone(), infrastructure_payload)
-                .await
-                .map_err(|e| {
-                    HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                        .detail(e.to_string())
-                })?
+            match app {
+                either::Either::Left(app) => (*app_queue)
+                    .enqueue_backup_task_new(app_name.clone(), app)
+                    .await
+                    .map_err(|e| {
+                        HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                            .detail(e.to_string())
+                    })?,
+                either::Either::Right(backed_up_app) => {
+                    return Ok(AsyncCompletion::Ready(Json(AppV2::BackedUp(
+                        backed_up_app.into_app(),
+                    ))));
+                }
+            }
         }
     };
 

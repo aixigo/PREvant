@@ -1,5 +1,6 @@
 use crate::{
     apps::{AppTask, AppsError},
+    infrastructure::BackupPayloadProxy,
     models::AppStatusChangeId,
 };
 use chrono::{DateTime, Utc};
@@ -7,6 +8,7 @@ use domain::{
     AppName, Owner,
     app_blueprints::{ServiceConfig, UserDefinedParameters},
     app_instance::{App, ContainerType, Service, ServiceStatus},
+    app_life_cycle::BackupRepository,
 };
 use rocket::{
     Build, Orbit, Rocket,
@@ -600,6 +602,28 @@ impl From<RawService> for Service {
             blueprint_config: value.config,
             service_type: value.service_type.unwrap_or_default(),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl BackupRepository for AppPostgresRepository {
+    type BackupPayload = BackupPayloadProxy;
+    type Error = sqlx::Error;
+
+    async fn store_elements_for_backup<ID>(
+        &self,
+        app_name: &AppName,
+        backed_up_payload: Self::BackupPayload,
+    ) -> Result<ID, Self::Error> {
+        todo!()
+    }
+
+    async fn delete_restored_elements(
+        &self,
+        app_name: &AppName,
+        backed_up_payload: Self::BackupPayload,
+    ) -> Result<(), Self::Error> {
+        todo!()
     }
 }
 

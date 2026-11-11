@@ -90,12 +90,12 @@ use domain::app_life_cycle::{BackupRepository, LifecycleInfrastructure};
 # let runtime = tokio::runtime::Runtime::new().unwrap();
 # runtime.block_on(async {
 
-type BackedUpElement = // …
+type BackupPayload = // …
 # ();
 
 // Create an instance of `RuntimeInfrastructure` to fetch applications from the
 // infrastructure (here it is mock).
-let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackedUpElement = BackedUpElement, Error = Infallible>> = Box::new(|| {
+let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackupPayload = BackupPayload, Error = Infallible>> = Box::new(|| {
    // simulate the fetching services, … from the infra
 #  Ok(HashMap::from([(AppName::master(), Either::Left(App::new(
 #     Vec::new(), Default::default(), None, None,
@@ -112,21 +112,21 @@ struct NoOpBackupRepository;
 #[async_trait::async_trait]
 impl BackupRepository for NoOpBackupRepository {
     // Implement the trait
-    type BackedUpElement = BackedUpElement;
+    type BackupPayload = BackupPayload;
     type Error = Infallible;
 #
 #    async fn store_elements_for_backup(
 #        &mut self,
 #        app_name: &AppName,
-#        backed_up_elements: Vec<Self::BackedUpElement>,
-#    ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
-#      Ok(backed_up_elements)
+#        backed_up_payload: Self::BackupPayload,
+#    ) -> Result<Self::BackupPayload, Self::Error> {
+#      Ok(backed_up_payload)
 #    }
 #
 #    async fn delete_restored_elements(
 #        &mut self,
 #        app_name: &AppName,
-#        restored_elements: Vec<Self::BackedUpElement>,
+#        backed_payload: Self::BackupPayload,
 #    ) -> Result<(), Self::Error> {
 #      Ok(())
 #    }
@@ -138,20 +138,20 @@ struct NoOpLifecycleInfrastructure;
 #[async_trait::async_trait]
 impl LifecycleInfrastructure for NoOpLifecycleInfrastructure {
     // Implement the trait
-    type BackedUpElement = BackedUpElement;
+    type BackupPayload = BackupPayload;
     type Error = Infallible;
 #
 #    async fn snapshot_for_backup(
 #        &self,
 #        app_name: &AppName,
-#    ) -> Result<Option<Vec<Self::BackedUpElement>>, Self::Error> {
-#       Ok(Some(vec![()]))
+#    ) -> Result<Option<Self::BackupPayload>, Self::Error> {
+#       Ok(Some(()))
 #    }
 #
 #    async fn suspend_backed_up_elements(
 #        &mut self,
 #        app_name: &AppName,
-#        backed_up_elements: &[Self::BackedUpElement],
+#        backed_up_elements: &Self::BackupPayload,
 #    ) -> Result<(), Self::Error> {
 #      Ok(())
 #    }
@@ -159,9 +159,9 @@ impl LifecycleInfrastructure for NoOpLifecycleInfrastructure {
 #    async fn restore_from_backup(
 #        &mut self,
 #        app_name: &AppName,
-#        backed_up_elements: Vec<Self::BackedUpElement>,
-#    ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
-#      Ok(backed_up_elements)
+#        backed_up_payload: Self::BackupPayload,
+#    ) -> Result<Self::BackupPayload, Self::Error> {
+#      Ok(backed_up_payload)
 #    }
 }
 
@@ -169,7 +169,7 @@ let mut lifecycle_infrastructure = NoOpLifecycleInfrastructure;
 let mut backup_repository = NoOpBackupRepository;
 
 // Perform the backup with the aid of infrastructure and repository.
-let backed_up_app: BackedUpApp<BackedUpElement> = app.backup(
+let backed_up_app: BackedUpApp<BackupPayload> = app.backup(
    &AppName::master(),
    &mut lifecycle_infrastructure,
    &mut backup_repository
@@ -193,7 +193,7 @@ use domain::app_life_cycle::{BackupRepository, LifecycleInfrastructure};
 # let runtime = tokio::runtime::Runtime::new().unwrap();
 # runtime.block_on(async {
 
-let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackedUpElement = (), Error = Infallible>> =
+let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackupPayload = (), Error = Infallible>> =
 # Box::new(|| {
 #   Ok(HashMap::from([(AppName::master(), Either::Left(App::new(
 #      Vec::new(), Default::default(), None, None,
@@ -227,11 +227,11 @@ use domain::app_life_cycle::{BackupRepository, LifecycleInfrastructure};
 
 // Create an instance of `RuntimeInfrastructure` to fetch applications from the
 // infrastructure (here it is mock).
-let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackedUpElement = (), Error = Infallible>> = Box::new(|| {
+let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackupPayload = (), Error = Infallible>> = Box::new(|| {
     // simulate the fetching services, … from the infra
-#   Ok(HashMap::from([(AppName::master(), Either::Right(BackedUpApp::with_app_and_elements(App::new(
+#   Ok(HashMap::from([(AppName::master(), Either::Right(BackedUpApp::with_app_and_payload(App::new(
 #      Vec::new(), Default::default(), None, None,
-#   ), vec![()]).unwrap()))]))
+#   ), ())))]))
 });
 
 let Some(Either::Right(backed_up_app)) = runtime_infrastructure.fetch_app(AppName::master()).await.unwrap() else {
@@ -244,21 +244,21 @@ struct NoOpBackupRepository;
 #[async_trait::async_trait]
 impl BackupRepository for NoOpBackupRepository {
     // Implement the trait
-#    type BackedUpElement = ();
+#    type BackupPayload = ();
 #    type Error = Infallible;
 #
 #    async fn store_elements_for_backup(
 #        &mut self,
 #        app_name: &AppName,
-#        backed_up_elements: Vec<Self::BackedUpElement>,
-#    ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
-#      Ok(backed_up_elements)
+#        backed_up_payload: Self::BackupPayload,
+#    ) -> Result<Self::BackupPayload, Self::Error> {
+#      Ok(backed_up_payload)
 #    }
 #
 #    async fn delete_restored_elements(
 #        &mut self,
 #        app_name: &AppName,
-#        restored_elements: Vec<Self::BackedUpElement>,
+#        restored_payload: Self::BackupPayload,
 #    ) -> Result<(), Self::Error> {
 #      Ok(())
 #    }
@@ -270,20 +270,20 @@ struct NoOpLifecycleInfrastructure;
 #[async_trait::async_trait]
 impl LifecycleInfrastructure for NoOpLifecycleInfrastructure {
     // Implement the trait
-#    type BackedUpElement = ();
+#    type BackupPayload = ();
 #    type Error = Infallible;
 #
 #    async fn snapshot_for_backup(
 #        &self,
 #        app_name: &AppName,
-#    ) -> Result<Option<Vec<Self::BackedUpElement>>, Self::Error> {
-#       Ok(Some(vec![()]))
+#    ) -> Result<Option<Self::BackupPayload>, Self::Error> {
+#       Ok(Some(()))
 #    }
 #
 #    async fn suspend_backed_up_elements(
 #        &mut self,
 #        app_name: &AppName,
-#        backed_up_elements: &[Self::BackedUpElement],
+#        backed_up_elements: &Self::BackupPayload,
 #    ) -> Result<(), Self::Error> {
 #      Ok(())
 #    }
@@ -291,9 +291,9 @@ impl LifecycleInfrastructure for NoOpLifecycleInfrastructure {
 #    async fn restore_from_backup(
 #        &mut self,
 #        app_name: &AppName,
-#        backed_up_elements: Vec<Self::BackedUpElement>,
-#    ) -> Result<Vec<Self::BackedUpElement>, Self::Error> {
-#      Ok(backed_up_elements)
+#        backed_up_payload: Self::BackupPayload,
+#    ) -> Result<Self::BackupPayload, Self::Error> {
+#      Ok(backed_up_payload)
 #    }
 }
 
@@ -325,7 +325,7 @@ use domain::app_life_cycle::{BackupRepository, LifecycleInfrastructure};
 # let runtime = tokio::runtime::Runtime::new().unwrap();
 # runtime.block_on(async {
 
-let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackedUpElement = (), Error = Infallible>> =
+let runtime_infrastructure: Box<dyn RuntimeInfrastructure<BackupPayload = (), Error = Infallible>> =
 # Box::new(|| {
 #   Ok(HashMap::from([(AppName::master(), Either::Left(App::new(
 #      Vec::new(), Default::default(), None, None,

@@ -1,11 +1,13 @@
+use crate::apps::runtime::RuntimeInfrastructureAdapter;
 use crate::apps::{
     AppTask, Apps, AppsError, CreateOrUpdateParams, MergedAppTask, queue::inmemory::InMemoryQueue,
     repository::AppPostgresRepository,
 };
-use crate::infrastructure::{Infrastructure, InfrastructureProxy};
+use crate::infrastructure::{BackupPayloadProxy, Infrastructure, InfrastructureProxy};
 use crate::models::AppStatusChangeId;
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
+use domain::app_life_cycle::{BackupRepository, LifecycleInfrastructure};
 use domain::{
     AppName, Owner,
     app_blueprints::{ServiceConfig, UserDefinedParameters},
@@ -53,9 +55,12 @@ impl Fairing for AppProcessingQueue {
             _ => AppTaskQueueDB::inmemory(),
         };
 
+        let runtime_infrastructure = rocket.state::<InfrastructureProxy>().unwrap();
+
         let producer = AppTaskQueueProducer {
             db: Arc::new(db),
             notify: Arc::new(Notify::new()),
+            infrastructure_proxy: runtime_infrastructure.clone(),
         };
 
         Ok(rocket.manage(producer))
@@ -74,7 +79,7 @@ impl Fairing for AppProcessingQueue {
         rocket::tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    res = consumer.process_next_task(&apps) => {
+                    res = consumer.process_next_task(&apps, todo!()) => {
                         if let Err(err) = res {
                             log::error!("Cannot process task: {err}");
                         }
@@ -102,6 +107,7 @@ impl Fairing for AppProcessingQueue {
 #[derive(Clone)]
 pub struct AppTaskQueueProducer {
     db: Arc<AppTaskQueueDB>,
+    infrastructure_proxy: InfrastructureProxy,
     notify: Arc<Notify>,
 }
 impl AppTaskQueueProducer {
@@ -111,6 +117,7 @@ impl AppTaskQueueProducer {
         Self {
             db: Arc::new(AppTaskQueueDB::inmemory()),
             notify: Arc::new(Notify::new()),
+            infrastructure_proxy: crate::infrastructure::Dummy::new().into(),
         }
     }
 
@@ -155,6 +162,24 @@ impl AppTaskQueueProducer {
             log::debug!("Notify about new delete task: {status_id}.");
         }
         self.notify.notify_one();
+
+        Ok(status_id)
+    }
+
+    pub async fn enqueue_backup_task_new(
+        &self,
+        app_name: AppName,
+        app: App,
+    ) -> Result<AppStatusChangeId> {
+        let AppTaskQueueDB::DB(repository) = self.db.as_ref() else {
+            todo!()
+        };
+
+        let Some(app_snapshot) = app.snapshot(app_name, &self.infrastructure_proxy).await? else {
+            todo!()
+        };
+
+        let status_id = app_snapshot.store(repository).await?;
 
         Ok(status_id)
     }
@@ -243,7 +268,11 @@ struct AppTaskQueueConsumer {
 }
 
 impl AppTaskQueueConsumer {
-    pub async fn process_next_task(&self, apps: &Apps) -> Result<()> {
+    pub async fn process_next_task(
+        &self,
+        apps: &Apps,
+        runtime_infrastructure: &RuntimeInfrastructureAdapter,
+    ) -> Result<()> {
         tokio::select! {
             _ = self.notify.notified() => {
                 log::debug!("Got notified by another thread to check for new items in the queue.");

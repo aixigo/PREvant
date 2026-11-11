@@ -23,6 +23,7 @@ clap = { version = "4.6", features = ["derive", "cargo", "help", "usage", "error
 cron = "0.17"
 domain = { path = "../domain" }
 dyn-clone = "1.0"
+either = { workspace = true }
 env_logger = { workspace = true }
 exponential-backoff = "2.1"
 evmap = "10.0"

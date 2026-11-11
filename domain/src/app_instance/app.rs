@@ -71,29 +71,17 @@ impl App {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BackedUpApp<InfrastructureElement> {
+pub struct BackedUpApp<Payload> {
     pub services: Vec<Service>,
     pub owners: HashSet<Owner>,
     pub user_defined_parameters: Option<UserDefinedParameters>,
     pub created_at: Option<DateTime<Utc>>,
-    pub opaque_elements: Vec<InfrastructureElement>,
+    pub backed_up_payload: Payload,
     phantom_data: PhantomData<()>,
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum BackedUpAppError {
-    #[error("There must be at least one backup element")]
-    NoElements,
-}
-
-impl<InfrastructureElement> BackedUpApp<InfrastructureElement> {
-    pub fn with_app_and_elements(
-        app: App,
-        opaque_elements: Vec<InfrastructureElement>,
-    ) -> Result<Self, BackedUpAppError> {
-        if opaque_elements.is_empty() {
-            return Err(BackedUpAppError::NoElements);
-        }
+impl<Payload> BackedUpApp<Payload> {
+    pub fn with_app_and_payload(app: App, backed_up_payload: Payload) -> Self {
         let App {
             services,
             owners,
@@ -102,23 +90,42 @@ impl<InfrastructureElement> BackedUpApp<InfrastructureElement> {
             phantom_data,
         } = app;
 
-        Ok(Self {
+        Self {
             services,
             owners,
             user_defined_parameters,
             created_at,
-            opaque_elements,
+            backed_up_payload,
             phantom_data,
-        })
+        }
     }
 
-    pub(crate) fn into_app_and_elements(self) -> (App, Vec<InfrastructureElement>) {
+    pub fn into_app(self) -> App {
         let Self {
             services,
             owners,
             user_defined_parameters,
             created_at,
-            opaque_elements,
+            backed_up_payload: _,
+            phantom_data,
+        } = self;
+
+        App {
+            services,
+            owners,
+            user_defined_parameters,
+            created_at,
+            phantom_data,
+        }
+    }
+
+    pub(crate) fn into_app_and_payload(self) -> (App, Payload) {
+        let Self {
+            services,
+            owners,
+            user_defined_parameters,
+            created_at,
+            backed_up_payload,
             phantom_data,
         } = self;
 
@@ -130,7 +137,7 @@ impl<InfrastructureElement> BackedUpApp<InfrastructureElement> {
                 created_at,
                 phantom_data,
             },
-            opaque_elements,
+            backed_up_payload,
         )
     }
 }
