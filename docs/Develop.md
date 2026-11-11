@@ -45,7 +45,11 @@ For developing against a local Kubernetes cluster you can use [k3d].
 
 # <a name="fe-dev"></a>Frontend Development
 
-PREvant’s frontend is located in the `/frontend` directory and uses [`npm`](https://www.npmjs.com/) for development and builds. You can either [build the static HTML files](#frontend-static-html-build) or [run the development server](#frontend-development-server). There is also a section on how to [run the frontend tests](#frontend-tests).
+PREvant’s frontend is located in the `/frontend` directory and uses
+[`pnpm`](https://pnpm.io/) for development and builds. You can either [build
+the static HTML files](#frontend-static-html-build) or [run the development
+server](#frontend-development-server). There is also a section on how to [run
+the frontend tests](#frontend-tests).
 
 ## <a name="fe-static-html"></a>Frontend Static HTML Build
 
@@ -57,11 +61,11 @@ To build the static HTML files that can be served by PREvant's backend:
    ```
 2. Install dependencies:
    ```bash
-   npm ci
+   pnpm ci
    ```
 3. Build the frontend:
    ```bash
-   npm run build
+   pnpm run build
    ```
 
 Afterwards, start the backend (see [Backend Development](#backend-development)). PREvant will then be accessible at:
@@ -87,8 +91,8 @@ To run the frontend in development mode:
 3. Install dependencies and start the dev server:
 
    ```bash
-   npm ci
-   npm run serve
+   pnpm ci
+   pnpm run serve
    ```
 
 4. Open the following URL in your browser:
@@ -114,7 +118,7 @@ We use [Vitest](https://vitest.dev/) for unit testing the frontend. Unit tests e
 To run all unit tests in the project:
 
 ```bash
-npm run test:unit
+pnpm run test:unit
 ```
 
 This command outputs results in the terminal and also generates a coverage report at:
@@ -126,7 +130,7 @@ reports/frontend/coverage/index.html
 Alternatively, you can run the tests in debug mode (with a UI):
 
 ```bash
-npm run test:unit:ui
+pnpm run test:unit:ui
 ```
 
 This will open a browser-based UI where you can:
@@ -150,13 +154,13 @@ This only needs to be done once (or whenever Playwright updates its browser requ
 To run the Playwright tests:
 
 ```bash
-npm run test:e2e
+pnpm run test:e2e
 ```
 
 Alternatively, you can run the tests in debug mode (with a UI):
 
 ```bash
-npm run test:e2e:ui
+pnpm run test:e2e:ui
 ```
 
 Some tests rely on fixture files (e.g., AsyncAPI YAMLs) that are only served during development:
