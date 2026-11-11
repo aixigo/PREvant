@@ -13,13 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js via PNPM
+        uses: pnpm/setup@v1
         with:
-          node-version: 22
+          runtime: node@22
+          version: 12
 
       - name: Install dependencies
         working-directory: frontend
-        run: npm ci
+        run: pnpm ci
 
       - name: Install Playwright Browsers
         working-directory: frontend
@@ -27,7 +29,7 @@ jobs:
 
       - name: Run Playwright tests
         working-directory: frontend
-        run: npm run test:e2e
+        run: pnpm run test:e2e
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}

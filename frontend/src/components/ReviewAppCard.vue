@@ -91,9 +91,9 @@
             <div v-for="container in reviewApp.containers"
                  :key="container.name"
                  class="ra-container"
-                 :class="{ 
+                 :class="{
                   'ra-container__paused': !isRunning( container ),
-                  'ra-container__expandable': isExpandable( container ) 
+                  'ra-container__expandable': isExpandable( container )
                  }">
 
                <div class="ra-container__type"
@@ -148,8 +148,7 @@
                      </div>
 
                      <div v-if="container.version && container.version.dateModified" class="ra-build-infos">
-                        <span>{{ formatBuildDate( container.version.dateModified ) }}</span>,
-                        <span>{{ formatBuildTime( container.version.dateModified ) }}</span>
+                        <span>{{ formatBuildDateTime( container.version.dateModified ) }}</span>
                      </div>
                   </div>
                </div>
@@ -290,7 +289,6 @@
 
 <script>
    import { ref } from 'vue';
-   import moment from 'moment';
    import {
       MDBBadge,
       MDBCard,
@@ -452,29 +450,14 @@
             this.$emit('changeState', this.reviewApp.name, service);
          },
 
-         formatBuildDate(buildDateTime) {
+         formatBuildDateTime(buildDateTime) {
             if (buildDateTime == null) {
                return 'N/A';
             }
 
-            const date = moment(buildDateTime);
-            if (date.isValid()) {
-               return date.toDate().toLocaleDateString()
-            }
-            return buildDateTime;
+            const date = new Date(buildDateTime);
+            return date.toLocaleString();
          },
-         formatBuildTime(buildDateTime) {
-            if (buildDateTime == null) {
-               return 'N/A';
-            }
-
-            const date = moment(buildDateTime);
-            if (date.isValid()) {
-               return date.toDate().toLocaleTimeString()
-            }
-            return buildDateTime;
-         },
-
          formatVersion(version) {
             if (version.softwareVersion != null) {
                if (version.gitCommit != null) {

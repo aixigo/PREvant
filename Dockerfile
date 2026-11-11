@@ -1,10 +1,12 @@
 # Build Frontend
 FROM node:22-alpine AS frontend-builder
+COPY --from=ghcr.io/pnpm/pnpm:12-alpine /opt/pnpm /opt/pnpm
+RUN for bin in pnpm pn pnpx pnx; do ln -s "/opt/pnpm/$bin" "/usr/local/bin/$bin"; done
 WORKDIR /usr/src/frontend/
-COPY frontend/package.json frontend/index.html frontend/package-lock.json frontend/*.config.mjs /usr/src/frontend/
+COPY frontend/package.json frontend/index.html frontend/pnpm*.yaml frontend/*.config.mjs /usr/src/frontend/
 COPY frontend/public /usr/src/frontend/public/
 COPY frontend/src /usr/src/frontend/src/
-RUN npm ci && npm run build
+RUN pnpm ci && pnpm run build
 
 
 # Build Backend
