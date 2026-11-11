@@ -4,21 +4,25 @@
 
 # PREvant In a Nutshell
 
-PREvant is a web-based software tool that acts as a testing and review platform,
-simplifying the deployment and management of microservices for development
-teams. Operating as a Docker container, it connects continuous integration
-pipelines with container orchestration platforms, allowing developers to ensure that
-features align with domain expert requirements. PREvant's RESTful API helps to
-integrate microservices from different branches (in multi-repo development
-setups) into reviewable applications, creating preview environments for testing
-new features before they are finalized. This reduces the complexity and speeds
-up the development process, aligning with agile methodologies.
+PREvant is a web-based software tool that acts as a testing and review
+platform, simplifying the deployment and management of microservices for
+development teams. Operated as a service via [Docker
+compose](./examples/Docker/README.md) or
+[Kubernetes](./examples/Kubernetes/README.md), it connects continuous
+integration pipelines with container orchestration platforms it is running in,
+allowing developers to ensure that features align with domain expert
+requirements.
+
+PREvant's HTTP API helps to test development versions of microservices of
+different branches in multi-repo development setups into reviewable
+applications, testing new features before they are released. This reduces the
+complexity and speeds up the development process, aligning with agile
+methodologies.
 
 The name PREvant short for _Preview servant_, pronounced like "prevent"
-(`prɪˈvɛnt`), reflects its role in preventing development errors by enabling
+(`prɪˈvɛnt`) and reflects its role in preventing development errors by enabling
 early reviews through its web interface, where stakeholders can assess and give
-feedback on application developments efficiently.
-
+feedback on application development efforts.
 
 ![In a nutshell](assets/in-a-nutshell.svg "In a nutshell")
 

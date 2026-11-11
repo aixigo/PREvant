@@ -29,6 +29,22 @@ See [authentication.md](authentication.md) how to configure authentication (high
 
 ## Runtime Configuration
 
+PREvant can be operated in [Docker compose](../examples/Docker/README.md) or
+[Kubernetes](../examples/Kubernetes/README.md) as there are options to
+configure the way how PREvant interacts with these runtimes (see sub sections
+below).
+
+### Docker
+
+There is also support for Podman as technical alternative to Docker. If there
+is no Docker daemon available, Podman can be enabled by setting the
+`--runtime-type` CLI flag or by configuring it via config file.
+
+```toml
+[runtime]
+type = 'Podman'
+```
+
 ### Kubernetes
 
 ```toml
