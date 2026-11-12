@@ -8,6 +8,7 @@ path = "src/lib.rs"
 [dependencies]
 async-trait = { workspace = true }
 chrono = { workspace = true }
+either = { workspace = true }
 handlebars = { workspace = true }
 jsonschema = { workspace = true }
 oci-client = { workspace = true }
@@ -22,10 +23,12 @@ serde_derive = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
 assert-json-diff = { workspace = true }
+mockall = { version = "0.15" }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
 sha2 = { workspace = true }

@@ -6,6 +6,7 @@ mod host_meta_cache;
 mod queue;
 mod repository;
 mod routes;
+mod runtime;
 
 use crate::config::{Config, ConfigError, ReplicateApplicationCondition};
 use crate::infrastructure::{HttpForwarder, Infrastructure, InfrastructureProxy};
@@ -125,6 +126,7 @@ impl Apps {
 
     /// Analyzes running containers and returns a map of `app-name` with the
     /// corresponding list of `Service`s.
+    #[deprecated]
     pub async fn fetch_apps(&self) -> Result<HashMap<AppName, App>, AppsError> {
         Ok(self.infrastructure.fetch_apps().await?)
     }

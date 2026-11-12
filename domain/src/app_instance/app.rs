@@ -71,6 +71,78 @@ impl App {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackedUpApp<Payload> {
+    pub services: Vec<Service>,
+    pub owners: HashSet<Owner>,
+    pub user_defined_parameters: Option<UserDefinedParameters>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub backed_up_payload: Payload,
+    phantom_data: PhantomData<()>,
+}
+
+impl<Payload> BackedUpApp<Payload> {
+    pub fn with_app_and_payload(app: App, backed_up_payload: Payload) -> Self {
+        let App {
+            services,
+            owners,
+            user_defined_parameters,
+            created_at,
+            phantom_data,
+        } = app;
+
+        Self {
+            services,
+            owners,
+            user_defined_parameters,
+            created_at,
+            backed_up_payload,
+            phantom_data,
+        }
+    }
+
+    pub fn into_app(self) -> App {
+        let Self {
+            services,
+            owners,
+            user_defined_parameters,
+            created_at,
+            backed_up_payload: _,
+            phantom_data,
+        } = self;
+
+        App {
+            services,
+            owners,
+            user_defined_parameters,
+            created_at,
+            phantom_data,
+        }
+    }
+
+    pub(crate) fn into_app_and_payload(self) -> (App, Payload) {
+        let Self {
+            services,
+            owners,
+            user_defined_parameters,
+            created_at,
+            backed_up_payload,
+            phantom_data,
+        } = self;
+
+        (
+            App {
+                services,
+                owners,
+                user_defined_parameters,
+                created_at,
+                phantom_data,
+            },
+            backed_up_payload,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Service {
     /// An unique identifier of the service, e.g. the Docker container id
     pub id: String,

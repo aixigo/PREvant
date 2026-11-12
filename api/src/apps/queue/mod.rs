@@ -30,11 +30,15 @@ const TASK_PROCESSING_TIMEOUT: std::time::Duration = std::time::Duration::from_m
 #[cfg(test)]
 pub const TASK_PROCESSING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-pub struct AppProcessingQueue {}
+pub struct AppProcessingQueue {
+    infrastructure_proxy: InfrastructureProxy,
+}
 
 impl AppProcessingQueue {
-    pub fn fairing() -> Self {
-        Self {}
+    pub fn fairing(infrastructure_proxy: InfrastructureProxy) -> Self {
+        Self {
+            infrastructure_proxy,
+        }
     }
 }
 
@@ -56,6 +60,7 @@ impl Fairing for AppProcessingQueue {
         let producer = AppTaskQueueProducer {
             db: Arc::new(db),
             notify: Arc::new(Notify::new()),
+            infrastructure_proxy: self.infrastructure_proxy.clone(),
         };
 
         Ok(rocket.manage(producer))
@@ -102,6 +107,7 @@ impl Fairing for AppProcessingQueue {
 #[derive(Clone)]
 pub struct AppTaskQueueProducer {
     db: Arc<AppTaskQueueDB>,
+    infrastructure_proxy: InfrastructureProxy,
     notify: Arc<Notify>,
 }
 impl AppTaskQueueProducer {
@@ -111,6 +117,7 @@ impl AppTaskQueueProducer {
         Self {
             db: Arc::new(AppTaskQueueDB::inmemory()),
             notify: Arc::new(Notify::new()),
+            infrastructure_proxy: crate::infrastructure::Dummy::new().into(),
         }
     }
 
@@ -157,6 +164,24 @@ impl AppTaskQueueProducer {
         self.notify.notify_one();
 
         Ok(status_id)
+    }
+
+    pub async fn enqueue_backup_task_new(
+        &self,
+        app_name: AppName,
+        app: App,
+    ) -> Result<AppStatusChangeId> {
+        let AppTaskQueueDB::DB(repository) = self.db.as_ref() else {
+            todo!()
+        };
+
+        let Some(app_snapshot) = app.snapshot(app_name, &self.infrastructure_proxy).await? else {
+            todo!()
+        };
+
+        let status_id = app_snapshot.store(repository).await?;
+
+        Ok(AppStatusChangeId::from(status_id))
     }
 
     pub async fn enqueue_backup_task(

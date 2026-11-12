@@ -74,6 +74,12 @@ impl std::str::FromStr for AppStatusChangeId {
     }
 }
 
+impl From<uuid::Uuid> for AppStatusChangeId {
+    fn from(value: uuid::Uuid) -> Self {
+        Self(value)
+    }
+}
+
 impl<'r> FromParam<'r> for AppStatusChangeId {
     type Error = AppStatusChangeIdError;
 
