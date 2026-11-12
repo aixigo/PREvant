@@ -1,10 +1,11 @@
 use crate::{
-    apps::{app_task, repository::AppPostgresRepository},
+    apps::repository::AppPostgresRepository,
     infrastructure::{Infrastructure, InfrastructureProxy},
 };
 use domain::{
     AppName,
     app_instance::{App, BackedUpApp, RuntimeInfrastructure},
+    app_life_cycle::BackupRepository,
 };
 use either::Either;
 use std::collections::HashMap;
@@ -27,7 +28,15 @@ impl RuntimeInfrastructureAdapter {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum RuntimeInfrastructureAdapterError {}
+pub enum RuntimeInfrastructureAdapterError {
+    #[error("{0}")]
+    Infrastructure(
+        // TODO: should be replaced
+        anyhow::Error,
+    ),
+    #[error("{0}")]
+    BackupRepository(<AppPostgresRepository as BackupRepository>::Error),
+}
 
 #[async_trait::async_trait]
 impl RuntimeInfrastructure for RuntimeInfrastructureAdapter {
@@ -49,7 +58,7 @@ impl RuntimeInfrastructure for RuntimeInfrastructureAdapter {
                     Some(repository) => repository
                         .fetch_backed_up_apps()
                         .await
-                        .map_err(|e| todo!("{e}")),
+                        .map_err(RuntimeInfrastructureAdapterError::BackupRepository),
                     None => Ok(HashMap::new()),
                 }
             }
@@ -78,6 +87,28 @@ impl RuntimeInfrastructure for RuntimeInfrastructureAdapter {
         &self,
         app_name: AppName,
     ) -> Result<Option<Either<App, BackedUpApp<Self::BackupPayload>>>, Self::Error> {
-        todo!()
+        let (app, backed_up_app) = futures::try_join!(
+            async {
+                self.infrastructure
+                    .fetch_app(&app_name)
+                    .await
+                    .map_err(RuntimeInfrastructureAdapterError::Infrastructure)
+            },
+            async {
+                match &self.repository {
+                    Some(repository) => repository
+                        .load_backed_up_app(&app_name)
+                        .await
+                        .map_err(|e| RuntimeInfrastructureAdapterError::BackupRepository(dbg!(e))),
+                    None => Ok(None),
+                }
+            }
+        )?;
+
+        match (app, backed_up_app) {
+            (None, None) => Ok(None),
+            (_, Some(backed_up_app)) => Ok(Some(Either::Right(backed_up_app))),
+            (Some(app), None) => Ok(Some(Either::Left(app))),
+        }
     }
 }

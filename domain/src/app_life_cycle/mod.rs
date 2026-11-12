@@ -35,11 +35,16 @@ pub trait BackupRepository {
     type BackupPayload;
     type Error;
 
-    async fn store_elements_for_backup<ID>(
+    async fn load_backed_up_app(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<BackedUpApp<Self::BackupPayload>>, Self::Error>;
+
+    async fn store_elements_for_backup(
         &self,
         app_name: &AppName,
         backed_up_payload: Self::BackupPayload,
-    ) -> Result<ID, Self::Error>;
+    ) -> Result<uuid::Uuid, Self::Error>;
 
     async fn delete_restored_elements(
         &self,
@@ -56,7 +61,7 @@ pub struct AppBackupSnapshot<BackupPayload> {
 }
 
 impl<P> AppBackupSnapshot<P> {
-    pub async fn store<ID, R>(self, repository: &R) -> Result<ID, R::Error>
+    pub async fn store<R>(self, repository: &R) -> Result<uuid::Uuid, R::Error>
     where
         R: BackupRepository<BackupPayload = P>,
     {

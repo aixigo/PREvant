@@ -59,7 +59,7 @@ impl Fairing for AppsFairing {
             RuntimeInfrastructureAdapter::new(infrastructure.clone(), repository);
 
         // TODO: apps should be eventually removed
-        let apps = match Apps::new(self.config.clone(), infrastructure) {
+        let apps = match Apps::new(self.config.clone(), infrastructure.clone()) {
             Ok(apps) => apps.with_base_route(prevant_base_route.cloned().flatten()),
             Err(_err) => {
                 // TODO: message
@@ -76,6 +76,7 @@ impl Fairing for AppsFairing {
 
         Ok(rocket
             .manage(runtime_infrastructure_adapter)
+            .manage(infrastructure)
             .manage(apps)
             .manage(host_meta_cache)
             .manage(app_updates))

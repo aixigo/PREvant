@@ -428,12 +428,15 @@ pub async fn change_app_status(
                 })?
         }
         AppStatus::BackedUp => {
+            log::trace!(
+                "Loocking up application details for {app_name} before moving application to backup."
+            );
             let Some(app) = runtime_infrastructure
                 .fetch_app(app_name.clone())
                 .await
                 .map_err(|e| {
                     HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                        .detail(e.to_string())
+                        .detail(dbg!(&e).to_string())
                 })?
             else {
                 return Err(AppsError::AppNotFound { app_name }.into());

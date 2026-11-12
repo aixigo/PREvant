@@ -981,7 +981,7 @@ impl K8sDeploymentUnit {
         let namespace = app_name.to_rfc1123_namespace_id();
 
         let api = Api::<Role>::namespaced(client, &namespace);
-        roles.extend(api.list(&Default::default()).await?.items);
+        roles.extend(dbg!(api.list(&Default::default()).await?.items));
 
         let api = Api::<RoleBinding>::namespaced(api.into_client(), &namespace);
         role_bindings.extend(api.list(&Default::default()).await?.items);
