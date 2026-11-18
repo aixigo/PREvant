@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::{fmt::Display, str::FromStr};
 use url::Url;
 
-#[derive(Clone, Copy, Deserialize, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Deserialize, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum TraefikVersion {
     #[serde(rename = "v1")]
     V1,
@@ -1819,6 +1819,12 @@ mod tests {
             let img = Image::from_str(&format!("traefik:{tag}")).unwrap();
             assert_eq!(TraefikVersion::try_from(img), Ok(TraefikVersion::V3));
         }
+    }
+
+    #[test]
+    fn ord() {
+        assert!(TraefikVersion::V1 < TraefikVersion::V2);
+        assert!(TraefikVersion::V2 < TraefikVersion::V3);
     }
 
     mod middleware {

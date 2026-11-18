@@ -1,5 +1,6 @@
-use super::traefik_crds::{IngressRoute, Middleware};
-use crate::infrastructure::{APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL};
+use crate::infrastructure::{
+    APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL, kubernetes::traefik_crds,
+};
 use domain::{AppName, app_instance::ContainerType};
 use k8s_openapi::{
     Resource as _,
@@ -17,8 +18,10 @@ use kube::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
+use traefik_crds::{TraefikIngressRoute, TraefikMiddleware};
 
 #[derive(Clone)]
+#[cfg_attr(test, derive(Debug))]
 pub enum K8sElement {
     Role(Role),
     RoleBinding(RoleBinding),
@@ -34,8 +37,8 @@ pub enum K8sElement {
     ServiceAccount(ServiceAccount),
     Ingress(Ingress),
     NetworkPolicy(NetworkPolicy),
-    TraefikIngressRoute(IngressRoute),
-    TraefikMiddleware(Middleware),
+    TraefikIngressRoute(TraefikIngressRoute),
+    TraefikMiddleware(TraefikMiddleware),
     Other((DynamicObject, ApiResource)),
 }
 
@@ -109,14 +112,34 @@ impl From<NetworkPolicy> for K8sElement {
         Self::NetworkPolicy(value)
     }
 }
-impl From<IngressRoute> for K8sElement {
-    fn from(value: IngressRoute) -> Self {
+impl From<TraefikMiddleware> for K8sElement {
+    fn from(value: TraefikMiddleware) -> Self {
+        Self::TraefikMiddleware(value)
+    }
+}
+impl From<TraefikIngressRoute> for K8sElement {
+    fn from(value: TraefikIngressRoute) -> Self {
         Self::TraefikIngressRoute(value)
     }
 }
-impl From<Middleware> for K8sElement {
-    fn from(value: Middleware) -> Self {
-        Self::TraefikMiddleware(value)
+impl From<traefik_crds::v2::IngressRoute> for K8sElement {
+    fn from(value: traefik_crds::v2::IngressRoute) -> Self {
+        Self::TraefikIngressRoute(TraefikIngressRoute::V2(value))
+    }
+}
+impl From<traefik_crds::v2::Middleware> for K8sElement {
+    fn from(value: traefik_crds::v2::Middleware) -> Self {
+        Self::TraefikMiddleware(TraefikMiddleware::V2(value))
+    }
+}
+impl From<traefik_crds::v3::IngressRoute> for K8sElement {
+    fn from(value: traefik_crds::v3::IngressRoute) -> Self {
+        Self::TraefikIngressRoute(TraefikIngressRoute::V3(value))
+    }
+}
+impl From<traefik_crds::v3::Middleware> for K8sElement {
+    fn from(value: traefik_crds::v3::Middleware) -> Self {
+        Self::TraefikMiddleware(TraefikMiddleware::V3(value))
     }
 }
 impl From<(DynamicObject, ApiResource)> for K8sElement {
@@ -152,16 +175,30 @@ impl K8sElement {
             | (NetworkPolicy::GROUP, NetworkPolicy::VERSION, NetworkPolicy::KIND) => true,
 
             (group, version, kind)
-                if group == IngressRoute::group(&())
-                    && version == IngressRoute::version(&())
-                    && kind == IngressRoute::kind(&()) =>
+                if group == traefik_crds::v2::IngressRoute::group(&())
+                    && version == traefik_crds::v2::IngressRoute::version(&())
+                    && kind == traefik_crds::v2::IngressRoute::kind(&()) =>
             {
                 true
             }
             (group, version, kind)
-                if group == Middleware::group(&())
-                    && version == Middleware::version(&())
-                    && kind == Middleware::kind(&()) =>
+                if group == traefik_crds::v3::IngressRoute::group(&())
+                    && version == traefik_crds::v3::IngressRoute::version(&())
+                    && kind == traefik_crds::v3::IngressRoute::kind(&()) =>
+            {
+                true
+            }
+            (group, version, kind)
+                if group == traefik_crds::v2::Middleware::group(&())
+                    && version == traefik_crds::v2::Middleware::version(&())
+                    && kind == traefik_crds::v2::Middleware::kind(&()) =>
+            {
+                true
+            }
+            (group, version, kind)
+                if group == traefik_crds::v3::Middleware::group(&())
+                    && version == traefik_crds::v3::Middleware::version(&())
+                    && kind == traefik_crds::v3::Middleware::kind(&()) =>
             {
                 true
             }
@@ -185,8 +222,8 @@ impl K8sElement {
             K8sElement::ServiceAccount(service_account) => &service_account.metadata,
             K8sElement::Ingress(ingress) => &ingress.metadata,
             K8sElement::NetworkPolicy(network_policy) => &network_policy.metadata,
-            K8sElement::TraefikIngressRoute(ingress_route) => &ingress_route.metadata,
-            K8sElement::TraefikMiddleware(middleware) => &middleware.metadata,
+            K8sElement::TraefikIngressRoute(ingress_route) => ingress_route.metadata(),
+            K8sElement::TraefikMiddleware(middleware) => middleware.metadata(),
             K8sElement::Other((dynamic_object, _)) => &dynamic_object.metadata,
         }
     }
@@ -207,8 +244,8 @@ impl K8sElement {
             K8sElement::ServiceAccount(service_account) => &mut service_account.metadata,
             K8sElement::Ingress(ingress) => &mut ingress.metadata,
             K8sElement::NetworkPolicy(network_policy) => &mut network_policy.metadata,
-            K8sElement::TraefikIngressRoute(ingress_route) => &mut ingress_route.metadata,
-            K8sElement::TraefikMiddleware(middleware) => &mut middleware.metadata,
+            K8sElement::TraefikIngressRoute(ingress_route) => ingress_route.metadata_mut(),
+            K8sElement::TraefikMiddleware(middleware) => middleware.metadata_mut(),
             K8sElement::Other((dynamic_object, _)) => &mut dynamic_object.metadata,
         };
 
@@ -339,24 +376,43 @@ impl<'de> Deserialize<'de> for K8sElement {
                     .map_err(serde::de::Error::custom)?,
             )),
             (api_version, kind)
-                if api_version == Middleware::api_version(&()) && kind == Middleware::kind(&()) =>
+                if api_version == traefik_crds::v2::Middleware::api_version(&())
+                    && kind == traefik_crds::v2::Middleware::kind(&()) =>
             {
-                Ok(Self::TraefikMiddleware(
-                    dy.try_parse::<Middleware>()
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v2::Middleware>()
                         .map_err(serde::de::Error::custom)?,
                 ))
             }
             (api_version, kind)
-                if api_version == IngressRoute::api_version(&())
-                    && kind == IngressRoute::kind(&()) =>
+                if api_version == traefik_crds::v3::Middleware::api_version(&())
+                    && kind == traefik_crds::v3::Middleware::kind(&()) =>
             {
-                Ok(Self::TraefikIngressRoute(
-                    dy.try_parse::<IngressRoute>()
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v3::Middleware>()
+                        .map_err(serde::de::Error::custom)?,
+                ))
+            }
+            (api_version, kind)
+                if api_version == traefik_crds::v2::IngressRoute::api_version(&())
+                    && kind == traefik_crds::v2::IngressRoute::kind(&()) =>
+            {
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v2::IngressRoute>()
+                        .map_err(serde::de::Error::custom)?,
+                ))
+            }
+            (api_version, kind)
+                if api_version == traefik_crds::v3::IngressRoute::api_version(&())
+                    && kind == traefik_crds::v3::IngressRoute::kind(&()) =>
+            {
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v3::IngressRoute>()
                         .map_err(serde::de::Error::custom)?,
                 ))
             }
             (api_version, kind) => Err(serde::de::Error::custom(format!(
-                "Unknown variant for Kubernetes API object: {api_version}/{kind}, supported are: {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, or {}/{}",
+                "Unknown variant for Kubernetes API object: {api_version}/{kind}, supported are: {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, or {}/{}",
                 Role::API_VERSION,
                 Role::KIND,
                 RoleBinding::API_VERSION,
@@ -385,10 +441,14 @@ impl<'de> Deserialize<'de> for K8sElement {
                 Ingress::KIND,
                 NetworkPolicy::API_VERSION,
                 NetworkPolicy::KIND,
-                IngressRoute::api_version(&()),
-                IngressRoute::kind(&()),
-                Middleware::api_version(&()),
-                Middleware::kind(&()),
+                traefik_crds::v2::IngressRoute::api_version(&()),
+                traefik_crds::v2::IngressRoute::kind(&()),
+                traefik_crds::v3::IngressRoute::api_version(&()),
+                traefik_crds::v3::IngressRoute::kind(&()),
+                traefik_crds::v2::Middleware::api_version(&()),
+                traefik_crds::v2::Middleware::kind(&()),
+                traefik_crds::v3::Middleware::api_version(&()),
+                traefik_crds::v3::Middleware::kind(&()),
             ))),
         }
     }
@@ -415,8 +475,29 @@ pub enum K8sBackupElement {
     CronJob(CronJob),
     ServiceAccount(ServiceAccount),
     NetworkPolicy(NetworkPolicy),
-    TraefikIngressRoute(IngressRoute),
-    TraefikMiddleware(Middleware),
+    TraefikIngressRoute(TraefikIngressRoute),
+    TraefikMiddleware(TraefikMiddleware),
+}
+
+impl From<traefik_crds::v2::IngressRoute> for K8sBackupElement {
+    fn from(value: traefik_crds::v2::IngressRoute) -> Self {
+        Self::TraefikIngressRoute(TraefikIngressRoute::V2(value))
+    }
+}
+impl From<traefik_crds::v2::Middleware> for K8sBackupElement {
+    fn from(value: traefik_crds::v2::Middleware) -> Self {
+        Self::TraefikMiddleware(TraefikMiddleware::V2(value))
+    }
+}
+impl From<traefik_crds::v3::IngressRoute> for K8sBackupElement {
+    fn from(value: traefik_crds::v3::IngressRoute) -> Self {
+        Self::TraefikIngressRoute(TraefikIngressRoute::V3(value))
+    }
+}
+impl From<traefik_crds::v3::Middleware> for K8sBackupElement {
+    fn from(value: traefik_crds::v3::Middleware) -> Self {
+        Self::TraefikMiddleware(TraefikMiddleware::V3(value))
+    }
 }
 
 impl Serialize for K8sBackupElement {
@@ -521,24 +602,43 @@ impl<'de> Deserialize<'de> for K8sBackupElement {
                     .map_err(serde::de::Error::custom)?,
             )),
             (api_version, kind)
-                if api_version == Middleware::api_version(&()) && kind == Middleware::kind(&()) =>
+                if api_version == traefik_crds::v2::Middleware::api_version(&())
+                    && kind == traefik_crds::v2::Middleware::kind(&()) =>
             {
-                Ok(Self::TraefikMiddleware(
-                    dy.try_parse::<Middleware>()
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v2::Middleware>()
                         .map_err(serde::de::Error::custom)?,
                 ))
             }
             (api_version, kind)
-                if api_version == IngressRoute::api_version(&())
-                    && kind == IngressRoute::kind(&()) =>
+                if api_version == traefik_crds::v3::Middleware::api_version(&())
+                    && kind == traefik_crds::v3::Middleware::kind(&()) =>
             {
-                Ok(Self::TraefikIngressRoute(
-                    dy.try_parse::<IngressRoute>()
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v3::Middleware>()
+                        .map_err(serde::de::Error::custom)?,
+                ))
+            }
+            (api_version, kind)
+                if api_version == traefik_crds::v2::IngressRoute::api_version(&())
+                    && kind == traefik_crds::v2::IngressRoute::kind(&()) =>
+            {
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v2::IngressRoute>()
+                        .map_err(serde::de::Error::custom)?,
+                ))
+            }
+            (api_version, kind)
+                if api_version == traefik_crds::v3::IngressRoute::api_version(&())
+                    && kind == traefik_crds::v3::IngressRoute::kind(&()) =>
+            {
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v3::IngressRoute>()
                         .map_err(serde::de::Error::custom)?,
                 ))
             }
             (api_version, kind) => Err(serde::de::Error::custom(format!(
-                "Unknown variant for back-up payload: {api_version}/{kind}, supported are: {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, or {}/{}",
+                "Unknown variant for back-up payload: {api_version}/{kind}, supported are: {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, or {}/{}",
                 Role::API_VERSION,
                 Role::KIND,
                 RoleBinding::API_VERSION,
@@ -557,10 +657,14 @@ impl<'de> Deserialize<'de> for K8sBackupElement {
                 ServiceAccount::KIND,
                 NetworkPolicy::API_VERSION,
                 NetworkPolicy::KIND,
-                IngressRoute::api_version(&()),
-                IngressRoute::kind(&()),
-                Middleware::api_version(&()),
-                Middleware::kind(&()),
+                traefik_crds::v2::IngressRoute::api_version(&()),
+                traefik_crds::v2::IngressRoute::kind(&()),
+                traefik_crds::v3::IngressRoute::api_version(&()),
+                traefik_crds::v3::IngressRoute::kind(&()),
+                traefik_crds::v2::Middleware::api_version(&()),
+                traefik_crds::v2::Middleware::kind(&()),
+                traefik_crds::v3::Middleware::api_version(&()),
+                traefik_crds::v3::Middleware::kind(&()),
             ))),
         }
     }
@@ -1191,6 +1295,114 @@ mod tests {
             assert!(matches!(
                 element,
                 K8sBackupElement::NetworkPolicy(e) if e.metadata.name.as_deref() == Some("my-network-policy")
+            ))
+        }
+    }
+
+    mod deserialize_traefik_ingress {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: traefik.io/v1alpha1
+                kind: IngressRoute
+                metadata:
+                  name: prevant-ingress-route
+                spec:
+                  entryPoints:
+                    - web
+                  routes:
+                    - kind: Rule
+                      match: PathPrefix(`/`)
+                      priority: -100
+                      services:
+                        - name: prevant
+                          port: 80
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::TraefikIngressRoute(traefik_crds::TraefikIngressRoute::V3(e)) if e.metadata.name.as_deref() == Some("prevant-ingress-route")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: traefik.io/v1alpha1
+                kind: IngressRoute
+                metadata:
+                  name: prevant-ingress-route
+                spec:
+                  entryPoints:
+                    - web
+                  routes:
+                    - kind: Rule
+                      match: PathPrefix(`/`)
+                      priority: -100
+                      services:
+                        - name: prevant
+                          port: 80
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::TraefikIngressRoute(traefik_crds::TraefikIngressRoute::V3(e)) if e.metadata.name.as_deref() == Some("prevant-ingress-route")
+            ));
+        }
+    }
+
+    mod deserialize_traefik_middleware {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: traefik.io/v1alpha1
+                kind: Middleware
+                metadata:
+                  name: stripprefix
+                  namespace: foo
+
+                spec:
+                  stripPrefix:
+                    prefixes:
+                      - /stripit
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::TraefikMiddleware(traefik_crds::TraefikMiddleware::V3(e)) if e.metadata.name.as_deref() == Some("stripprefix")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: traefik.io/v1alpha1
+                kind: Middleware
+                metadata:
+                  name: stripprefix
+                  namespace: foo
+
+                spec:
+                  stripPrefix:
+                    prefixes:
+                      - /stripit
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::TraefikMiddleware(traefik_crds::TraefikMiddleware::V3(e)) if e.metadata.name.as_deref() == Some("stripprefix")
             ));
         }
     }

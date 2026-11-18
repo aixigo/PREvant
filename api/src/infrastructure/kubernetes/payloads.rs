@@ -28,18 +28,18 @@ use super::super::{
     STORAGE_TYPE_LABEL,
 };
 use crate::config::ContainerConfig;
-use crate::infrastructure::kubernetes::element::K8sElement;
 use crate::infrastructure::kubernetes::{
+    element::K8sElement,
     infrastructure::KubernetesInfrastructureError,
     traefik_crds::{
-        IngressRoute, IngressRouteSpec, Middleware, MiddlewareSpec, TraefikRuleMiddlewareRef,
-        TraefikRuleService, TraefikRuleSpec, TraefikTls,
+        self, TraefikRuleMiddlewareRef, TraefikRuleService, TraefikRuleSpec, TraefikTls,
     },
 };
 use crate::infrastructure::{OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL};
 use base64::{Engine, engine::general_purpose};
 use bytesize::ByteSize;
 use chrono::{DateTime, Utc};
+use domain::traefik::TraefikVersion;
 use domain::{
     AppName, Image, Owner,
     app_blueprints::{Environment, ServiceConfig, UserDefinedParameters},
@@ -359,7 +359,14 @@ pub fn convert_k8s_ingress_to_traefik_rule(
 pub fn convert_k8s_ingress_to_traefik_ingress(
     ingress: Ingress,
     services: &[V1Service],
-) -> Result<(IngressRoute, Vec<Middleware>), Box<ConvertK8sIngressError>> {
+    traefik_version: TraefikVersion,
+) -> Result<
+    (
+        traefik_crds::TraefikIngressRoute,
+        Vec<traefik_crds::TraefikMiddleware>,
+    ),
+    Box<ConvertK8sIngressError>,
+> {
     let Some(spec) = ingress.spec.as_ref() else {
         return Err(Box::new(ConvertK8sIngressError::NoSpec {
             ingress: K8sSource(ingress),
@@ -465,28 +472,30 @@ pub fn convert_k8s_ingress_to_traefik_ingress(
         .routes()
         .iter()
         .flat_map(|r| r.middlewares().iter())
-        .map(|middleware| Middleware {
-            metadata: kube::core::ObjectMeta {
-                name: Some(middleware.name.clone()),
-                ..Default::default()
-            },
-            spec: MiddlewareSpec(middleware.to_json_spec()),
+        .map(|middleware| {
+            traefik_crds::TraefikMiddleware::new(
+                traefik_version,
+                kube::core::ObjectMeta {
+                    name: Some(middleware.name.clone()),
+                    ..Default::default()
+                },
+                middleware.to_json_spec(),
+            )
         })
         .collect::<Vec<_>>();
 
-    let route = IngressRoute {
-        metadata: ObjectMeta {
+    let route = traefik_crds::TraefikIngressRoute::new(
+        traefik_version,
+        ObjectMeta {
             name: ingress.metadata.name,
             ..Default::default()
         },
-        spec: IngressRouteSpec {
-            routes: Some(routes),
-            entry_points: Some(route.entry_points().clone()),
-            tls: route.tls().as_ref().map(|tls| TraefikTls {
-                cert_resolver: Some(tls.cert_resolver.clone()),
-            }),
-        },
-    };
+        Some(route.entry_points().clone()),
+        Some(routes),
+        route.tls().as_ref().map(|tls| TraefikTls {
+            cert_resolver: Some(tls.cert_resolver.clone()),
+        }),
+    );
 
     Ok((route, middlewares))
 }
@@ -862,25 +871,24 @@ pub fn service_payload(
 }
 
 pub fn convert_k8s_traefik_crds_to_domain_traefik_routes(
-    routes: Vec<IngressRoute>,
-    middlewares: Vec<Middleware>,
+    routes: Vec<traefik_crds::TraefikIngressRoute>,
+    middlewares: Vec<traefik_crds::TraefikMiddleware>,
 ) -> anyhow::Result<Vec<(String, TraefikIngressRoute, Vec<TraefikRuleService>)>> {
     let middlewares_by_name = middlewares
         .iter()
-        .filter_map(|m| Some((m.metadata.name.as_deref()?, m)))
+        .filter_map(|m| Some((m.metadata().name.as_deref()?, m)))
         .collect::<HashMap<_, _>>();
 
     let mut converted_routes = Vec::with_capacity(routes.len());
     for route in routes.into_iter() {
-        let name = route.metadata.name.as_deref().unwrap_or_default();
-        let entry_points = route.spec.entry_points.unwrap_or_default();
-        let tls = route.spec.tls.and_then(|tls| tls.cert_resolver);
+        let name = route.metadata().name.as_deref().unwrap_or_default();
+        let entry_points = route.entry_points();
+        let tls = route.tls().and_then(|tls| tls.cert_resolver.as_ref());
 
         for (i, route) in route
-            .spec
-            .routes
+            .routes()
             .into_iter()
-            .flat_map(|r| r.into_iter())
+            .flat_map(|r| r.iter())
             .enumerate()
         {
             let rule = TraefikRouterRule::from_str(&route.r#match).unwrap();
@@ -891,7 +899,7 @@ pub fn convert_k8s_traefik_crds_to_domain_traefik_routes(
                 .flat_map(|m| m.iter())
                 .filter_map(|m| Some((m.name.as_str(), middlewares_by_name.get(m.name.as_str())?)))
                 .map(|(name, middleware)| {
-                    TraefikMiddleware::from_json(name.to_string(), middleware.spec.0.clone())
+                    TraefikMiddleware::from_json(name.to_string(), middleware.spec().clone())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -902,19 +910,23 @@ pub fn convert_k8s_traefik_crds_to_domain_traefik_routes(
                     name.to_string()
                 },
                 TraefikIngressRoute::with_existing_routing_rules(
-                    entry_points.clone(),
+                    entry_points.cloned().unwrap_or_default(),
                     rule,
                     middlewares,
-                    tls.clone(),
+                    tls.cloned(),
                 ),
-                route.services,
+                route.services.clone(),
             ));
         }
     }
     Ok(converted_routes)
 }
 
-pub fn ingress_route_payload_base(app_name: &AppName, route: &TraefikIngressRoute) -> IngressRoute {
+pub fn ingress_route_payload_base(
+    app_name: &AppName,
+    route: &TraefikIngressRoute,
+    traefik_version: TraefikVersion,
+) -> traefik_crds::TraefikIngressRoute {
     let rules = route
         .routes()
         .iter()
@@ -939,8 +951,9 @@ pub fn ingress_route_payload_base(app_name: &AppName, route: &TraefikIngressRout
         })
         .collect::<Vec<_>>();
 
-    IngressRoute {
-        metadata: ObjectMeta {
+    traefik_crds::TraefikIngressRoute::new(
+        traefik_version,
+        ObjectMeta {
             name: Some(format!(
                 "{}-ingress-route",
                 app_name.to_rfc1123_namespace_id(),
@@ -955,14 +968,12 @@ pub fn ingress_route_payload_base(app_name: &AppName, route: &TraefikIngressRout
             ])),
             ..Default::default()
         },
-        spec: IngressRouteSpec {
-            routes: Some(rules),
-            entry_points: Some(route.entry_points().clone()),
-            tls: route.tls().as_ref().map(|tls| TraefikTls {
-                cert_resolver: Some(tls.cert_resolver.clone()),
-            }),
-        },
-    }
+        Some(route.entry_points().clone()),
+        Some(rules),
+        route.tls().as_ref().map(|tls| TraefikTls {
+            cert_resolver: Some(tls.cert_resolver.clone()),
+        }),
+    )
 }
 
 /// Creates a payload that ensures that Traefik find the correct route in Kubernetes
@@ -975,7 +986,8 @@ pub fn ingress_route_payload(
     route: &TraefikIngressRoute,
     service_type: &ContainerType,
     port: Option<u16>,
-) -> IngressRoute {
+    traefik_version: TraefikVersion,
+) -> traefik_crds::TraefikIngressRoute {
     let rules = route
         .routes()
         .iter()
@@ -1004,8 +1016,9 @@ pub fn ingress_route_payload(
         })
         .collect::<Vec<_>>();
 
-    IngressRoute {
-        metadata: ObjectMeta {
+    traefik_crds::TraefikIngressRoute::new(
+        traefik_version,
+        ObjectMeta {
             name: Some(format!(
                 "{}-{}-ingress-route",
                 app_name.to_rfc1123_namespace_id(),
@@ -1026,14 +1039,12 @@ pub fn ingress_route_payload(
             ])),
             ..Default::default()
         },
-        spec: IngressRouteSpec {
-            routes: Some(rules),
-            entry_points: Some(route.entry_points().clone()),
-            tls: route.tls().as_ref().map(|tls| TraefikTls {
-                cert_resolver: Some(tls.cert_resolver.clone()),
-            }),
-        },
-    }
+        Some(route.entry_points().clone()),
+        Some(rules),
+        route.tls().as_ref().map(|tls| TraefikTls {
+            cert_resolver: Some(tls.cert_resolver.clone()),
+        }),
+    )
 }
 
 /// See [Traefik Routers](https://docs.traefik.io/v2.0/user-guides/crd-acme/#traefik-routers)
@@ -1041,7 +1052,8 @@ pub fn ingress_route_payload(
 pub fn middleware_payload(
     app_name: &AppName,
     ingress_route: &TraefikIngressRoute,
-) -> Vec<Middleware> {
+    traefik_version: TraefikVersion,
+) -> Vec<traefik_crds::TraefikMiddleware> {
     ingress_route
         .routes()
         .iter()
@@ -1055,13 +1067,16 @@ pub fn middleware_payload(
                 ))
             })
         })
-        .map(|(name, spec)| Middleware {
-            metadata: ObjectMeta {
-                name: Some(name.clone()),
-                namespace: Some(app_name.to_rfc1123_namespace_id()),
-                ..Default::default()
-            },
-            spec: MiddlewareSpec(serde_json::json!(spec)),
+        .map(|(name, spec)| {
+            traefik_crds::TraefikMiddleware::new(
+                traefik_version,
+                ObjectMeta {
+                    name: Some(name.clone()),
+                    namespace: Some(app_name.to_rfc1123_namespace_id()),
+                    ..Default::default()
+                },
+                serde_json::json!(spec),
+            )
         })
         .collect::<Vec<_>>()
 }
@@ -1508,8 +1523,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn create_traefik_crd_ingress_route() {
+    #[rstest::rstest]
+    #[case(TraefikVersion::V2, "traefik.containo.us/v1alpha1")]
+    #[case(TraefikVersion::V3, "traefik.io/v1alpha1")]
+    fn create_traefik_crd_ingress_route(
+        #[case] traefik_version: TraefikVersion,
+        #[case] api_version: &str,
+    ) {
         let config = blueprint_service!("db", "mariadb:10.3.17");
 
         let mut deployment_unit = AppDeploymentBuilder::init(AppName::master(), vec![config], None)
@@ -1525,12 +1545,13 @@ mod tests {
             &service.ingress_route,
             &service.service_type,
             Some(service.port),
+            traefik_version,
         );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
             expected: serde_json::json!({
-              "apiVersion": "traefik.containo.us/v1alpha1",
+              "apiVersion": api_version,
               "kind": "IngressRoute",
               "metadata": {
                 "name": "master-db-ingress-route",
@@ -1559,8 +1580,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn should_create_ingress_route_with_app_name_that_is_not_compliant_to_rfc1123() {
+    #[rstest::rstest]
+    #[case(TraefikVersion::V2, "traefik.containo.us/v1alpha1")]
+    #[case(TraefikVersion::V3, "traefik.io/v1alpha1")]
+    fn should_create_ingress_route_with_app_name_that_is_not_compliant_to_rfc1123(
+        #[case] traefik_version: TraefikVersion,
+        #[case] api_version: &str,
+    ) {
         let config = blueprint_service!("db", "mariadb:10.3.17");
 
         let mut deployment_unit =
@@ -1577,12 +1603,13 @@ mod tests {
             &service.ingress_route,
             &service.service_type,
             Some(service.port),
+            traefik_version,
         );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
             expected: serde_json::json!({
-              "apiVersion": "traefik.containo.us/v1alpha1",
+              "apiVersion": api_version,
               "kind": "IngressRoute",
               "metadata": {
                 "name": "my-app-db-ingress-route",
@@ -1611,19 +1638,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn should_create_middleware_with_default_prefix() {
+    #[rstest::rstest]
+    #[case(TraefikVersion::V2, "traefik.containo.us/v1alpha1")]
+    #[case(TraefikVersion::V3, "traefik.io/v1alpha1")]
+    fn should_create_middleware_with_default_prefix(
+        #[case] traefik_version: TraefikVersion,
+        #[case] api_version: &str,
+    ) {
         let app_name = AppName::master();
 
         let payload = middleware_payload(
             &app_name,
             &TraefikIngressRoute::with_defaults(&app_name, "db"),
+            traefik_version,
         );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
             expected: serde_json::json!([{
-              "apiVersion": "traefik.containo.us/v1alpha1",
+              "apiVersion": api_version,
               "kind": "Middleware",
               "metadata": {
                 "name": "master-db-middleware",
@@ -1641,8 +1674,10 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case(TraefikIngressRoute::with_app_only_defaults(&AppName::master()))]
-    #[case(TraefikIngressRoute::with_defaults(&AppName::master(), "nextcloud"))]
+    #[case(TraefikIngressRoute::with_app_only_defaults(&AppName::master()), TraefikVersion::V2)]
+    #[case(TraefikIngressRoute::with_app_only_defaults(&AppName::master()), TraefikVersion::V3)]
+    #[case(TraefikIngressRoute::with_defaults(&AppName::master(), "nextcloud"), TraefikVersion::V2)]
+    #[case(TraefikIngressRoute::with_defaults(&AppName::master(), "nextcloud"), TraefikVersion::V3)]
     #[case(TraefikIngressRoute::with_existing_routing_rules(
             vec![String::from("websecure")],
             TraefikRouterRule::from_str("Host(`example.com`) && PathPrefix(`/test`)").unwrap(),
@@ -1651,10 +1686,22 @@ mod tests {
                 url::Url::from_str("https://auth.example.com").unwrap()
             )],
             Some(String::from("tls")),
-    ))]
-    fn convert_back_traefik_domain(#[case] route: TraefikIngressRoute) {
-        let ingress = ingress_route_payload_base(&AppName::master(), &route);
-        let middlewares = middleware_payload(&AppName::master(), &route);
+    ), TraefikVersion::V2)]
+    #[case(TraefikIngressRoute::with_existing_routing_rules(
+            vec![String::from("websecure")],
+            TraefikRouterRule::from_str("Host(`example.com`) && PathPrefix(`/test`)").unwrap(),
+            vec![TraefikMiddleware::with_forward_auth(
+                String::from("auth"),
+                url::Url::from_str("https://auth.example.com").unwrap()
+            )],
+            Some(String::from("tls")),
+    ), TraefikVersion::V3)]
+    fn convert_back_traefik_domain(
+        #[case] route: TraefikIngressRoute,
+        #[case] traefik_version: TraefikVersion,
+    ) {
+        let ingress = ingress_route_payload_base(&AppName::master(), &route, traefik_version);
+        let middlewares = middleware_payload(&AppName::master(), &route, traefik_version);
 
         let routes =
             convert_k8s_traefik_crds_to_domain_traefik_routes(vec![ingress], middlewares).unwrap();
@@ -1665,19 +1712,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn should_create_middleware_with_default_prefix_with_name_rfc1123_app_name() {
+    #[rstest::rstest]
+    #[case(TraefikVersion::V2, "traefik.containo.us/v1alpha1")]
+    #[case(TraefikVersion::V3, "traefik.io/v1alpha1")]
+    fn should_create_middleware_with_default_prefix_with_name_rfc1123_app_name(
+        #[case] traefik_version: TraefikVersion,
+        #[case] api_version: &str,
+    ) {
         let app_name = AppName::from_str("MY-APP").unwrap();
 
         let payload = middleware_payload(
             &app_name,
             &TraefikIngressRoute::with_defaults(&app_name, "db"),
+            traefik_version,
         );
 
         assert_json_diff::assert_json_include!(
             actual: payload,
             expected: serde_json::json!([{
-              "apiVersion": "traefik.containo.us/v1alpha1",
+              "apiVersion": api_version,
               "kind": "Middleware",
               "metadata": {
                 "name": "my-app-db-middleware",
@@ -2172,16 +2225,17 @@ mod tests {
                     ..Default::default()
                 },
                 &[],
+                TraefikVersion::V2,
             )?;
 
             assert_eq!(
                 route,
-                IngressRoute {
+                traefik_crds::TraefikIngressRoute::V2(traefik_crds::v2::IngressRoute {
                     metadata: ObjectMeta {
                         name: Some(String::from("my-ingress")),
                         ..Default::default()
                     },
-                    spec: IngressRouteSpec {
+                    spec: traefik_crds::v2::IngressRouteSpec {
                         entry_points: Some(vec![]),
                         routes: Some(vec![TraefikRuleSpec {
                             kind: String::from("Rule"),
@@ -2198,24 +2252,26 @@ mod tests {
                         }]),
                         tls: None
                     }
-                }
+                })
             );
 
             assert_eq!(
                 middlewares,
-                vec![Middleware {
-                    metadata: ObjectMeta {
-                        name: Some(String::from("my-ingress-middleware")),
-                        ..Default::default()
-                    },
-                    spec: MiddlewareSpec(serde_json::json!({
-                        "stripPrefix": {
-                            "prefixes": [
-                                "/my-service/"
-                            ]
-                        }
-                    }))
-                }]
+                vec![traefik_crds::TraefikMiddleware::V2(
+                    traefik_crds::v2::Middleware {
+                        metadata: ObjectMeta {
+                            name: Some(String::from("my-ingress-middleware")),
+                            ..Default::default()
+                        },
+                        spec: traefik_crds::v2::MiddlewareSpec(serde_json::json!({
+                            "stripPrefix": {
+                                "prefixes": [
+                                    "/my-service/"
+                                ]
+                            }
+                        }))
+                    }
+                )]
             );
 
             Ok(())
@@ -2265,17 +2321,18 @@ mod tests {
                     ..Default::default()
                 },
                 &[],
+                TraefikVersion::V3,
             )
             .unwrap();
 
             assert_eq!(
                 route,
-                IngressRoute {
+                traefik_crds::TraefikIngressRoute::V3(traefik_crds::v3::IngressRoute {
                     metadata: ObjectMeta {
                         name: Some(String::from("my-ingress")),
                         ..Default::default()
                     },
-                    spec: IngressRouteSpec {
+                    spec: traefik_crds::v3::IngressRouteSpec {
                         entry_points: Some(vec![]),
                         routes: Some(vec![TraefikRuleSpec {
                             kind: String::from("Rule"),
@@ -2292,29 +2349,35 @@ mod tests {
                         }]),
                         tls: None
                     }
-                }
+                })
             );
 
             assert_eq!(
                 middlewares,
-                vec![Middleware {
-                    metadata: ObjectMeta {
-                        name: Some(String::from("my-ingress-middleware")),
-                        ..Default::default()
-                    },
-                    spec: MiddlewareSpec(serde_json::json!({
-                        "stripPrefix": {
-                            "prefixes": [
-                                "/my-service/"
-                            ]
-                        }
-                    }))
-                }]
+                vec![traefik_crds::TraefikMiddleware::V3(
+                    traefik_crds::v3::Middleware {
+                        metadata: ObjectMeta {
+                            name: Some(String::from("my-ingress-middleware")),
+                            ..Default::default()
+                        },
+                        spec: traefik_crds::v3::MiddlewareSpec(serde_json::json!({
+                            "stripPrefix": {
+                                "prefixes": [
+                                    "/my-service/"
+                                ]
+                            }
+                        }))
+                    }
+                )]
             );
         }
 
-        #[test]
-        fn convert_k8s_ingress_to_traefik_ingress_with_missing_port() {
+        #[rstest::rstest]
+        #[case(TraefikVersion::V2)]
+        #[case(TraefikVersion::V3)]
+        fn convert_k8s_ingress_to_traefik_ingress_with_missing_port(
+            #[case] traefik_version: TraefikVersion,
+        ) {
             let (route, _middlewares) = super::convert_k8s_ingress_to_traefik_ingress(
                 Ingress {
                     metadata: ObjectMeta {
@@ -2361,6 +2424,7 @@ mod tests {
                     }),
                     ..Default::default()
                 }],
+                traefik_version,
             )
             .unwrap();
 

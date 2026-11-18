@@ -136,10 +136,10 @@ extreme: any future change must be backwards compatibility and this considers:
    any notice.
 4. Supported [Traefik] version:
 
-   | Backend    | Traefik v1                                                 | Traefik v2 | Traefik v3              |
-   |------------|------------------------------------------------------------|------------|-------------------------|
-   | Docker     | 🗸 (be aware that Traefik v1 stops working with Docker v29) | 🗸          | 🗸                       |
-   | Kubernetes | 🗴 (never implemented)                                      | 🗸          | 🗴 (not yet implemented) |
+   | Backend    | Traefik v1                                                 | Traefik v2 | Traefik v3 |
+   |------------|------------------------------------------------------------|------------|------------|
+   | Docker     | 🗸 (be aware that Traefik v1 stops working with Docker v29) | 🗸          | 🗸          |
+   | Kubernetes | 🗴 (never implemented)                                      | 🗸          | 🗸          |
 
 # Development
 

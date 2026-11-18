@@ -1,7 +1,6 @@
 use super::{
     infrastructure::KubernetesInfrastructureError,
     payloads::{convert_k8s_ingress_to_traefik_ingress, kubernetes_deployement_to_service_config},
-    traefik_crds::{IngressRoute as TraefikIngressRoute, Middleware as TraefikMiddleware},
 };
 use crate::{
     config::BootstrappingContainer,
@@ -13,6 +12,7 @@ use crate::{
                 convert_k8s_traefik_crds_to_domain_traefik_routes, ingress_route_payload,
                 ingress_route_payload_base, middleware_payload,
             },
+            traefik_crds::{TraefikIngressRoute, TraefikMiddleware},
         },
     },
 };
@@ -22,6 +22,7 @@ use domain::{
     app_deployment::{
         BootstrappedCompanion, BootstrappedCompanions, MergeBootstrappedElementsContext,
     },
+    traefik::TraefikVersion,
 };
 use futures::{AsyncReadExt, StreamExt, TryStreamExt};
 use handlebars::RenderError;
@@ -45,7 +46,6 @@ use kube::{
     core::{ObjectMeta, WatchEvent, dynamic},
 };
 use log::{debug, trace, warn};
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -54,7 +54,6 @@ use std::{
 
 static BOOTSTRAPPED_SECRET: &str = "com.aixigo.preview.servant.bootstrapped-secret";
 
-#[derive(Default)]
 pub(super) struct K8sDeploymentUnit {
     roles: Vec<Role>,
     role_bindings: Vec<RoleBinding>,
@@ -71,33 +70,126 @@ pub(super) struct K8sDeploymentUnit {
     policies: Vec<NetworkPolicy>,
     traefik_ingresses: Vec<TraefikIngressRoute>,
     traefik_middlewares: Vec<TraefikMiddleware>,
+    traefik_version: TraefikVersion,
     dynamic_objects: Vec<(dynamic::DynamicObject, ApiResource)>,
 }
 
-impl<'de> Deserialize<'de> for K8sDeploymentUnit {
-    fn deserialize<D>(deserializer: D) -> Result<K8sDeploymentUnit, D::Error>
+#[cfg(test)]
+impl serde::Serialize for K8sDeploymentUnit {
+    fn serialize<S>(&self, serializer: S) -> std::prelude::v1::Result<S::Ok, S::Error>
     where
-        D: serde::Deserializer<'de>,
+        S: serde::Serializer,
     {
-        let elements = Vec::<K8sElement>::deserialize(deserializer)?;
-        Ok(K8sDeploymentUnit::from_iter(elements))
+        use serde::ser::SerializeSeq;
+        let Self {
+            roles,
+            role_bindings,
+            stateful_sets,
+            config_maps,
+            secrets,
+            pvcs,
+            services,
+            pods,
+            deployments,
+            jobs,
+            cron_jobs,
+            service_accounts,
+            policies,
+            traefik_ingresses,
+            traefik_middlewares,
+            traefik_version: _,
+            dynamic_objects,
+        } = self;
+
+        let len = roles.len()
+            + config_maps.len()
+            + secrets.len()
+            + pvcs.len()
+            + services.len()
+            + service_accounts.len()
+            + policies.len()
+            + deployments.len()
+            + jobs.len()
+            + cron_jobs.len()
+            + stateful_sets.len()
+            + traefik_ingresses.len()
+            + traefik_middlewares.len()
+            + pods.len();
+
+        let mut seq = serializer.serialize_seq(Some(len))?;
+        for role in roles.iter() {
+            seq.serialize_element(role)?;
+        }
+        for role_binding in role_bindings.iter() {
+            seq.serialize_element(role_binding)?;
+        }
+        for config_map in config_maps.iter() {
+            seq.serialize_element(config_map)?;
+        }
+        for secret in secrets.iter() {
+            seq.serialize_element(secret)?;
+        }
+        for pvc in pvcs.iter() {
+            seq.serialize_element(pvc)?;
+        }
+        for service in services.iter() {
+            seq.serialize_element(service)?;
+        }
+        for service_account in service_accounts.iter() {
+            seq.serialize_element(service_account)?;
+        }
+        for policy in policies.iter() {
+            seq.serialize_element(policy)?;
+        }
+        for deployment in deployments.iter() {
+            seq.serialize_element(deployment)?;
+        }
+        for job in jobs.iter() {
+            seq.serialize_element(job)?;
+        }
+        for cron_job in cron_jobs.iter() {
+            seq.serialize_element(cron_job)?;
+        }
+        for stateful_set in stateful_sets.iter() {
+            seq.serialize_element(stateful_set)?;
+        }
+        for ingress in traefik_ingresses.iter() {
+            seq.serialize_element(ingress)?;
+        }
+        for middleware in traefik_middlewares.iter() {
+            seq.serialize_element(middleware)?;
+        }
+        for pod in pods.iter() {
+            seq.serialize_element(pod)?;
+        }
+        for (dynamic_object, _ar) in dynamic_objects.iter() {
+            seq.serialize_element(dynamic_object)?;
+        }
+
+        seq.end()
     }
+}
+
+macro_rules! empty_read_only_metadata_fields {
+    ($meta:expr) => {{
+        $meta.annotations = $meta.annotations.take().map(|mut annotations| {
+            annotations.remove(&String::from("deployment.kubernetes.io/revision"));
+            annotations
+        });
+        $meta.managed_fields = None;
+        $meta.creation_timestamp = None;
+        $meta.deletion_grace_period_seconds = None;
+        $meta.deletion_timestamp = None;
+        $meta.generation = None;
+        $meta.resource_version = None;
+        $meta.uid = None;
+    }};
 }
 
 macro_rules! empty_read_only_fields {
     ($field:expr) => {
-        for meta in $field.map(|manifest| &mut manifest.metadata) {
-            meta.annotations = meta.annotations.take().map(|mut annotations| {
-                annotations.remove(&String::from("deployment.kubernetes.io/revision"));
-                annotations
-            });
-            meta.managed_fields = None;
-            meta.creation_timestamp = None;
-            meta.deletion_grace_period_seconds = None;
-            meta.deletion_timestamp = None;
-            meta.generation = None;
-            meta.resource_version = None;
-            meta.uid = None;
+        for meta in $field.map(|manifest| manifest.metadata_mut()) {
+            empty_read_only_metadata_fields!(meta);
         }
     };
     ($field:expr, $( $additional_field:ident ),* ) => {
@@ -139,6 +231,7 @@ impl IntoIterator for K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            traefik_version: _,
             dynamic_objects,
         } = self;
 
@@ -164,73 +257,6 @@ impl IntoIterator for K8sDeploymentUnit {
             // is stabilized this allocation can go away.
             .collect::<Vec<_>>()
             .into_iter()
-    }
-}
-
-impl FromIterator<K8sElement> for K8sDeploymentUnit {
-    fn from_iter<T: IntoIterator<Item = K8sElement>>(iter: T) -> Self {
-        let mut roles = Vec::new();
-        let mut role_bindings = Vec::new();
-        let mut stateful_sets = Vec::new();
-        let mut config_maps = Vec::new();
-        let mut secrets = Vec::new();
-        let mut pvcs = Vec::new();
-        let mut services = Vec::new();
-        let mut pods = Vec::new();
-        let mut deployments = Vec::new();
-        let mut jobs = Vec::new();
-        let mut cron_jobs = Vec::new();
-        let mut service_accounts = Vec::new();
-        let mut ingresses = Vec::new();
-        let mut policies = Vec::new();
-        let mut traefik_ingresses = Vec::new();
-        let mut traefik_middlewares = Vec::new();
-        let mut dynamic_objects = Vec::new();
-
-        for element in iter {
-            match element {
-                K8sElement::Role(role) => roles.push(role),
-                K8sElement::RoleBinding(role_binding) => role_bindings.push(role_binding),
-                K8sElement::StatefulSet(stateful_set) => stateful_sets.push(stateful_set),
-                K8sElement::ConfigMap(config_map) => config_maps.push(config_map),
-                K8sElement::Secret(secret) => secrets.push(secret),
-                K8sElement::PVC(persistent_volume_claim) => pvcs.push(persistent_volume_claim),
-                K8sElement::Service(service) => services.push(service),
-                K8sElement::Pod(pod) => pods.push(pod),
-                K8sElement::Deployment(deployment) => deployments.push(deployment),
-                K8sElement::Job(job) => jobs.push(job),
-                K8sElement::CronJob(cron_job) => cron_jobs.push(cron_job),
-                K8sElement::ServiceAccount(service_account) => {
-                    service_accounts.push(service_account)
-                }
-                K8sElement::Ingress(ingress) => ingresses.push(ingress),
-                K8sElement::NetworkPolicy(network_policy) => policies.push(network_policy),
-                K8sElement::TraefikIngressRoute(ingress_route) => {
-                    traefik_ingresses.push(ingress_route)
-                }
-                K8sElement::TraefikMiddleware(middleware) => traefik_middlewares.push(middleware),
-                K8sElement::Other(dynamic_object) => dynamic_objects.push(dynamic_object),
-            }
-        }
-
-        Self::sorted(Self {
-            roles,
-            role_bindings,
-            stateful_sets,
-            config_maps,
-            secrets,
-            pvcs,
-            services,
-            pods,
-            deployments,
-            jobs,
-            cron_jobs,
-            service_accounts,
-            policies,
-            traefik_ingresses,
-            traefik_middlewares,
-            dynamic_objects,
-        })
     }
 }
 
@@ -292,6 +318,7 @@ impl K8sDeploymentUnit {
             mut policies,
             mut traefik_ingresses,
             mut traefik_middlewares,
+            traefik_version,
             mut dynamic_objects,
         } = self;
 
@@ -315,8 +342,18 @@ impl K8sDeploymentUnit {
         cron_jobs.sort_by(sort_by);
         service_accounts.sort_by(sort_by);
         policies.sort_by(sort_by);
-        traefik_ingresses.sort_by(sort_by);
-        traefik_middlewares.sort_by(sort_by);
+        traefik_ingresses.sort_by(|a, b| match (a, b) {
+            (TraefikIngressRoute::V2(a), TraefikIngressRoute::V2(b)) => sort_by(a, b),
+            (TraefikIngressRoute::V2(_), TraefikIngressRoute::V3(_)) => std::cmp::Ordering::Less,
+            (TraefikIngressRoute::V3(_), TraefikIngressRoute::V2(_)) => std::cmp::Ordering::Greater,
+            (TraefikIngressRoute::V3(a), TraefikIngressRoute::V3(b)) => sort_by(a, b),
+        });
+        traefik_middlewares.sort_by(|a, b| match (a, b) {
+            (TraefikMiddleware::V2(a), TraefikMiddleware::V2(b)) => sort_by(a, b),
+            (TraefikMiddleware::V2(_), TraefikMiddleware::V3(_)) => std::cmp::Ordering::Less,
+            (TraefikMiddleware::V3(_), TraefikMiddleware::V2(_)) => std::cmp::Ordering::Greater,
+            (TraefikMiddleware::V3(a), TraefikMiddleware::V3(b)) => sort_by(a, b),
+        });
         dynamic_objects.sort_by(|(a, _), (b, _)| sort_by(a, b));
 
         Self {
@@ -335,6 +372,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            traefik_version,
             dynamic_objects,
         }
     }
@@ -571,9 +609,28 @@ impl K8sDeploymentUnit {
         app_name: &AppName,
         bootstrapping_container: &[BootstrappingContainer],
         image_pull_secret: Option<Secret>,
+        traefik_version: TraefikVersion,
     ) -> Result<Self> {
         if bootstrapping_container.is_empty() {
-            return Ok(Default::default());
+            return Ok(Self {
+                roles: Default::default(),
+                role_bindings: Default::default(),
+                stateful_sets: Default::default(),
+                config_maps: Default::default(),
+                secrets: Default::default(),
+                pvcs: Default::default(),
+                services: Default::default(),
+                pods: Default::default(),
+                deployments: Default::default(),
+                jobs: Default::default(),
+                cron_jobs: Default::default(),
+                service_accounts: Default::default(),
+                policies: Default::default(),
+                traefik_ingresses: Default::default(),
+                traefik_middlewares: Default::default(),
+                traefik_version,
+                dynamic_objects: Default::default(),
+            });
         }
 
         let ((bootstrapping_pod_name, log_streams), writable_api_resources) = futures::try_join!(
@@ -589,8 +646,13 @@ impl K8sDeploymentUnit {
             async { Self::fetch_writable_api_resources(client.clone()).await }
         )?;
 
-        let result =
-            Self::parse_from_log_streams(app_name, writable_api_resources, log_streams).await;
+        let result = Self::parse_from_log_streams(
+            app_name,
+            writable_api_resources,
+            log_streams,
+            traefik_version,
+        )
+        .await;
 
         let pod_api: Api<Pod> = Api::namespaced(client, &app_name.to_rfc1123_namespace_id());
         pod_api
@@ -680,27 +742,14 @@ impl K8sDeploymentUnit {
         app_name: &AppName,
         writable_api_resources: HashSet<ApiResource>,
         log_streams: L,
+        traefik_version: TraefikVersion,
     ) -> Result<Self>
     where
         L: IntoIterator<Item = BootstrappingLogStream<'a>>,
     {
-        let mut roles = Vec::new();
-        let mut role_bindings = Vec::new();
-        let mut stateful_sets = Vec::new();
-        let mut config_maps = Vec::new();
-        let mut secrets = Vec::new();
-        let mut pvcs = Vec::new();
+        let mut elements = Vec::new();
         let mut services = Vec::new();
-        let mut pods = Vec::new();
-        let mut deployments = Vec::new();
-        let mut jobs = Vec::new();
-        let mut cron_jobs = Vec::new();
-        let mut service_accounts = Vec::new();
         let mut ingresses = Vec::new();
-        let mut policies = Vec::new();
-        let mut traefik_ingresses = Vec::new();
-        let mut traefik_middlewares = Vec::new();
-        let mut dynamic_objects = Vec::new();
 
         for log_stream in log_streams.into_iter() {
             let BootstrappingLogStream {
@@ -744,39 +793,20 @@ impl K8sDeploymentUnit {
                 element = element.with_prevant_metadata(app_name);
 
                 match element {
-                    K8sElement::Role(role) => roles.push(role),
-                    K8sElement::RoleBinding(role_binding) => role_bindings.push(role_binding),
-                    K8sElement::StatefulSet(stateful_set) => stateful_sets.push(stateful_set),
-                    K8sElement::ConfigMap(config_map) => config_maps.push(config_map),
                     K8sElement::Secret(mut secret) => {
                         let marker = BootstrappedSecretMarker(bootstrapping_container);
                         secret
                             .labels_mut()
                             .insert(BOOTSTRAPPED_SECRET.to_string(), format!("{marker}"));
 
-                        secrets.push(secret);
+                        elements.push(K8sElement::Secret(secret));
                     }
-                    K8sElement::PVC(persistent_volume_claim) => pvcs.push(persistent_volume_claim),
                     K8sElement::Service(service) => services.push(service),
-                    K8sElement::Pod(pod) => pods.push(pod),
-                    K8sElement::Deployment(deployment) => deployments.push(deployment),
-                    K8sElement::Job(job) => jobs.push(job),
-                    K8sElement::CronJob(cron_job) => cron_jobs.push(cron_job),
-                    K8sElement::ServiceAccount(service_account) => {
-                        service_accounts.push(service_account)
-                    }
                     K8sElement::Ingress(ingress) => ingresses.push(ingress),
-                    K8sElement::NetworkPolicy(network_policy) => policies.push(network_policy),
-                    K8sElement::TraefikIngressRoute(ingress_route) => {
-                        traefik_ingresses.push(ingress_route)
-                    }
-                    K8sElement::TraefikMiddleware(middleware) => {
-                        traefik_middlewares.push(middleware)
-                    }
                     K8sElement::Other((dynamic_object, api_resource))
                         if writable_api_resources.contains(&api_resource) =>
                     {
-                        dynamic_objects.push((dynamic_object, api_resource))
+                        elements.push(K8sElement::Other((dynamic_object, api_resource)));
                     }
                     K8sElement::Other((dynamic_object, api_resource)) => {
                         log::warn!(
@@ -788,13 +818,18 @@ impl K8sDeploymentUnit {
                             noyalib::to_string(&dynamic_object).unwrap_or_default()
                         );
                     }
+                    element => {
+                        elements.push(element);
+                    }
                 }
             }
         }
 
         for ingress in ingresses {
             let (route, middlewares) = match convert_k8s_ingress_to_traefik_ingress(
-                ingress, &services,
+                ingress,
+                &services,
+                traefik_version,
             ) {
                 Ok((route, middlewares)) => (route, middlewares),
                 Err(err) => {
@@ -806,28 +841,16 @@ impl K8sDeploymentUnit {
                 }
             };
 
-            traefik_ingresses.push(route);
-            traefik_middlewares.extend(middlewares);
+            elements.push(K8sElement::TraefikIngressRoute(route));
+            elements.extend(middlewares.into_iter().map(K8sElement::TraefikMiddleware));
         }
 
-        Ok(Self::sorted(Self {
-            roles,
-            role_bindings,
-            stateful_sets,
-            config_maps,
-            secrets,
-            pvcs,
-            services,
-            pods,
-            deployments,
-            jobs,
-            cron_jobs,
-            service_accounts,
-            policies,
-            traefik_ingresses,
-            traefik_middlewares,
-            dynamic_objects,
-        }))
+        Ok(Self::from_iter(
+            elements
+                .into_iter()
+                .chain(services.into_iter().map(K8sElement::Service)),
+            traefik_version,
+        )?)
     }
 
     pub fn update_with_merge_context(
@@ -843,28 +866,33 @@ impl K8sDeploymentUnit {
             let mut traefik_ingress = context.base_route.clone();
             traefik_ingress.merge_with(route).unwrap();
 
-            let mut traefik_k8s_ingress =
-                if let Some(service_config_context) = &context.service_config_context {
-                    let blueprint_service = service_config_context.blueprint_config_after;
+            let mut traefik_k8s_ingress = if let Some(service_config_context) =
+                &context.service_config_context
+            {
+                let blueprint_service = service_config_context.blueprint_config_after;
 
-                    ingress_route_payload(
-                        context.app_name,
-                        blueprint_service,
-                        &traefik_ingress,
-                        &service_config_context.service_type,
-                        None,
-                    )
-                } else {
-                    ingress_route_payload_base(context.app_name, &traefik_ingress)
-                };
+                ingress_route_payload(
+                    context.app_name,
+                    blueprint_service,
+                    &traefik_ingress,
+                    &service_config_context.service_type,
+                    None,
+                    self.traefik_version,
+                )
+            } else {
+                ingress_route_payload_base(context.app_name, &traefik_ingress, self.traefik_version)
+            };
 
-            traefik_k8s_ingress.metadata.name = Some(original_name);
-            traefik_k8s_ingress.spec.routes.as_mut().unwrap()[0].services = services;
+            traefik_k8s_ingress.metadata_mut().name = Some(original_name);
+            traefik_k8s_ingress.rule_spec_mut().unwrap()[0].services = services;
 
             self.traefik_ingresses.push(traefik_k8s_ingress);
 
-            self.traefik_middlewares
-                .extend(middleware_payload(context.app_name, &traefik_ingress));
+            self.traefik_middlewares.extend(middleware_payload(
+                context.app_name,
+                &traefik_ingress,
+                self.traefik_version,
+            ));
         }
 
         Ok(self)
@@ -1083,7 +1111,11 @@ impl K8sDeploymentUnit {
         }
     }
 
-    pub(super) async fn fetch(client: Client, app_name: &AppName) -> Result<Self> {
+    pub(super) async fn fetch(
+        client: Client,
+        app_name: &AppName,
+        traefik_version: TraefikVersion,
+    ) -> Result<Self> {
         let mut roles = Vec::new();
         let mut role_bindings = Vec::new();
         let mut stateful_sets = Vec::new();
@@ -1139,13 +1171,67 @@ impl K8sDeploymentUnit {
         let api = Api::<ServiceAccount>::namespaced(api.into_client(), &namespace);
         service_accounts.extend(api.list(&Default::default()).await?.items);
 
-        let api = Api::<TraefikIngressRoute>::namespaced(api.into_client(), &namespace);
-        traefik_ingresses.extend(api.list(&Default::default()).await?.items);
+        let client = match &traefik_version {
+            TraefikVersion::V1 => unreachable!("Traefik V1 was never supported"),
+            TraefikVersion::V2 => {
+                let api = Api::<super::traefik_crds::v2::IngressRoute>::namespaced(
+                    api.into_client(),
+                    &namespace,
+                );
+                traefik_ingresses.extend(
+                    api.list(&Default::default())
+                        .await?
+                        .items
+                        .into_iter()
+                        .map(TraefikIngressRoute::V2),
+                );
+                api.into_client()
+            }
+            TraefikVersion::V3 => {
+                let api = Api::<super::traefik_crds::v3::IngressRoute>::namespaced(
+                    api.into_client(),
+                    &namespace,
+                );
+                traefik_ingresses.extend(
+                    api.list(&Default::default())
+                        .await?
+                        .items
+                        .into_iter()
+                        .map(TraefikIngressRoute::V3),
+                );
+                api.into_client()
+            }
+        };
 
-        let api = Api::<TraefikMiddleware>::namespaced(api.into_client(), &namespace);
-        traefik_middlewares.extend(api.list(&Default::default()).await?.items);
+        let client = match traefik_version {
+            TraefikVersion::V1 => unreachable!("Traefik V1 was never supported"),
+            TraefikVersion::V2 => {
+                let api =
+                    Api::<super::traefik_crds::v2::Middleware>::namespaced(client, &namespace);
+                traefik_middlewares.extend(
+                    api.list(&Default::default())
+                        .await?
+                        .items
+                        .into_iter()
+                        .map(TraefikMiddleware::V2),
+                );
+                api.into_client()
+            }
+            TraefikVersion::V3 => {
+                let api =
+                    Api::<super::traefik_crds::v3::Middleware>::namespaced(client, &namespace);
+                traefik_middlewares.extend(
+                    api.list(&Default::default())
+                        .await?
+                        .items
+                        .into_iter()
+                        .map(TraefikMiddleware::V3),
+                );
+                api.into_client()
+            }
+        };
 
-        let api = Api::<NetworkPolicy>::namespaced(api.into_client(), &namespace);
+        let api = Api::<NetworkPolicy>::namespaced(client, &namespace);
         policies.extend(api.list(&Default::default()).await?.items);
 
         let client = api.into_client();
@@ -1183,6 +1269,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            traefik_version,
             dynamic_objects,
         }))
     }
@@ -1225,6 +1312,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            traefik_version: _,
             dynamic_objects,
         } = self;
 
@@ -1268,10 +1356,24 @@ impl K8sDeploymentUnit {
             create_or_patch(client.clone(), app_name, stateful_set).await?;
         }
         for ingress in traefik_ingresses {
-            create_or_patch(client.clone(), app_name, ingress).await?;
+            match ingress {
+                TraefikIngressRoute::V2(ingress) => {
+                    create_or_patch(client.clone(), app_name, ingress).await?;
+                }
+                TraefikIngressRoute::V3(ingress) => {
+                    create_or_patch(client.clone(), app_name, ingress).await?;
+                }
+            }
         }
         for middleware in traefik_middlewares {
-            create_or_patch(client.clone(), app_name, middleware).await?;
+            match middleware {
+                TraefikMiddleware::V2(middleware) => {
+                    create_or_patch(client.clone(), app_name, middleware).await?;
+                }
+                TraefikMiddleware::V3(middleware) => {
+                    create_or_patch(client.clone(), app_name, middleware).await?;
+                }
+            }
         }
         for pod in pods {
             create_or_patch(client.clone(), app_name, pod).await?;
@@ -1301,6 +1403,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            traefik_version: _,
             dynamic_objects,
         } = self;
 
@@ -1418,25 +1521,66 @@ impl K8sDeploymentUnit {
             .await?;
         }
 
-        let api = Api::<TraefikIngressRoute>::namespaced(api.into_client(), &namespace);
+        let mut client = Some(api.into_client());
         for ingress in traefik_ingresses {
-            api.delete(
-                ingress.metadata.name.as_deref().unwrap_or_default(),
-                &Default::default(),
-            )
-            .await?;
+            client = Some(match ingress {
+                TraefikIngressRoute::V2(ingress) => {
+                    let api = Api::<super::traefik_crds::v2::IngressRoute>::namespaced(
+                        client.take().unwrap(),
+                        &namespace,
+                    );
+                    api.delete(
+                        ingress.metadata.name.as_deref().unwrap_or_default(),
+                        &Default::default(),
+                    )
+                    .await?;
+                    api.into_client()
+                }
+                TraefikIngressRoute::V3(ingress) => {
+                    let api = Api::<super::traefik_crds::v3::IngressRoute>::namespaced(
+                        client.take().unwrap(),
+                        &namespace,
+                    );
+                    api.delete(
+                        ingress.metadata.name.as_deref().unwrap_or_default(),
+                        &Default::default(),
+                    )
+                    .await?;
+                    api.into_client()
+                }
+            });
         }
 
-        let api = Api::<TraefikMiddleware>::namespaced(api.into_client(), &namespace);
         for middleware in traefik_middlewares {
-            api.delete(
-                middleware.metadata.name.as_deref().unwrap_or_default(),
-                &Default::default(),
-            )
-            .await?;
+            client = Some(match middleware {
+                TraefikMiddleware::V2(middleware) => {
+                    let api = Api::<super::traefik_crds::v2::Middleware>::namespaced(
+                        client.take().unwrap(),
+                        &namespace,
+                    );
+                    api.delete(
+                        middleware.metadata.name.as_deref().unwrap_or_default(),
+                        &Default::default(),
+                    )
+                    .await?;
+                    api.into_client()
+                }
+                TraefikMiddleware::V3(middleware) => {
+                    let api = Api::<super::traefik_crds::v3::Middleware>::namespaced(
+                        client.take().unwrap(),
+                        &namespace,
+                    );
+                    api.delete(
+                        middleware.metadata.name.as_deref().unwrap_or_default(),
+                        &Default::default(),
+                    )
+                    .await?;
+                    api.into_client()
+                }
+            });
         }
 
-        let api = Api::<Pod>::namespaced(api.into_client(), &namespace);
+        let api = Api::<Pod>::namespaced(client.take().unwrap(), &namespace);
         for pod in pods {
             api.delete(
                 pod.metadata.name.as_deref().unwrap_or_default(),
@@ -1479,6 +1623,7 @@ impl K8sDeploymentUnit {
             mut policies,
             mut traefik_ingresses,
             mut traefik_middlewares,
+            traefik_version,
             mut dynamic_objects,
         } = self;
 
@@ -1513,10 +1658,13 @@ impl K8sDeploymentUnit {
 
         empty_read_only_fields!(service_accounts.iter_mut());
         empty_read_only_fields!(policies.iter_mut());
+
         empty_read_only_fields!(traefik_middlewares.iter_mut());
         empty_read_only_fields!(traefik_ingresses.iter_mut());
 
-        empty_read_only_fields!(dynamic_objects.iter_mut().map(|(d, _)| d));
+        for (d, _) in dynamic_objects.iter_mut() {
+            empty_read_only_metadata_fields!(&mut d.metadata);
+        }
 
         Self {
             roles,
@@ -1534,6 +1682,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            traefik_version,
             dynamic_objects,
         }
     }
@@ -1578,6 +1727,7 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            traefik_version: _,
             dynamic_objects: _,
         } = self.without_managed_data();
 
@@ -1608,10 +1758,98 @@ impl K8sDeploymentUnit {
             )
             .collect()
     }
+}
 
-    #[cfg(test)]
-    pub fn to_json_vec(&self) -> Vec<serde_json::Value> {
-        let Self {
+#[derive(thiserror::Error, Debug)]
+pub enum K8sDeploymentUnitFromIterError {
+    #[error("Expected Traefik CRD version {expected} for {name} bot got {actual}")]
+    TraefikVersionMitmach {
+        expected: TraefikVersion,
+        actual: TraefikVersion,
+        name: String,
+    },
+}
+
+impl K8sDeploymentUnit {
+    pub fn from_iter<T: IntoIterator<Item = K8sElement>>(
+        iter: T,
+        traefik_version: TraefikVersion,
+    ) -> Result<Self, K8sDeploymentUnitFromIterError> {
+        let mut roles = Vec::new();
+        let mut role_bindings = Vec::new();
+        let mut stateful_sets = Vec::new();
+        let mut config_maps = Vec::new();
+        let mut secrets = Vec::new();
+        let mut pvcs = Vec::new();
+        let mut services = Vec::new();
+        let mut pods = Vec::new();
+        let mut deployments = Vec::new();
+        let mut jobs = Vec::new();
+        let mut cron_jobs = Vec::new();
+        let mut service_accounts = Vec::new();
+        let mut ingresses = Vec::new();
+        let mut policies = Vec::new();
+        let mut traefik_ingresses = Vec::new();
+        let mut traefik_middlewares = Vec::new();
+        let mut dynamic_objects = Vec::new();
+
+        for element in iter {
+            match element {
+                K8sElement::Role(role) => roles.push(role),
+                K8sElement::RoleBinding(role_binding) => role_bindings.push(role_binding),
+                K8sElement::StatefulSet(stateful_set) => stateful_sets.push(stateful_set),
+                K8sElement::ConfigMap(config_map) => config_maps.push(config_map),
+                K8sElement::Secret(secret) => secrets.push(secret),
+                K8sElement::PVC(persistent_volume_claim) => pvcs.push(persistent_volume_claim),
+                K8sElement::Service(service) => services.push(service),
+                K8sElement::Pod(pod) => pods.push(pod),
+                K8sElement::Deployment(deployment) => deployments.push(deployment),
+                K8sElement::Job(job) => jobs.push(job),
+                K8sElement::CronJob(cron_job) => cron_jobs.push(cron_job),
+                K8sElement::ServiceAccount(service_account) => {
+                    service_accounts.push(service_account)
+                }
+                K8sElement::Ingress(ingress) => ingresses.push(ingress),
+                K8sElement::NetworkPolicy(network_policy) => policies.push(network_policy),
+                K8sElement::TraefikIngressRoute(ingress_route) => {
+                    if traefik_version != ingress_route.traefik_version() {
+                        return Err(K8sDeploymentUnitFromIterError::TraefikVersionMitmach {
+                            expected: traefik_version,
+                            actual: ingress_route.traefik_version(),
+                            name: ingress_route.metadata().name.clone().unwrap_or_default(),
+                        });
+                    }
+                    traefik_ingresses.push(ingress_route)
+                }
+                K8sElement::TraefikMiddleware(middleware) => {
+                    if traefik_version != middleware.traefik_version() {
+                        return Err(K8sDeploymentUnitFromIterError::TraefikVersionMitmach {
+                            expected: traefik_version,
+                            actual: middleware.traefik_version(),
+                            name: middleware.metadata().name.clone().unwrap_or_default(),
+                        });
+                    }
+                    traefik_middlewares.push(middleware);
+                }
+                K8sElement::Other(dynamic_object) => dynamic_objects.push(dynamic_object),
+            }
+        }
+
+        let traefik_version = match traefik_ingresses
+            .iter()
+            .map(|ingress| ingress.traefik_version())
+            .chain(
+                traefik_middlewares
+                    .iter()
+                    .map(|middleware| middleware.traefik_version()),
+            )
+            .next()
+        {
+            Some(version) => version,
+            None => traefik_version,
+        };
+
+        Ok(Self::sorted(Self {
             roles,
             role_bindings,
             stateful_sets,
@@ -1627,76 +1865,9 @@ impl K8sDeploymentUnit {
             policies,
             traefik_ingresses,
             traefik_middlewares,
+            traefik_version,
             dynamic_objects,
-        } = &self;
-
-        let mut json = Vec::with_capacity(
-            roles.len()
-                + config_maps.len()
-                + secrets.len()
-                + pvcs.len()
-                + services.len()
-                + service_accounts.len()
-                + policies.len()
-                + deployments.len()
-                + jobs.len()
-                + cron_jobs.len()
-                + stateful_sets.len()
-                + traefik_ingresses.len()
-                + traefik_middlewares.len()
-                + pods.len(),
-        );
-
-        for role in roles.iter() {
-            json.push(serde_json::to_value(role).unwrap());
-        }
-        for role_binding in role_bindings.iter() {
-            json.push(serde_json::to_value(role_binding).unwrap());
-        }
-        for config_map in config_maps.iter() {
-            json.push(serde_json::to_value(config_map).unwrap());
-        }
-        for secret in secrets.iter() {
-            json.push(serde_json::to_value(secret).unwrap());
-        }
-        for pvc in pvcs.iter() {
-            json.push(serde_json::to_value(pvc).unwrap());
-        }
-        for service in services.iter() {
-            json.push(serde_json::to_value(service).unwrap());
-        }
-        for service_account in service_accounts.iter() {
-            json.push(serde_json::to_value(service_account).unwrap());
-        }
-        for policy in policies.iter() {
-            json.push(serde_json::to_value(policy).unwrap());
-        }
-        for deployment in deployments.iter() {
-            json.push(serde_json::to_value(deployment).unwrap());
-        }
-        for job in jobs.iter() {
-            json.push(serde_json::to_value(job).unwrap());
-        }
-        for cron_job in cron_jobs.iter() {
-            json.push(serde_json::to_value(cron_job).unwrap());
-        }
-        for stateful_set in stateful_sets.iter() {
-            json.push(serde_json::to_value(stateful_set).unwrap());
-        }
-        for ingress in traefik_ingresses.iter() {
-            json.push(serde_json::to_value(ingress).unwrap());
-        }
-        for middleware in traefik_middlewares.iter() {
-            json.push(serde_json::to_value(middleware).unwrap());
-        }
-        for pod in pods.iter() {
-            json.push(serde_json::to_value(pod).unwrap());
-        }
-        for (dynamic_object, _ar) in dynamic_objects.iter() {
-            json.push(serde_json::to_value(dynamic_object).unwrap());
-        }
-
-        json
+        }))
     }
 }
 
@@ -1744,6 +1915,7 @@ impl TryFrom<K8sDeploymentUnit> for BootstrappedCompanions<K8sElement> {
             policies,
             mut traefik_ingresses,
             mut traefik_middlewares,
+            traefik_version: _,
             dynamic_objects,
         } = value;
 
@@ -1782,7 +1954,7 @@ impl TryFrom<K8sDeploymentUnit> for BootstrappedCompanions<K8sElement> {
             for service in services {
                 let (ingresses_of_service, remaining): (Vec<_>, Vec<_>) =
                     traefik_ingresses.into_iter().partition(|ingress| {
-                        for route in ingress.spec.routes.as_ref().iter().flat_map(|r| r.iter()) {
+                        for route in ingress.rule_spec().iter().flat_map(|r| r.iter()) {
                             for s in route.services.iter() {
                                 if Some(s.name.as_str()) == service.metadata.name.as_deref() {
                                     return true;
@@ -1805,9 +1977,9 @@ impl TryFrom<K8sDeploymentUnit> for BootstrappedCompanions<K8sElement> {
             for ingress in ingresses.iter() {
                 let (middlewares_of_ingress, remaining): (Vec<_>, Vec<_>) =
                     traefik_middlewares.into_iter().partition(|middleware| {
-                        for route in ingress.spec.routes.as_ref().iter().flat_map(|r| r.iter()) {
+                        for route in ingress.rule_spec().iter().flat_map(|r| r.iter()) {
                             for m in route.middlewares.as_ref().iter().flat_map(|m| m.iter()) {
-                                if Some(m.name.as_str()) == middleware.metadata.name.as_deref() {
+                                if Some(m.name.as_str()) == middleware.metadata().name.as_deref() {
                                     return true;
                                 }
                             }
@@ -1973,14 +2145,17 @@ async fn create_or_patch_dynamic_object(
 mod tests {
     use super::*;
     use crate::infrastructure::CONTAINER_TYPE_LABEL;
-    use assert_json_diff::assert_json_include;
     use k8s_openapi::api::{
         apps::v1::DeploymentSpec,
         core::v1::{ContainerPort, EnvVar, PodTemplateSpec},
     };
 
-    async fn parse_unit_from_log_stream(stdout: &'static str) -> K8sDeploymentUnit {
+    async fn parse_unit_from_log_stream(
+        stdout: &'static str,
+        traefik_version: TraefikVersion,
+    ) -> anyhow::Result<K8sDeploymentUnit> {
         let _ = env_logger::builder().is_test(true).try_init();
+
         let bootstrapping_container = BootstrappingContainer {
             image: Image::from_str("aixigo/bootstrap-example:latest").unwrap(),
             image_pull_policy: Default::default(),
@@ -1991,13 +2166,17 @@ mod tests {
             log_stream: Box::new(stdout.as_bytes()),
         }];
 
-        K8sDeploymentUnit::parse_from_log_streams(&AppName::master(), HashSet::new(), log_streams)
-            .await
-            .unwrap()
+        K8sDeploymentUnit::parse_from_log_streams(
+            &AppName::master(),
+            HashSet::new(),
+            log_streams,
+            traefik_version,
+        )
+        .await
     }
 
     #[tokio::test]
-    async fn parse_unit_from_secret_stdout_where_value_is_base64_encoded() {
+    async fn parse_unit_from_secret_stdout_where_value_is_base64_encoded() -> anyhow::Result<()> {
         let unit = parse_unit_from_log_stream(
             r#"
             apiVersion: v1
@@ -2028,9 +2207,10 @@ mod tests {
               # In this example, the key data is not a real PEM-encoded private key
               tls.key: |
                 RXhhbXBsZSBkYXRhIGZvciB0aGUgVExTIGNydCBmaWVsZA==
-        "#,
+            "#,
+            TraefikVersion::V2,
         )
-        .await;
+        .await?;
 
         assert_json_diff::assert_json_eq!(
             unit.secrets,
@@ -2051,11 +2231,13 @@ mod tests {
                     "tls.key": "RXhhbXBsZSBkYXRhIGZvciB0aGUgVExTIGNydCBmaWVsZA=="
                 }
             }])
-        )
+        );
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn parse_unit_from_deployment_stdout() {
+    async fn parse_unit_from_deployment_stdout() -> anyhow::Result<()> {
         let unit = parse_unit_from_log_stream(
             r#"
             apiVersion: apps/v1
@@ -2078,9 +2260,10 @@ mod tests {
                     image: nginx:1.14.2
                     ports:
                     - containerPort: 80
-                        "#,
+            "#,
+            TraefikVersion::V2,
         )
-        .await;
+        .await?;
 
         assert_json_diff::assert_json_eq!(
             unit.deployments,
@@ -2121,11 +2304,13 @@ mod tests {
                     }
                 }
             }])
-        )
+        );
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn parse_unit_with_invalid_deployment() {
+    async fn parse_unit_with_invalid_deployment() -> anyhow::Result<()> {
         let unit = parse_unit_from_log_stream(
             r#"
             apiVersion: apps/v1
@@ -2148,15 +2333,105 @@ mod tests {
                     image: nginx:1.14.2
                     ports:
                     - containerPort: 80
-                        "#,
+            "#,
+            TraefikVersion::V2,
         )
-        .await;
+        .await?;
 
         assert!(unit.into_iter().next().is_none());
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn merge_deployment_into_bootstrapped_deployment() {
+    #[rstest::rstest]
+    #[case(
+        r#"
+        apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: traefik-resource
+        spec:
+          stripPrefix:
+            prefixes:
+              - /stripit
+        "#,
+        TraefikVersion::V2
+    )]
+    #[case(
+        r#"
+        apiVersion: traefik.containo.us/v1alpha1
+        kind: Middleware
+        metadata:
+          name: traefik-resource
+        spec:
+          stripPrefix:
+            prefixes:
+              - /stripit
+        "#,
+        TraefikVersion::V3
+    )]
+    #[case(
+        r#"
+        apiVersion: traefik.io/v1alpha1
+        kind: IngressRoute
+        metadata:
+          name: traefik-resource
+        spec:
+          entryPoints:
+            - web
+          routes:
+            - kind: Rule
+              match: PathPrefix(`/`)
+              priority: -100
+              services:
+                - name: prevant
+                  port: 80
+        "#,
+        TraefikVersion::V2
+    )]
+    #[case(
+        r#"
+        apiVersion: traefik.containo.us/v1alpha1
+        kind: IngressRoute
+        metadata:
+          name: traefik-resource
+        spec:
+          entryPoints:
+            - web
+          routes:
+            - kind: Rule
+              match: PathPrefix(`/`)
+              priority: -100
+              services:
+                - name: prevant
+                  port: 80
+        "#,
+        TraefikVersion::V3
+    )]
+    async fn fail_to_parse_unit_with_unexpected_traefik_version(
+        #[case] stdout: &'static str,
+        #[case] traefik_version: TraefikVersion,
+    ) {
+        let result = parse_unit_from_log_stream(stdout, traefik_version).await;
+
+        assert!(matches!(result, Err(err) if err.to_string()
+                .starts_with(&format!("Expected Traefik CRD version {traefik_version} for traefik-resource bot got v"))));
+    }
+
+    #[tokio::test]
+    #[rstest::rstest]
+    #[case::v2_traefik_route(TraefikIngressRoute::V2(crate::infrastructure::kubernetes::traefik_crds::v2::IngressRoute {
+        metadata: Default::default(),
+        spec: Default::default(),
+    }))]
+    #[case::v3_traefik_route(TraefikIngressRoute::V3(crate::infrastructure::kubernetes::traefik_crds::v3::IngressRoute {
+        metadata: Default::default(),
+        spec: Default::default(),
+    }))]
+    async fn merge_deployment_into_bootstrapped_deployment(
+        #[case] ingress_route: TraefikIngressRoute,
+    ) -> anyhow::Result<()> {
         let mut unit = parse_unit_from_log_stream(
             r#"
             apiVersion: apps/v1
@@ -2179,9 +2454,10 @@ mod tests {
                     image: nginx:1.14.2
                     ports:
                     - containerPort: 80
-                        "#,
+            "#,
+            TraefikVersion::V2,
         )
-        .await;
+        .await?;
 
         unit.merge(
             None,
@@ -2239,10 +2515,7 @@ mod tests {
                 }),
                 ..Default::default()
             },
-            TraefikIngressRoute {
-                metadata: Default::default(),
-                spec: Default::default(),
-            },
+            ingress_route,
             Vec::new(),
         );
 
@@ -2306,7 +2579,9 @@ mod tests {
                 }
               }]
             )
-        )
+        );
+
+        Ok(())
     }
 
     fn captured_example_from_k3s() -> Vec<serde_json::Value> {
@@ -3056,48 +3331,15 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn parse_from_json() {
-        let json = captured_example_from_k3s();
-
-        let unit = serde_json::from_value::<K8sDeploymentUnit>(json.into()).unwrap();
-
-        assert_eq!(unit.roles.len(), 0);
-        assert_eq!(unit.role_bindings.len(), 0);
-        assert_eq!(unit.stateful_sets.len(), 0);
-        assert_eq!(unit.config_maps.len(), 0);
-        assert_eq!(unit.secrets.len(), 0);
-        assert_eq!(unit.pvcs.len(), 0);
-        assert_eq!(unit.services.len(), 2);
-        assert_eq!(unit.pods.len(), 2);
-        assert_eq!(unit.deployments.len(), 2);
-        assert_eq!(unit.jobs.len(), 0);
-        assert_eq!(unit.service_accounts.len(), 0);
-        assert_eq!(unit.policies.len(), 0);
-        assert_eq!(unit.traefik_ingresses.len(), 0);
-        assert_eq!(unit.traefik_middlewares.len(), 0);
-    }
-
-    #[test]
-    fn to_json_vec() {
-        let json = captured_example_from_k3s();
-
-        let unit = serde_json::from_value::<K8sDeploymentUnit>(json.into()).unwrap();
-
-        assert_json_include!(
-            actual: serde_json::Value::Array(unit.to_json_vec()),
-            expected: serde_json::Value::Array(captured_example_from_k3s())
-        );
-    }
-
     mod prepare_for_back_up {
         use super::*;
 
         #[test]
-        fn clean_system_populations() {
-            let unit =
-                serde_json::from_value::<K8sDeploymentUnit>(captured_example_from_k3s().into())
-                    .unwrap();
+        fn clean_system_populations() -> anyhow::Result<()> {
+            let iter = captured_example_from_k3s()
+                .into_iter()
+                .filter_map(|e| serde_json::from_value::<K8sElement>(e).ok());
+            let unit = K8sDeploymentUnit::from_iter(iter, TraefikVersion::V2)?;
 
             let prepare_for_back_up = unit.into_back_up_payload();
 
@@ -3130,10 +3372,11 @@ mod tests {
                     .any(|deployment| deployment.status.is_some()),
                 "Deployment's status will be set by server"
             );
+            Ok(())
         }
 
         #[tokio::test]
-        async fn clean_jobs() {
+        async fn clean_jobs() -> anyhow::Result<()> {
             let unit = parse_unit_from_log_stream(
                 r#"
 apiVersion: batch/v1
@@ -3149,18 +3392,20 @@ spec:
         command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(2000)"]
       restartPolicy: Never
   backoffLimit: 4 "#,
+                TraefikVersion::V2,
             )
-            .await;
+            .await?;
 
             assert!(!unit.jobs.is_empty());
 
             let prepared_for_back_up = unit.into_back_up_payload();
 
             assert_eq!(prepared_for_back_up, Vec::new());
+            Ok(())
         }
 
         #[tokio::test]
-        async fn clean_volume_mounts() {
+        async fn clean_volume_mounts() -> anyhow::Result<()> {
             let unit = parse_unit_from_log_stream(
                 r#"
 apiVersion: v1
@@ -3219,8 +3464,9 @@ spec:
   storageClassName: ""
   volumeName: foo-pv
                 "#,
+                TraefikVersion::V2,
             )
-            .await;
+            .await?;
 
             assert!(!unit.secrets.is_empty());
             assert!(!unit.config_maps.is_empty());
@@ -3228,7 +3474,8 @@ spec:
 
             let prepared_for_back_up = unit.into_back_up_payload();
 
-            assert_eq!(prepared_for_back_up, Vec::new())
+            assert_eq!(prepared_for_back_up, Vec::new());
+            Ok(())
         }
     }
 
@@ -3420,11 +3667,12 @@ spec:
               apiVersion: v1
               fieldPath: metadata.namespace
             path: namespace"#,
+            TraefikVersion::V2,
         )
-        .await;
+        .await?;
 
         assert_json_diff::assert_json_eq!(
-            unit.without_managed_data().to_json_vec(),
+            unit.without_managed_data(),
             serde_json::json!([
               {
                 "apiVersion": "v1",
@@ -3547,7 +3795,7 @@ spec:
         use super::*;
 
         #[tokio::test]
-        async fn merge_routes_that_do_not_map_to_any_blueprint_config() {
+        async fn merge_routes_that_do_not_map_to_any_blueprint_config() -> anyhow::Result<()> {
             let unit = parse_unit_from_log_stream(
                 r#"apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -3569,8 +3817,9 @@ spec:
             port:
               number: 2001
 "#,
+                TraefikVersion::V2,
             )
-            .await;
+            .await?;
 
             let payload = unit
                 .update_with_merge_context(MergeBootstrappedElementsContext {
@@ -3587,14 +3836,12 @@ spec:
                         )],
                     ),
                 })
-                .unwrap()
-                .to_json_vec();
+                .unwrap();
 
             assert_json_diff::assert_json_include!(
                 actual: payload,
                 expected: serde_json::json!([
                     {
-                      "apiVersion": "traefik.containo.us/v1alpha1",
                       "kind": "IngressRoute",
                       "metadata": {
                         "annotations": {
@@ -3626,7 +3873,6 @@ spec:
                       }
                     },
                     {
-                      "apiVersion": "traefik.containo.us/v1alpha1",
                       "kind": "Middleware",
                       "metadata": {
                         "name": "whoami-middleware",
@@ -3641,10 +3887,12 @@ spec:
                     }
                 ])
             );
+            Ok(())
         }
 
         #[tokio::test]
-        async fn merge_routes_that_do_not_map_to_any_blueprint_config_without_path_prefixing() {
+        async fn merge_routes_that_do_not_map_to_any_blueprint_config_without_path_prefixing()
+        -> anyhow::Result<()> {
             let unit = parse_unit_from_log_stream(
                 r#"apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -3674,8 +3922,9 @@ spec:
   - port: 2001
     targetPort: 2001
 "#,
+                TraefikVersion::V2,
             )
-            .await;
+            .await?;
 
             let payload = unit
                 .update_with_merge_context(MergeBootstrappedElementsContext {
@@ -3692,8 +3941,7 @@ spec:
                         )],
                     ),
                 })
-                .unwrap()
-                .to_json_vec();
+                .unwrap();
 
             assert_json_diff::assert_json_include!(
                 actual: payload,
@@ -3712,7 +3960,6 @@ spec:
                         }
                     },
                     {
-                        "apiVersion": "traefik.containo.us/v1alpha1",
                         "kind": "IngressRoute",
                         "metadata": {
                             "annotations": {
@@ -3740,6 +3987,7 @@ spec:
                     }
                 ])
             );
+            Ok(())
         }
     }
 
@@ -3800,10 +4048,12 @@ data:
                     args: vec![String::from("sh"), String::from("-c"), String::from(script)],
                 }],
                 None,
+                TraefikVersion::V2,
             )
             .await?;
 
-            let payload_without_existing_secret = unit_without_existing_secret.to_json_vec();
+            let payload_without_existing_secret =
+                serde_json::to_value(&unit_without_existing_secret).unwrap();
             unit_without_existing_secret
                 .deploy(client.clone(), &app_name)
                 .await?;
@@ -3817,13 +4067,11 @@ data:
                     args: vec![String::from("sh"), String::from("-c"), String::from(script)],
                 }],
                 None,
+                TraefikVersion::V2,
             )
             .await?;
 
-            assert_json_eq!(
-                payload_without_existing_secret,
-                unit_with_existing_secret.to_json_vec()
-            );
+            assert_json_eq!(payload_without_existing_secret, unit_with_existing_secret);
 
             Ok(())
         }
