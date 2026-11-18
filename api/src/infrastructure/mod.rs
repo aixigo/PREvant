@@ -40,7 +40,7 @@ use domain::{
 pub use dummy_infrastructure::Dummy;
 use futures::stream::BoxStream;
 pub use infrastructure::{HttpForwarder, Infrastructure};
-pub use kubernetes::Kubernetes;
+pub use kubernetes::{Kubernetes, KubernetesInfrastructureError};
 use regex::Regex;
 use serde_json::{Value, map::Map};
 use std::collections::HashMap;
