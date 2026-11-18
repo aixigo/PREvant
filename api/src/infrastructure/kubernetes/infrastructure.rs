@@ -29,19 +29,20 @@ use super::payloads::{
     deployment_payload, image_pull_secret_payload, ingress_route_payload, middleware_payload,
     namespace_payload, persistent_volume_claim_payload, secrets_payload, service_payload,
 };
-use super::traefik_crds::{IngressRoute, Middleware};
 use crate::config::{Config as PREvantConfig, ContainerConfig, Runtime};
 use crate::infrastructure::{
     HttpForwarder, Infrastructure, OWNERS_LABEL, USER_DEFINED_PARAMETERS_LABEL,
     kubernetes::{
         element::{K8sBackupElement, K8sElement},
         payloads::{kubernetes_object_to_service, namespace_annotations},
+        traefik_crds,
     },
 };
 use anyhow::Result;
 use async_stream::stream;
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
+use domain::traefik::TraefikVersion;
 use domain::{
     AppName, Image, Owner,
     app_blueprints::{DesiredServiceStatus, UserDefinedParameters},
@@ -65,10 +66,11 @@ use k8s_openapi::api::{
     apps::v1::Deployment as V1Deployment, core::v1::Namespace as V1Namespace,
     core::v1::Pod as V1Pod, core::v1::Secret as V1Secret, core::v1::Service as V1Service,
 };
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use k8s_openapi::jiff::Timestamp;
 use kube::api::ObjectMeta;
 use kube::config::Kubeconfig;
-use kube::{Resource, ResourceExt};
+use kube::{CustomResourceExt, Resource, ResourceExt};
 use kube::{
     api::{Api, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     client::Client,
@@ -88,10 +90,13 @@ use std::{
 #[derive(Clone)]
 pub struct Kubernetes {
     config: PREvantConfig,
+    traefik_version: TraefikVersion,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum KubernetesInfrastructureError {
+    #[error("Traefik version 1 has never been supported")]
+    TraefikVersion1NeverSupported,
     #[error("Failed to create Kubernetes client: {0}")]
     CannotInitializeClient(CannotInitializeClientError),
     #[error("Unexpected Kubernetes interaction error: {err}")]
@@ -146,12 +151,32 @@ impl From<NamespaceCreationResponse> for V1Namespace {
 }
 
 impl Kubernetes {
-    pub fn new(config: PREvantConfig) -> Self {
-        Self { config }
+    pub async fn new(config: PREvantConfig) -> Result<Self, KubernetesInfrastructureError> {
+        let traefik_version = match config.traefik.version {
+            Some(traefik_version) => traefik_version,
+            None => Self::traefik_version(Self::client_from(&config.runtime).await?).await?,
+        };
+
+        if TraefikVersion::V1 == traefik_version {
+            return Err(KubernetesInfrastructureError::TraefikVersion1NeverSupported);
+        }
+
+        log::info!("Using Traefik version {traefik_version} for Kubernetes backend");
+
+        Ok(Self {
+            config,
+            traefik_version,
+        })
     }
 
     async fn client(&self) -> Result<Client, KubernetesInfrastructureError> {
-        let configuration = match &self.config.runtime {
+        Self::client_from(&self.config.runtime).await
+    }
+
+    async fn client_from(
+        runtime_config: &crate::config::Runtime,
+    ) -> Result<Client, KubernetesInfrastructureError> {
+        let configuration = match runtime_config {
             Runtime::Kubernetes(k8s_config) if k8s_config.kube_config.is_some() => {
                 let config_file = k8s_config.kube_config.as_ref().unwrap();
                 let config = tokio::fs::read_to_string(&config_file)
@@ -191,6 +216,42 @@ impl Kubernetes {
                 CannotInitializeClientError::KubeError(err),
             )
         })
+    }
+
+    async fn traefik_version(
+        client: kube::Client,
+    ) -> Result<TraefikVersion, KubernetesInfrastructureError> {
+        let api = Api::<CustomResourceDefinition>::all(client);
+        let version = match api.list(&Default::default()).await {
+            Ok(crds) => {
+                // Looking for the minimal Traefik CRD because Traefik v2 defines both CRD types
+                // and thus we need to be defensive because Traefik v2 for PREvant is younger and
+                // the CRDs were longer arround.
+                crds.into_iter()
+                    .filter_map(|crd| {
+                        if crd.spec.group == traefik_crds::v2::Middleware::group(&()) {
+                            Some(TraefikVersion::V2)
+                        } else if crd.spec.group == traefik_crds::v3::Middleware::group(&()) {
+                            Some(TraefikVersion::V3)
+                        } else {
+                            None
+                        }
+                    })
+                    .min()
+                    .unwrap_or(TraefikVersion::V2)
+            }
+            Err(kube::error::Error::Api(s)) if s.is_forbidden() => {
+                log::warn!(
+                    "Cannot access Custom Resource Definitions to determine the Traefik version in use ({s}). Assuming Traefik v2 is in use."
+                );
+                TraefikVersion::V2
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
+
+        Ok(version)
     }
 
     async fn get_deployment_and_pod(
@@ -350,11 +411,12 @@ impl Kubernetes {
             Option<V1Secret>,
             V1Service,
             V1Deployment,
-            IngressRoute,
-            Vec<Middleware>,
+            traefik_crds::TraefikIngressRoute,
+            Vec<traefik_crds::TraefikMiddleware>,
         ),
         KubernetesInfrastructureError,
     > {
+        let traefik_version = self.traefik_version;
         let secret = secrets_payload(app_name, &deployable_service.blueprint_service);
 
         let service = service_payload(app_name, deployable_service);
@@ -374,8 +436,10 @@ impl Kubernetes {
             &deployable_service.ingress_route,
             &deployable_service.service_type,
             Some(deployable_service.port),
+            traefik_version,
         );
-        let middlewares = middleware_payload(app_name, &deployable_service.ingress_route);
+        let middlewares =
+            middleware_payload(app_name, &deployable_service.ingress_route, traefik_version);
 
         Ok((secret, service, deployment, ingress_route, middlewares))
     }
@@ -516,6 +580,68 @@ impl Kubernetes {
     }
 }
 
+macro_rules! fetch_traefik_ingress_route {
+    ($api:expr, $service:expr, $route_type:path, $middleware_type:path) => {{
+        let api = Api::<$route_type>::namespaced(
+            $api.into_client(),
+            $service.metadata.namespace.as_deref().unwrap_or_default(),
+        );
+        let routes = api.list(&Default::default()).await?;
+
+        let Some((ingress_route, inner_route)) = routes
+            .iter()
+            .filter_map(|r| Some((r, r.spec.routes.as_ref()?)))
+            .filter_map(|(ingress_route, routes)| {
+                for route in routes {
+                    for s in &route.services {
+                        if Some(&s.name) == $service.meta().name.as_ref() {
+                            return Some((ingress_route, route.clone()));
+                        }
+                    }
+                }
+
+                None
+            })
+            .next()
+        else {
+            return Ok(None);
+        };
+
+        let api = Api::<$middleware_type>::namespaced(
+            api.into_client(),
+            $service.metadata.namespace.as_deref().unwrap_or_default(),
+        );
+        let mut middlewares = inner_route
+            .middlewares
+            .iter()
+            .flatten()
+            .map(|m| api.get(&m.name))
+            .collect::<FuturesUnordered<_>>();
+
+        let mut traefik_middlewares = Vec::with_capacity(middlewares.len());
+        while let Some(middleware) = middlewares.try_next().await? {
+            let middleware = TraefikMiddleware::from_json(
+                middleware.metadata.name.expect("There should be a name"),
+                middleware.spec.0,
+            )?;
+
+            traefik_middlewares.push(middleware);
+        }
+
+        Ok(Some(TraefikIngressRoute::with_existing_routing_rules(
+            ingress_route.spec.entry_points.clone().unwrap_or_default(),
+            TraefikRouterRule::from_str(&inner_route.r#match).unwrap(),
+            traefik_middlewares,
+            ingress_route
+                .spec
+                .tls
+                .clone()
+                .unwrap_or_default()
+                .cert_resolver,
+        )))
+    }};
+}
+
 #[async_trait]
 impl Infrastructure for Kubernetes {
     type BootstrappedElement = K8sElement;
@@ -648,16 +774,22 @@ impl Infrastructure for Kubernetes {
         app_names: Vec<AppName>,
     ) -> Result<HashMap<AppName, Vec<Regex>>> {
         let mut client = Some(self.client().await?);
+        let traefik_version = self.traefik_version;
 
         let mut app_names_and_router_names = HashMap::new();
         for app_name in app_names {
-            let api = Api::<IngressRoute>::namespaced(
+            let api = Api::<kube::api::DynamicObject>::namespaced_with(
                 client.take().unwrap(),
                 &app_name.to_rfc1123_namespace_id(),
+                &match traefik_version {
+                    TraefikVersion::V1 => unreachable!("Traefik V1 was never supported"),
+                    TraefikVersion::V2 => traefik_crds::v2::IngressRoute::api_resource(),
+                    TraefikVersion::V3 => traefik_crds::v3::IngressRoute::api_resource(),
+                },
             );
 
             let response = api
-                .list(&ListParams {
+                .list_metadata(&ListParams {
                     // TODO: eventually PREvant should set labels to make sure to get only the ones
                     // that are managed by PREvant.
                     // label_selector: Some(format!("{APP_NAME_LABEL}={app_name}")),
@@ -695,7 +827,7 @@ impl Infrastructure for Kubernetes {
     ) -> Result<Option<Self::BackupPayload>> {
         let client = self.client().await?;
 
-        let unit = K8sDeploymentUnit::fetch(client, app_name).await?;
+        let unit = K8sDeploymentUnit::fetch(client, app_name, self.traefik_version).await?;
         if unit.is_empty() {
             return Ok(None);
         }
@@ -735,7 +867,8 @@ impl Infrastructure for Kubernetes {
                         .flat_map(|service| service.bootstrapped_companion_elements.iter()),
                 )
                 .cloned(),
-        );
+            self.traefik_version,
+        )?;
 
         for deployable_service in &deployment_unit.services {
             let (secret, service, deployment, ingress_route, middlewares) = self
@@ -819,8 +952,10 @@ impl Infrastructure for Kubernetes {
         app_name: &AppName,
         infrastructure_payload: Self::BackupPayload,
     ) -> Result<()> {
-        let unit =
-            K8sDeploymentUnit::from_iter(infrastructure_payload.into_iter().map(K8sElement::from));
+        let unit = K8sDeploymentUnit::from_iter(
+            infrastructure_payload.into_iter().map(K8sElement::from),
+            self.traefik_version,
+        )?;
         unit.delete(self.client().await?, app_name).await
     }
 
@@ -829,8 +964,10 @@ impl Infrastructure for Kubernetes {
         app_name: &AppName,
         infrastructure_payload: Self::BackupPayload,
     ) -> Result<Option<App>> {
-        let unit =
-            K8sDeploymentUnit::from_iter(infrastructure_payload.into_iter().map(K8sElement::from));
+        let unit = K8sDeploymentUnit::from_iter(
+            infrastructure_payload.into_iter().map(K8sElement::from),
+            self.traefik_version,
+        )?;
         unit.deploy(self.client().await?, app_name).await?;
         self.fetch_app(app_name).await
     }
@@ -992,63 +1129,26 @@ impl Infrastructure for Kubernetes {
             return Ok(None);
         };
 
-        let api = Api::<IngressRoute>::namespaced(
-            api.into_client(),
-            &service.metadata.namespace.clone().unwrap(),
-        );
-        let routes = api.list(&Default::default()).await?;
-
-        let Some((ingress_route, inner_route)) = routes
-            .iter()
-            .filter_map(|r| Some((r, r.spec.routes.as_ref()?)))
-            .filter_map(|(ingress_route, routes)| {
-                for route in routes {
-                    for s in &route.services {
-                        if Some(&s.name) == service.meta().name.as_ref() {
-                            return Some((ingress_route, route.clone()));
-                        }
-                    }
-                }
-
-                None
-            })
-            .next()
-        else {
-            return Ok(None);
-        };
-
-        let api = Api::<Middleware>::namespaced(
-            api.into_client(),
-            &service.metadata.namespace.clone().unwrap(),
-        );
-        let mut middlewares = inner_route
-            .middlewares
-            .iter()
-            .flatten()
-            .map(|m| api.get(&m.name))
-            .collect::<FuturesUnordered<_>>();
-
-        let mut traefik_middlewares = Vec::with_capacity(middlewares.len());
-        while let Some(middleware) = middlewares.try_next().await? {
-            let middleware = TraefikMiddleware::from_json(
-                middleware.metadata.name.expect("There should be a name"),
-                middleware.spec.0,
-            )?;
-
-            traefik_middlewares.push(middleware);
+        let traefik_version = self.traefik_version;
+        match traefik_version {
+            TraefikVersion::V1 => unreachable!("Traefik V1 was never supported"),
+            TraefikVersion::V2 => {
+                fetch_traefik_ingress_route!(
+                    api,
+                    &service,
+                    traefik_crds::v2::IngressRoute,
+                    traefik_crds::v2::Middleware
+                )
+            }
+            TraefikVersion::V3 => {
+                fetch_traefik_ingress_route!(
+                    api,
+                    &service,
+                    traefik_crds::v3::IngressRoute,
+                    traefik_crds::v3::Middleware
+                )
+            }
         }
-
-        Ok(Some(TraefikIngressRoute::with_existing_routing_rules(
-            ingress_route.spec.entry_points.clone().unwrap_or_default(),
-            TraefikRouterRule::from_str(&inner_route.r#match).unwrap(),
-            traefik_middlewares,
-            ingress_route
-                .spec
-                .tls
-                .clone()
-                .unwrap_or_default()
-                .cert_resolver,
-        )))
     }
 
     async fn bootstrap_companions_with_raw_elements(
@@ -1079,6 +1179,7 @@ impl Infrastructure for Kubernetes {
             context.app_name,
             &bootstrapping_containers,
             bootstrap_image_pull_secret,
+            self.traefik_version,
         )
         .await
         {
@@ -1111,10 +1212,12 @@ impl Infrastructure for Kubernetes {
         context: MergeBootstrappedElementsContext<'_>,
         raw_elements: Vec<Self::BootstrappedElement>,
     ) -> Result<Vec<Self::BootstrappedElement>> {
-        Ok(K8sDeploymentUnit::from_iter(raw_elements)
-            .update_with_merge_context(context)?
-            .into_iter()
-            .collect::<Vec<_>>())
+        Ok(
+            K8sDeploymentUnit::from_iter(raw_elements, self.traefik_version)?
+                .update_with_merge_context(context)?
+                .into_iter()
+                .collect::<Vec<_>>(),
+        )
     }
 
     async fn resolve_infrastructure_template_data(
@@ -1236,7 +1339,9 @@ mod tests {
                 ..Default::default()
             }),
             ..Default::default()
-        });
+        })
+        .await
+        .unwrap();
 
         (k3s_instance, infra, tempdir)
     }
@@ -1377,6 +1482,7 @@ mod tests {
         let (unit, _) = StaticBootstrapCompanion {
             app_name: app_name.clone(),
             service_configs,
+            traefik_version: infra.traefik_version,
             ..Default::default()
         }
         .bootstrap(&infra)
@@ -1400,11 +1506,11 @@ mod tests {
             }),
         );
 
-        let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
+        let payload =
+            K8sDeploymentUnit::fetch(infra.client().await?, &app_name, infra.traefik_version)
+                .await?
+                .without_managed_data()
+                .without_date_annotations();
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -1414,7 +1520,6 @@ mod tests {
                 {},
                 {},
                 {
-                  "apiVersion": "traefik.containo.us/v1alpha1",
                   "kind": "IngressRoute",
                   "metadata": {
                     "annotations": {
@@ -1446,7 +1551,6 @@ mod tests {
                   }
                 },
                 {
-                  "apiVersion": "traefik.containo.us/v1alpha1",
                   "kind": "Middleware",
                   "metadata": {
                     "name": "whoami-middleware",
@@ -1466,11 +1570,11 @@ mod tests {
         // Redeploy again to check if the operation is idempotent
         infra.deploy_services(unit, &Default::default()).await?;
 
-        let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
+        let payload_2 =
+            K8sDeploymentUnit::fetch(infra.client().await?, &app_name, infra.traefik_version)
+                .await?
+                .without_managed_data()
+                .without_date_annotations();
         assert_json_diff::assert_json_eq!(payload, payload_2);
 
         Ok(())
@@ -1486,15 +1590,16 @@ mod tests {
         let (unit, _) = StaticBootstrapCompanion {
             generate_whoami_deployment: false,
             app_name: app_name.clone(),
+            traefik_version: infra.traefik_version,
             ..Default::default()
         }
         .bootstrap(&infra)
         .await?;
 
-        let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .to_json_vec();
+        let payload =
+            K8sDeploymentUnit::fetch(infra.client().await?, &app_name, infra.traefik_version)
+                .await?
+                .without_managed_data();
 
         assert_json_diff::assert_json_include!(
             actual: payload,
@@ -1502,7 +1607,6 @@ mod tests {
                 {},
                 {},
                 {
-                  "apiVersion": "traefik.containo.us/v1alpha1",
                   "kind": "IngressRoute",
                   "metadata": {
                     "annotations": {
@@ -1532,7 +1636,6 @@ mod tests {
                   }
                 },
                 {
-                  "apiVersion": "traefik.containo.us/v1alpha1",
                   "kind": "Middleware",
                   "metadata": {
                     "name": "whoami-middleware",
@@ -1552,10 +1655,10 @@ mod tests {
         // Redeploy again to check if the operation is idempotent
         infra.deploy_services(unit, &Default::default()).await?;
 
-        let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .to_json_vec();
+        let payload_2 =
+            K8sDeploymentUnit::fetch(infra.client().await?, &app_name, infra.traefik_version)
+                .await?
+                .without_managed_data();
         assert_json_diff::assert_json_eq!(payload, payload_2);
 
         Ok(())
@@ -1570,6 +1673,7 @@ mod tests {
         let app_name = AppName::master();
         StaticBootstrapCompanion {
             app_name: app_name.clone(),
+            traefik_version: infra.traefik_version,
             ..Default::default()
         }
         .bootstrap(&infra)
@@ -1600,6 +1704,7 @@ mod tests {
         let (unit, _) = StaticBootstrapCompanion {
             app_name: app_name.clone(),
             service_configs: vec![blueprint_service!("whoami", "traefik/whoami:v1.11.0")],
+            traefik_version: infra.traefik_version,
             ..Default::default()
         }
         .bootstrap(&infra)
@@ -1627,20 +1732,20 @@ mod tests {
             }),
         );
 
-        let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
+        let payload =
+            K8sDeploymentUnit::fetch(infra.client().await?, &app_name, infra.traefik_version)
+                .await?
+                .without_managed_data()
+                .without_date_annotations();
 
         // Redeploy again to check if the operation is idempotent
         infra.deploy_services(unit, &Default::default()).await?;
 
-        let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
+        let payload_2 =
+            K8sDeploymentUnit::fetch(infra.client().await?, &app_name, infra.traefik_version)
+                .await?
+                .without_managed_data()
+                .without_date_annotations();
         assert_json_diff::assert_json_eq!(payload, payload_2);
 
         Ok(())
@@ -1715,20 +1820,20 @@ mod tests {
             }),
         );
 
-        let payload = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
+        let payload =
+            K8sDeploymentUnit::fetch(infra.client().await?, &app_name, infra.traefik_version)
+                .await?
+                .without_managed_data()
+                .without_date_annotations();
 
         // Redeploy again to check if the operation is idempotent
         infra.deploy_services(unit, &Default::default()).await?;
 
-        let payload_2 = K8sDeploymentUnit::fetch(infra.client().await?, &app_name)
-            .await?
-            .without_managed_data()
-            .without_date_annotations()
-            .to_json_vec();
+        let payload_2 =
+            K8sDeploymentUnit::fetch(infra.client().await?, &app_name, infra.traefik_version)
+                .await?
+                .without_managed_data()
+                .without_date_annotations();
         assert_json_diff::assert_json_eq!(payload, payload_2);
 
         Ok(())
@@ -1795,6 +1900,7 @@ mod tests {
         app_name: AppName,
         service_configs: Vec<domain::app_blueprints::ServiceConfig>,
         app_to_replicate_from: Option<(AppName, App)>,
+        traefik_version: TraefikVersion,
     }
 
     impl Default for StaticBootstrapCompanion {
@@ -1804,6 +1910,7 @@ mod tests {
                 app_name: AppName::master(),
                 service_configs: Vec::new(),
                 app_to_replicate_from: None,
+                traefik_version: TraefikVersion::V2,
             }
         }
     }
@@ -1959,6 +2066,7 @@ mod tests {
                 context.app_name,
                 HashSet::new(),
                 log_streams,
+                self.traefik_version,
             )
             .await?;
 
@@ -1970,10 +2078,12 @@ mod tests {
             context: MergeBootstrappedElementsContext<'_>,
             raw_elements: Vec<Self::BootstrappedElement>,
         ) -> Result<Vec<Self::BootstrappedElement>> {
-            Ok(K8sDeploymentUnit::from_iter(raw_elements)
-                .update_with_merge_context(context)?
-                .into_iter()
-                .collect::<Vec<_>>())
+            Ok(
+                K8sDeploymentUnit::from_iter(raw_elements, self.traefik_version)?
+                    .update_with_merge_context(context)?
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            )
         }
     }
 }

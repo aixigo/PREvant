@@ -83,6 +83,7 @@ rules:
  # Traefik CRDs: (for Traefik v2 use traefik.containo.us and for Traefik v3 use traefik.io)
  - apiGroups:
     - traefik.containo.us
+    - traefik.io
    resources:
     - middlewares
     - ingressroutes
@@ -93,13 +94,15 @@ rules:
     - update
     - patch
     - delete
- # Makes sure PREvant can read what it is allowed to read
+ # Makes sure PREvant can read the custom resource definitions to inspect which
+ # Traefik version is in use.
  - apiGroups:
     - apiextensions.k8s.io
    resources:
     - customresourcedefinitions
    verbs:
     - get
+    - list
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
