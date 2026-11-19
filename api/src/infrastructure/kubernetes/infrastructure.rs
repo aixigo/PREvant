@@ -564,6 +564,8 @@ impl Infrastructure for Kubernetes {
     }
 
     async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>> {
+        log::trace!("Fetching kubernetes manifests for {app_name}");
+
         let namespace = app_name.to_rfc1123_namespace_id();
         let list_param = Default::default();
 

@@ -192,7 +192,7 @@ async fn main() -> Result<(), StartUpError> {
         .attach(DatabasePool::fairing())
         .attach(Auth::fairing())
         .attach(AppRepository::fairing())
-        .attach(AppProcessingQueue::fairing())
+        .attach(AppProcessingQueue::fairing(infrastructure.clone()))
         .attach(TicketsCaching::fairing())
         .attach(Apps::fairing(config, infrastructure))
         .attach(AppCleanUp::fairing())

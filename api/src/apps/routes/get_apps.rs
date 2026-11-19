@@ -1,24 +1,23 @@
 use crate::{
     apps::{
-        repository::{AppPostgresRepository, BackupUpdateReceiver},
-        routes::AppV2,
-        Apps, HostMetaCache,
+        HostMetaCache, repository::BackupUpdateReceiver, routes::AppV2,
+        runtime::RuntimeInfrastructureAdapter,
     },
     http_result::{HttpApiError, HttpResult},
     models::RequestInfo,
 };
 use domain::{
-    app_instance::{App, AppWithHostMeta},
     AppName,
+    app_instance::{App, AppWithHostMeta, RuntimeInfrastructure},
 };
 use http::StatusCode;
 use http_api_problem::HttpApiProblem;
 use rocket::{
+    Shutdown, State,
     response::stream::{Event, EventStream},
     serde::json::Json,
-    Shutdown, State,
 };
-use serde::{ser::SerializeMap as _, Serialize};
+use serde::{Serialize, ser::SerializeMap as _};
 use std::collections::HashMap;
 use tokio::{select, sync::watch::Receiver};
 use tokio_stream::StreamExt;
@@ -59,32 +58,29 @@ impl Serialize for AppsV2 {
 
 #[rocket::get("/", format = "application/json", rank = 1)]
 pub(super) async fn apps_v1(
-    apps: &State<Apps>,
+    runtime_infra_structure_adapter: &State<RuntimeInfrastructureAdapter>,
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
-    app_repository: &State<Option<AppPostgresRepository>>,
 ) -> HttpResult<Json<AppsV1>> {
-    let (apps, app_backups) = futures::try_join!(
-        async { apps.fetch_apps().await.map_err(HttpApiError::from) },
-        async {
-            match &**app_repository {
-                Some(app_repository) => app_repository.fetch_backed_up_apps().await.map_err(|e| {
-                    HttpApiError::from(
-                        HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                            .detail(e.to_string()),
-                    )
-                }),
-                None => Ok(HashMap::new()),
-            }
-        }
-    )?;
+    let apps = runtime_infra_structure_adapter
+        .fetch_apps()
+        .await
+        .map_err(|e| {
+            HttpApiError::from(
+                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                    .detail(e.to_string()),
+            )
+        })?;
 
     // We filter the apps by the backups here because the deprecated API wouldn't have an option to
     // show the outside what kind of application the consumer received. Seeing the backed up
     // applications on the receivers' ends would be a semantic breaking change.
     let apps = apps
         .into_iter()
-        .filter(|(app_name, _)| !app_backups.contains_key(app_name))
+        .filter_map(|(app_name, app)| match app {
+            either::Either::Left(app) => Some((app_name, app)),
+            either::Either::Right(_) => None,
+        })
         .collect::<HashMap<_, _>>();
 
     Ok(Json(AppsV1(
@@ -113,32 +109,35 @@ fn merge(
 
 #[rocket::get("/", format = "application/vnd.prevant.v2+json", rank = 2)]
 pub(super) async fn apps_v2(
-    apps: &State<Apps>,
-    app_repository: &State<Option<AppPostgresRepository>>,
+    runtime_infra_structure_adapter: &State<RuntimeInfrastructureAdapter>,
     request_info: RequestInfo,
     host_meta_cache: &State<HostMetaCache>,
 ) -> HttpResult<Json<AppsV2>> {
-    let (apps, app_backups) = futures::try_join!(
-        async {
-            apps.fetch_apps()
-                .await
-                .map_err(HttpApiError::from)
-                .map(|apps| host_meta_cache.assign_host_meta_data(apps, &request_info))
-        },
-        async {
-            match &**app_repository {
-                Some(app_repository) => app_repository.fetch_backed_up_apps().await.map_err(|e| {
-                    HttpApiError::from(
-                        HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
-                            .detail(e.to_string()),
-                    )
-                }),
-                None => Ok(HashMap::new()),
-            }
-        }
-    )?;
+    let apps = runtime_infra_structure_adapter
+        .fetch_apps()
+        .await
+        .map_err(|e| {
+            HttpApiError::from(
+                HttpApiProblem::with_title_and_type(StatusCode::INTERNAL_SERVER_ERROR)
+                    .detail(e.to_string()),
+            )
+        })?;
 
-    Ok(Json(AppsV2(merge(apps, app_backups))))
+    let apps = apps
+        .into_iter()
+        .map(|(app_name, app)| {
+            let app_v2 = match app {
+                either::Either::Left(app) => AppV2::Deployed(
+                    host_meta_cache.assign_host_meta_data_for_app(&app_name, app, &request_info),
+                ),
+                either::Either::Right(backed_up_app) => AppV2::BackedUp(backed_up_app.into_app()),
+            };
+
+            (app_name, app_v2)
+        })
+        .collect::<HashMap<_, _>>();
+
+    Ok(Json(AppsV2(apps)))
 }
 
 #[rocket::get("/", format = "text/event-stream", rank = 3)]
@@ -239,8 +238,8 @@ mod tests {
     use assert_json_diff::assert_json_eq;
     use chrono::Utc;
     use domain::{
-        app_instance::{Service, ServiceStatus, ServiceWithHostMeta, WebHostMeta},
         Owner,
+        app_instance::{Service, ServiceStatus, ServiceWithHostMeta, WebHostMeta},
     };
     use std::{collections::HashSet, str::FromStr};
     use url::Url;
@@ -480,8 +479,8 @@ mod tests {
         use domain::{AppName, blueprint_service};
         use rocket::http::ContentType;
         use rocket::local::asynchronous::Client;
-        use serde_json::json;
         use serde_json::Value;
+        use serde_json::json;
         use std::collections::HashMap;
 
         async fn set_up_rocket_with_dummy_infrastructure_and_a_running_app(
@@ -510,8 +509,8 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn host_header_response_with_xforwardedhost_and_port_xforwardedproto_and_xforwardedport(
-        ) -> Result<(), crate::apps::AppsError> {
+        async fn host_header_response_with_xforwardedhost_and_port_xforwardedproto_and_xforwardedport()
+        -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
                 crate::apps::host_meta_crawling(Config::default());
             let client =
@@ -546,8 +545,8 @@ mod tests {
             Ok(())
         }
         #[tokio::test]
-        async fn host_header_response_with_xforwardedhost_xforwardedproto_and_xforwardedport(
-        ) -> Result<(), crate::apps::AppsError> {
+        async fn host_header_response_with_xforwardedhost_xforwardedproto_and_xforwardedport()
+        -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
                 crate::apps::host_meta_crawling(Config::default());
             let client =
@@ -580,8 +579,8 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn host_header_response_with_xforwardedproto_and_other_default_values(
-        ) -> Result<(), crate::apps::AppsError> {
+        async fn host_header_response_with_xforwardedproto_and_other_default_values()
+        -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
                 crate::apps::host_meta_crawling(Config::default());
             let client =
@@ -612,8 +611,8 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn host_header_response_with_xforwardedhost_and_other_default_values(
-        ) -> Result<(), crate::apps::AppsError> {
+        async fn host_header_response_with_xforwardedhost_and_other_default_values()
+        -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
                 crate::apps::host_meta_crawling(Config::default());
             let client =
@@ -643,8 +642,8 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn host_header_response_with_xforwardedport_and_default_values(
-        ) -> Result<(), crate::apps::AppsError> {
+        async fn host_header_response_with_xforwardedport_and_default_values()
+        -> Result<(), crate::apps::AppsError> {
             let (host_meta_cache, mut host_meta_crawler) =
                 crate::apps::host_meta_crawling(Config::default());
             let client =

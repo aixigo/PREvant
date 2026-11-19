@@ -49,6 +49,7 @@ pub trait Infrastructure: Send + Sync {
     type BackupPayload: Send + serde::Serialize + for<'de> serde::Deserialize<'de>;
 
     /// Returns a `map` of `app-name` and the details of the deployed applications.
+    #[deprecated(note = "use domain::app_instance::RuntimeInfrastructure::fetch_apps")]
     async fn fetch_apps(&self) -> Result<HashMap<AppName, App>>;
 
     async fn fetch_traefik_router_names(
@@ -58,6 +59,7 @@ pub trait Infrastructure: Send + Sync {
         Ok(HashMap::new())
     }
 
+    #[deprecated(note = "use domain::app_instance::RuntimeInfrastructure::fetch_app")]
     async fn fetch_app(&self, app_name: &AppName) -> Result<Option<App>>;
 
     async fn fetch_app_as_backup_based_infrastructure_payload(

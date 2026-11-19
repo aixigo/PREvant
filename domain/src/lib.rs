@@ -9,6 +9,7 @@ pub use owner::Owner;
 pub mod app_blueprints;
 pub mod app_deployment;
 pub mod app_instance;
+pub mod app_life_cycle;
 mod app_name;
 mod image;
 mod owner;

@@ -1,4 +1,8 @@
-use crate::{apps::Apps, config::Config, infrastructure::InfrastructureProxy};
+use crate::{
+    apps::{Apps, repository::AppPostgresRepository, runtime::RuntimeInfrastructureAdapter},
+    config::Config,
+    infrastructure::InfrastructureProxy,
+};
 use domain::{AppName, app_instance::App, traefik::TraefikIngressRoute};
 use rocket::{
     Build, Orbit, Rocket,
@@ -46,7 +50,16 @@ impl Fairing for AppsFairing {
             infrastructure.take().expect("Should be available")
         };
 
-        let apps = match Apps::new(self.config.clone(), infrastructure) {
+        let repository = rocket
+            .state::<Option<AppPostgresRepository>>()
+            .cloned()
+            .flatten();
+
+        let runtime_infrastructure_adapter =
+            RuntimeInfrastructureAdapter::new(infrastructure.clone(), repository);
+
+        // TODO: apps should be eventually removed
+        let apps = match Apps::new(self.config.clone(), infrastructure.clone()) {
             Ok(apps) => apps.with_base_route(prevant_base_route.cloned().flatten()),
             Err(_err) => {
                 // TODO: message
@@ -62,6 +75,8 @@ impl Fairing for AppsFairing {
         let app_updates = apps.app_updates().await;
 
         Ok(rocket
+            .manage(runtime_infrastructure_adapter)
+            .manage(infrastructure)
             .manage(apps)
             .manage(host_meta_cache)
             .manage(app_updates))

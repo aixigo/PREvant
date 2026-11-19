@@ -1,18 +1,20 @@
 use crate::{
     apps::{AppTask, AppsError},
+    infrastructure::BackupPayloadProxy,
     models::AppStatusChangeId,
 };
 use chrono::{DateTime, Utc};
 use domain::{
     AppName, Owner,
     app_blueprints::{ServiceConfig, UserDefinedParameters},
-    app_instance::{App, ContainerType, Service, ServiceStatus},
+    app_instance::{App, BackedUpApp, ContainerType, Service, ServiceStatus},
+    app_life_cycle::BackupRepository,
 };
 use rocket::{
     Build, Orbit, Rocket,
     fairing::{Fairing, Info, Kind},
 };
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction, types::Json};
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
@@ -20,6 +22,7 @@ use std::{
     sync::Mutex,
 };
 use tokio::sync::watch::Receiver;
+use uuid::Uuid;
 
 pub struct AppRepository {
     backup_poller: Mutex<Option<BackupPoller>>,
@@ -104,7 +107,7 @@ impl AppPostgresRepository {
     ) -> Result<Option<serde_json::Value>, sqlx::Error> {
         let mut connection = self.pool.acquire().await?;
 
-        let result = sqlx::query_as::<_, (sqlx::types::Json<serde_json::Value>,)>(
+        let result = sqlx::query_as::<_, (Json<serde_json::Value>,)>(
             r#"
                 SELECT infrastructure_payload
                 FROM app_backup
@@ -187,7 +190,7 @@ impl AppPostgresRepository {
     ) -> Result<Option<App>, sqlx::Error> {
         let mut connection = self.pool.acquire().await?;
 
-        let result = sqlx::query_as::<_, (String, sqlx::types::Json<RawApp>)>(
+        let result = sqlx::query_as::<_, (String, Json<RawApp>)>(
             r#"
                 SELECT app_name, app
                 FROM app_backup
@@ -213,7 +216,7 @@ impl AppPostgresRepository {
     where
         E: sqlx::Executor<'a, Database = Postgres>,
     {
-        let result = sqlx::query_as::<_, (String, sqlx::types::Json<RawApp>)>(
+        let result = sqlx::query_as::<_, (String, Json<RawApp>)>(
             r#"
                 SELECT app_name, app
                 FROM app_backup
@@ -262,10 +265,10 @@ impl AppPostgresRepository {
         sqlx::query_as::<
             _,
             (
-                Option<sqlx::types::Json<RawApp>>,
-                Option<sqlx::types::Json<AppsError>>,
-                Option<sqlx::types::Json<RawApp>>,
-                Option<sqlx::types::Json<AppsError>>,
+                Option<Json<RawApp>>,
+                Option<Json<AppsError>>,
+                Option<Json<RawApp>>,
+                Option<Json<AppsError>>,
             ),
         >(
             r#"
@@ -305,7 +308,7 @@ impl AppPostgresRepository {
     ) -> Result<Option<(Vec<AppTask>, HashSet<AppName>, QueueLockContext<'lc>)>, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
-        let tasks = sqlx::query_as::<_, (sqlx::types::Uuid, sqlx::types::Json<AppTask>)>(
+        let tasks = sqlx::query_as::<_, (Uuid, Json<AppTask>)>(
             r#"
             WITH oldest_unlocked_app AS (
                 SELECT app_name
@@ -600,6 +603,68 @@ impl From<RawService> for Service {
             blueprint_config: value.config,
             service_type: value.service_type.unwrap_or_default(),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl BackupRepository for AppPostgresRepository {
+    type BackupPayload = BackupPayloadProxy;
+    type Error = sqlx::Error;
+
+    async fn load_backed_up_app(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<BackedUpApp<Self::BackupPayload>>, Self::Error> {
+        let mut connection = self.pool.acquire().await?;
+
+        let result = sqlx::query_as::<_, (String, Json<RawApp>, Json<Self::BackupPayload>)>(
+            r#"
+                SELECT app_name, app, infrastructure_payload
+                FROM app_backup
+                WHERE app_name = $1
+                "#,
+        )
+        .bind(app_name.as_str())
+        .fetch_optional(&mut *connection)
+        .await?;
+
+        Ok(result.map(|(_app_name, app, payload)| {
+            BackedUpApp::with_app_and_payload(App::from(app.0), payload.0)
+        }))
+    }
+
+    async fn store_elements_for_backup(
+        &self,
+        app_name: &AppName,
+        backed_up_payload: Self::BackupPayload,
+    ) -> Result<Uuid, Self::Error> {
+        let uuid = Uuid::new_v4();
+
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO app_task (id, app_name, task)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(uuid)
+        .bind(app_name.as_str())
+        .bind(sqlx::types::Json(backed_up_payload))
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(uuid)
+    }
+
+    async fn delete_restored_elements(
+        &self,
+        app_name: &AppName,
+        backed_up_payload: Self::BackupPayload,
+    ) -> Result<(), Self::Error> {
+        todo!()
     }
 }
 

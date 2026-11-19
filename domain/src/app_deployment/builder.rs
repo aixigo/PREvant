@@ -378,6 +378,7 @@ pub struct WithStaticCompanions {
     app_companions: Vec<ApplicationCompanion>,
 }
 
+/// TODO: that should move be replaces with [`crate::app_instance::RuntimeInfrastructure`]
 #[async_trait::async_trait]
 pub trait ResolveApps {
     type Error;

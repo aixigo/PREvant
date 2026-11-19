@@ -33,6 +33,7 @@ use domain::{
         BootstrapCompanionsContext, BootstrappedCompanions, MergeBootstrappedElementsContext,
     },
     app_instance::{App, Service},
+    app_life_cycle::LifecycleInfrastructure,
     templating::TemplateData,
     traefik::TraefikIngressRoute,
 };
@@ -128,9 +129,9 @@ impl From<<Kubernetes as Infrastructure>::BootstrappedElement> for BootstrappedE
     }
 }
 
-impl Into<<Kubernetes as Infrastructure>::BootstrappedElement> for BootstrappedElementProxy {
-    fn into(self) -> <Kubernetes as Infrastructure>::BootstrappedElement {
-        match self {
+impl From<BootstrappedElementProxy> for <Kubernetes as Infrastructure>::BootstrappedElement {
+    fn from(val: BootstrappedElementProxy) -> Self {
+        match val {
             BootstrappedElementProxy::Kubernetes(e) => e,
             other => panic!(
                 "This should never happen: {} must not be converted to {}",
@@ -141,9 +142,9 @@ impl Into<<Kubernetes as Infrastructure>::BootstrappedElement> for BootstrappedE
     }
 }
 
-impl Into<()> for BootstrappedElementProxy {
-    fn into(self) -> () {
-        match self {
+impl From<BootstrappedElementProxy> for () {
+    fn from(val: BootstrappedElementProxy) {
+        match val {
             BootstrappedElementProxy::Unit => (),
             other => panic!(
                 "This should never happen: {} must not be converted to {}",
@@ -154,7 +155,7 @@ impl Into<()> for BootstrappedElementProxy {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum BackupPayloadProxy {
     Kubernetes(<Kubernetes as Infrastructure>::BackupPayload),
@@ -359,6 +360,42 @@ impl From<Kubernetes> for InfrastructureProxy {
 impl From<Dummy> for InfrastructureProxy {
     fn from(dummy: Dummy) -> Self {
         Self::Dummy(dummy)
+    }
+}
+
+#[async_trait::async_trait]
+impl LifecycleInfrastructure for InfrastructureProxy {
+    type BackupPayload = BackupPayloadProxy;
+    type Error = anyhow::Error;
+
+    async fn snapshot_for_backup(
+        &self,
+        app_name: &AppName,
+    ) -> Result<Option<Self::BackupPayload>, Self::Error> {
+        Ok(self
+            .fetch_app_as_backup_based_infrastructure_payload(app_name)
+            .await?)
+    }
+
+    async fn suspend_backed_up_elements(
+        &self,
+        app_name: &AppName,
+        backed_up_payload: Self::BackupPayload,
+    ) -> Result<(), Self::Error> {
+        Ok(self
+            .delete_infrastructure_objects_partially(app_name, backed_up_payload.clone())
+            .await?)
+    }
+
+    async fn restore_from_backup(
+        &self,
+        app_name: &AppName,
+        backed_up_payload: Self::BackupPayload,
+    ) -> Result<Self::BackupPayload, Self::Error> {
+        let _app = self
+            .restore_infrastructure_objects_partially(app_name, backed_up_payload.clone())
+            .await?;
+        Ok(backed_up_payload)
     }
 }
 
