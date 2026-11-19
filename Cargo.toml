@@ -29,7 +29,8 @@ sha2 = "0.10"
 thiserror = "2.0"
 testcontainers = { version = "0.28", features = ["docker-compose"] }
 testcontainers-modules = {
-   git = "https://github.com/testcontainers/testcontainers-rs-modules-community.git",
+   git = "https://github.com/schrieveslaach/testcontainers-rs-modules-community.git",
+   branch = "k3d-fixes",
    features = ["k3s", "postgres"]
 }
 tokio = { version = "1.47", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }

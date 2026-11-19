@@ -5967,8 +5967,12 @@ dependencies = [
 [[package]]
 name = "testcontainers-modules"
 version = "0.15.0"
-source = "git+https://github.com/testcontainers/testcontainers-rs-modules-community.git#d69e3a09397532accea9d9e907fecc280b1513a8"
+source = "git+https://github.com/schrieveslaach/testcontainers-rs-modules-community.git?branch=k3d-fixes#c7333bf1902ddd1bcb0739558134f0d447af823a"
 dependencies = [
+ "futures 0.3.34",
+ "noyalib",
+ "serde",
+ "tar",
  "testcontainers",
 ]
 

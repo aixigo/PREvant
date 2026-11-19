@@ -47,28 +47,26 @@ pub async fn create_cluster_and_expose_k8s_config() -> anyhow::Result<(
     let _ = env_logger::builder().is_test(true).try_init();
 
     let tempdir = tempfile::tempdir()?;
-    let config_mount = tempdir.path().to_path_buf();
 
-    let k3s_instance = K3s::default()
-                .with_conf_mount(&config_mount)
-                .with_privileged(true)
-                .with_ready_conditions(vec![WaitFor::message_on_stderr(
-                        r#""QuotaMonitor created object count evaluator" resource="ingressroutetcps.traefik.io""#,
-                )])
-                .with_startup_timeout(std::time::Duration::from_mins(2))
-                .with_log_consumer(
-                    LoggingConsumer::new()
-                    .with_stdout_level(log::Level::Trace)
-                    .with_stderr_level(log::Level::Trace),
-                )
-                .start()
-                .await?;
+    let k3s_instance = K3s::infer_from_k3d_config()?
+        .with_privileged(true)
+        .with_ready_conditions(vec![WaitFor::message_on_stderr(
+            r#""QuotaMonitor created object count evaluator" resource="ingressroutetcps.traefik.io""#,
+        )])
+        .with_startup_timeout(std::time::Duration::from_mins(2))
+        .with_log_consumer(
+            LoggingConsumer::new()
+                .with_stdout_level(log::Level::Trace)
+                .with_stderr_level(log::Level::Trace),
+        )
+        .start()
+        .await?;
 
     let mapped_port = k3s_instance
         .get_host_port_ipv4(testcontainers_modules::k3s::KUBE_SECURE_PORT.as_u16())
         .await?;
 
-    let config = k3s_instance.image().read_kube_config()?;
+    let config = K3s::download_kube_config(&k3s_instance).await?;
 
     let config_file = tempdir.path().join("k3s-mapped.yaml");
     let config = config.replace(
