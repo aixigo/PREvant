@@ -47,8 +47,9 @@ use http_api_problem::HttpApiProblem;
 use http_result::HttpApiError;
 use http_result::HttpResult;
 use rocket::{
+    State,
     fs::{FileServer, Options},
-    routes, State,
+    routes,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -109,7 +110,7 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
     // bundle remaining configs into one json object
     let config_json = serde_json::json!({
         "defaultAppName": config.applications.default_app,
-        "isAuthRequired": matches!(config.api_access.mode, ApiAccessMode::RequireAuth { .. }),
+        "isAuthRequired": matches!(config.api_access.mode, ApiAccessMode::RequireAuth),
         "isBackupsEnabled": config.database.is_some()
             // TODO this condition can be removed once the Docker backend supports Docker compose types, see #146
             && matches!(config.runtime, Runtime::Kubernetes(..)),
@@ -124,17 +125,20 @@ fn index(user: User, issuers: &State<Issuers>, config: &State<Config>) -> HttpRe
     })?))
 }
 
-fn create_infrastructure(config: &Config) -> InfrastructureProxy {
-    match &config.runtime {
+async fn create_infrastructure(config: &Config) -> Result<InfrastructureProxy, StartUpError> {
+    Ok(match &config.runtime {
         Runtime::Docker | Runtime::Podman => {
             log::info!("Using Docker/Podman backend");
             Docker::new(config.clone()).into()
         }
         Runtime::Kubernetes(_config) => {
             log::info!("Using Kubernetes backend");
-            Kubernetes::new(config.clone()).into()
+            Kubernetes::new(config.clone())
+                .await
+                .map_err(|err| StartUpError::FailedToSetupKubernetesInfrastructure { err })?
+                .into()
         }
-    }
+    })
 }
 
 #[rocket::main]
@@ -148,22 +152,24 @@ async fn main() -> Result<(), StartUpError> {
         err: err.to_string(),
     })?;
 
-    if let Ok(rocket_config) = rocket::Config::figment().extract::<rocket::Config>() {
-        if rocket_config.secret_key.is_zero() {
-            if !config.api_access.openid_providers.is_empty() {
-                log::warn!("Generating secret key for secure authentication. Please, set ROCKET_SECRET_KEY variable to make sure that logins survive restarts.");
-            }
-
-            let mut key = [0u8; 32];
-            key[0..16].copy_from_slice(uuid::Uuid::new_v4().to_bytes_le().as_slice());
-            key[16..].copy_from_slice(uuid::Uuid::new_v4().to_bytes_le().as_slice());
-            // safety: this is safe because it is called in the beginning of main and no other
-            // thread is started.
-            unsafe { std::env::set_var("ROCKET_SECRET_KEY", BASE64_STANDARD.encode(key)) };
+    if let Ok(rocket_config) = rocket::Config::figment().extract::<rocket::Config>()
+        && rocket_config.secret_key.is_zero()
+    {
+        if !config.api_access.openid_providers.is_empty() {
+            log::warn!(
+                "Generating secret key for secure authentication. Please, set ROCKET_SECRET_KEY variable to make sure that logins survive restarts."
+            );
         }
+
+        let mut key = [0u8; 32];
+        key[0..16].copy_from_slice(uuid::Uuid::new_v4().to_bytes_le().as_slice());
+        key[16..].copy_from_slice(uuid::Uuid::new_v4().to_bytes_le().as_slice());
+        // safety: this is safe because it is called in the beginning of main and no other
+        // thread is started.
+        unsafe { std::env::set_var("ROCKET_SECRET_KEY", BASE64_STANDARD.encode(key)) };
     }
 
-    let infrastructure = create_infrastructure(&config);
+    let infrastructure = create_infrastructure(&config).await?;
 
     let prevant_base_route = if let Some(base_url) = &config.base_url {
         Some(TraefikIngressRoute::from(base_url))
@@ -208,6 +214,10 @@ enum StartUpError {
     InvalidConfiguration { err: String },
     #[error("Cannot start HTTP server: {err}")]
     CannotStartWebServer { err: String },
+    #[error("Cannot setup Kubernetes backend: {err}")]
+    FailedToSetupKubernetesInfrastructure {
+        err: crate::infrastructure::KubernetesInfrastructureError,
+    },
 }
 
 impl std::convert::From<rocket::Error> for StartUpError {

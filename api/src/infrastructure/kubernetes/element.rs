@@ -1,13 +1,12 @@
-use std::collections::BTreeMap;
-
-use super::traefik_crds::{IngressRoute, Middleware};
-use crate::infrastructure::{APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL};
+use crate::infrastructure::{
+    APP_NAME_LABEL, CONTAINER_TYPE_LABEL, SERVICE_NAME_LABEL, kubernetes::traefik_crds,
+};
 use domain::{AppName, app_instance::ContainerType};
 use k8s_openapi::{
     Resource as _,
     api::{
         apps::v1::{Deployment, StatefulSet},
-        batch::v1::Job,
+        batch::v1::{CronJob, Job},
         core::v1::{ConfigMap, PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount},
         networking::v1::{Ingress, NetworkPolicy},
         rbac::v1::{Role, RoleBinding},
@@ -15,11 +14,14 @@ use k8s_openapi::{
 };
 use kube::{
     Resource, ResourceExt as _,
-    api::{DynamicObject, ObjectMeta},
+    api::{ApiResource, DynamicObject, ObjectMeta},
 };
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
+use traefik_crds::{TraefikIngressRoute, TraefikMiddleware};
 
 #[derive(Clone)]
+#[cfg_attr(test, derive(Debug))]
 pub enum K8sElement {
     Role(Role),
     RoleBinding(RoleBinding),
@@ -31,11 +33,13 @@ pub enum K8sElement {
     Pod(Pod),
     Deployment(Deployment),
     Job(Job),
+    CronJob(CronJob),
     ServiceAccount(ServiceAccount),
     Ingress(Ingress),
     NetworkPolicy(NetworkPolicy),
-    TraefikIngressRoute(IngressRoute),
-    TraefikMiddleware(Middleware),
+    TraefikIngressRoute(TraefikIngressRoute),
+    TraefikMiddleware(TraefikMiddleware),
+    Other((DynamicObject, ApiResource)),
 }
 
 impl From<Role> for K8sElement {
@@ -88,6 +92,11 @@ impl From<Job> for K8sElement {
         Self::Job(value)
     }
 }
+impl From<CronJob> for K8sElement {
+    fn from(value: CronJob) -> Self {
+        Self::CronJob(value)
+    }
+}
 impl From<ServiceAccount> for K8sElement {
     fn from(value: ServiceAccount) -> Self {
         Self::ServiceAccount(value)
@@ -103,18 +112,100 @@ impl From<NetworkPolicy> for K8sElement {
         Self::NetworkPolicy(value)
     }
 }
-impl From<IngressRoute> for K8sElement {
-    fn from(value: IngressRoute) -> Self {
+impl From<TraefikMiddleware> for K8sElement {
+    fn from(value: TraefikMiddleware) -> Self {
+        Self::TraefikMiddleware(value)
+    }
+}
+impl From<TraefikIngressRoute> for K8sElement {
+    fn from(value: TraefikIngressRoute) -> Self {
         Self::TraefikIngressRoute(value)
     }
 }
-impl From<Middleware> for K8sElement {
-    fn from(value: Middleware) -> Self {
-        Self::TraefikMiddleware(value)
+impl From<traefik_crds::v2::IngressRoute> for K8sElement {
+    fn from(value: traefik_crds::v2::IngressRoute) -> Self {
+        Self::TraefikIngressRoute(TraefikIngressRoute::V2(value))
+    }
+}
+impl From<traefik_crds::v2::Middleware> for K8sElement {
+    fn from(value: traefik_crds::v2::Middleware) -> Self {
+        Self::TraefikMiddleware(TraefikMiddleware::V2(value))
+    }
+}
+impl From<traefik_crds::v3::IngressRoute> for K8sElement {
+    fn from(value: traefik_crds::v3::IngressRoute) -> Self {
+        Self::TraefikIngressRoute(TraefikIngressRoute::V3(value))
+    }
+}
+impl From<traefik_crds::v3::Middleware> for K8sElement {
+    fn from(value: traefik_crds::v3::Middleware) -> Self {
+        Self::TraefikMiddleware(TraefikMiddleware::V3(value))
+    }
+}
+impl From<(DynamicObject, ApiResource)> for K8sElement {
+    fn from(value: (DynamicObject, ApiResource)) -> Self {
+        Self::Other(value)
     }
 }
 
 impl K8sElement {
+    pub fn is_well_known(api_resource: &ApiResource) -> bool {
+        match (
+            api_resource.group.as_str(),
+            api_resource.version.as_str(),
+            api_resource.kind.as_str(),
+        ) {
+            (Role::GROUP, Role::VERSION, Role::KIND)
+            | (RoleBinding::GROUP, RoleBinding::VERSION, RoleBinding::KIND)
+            | (StatefulSet::GROUP, StatefulSet::VERSION, StatefulSet::KIND)
+            | (ConfigMap::GROUP, ConfigMap::VERSION, ConfigMap::KIND)
+            | (Secret::GROUP, Secret::VERSION, Secret::KIND)
+            | (
+                PersistentVolumeClaim::GROUP,
+                PersistentVolumeClaim::VERSION,
+                PersistentVolumeClaim::KIND,
+            )
+            | (Service::GROUP, Service::VERSION, Service::KIND)
+            | (Pod::GROUP, Pod::VERSION, Pod::KIND)
+            | (Deployment::GROUP, Deployment::VERSION, Deployment::KIND)
+            | (Job::GROUP, Job::VERSION, Job::KIND)
+            | (CronJob::GROUP, CronJob::VERSION, CronJob::KIND)
+            | (ServiceAccount::GROUP, ServiceAccount::VERSION, ServiceAccount::KIND)
+            | (Ingress::GROUP, Ingress::VERSION, Ingress::KIND)
+            | (NetworkPolicy::GROUP, NetworkPolicy::VERSION, NetworkPolicy::KIND) => true,
+
+            (group, version, kind)
+                if group == traefik_crds::v2::IngressRoute::group(&())
+                    && version == traefik_crds::v2::IngressRoute::version(&())
+                    && kind == traefik_crds::v2::IngressRoute::kind(&()) =>
+            {
+                true
+            }
+            (group, version, kind)
+                if group == traefik_crds::v3::IngressRoute::group(&())
+                    && version == traefik_crds::v3::IngressRoute::version(&())
+                    && kind == traefik_crds::v3::IngressRoute::kind(&()) =>
+            {
+                true
+            }
+            (group, version, kind)
+                if group == traefik_crds::v2::Middleware::group(&())
+                    && version == traefik_crds::v2::Middleware::version(&())
+                    && kind == traefik_crds::v2::Middleware::kind(&()) =>
+            {
+                true
+            }
+            (group, version, kind)
+                if group == traefik_crds::v3::Middleware::group(&())
+                    && version == traefik_crds::v3::Middleware::version(&())
+                    && kind == traefik_crds::v3::Middleware::kind(&()) =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn metadata(&self) -> &ObjectMeta {
         match self {
             K8sElement::Role(role) => &role.metadata,
@@ -127,11 +218,13 @@ impl K8sElement {
             K8sElement::Pod(pod) => &pod.metadata,
             K8sElement::Deployment(deployment) => &deployment.metadata,
             K8sElement::Job(job) => &job.metadata,
+            K8sElement::CronJob(cron_job) => &cron_job.metadata,
             K8sElement::ServiceAccount(service_account) => &service_account.metadata,
             K8sElement::Ingress(ingress) => &ingress.metadata,
             K8sElement::NetworkPolicy(network_policy) => &network_policy.metadata,
-            K8sElement::TraefikIngressRoute(ingress_route) => &ingress_route.metadata,
-            K8sElement::TraefikMiddleware(middleware) => &middleware.metadata,
+            K8sElement::TraefikIngressRoute(ingress_route) => ingress_route.metadata(),
+            K8sElement::TraefikMiddleware(middleware) => middleware.metadata(),
+            K8sElement::Other((dynamic_object, _)) => &dynamic_object.metadata,
         }
     }
 
@@ -147,11 +240,13 @@ impl K8sElement {
             K8sElement::Pod(pod) => &mut pod.metadata,
             K8sElement::Deployment(deployment) => &mut deployment.metadata,
             K8sElement::Job(job) => &mut job.metadata,
+            K8sElement::CronJob(cron_job) => &mut cron_job.metadata,
             K8sElement::ServiceAccount(service_account) => &mut service_account.metadata,
             K8sElement::Ingress(ingress) => &mut ingress.metadata,
             K8sElement::NetworkPolicy(network_policy) => &mut network_policy.metadata,
-            K8sElement::TraefikIngressRoute(ingress_route) => &mut ingress_route.metadata,
-            K8sElement::TraefikMiddleware(middleware) => &mut middleware.metadata,
+            K8sElement::TraefikIngressRoute(ingress_route) => ingress_route.metadata_mut(),
+            K8sElement::TraefikMiddleware(middleware) => middleware.metadata_mut(),
+            K8sElement::Other((dynamic_object, _)) => &mut dynamic_object.metadata,
         };
 
         metadata.namespace = Some(app_name.to_rfc1123_namespace_id());
@@ -264,6 +359,10 @@ impl<'de> Deserialize<'de> for K8sElement {
             (Job::API_VERSION, Job::KIND) => Ok(Self::Job(
                 dy.try_parse::<Job>().map_err(serde::de::Error::custom)?,
             )),
+            (CronJob::API_VERSION, CronJob::KIND) => Ok(Self::CronJob(
+                dy.try_parse::<CronJob>()
+                    .map_err(serde::de::Error::custom)?,
+            )),
             (ServiceAccount::API_VERSION, ServiceAccount::KIND) => Ok(Self::ServiceAccount(
                 dy.try_parse::<ServiceAccount>()
                     .map_err(serde::de::Error::custom)?,
@@ -277,24 +376,43 @@ impl<'de> Deserialize<'de> for K8sElement {
                     .map_err(serde::de::Error::custom)?,
             )),
             (api_version, kind)
-                if api_version == Middleware::api_version(&()) && kind == Middleware::kind(&()) =>
+                if api_version == traefik_crds::v2::Middleware::api_version(&())
+                    && kind == traefik_crds::v2::Middleware::kind(&()) =>
             {
-                Ok(Self::TraefikMiddleware(
-                    dy.try_parse::<Middleware>()
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v2::Middleware>()
                         .map_err(serde::de::Error::custom)?,
                 ))
             }
             (api_version, kind)
-                if api_version == IngressRoute::api_version(&())
-                    && kind == IngressRoute::kind(&()) =>
+                if api_version == traefik_crds::v3::Middleware::api_version(&())
+                    && kind == traefik_crds::v3::Middleware::kind(&()) =>
             {
-                Ok(Self::TraefikIngressRoute(
-                    dy.try_parse::<IngressRoute>()
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v3::Middleware>()
+                        .map_err(serde::de::Error::custom)?,
+                ))
+            }
+            (api_version, kind)
+                if api_version == traefik_crds::v2::IngressRoute::api_version(&())
+                    && kind == traefik_crds::v2::IngressRoute::kind(&()) =>
+            {
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v2::IngressRoute>()
+                        .map_err(serde::de::Error::custom)?,
+                ))
+            }
+            (api_version, kind)
+                if api_version == traefik_crds::v3::IngressRoute::api_version(&())
+                    && kind == traefik_crds::v3::IngressRoute::kind(&()) =>
+            {
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v3::IngressRoute>()
                         .map_err(serde::de::Error::custom)?,
                 ))
             }
             (api_version, kind) => Err(serde::de::Error::custom(format!(
-                "Unknown variant for Kubernetes API object: {api_version}/{kind}, supported are: {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, or {}/{}",
+                "Unknown variant for Kubernetes API object: {api_version}/{kind}, supported are: {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, or {}/{}",
                 Role::API_VERSION,
                 Role::KIND,
                 RoleBinding::API_VERSION,
@@ -313,16 +431,24 @@ impl<'de> Deserialize<'de> for K8sElement {
                 Deployment::KIND,
                 Pod::API_VERSION,
                 Pod::KIND,
+                Job::API_VERSION,
+                Job::KIND,
+                CronJob::API_VERSION,
+                CronJob::KIND,
                 ServiceAccount::API_VERSION,
                 ServiceAccount::KIND,
                 Ingress::API_VERSION,
                 Ingress::KIND,
                 NetworkPolicy::API_VERSION,
                 NetworkPolicy::KIND,
-                IngressRoute::api_version(&()),
-                IngressRoute::kind(&()),
-                Middleware::api_version(&()),
-                Middleware::kind(&()),
+                traefik_crds::v2::IngressRoute::api_version(&()),
+                traefik_crds::v2::IngressRoute::kind(&()),
+                traefik_crds::v3::IngressRoute::api_version(&()),
+                traefik_crds::v3::IngressRoute::kind(&()),
+                traefik_crds::v2::Middleware::api_version(&()),
+                traefik_crds::v2::Middleware::kind(&()),
+                traefik_crds::v3::Middleware::api_version(&()),
+                traefik_crds::v3::Middleware::kind(&()),
             ))),
         }
     }
@@ -346,10 +472,32 @@ pub enum K8sBackupElement {
     Service(Service),
     Pod(Pod),
     Deployment(Deployment),
+    CronJob(CronJob),
     ServiceAccount(ServiceAccount),
     NetworkPolicy(NetworkPolicy),
-    TraefikIngressRoute(IngressRoute),
-    TraefikMiddleware(Middleware),
+    TraefikIngressRoute(TraefikIngressRoute),
+    TraefikMiddleware(TraefikMiddleware),
+}
+
+impl From<traefik_crds::v2::IngressRoute> for K8sBackupElement {
+    fn from(value: traefik_crds::v2::IngressRoute) -> Self {
+        Self::TraefikIngressRoute(TraefikIngressRoute::V2(value))
+    }
+}
+impl From<traefik_crds::v2::Middleware> for K8sBackupElement {
+    fn from(value: traefik_crds::v2::Middleware) -> Self {
+        Self::TraefikMiddleware(TraefikMiddleware::V2(value))
+    }
+}
+impl From<traefik_crds::v3::IngressRoute> for K8sBackupElement {
+    fn from(value: traefik_crds::v3::IngressRoute) -> Self {
+        Self::TraefikIngressRoute(TraefikIngressRoute::V3(value))
+    }
+}
+impl From<traefik_crds::v3::Middleware> for K8sBackupElement {
+    fn from(value: traefik_crds::v3::Middleware) -> Self {
+        Self::TraefikMiddleware(TraefikMiddleware::V3(value))
+    }
 }
 
 impl Serialize for K8sBackupElement {
@@ -364,6 +512,7 @@ impl Serialize for K8sBackupElement {
             K8sBackupElement::Service(service) => service.serialize(serializer),
             K8sBackupElement::Pod(pod) => pod.serialize(serializer),
             K8sBackupElement::Deployment(deployment) => deployment.serialize(serializer),
+            K8sBackupElement::CronJob(cron_job) => cron_job.serialize(serializer),
             K8sBackupElement::ServiceAccount(service_account) => {
                 service_account.serialize(serializer)
             }
@@ -440,6 +589,10 @@ impl<'de> Deserialize<'de> for K8sBackupElement {
             (Pod::API_VERSION, Pod::KIND) => Ok(Self::Pod(
                 dy.try_parse::<Pod>().map_err(serde::de::Error::custom)?,
             )),
+            (CronJob::API_VERSION, CronJob::KIND) => Ok(Self::CronJob(
+                dy.try_parse::<CronJob>()
+                    .map_err(serde::de::Error::custom)?,
+            )),
             (ServiceAccount::API_VERSION, ServiceAccount::KIND) => Ok(Self::ServiceAccount(
                 dy.try_parse::<ServiceAccount>()
                     .map_err(serde::de::Error::custom)?,
@@ -449,24 +602,43 @@ impl<'de> Deserialize<'de> for K8sBackupElement {
                     .map_err(serde::de::Error::custom)?,
             )),
             (api_version, kind)
-                if api_version == Middleware::api_version(&()) && kind == Middleware::kind(&()) =>
+                if api_version == traefik_crds::v2::Middleware::api_version(&())
+                    && kind == traefik_crds::v2::Middleware::kind(&()) =>
             {
-                Ok(Self::TraefikMiddleware(
-                    dy.try_parse::<Middleware>()
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v2::Middleware>()
                         .map_err(serde::de::Error::custom)?,
                 ))
             }
             (api_version, kind)
-                if api_version == IngressRoute::api_version(&())
-                    && kind == IngressRoute::kind(&()) =>
+                if api_version == traefik_crds::v3::Middleware::api_version(&())
+                    && kind == traefik_crds::v3::Middleware::kind(&()) =>
             {
-                Ok(Self::TraefikIngressRoute(
-                    dy.try_parse::<IngressRoute>()
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v3::Middleware>()
+                        .map_err(serde::de::Error::custom)?,
+                ))
+            }
+            (api_version, kind)
+                if api_version == traefik_crds::v2::IngressRoute::api_version(&())
+                    && kind == traefik_crds::v2::IngressRoute::kind(&()) =>
+            {
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v2::IngressRoute>()
+                        .map_err(serde::de::Error::custom)?,
+                ))
+            }
+            (api_version, kind)
+                if api_version == traefik_crds::v3::IngressRoute::api_version(&())
+                    && kind == traefik_crds::v3::IngressRoute::kind(&()) =>
+            {
+                Ok(Self::from(
+                    dy.try_parse::<traefik_crds::v3::IngressRoute>()
                         .map_err(serde::de::Error::custom)?,
                 ))
             }
             (api_version, kind) => Err(serde::de::Error::custom(format!(
-                "Unknown variant for back-up payload: {api_version}/{kind}, supported are: {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, or {}/{}",
+                "Unknown variant for back-up payload: {api_version}/{kind}, supported are: {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, or {}/{}",
                 Role::API_VERSION,
                 Role::KIND,
                 RoleBinding::API_VERSION,
@@ -479,14 +651,20 @@ impl<'de> Deserialize<'de> for K8sBackupElement {
                 Deployment::KIND,
                 Pod::API_VERSION,
                 Pod::KIND,
+                CronJob::API_VERSION,
+                CronJob::KIND,
                 ServiceAccount::API_VERSION,
                 ServiceAccount::KIND,
                 NetworkPolicy::API_VERSION,
                 NetworkPolicy::KIND,
-                IngressRoute::api_version(&()),
-                IngressRoute::kind(&()),
-                Middleware::api_version(&()),
-                Middleware::kind(&()),
+                traefik_crds::v2::IngressRoute::api_version(&()),
+                traefik_crds::v2::IngressRoute::kind(&()),
+                traefik_crds::v3::IngressRoute::api_version(&()),
+                traefik_crds::v3::IngressRoute::kind(&()),
+                traefik_crds::v2::Middleware::api_version(&()),
+                traefik_crds::v2::Middleware::kind(&()),
+                traefik_crds::v3::Middleware::api_version(&()),
+                traefik_crds::v3::Middleware::kind(&()),
             ))),
         }
     }
@@ -501,6 +679,7 @@ impl From<K8sBackupElement> for K8sElement {
             K8sBackupElement::Service(service) => Self::Service(service),
             K8sBackupElement::Pod(pod) => Self::Pod(pod),
             K8sBackupElement::Deployment(deployment) => Self::Deployment(deployment),
+            K8sBackupElement::CronJob(cron_job) => Self::CronJob(cron_job),
             K8sBackupElement::ServiceAccount(service_account) => {
                 Self::ServiceAccount(service_account)
             }
@@ -509,6 +688,722 @@ impl From<K8sBackupElement> for K8sElement {
                 Self::TraefikIngressRoute(ingress_route)
             }
             K8sBackupElement::TraefikMiddleware(middleware) => Self::TraefikMiddleware(middleware),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    mod deserialize_role {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: Role
+                metadata:
+                  name: my-role
+                rules:
+                  - apiGroups: [""]
+                    resources: ["pods"]
+                    verbs: ["get", "list"]
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::Role(e) if e.metadata.name.as_deref() == Some("my-role")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: Role
+                metadata:
+                  name: my-role
+                rules:
+                  - apiGroups: [""]
+                    resources: ["pods"]
+                    verbs: ["get", "list"]
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::Role(e) if e.metadata.name.as_deref() == Some("my-role")
+            ));
+        }
+    }
+
+    mod deserialize_role_binding {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: RoleBinding
+                metadata:
+                  name: my-role-binding
+                roleRef:
+                  apiGroup: rbac.authorization.k8s.io
+                  kind: Role
+                  name: my-role
+                subjects:
+                  - kind: ServiceAccount
+                    name: my-sa
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::RoleBinding(e) if e.metadata.name.as_deref() == Some("my-role-binding")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: RoleBinding
+                metadata:
+                  name: my-role-binding
+                roleRef:
+                  apiGroup: rbac.authorization.k8s.io
+                  kind: Role
+                  name: my-role
+                subjects:
+                  - kind: ServiceAccount
+                    name: my-sa
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::RoleBinding(e) if e.metadata.name.as_deref() == Some("my-role-binding")
+            ));
+        }
+    }
+
+    mod deserialize_stateful_set {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: apps/v1
+                kind: StatefulSet
+                metadata:
+                  name: my-stateful-set
+                spec:
+                  selector:
+                    matchLabels:
+                      app: my-app
+                  serviceName: my-service
+                  template:
+                    metadata:
+                      labels:
+                        app: my-app
+                    spec:
+                      containers:
+                        - name: my-container
+                          image: nginx
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::StatefulSet(e) if e.metadata.name.as_deref() == Some("my-stateful-set")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: apps/v1
+                kind: StatefulSet
+                metadata:
+                  name: my-stateful-set
+                spec:
+                  selector:
+                    matchLabels:
+                      app: my-app
+                  serviceName: my-service
+                  template:
+                    metadata:
+                      labels:
+                        app: my-app
+                    spec:
+                      containers:
+                        - name: my-container
+                          image: nginx
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::StatefulSet(e) if e.metadata.name.as_deref() == Some("my-stateful-set")
+            ));
+        }
+    }
+
+    mod deserialize_config_map {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: my-config
+                data:
+                  key: value
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::ConfigMap(e) if e.metadata.name.as_deref() == Some("my-config")
+            ));
+        }
+    }
+
+    mod deserialize_secret {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: v1
+                kind: Secret
+                metadata:
+                  name: my-secret
+                data:
+                  password: cGFzc3dvcmQ=
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::Secret(e) if e.metadata.name.as_deref() == Some("my-secret")
+            ));
+        }
+    }
+
+    mod deserialize_pvc {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: v1
+                kind: PersistentVolumeClaim
+                metadata:
+                  name: my-pvc
+                spec:
+                  accessModes:
+                    - ReadWriteOnce
+                  resources:
+                    requests:
+                      storage: 1Gi
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::PVC(e) if e.metadata.name.as_deref() == Some("my-pvc")
+            ));
+        }
+    }
+
+    mod deserialize_service {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: v1
+                kind: Service
+                metadata:
+                  name: my-service
+                spec:
+                  ports:
+                    - port: 80
+                      targetPort: 8080
+                  selector:
+                    app: my-app
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::Service(e) if e.metadata.name.as_deref() == Some("my-service")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: v1
+                kind: Service
+                metadata:
+                  name: my-service
+                spec:
+                  ports:
+                    - port: 80
+                      targetPort: 8080
+                  selector:
+                    app: my-app
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::Service(e) if e.metadata.name.as_deref() == Some("my-service")
+            ));
+        }
+    }
+
+    mod deserialize_pod {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  name: my-pod
+                spec:
+                  containers:
+                    - name: my-container
+                      image: nginx
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::Pod(e) if e.metadata.name.as_deref() == Some("my-pod")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  name: my-pod
+                spec:
+                  containers:
+                    - name: my-container
+                      image: nginx
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::Pod(e) if e.metadata.name.as_deref() == Some("my-pod")
+            ));
+        }
+    }
+
+    mod deserialize_deployment {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: apps/v1
+                kind: Deployment
+                metadata:
+                  name: my-deployment
+                spec:
+                  selector:
+                    matchLabels:
+                      app: my-app
+                  template:
+                    metadata:
+                      labels:
+                        app: my-app
+                    spec:
+                      containers:
+                        - name: my-container
+                          image: nginx
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::Deployment(e) if e.metadata.name.as_deref() == Some("my-deployment")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: apps/v1
+                kind: Deployment
+                metadata:
+                  name: my-deployment
+                spec:
+                  selector:
+                    matchLabels:
+                      app: my-app
+                  template:
+                    metadata:
+                      labels:
+                        app: my-app
+                    spec:
+                      containers:
+                        - name: my-container
+                          image: nginx
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::Deployment(e) if e.metadata.name.as_deref() == Some("my-deployment")
+            ));
+        }
+    }
+
+    mod deserialize_job {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: batch/v1
+                kind: Job
+                metadata:
+                  name: my-job
+                spec:
+                  template:
+                    spec:
+                      containers:
+                        - name: my-container
+                          image: busybox
+                          command: ["echo", "hello"]
+                      restartPolicy: Never
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::Job(e) if e.metadata.name.as_deref() == Some("my-job")
+            ));
+        }
+    }
+
+    mod deserialize_cron_job {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: batch/v1
+                kind: CronJob
+                metadata:
+                  name: my-cron-job
+                spec:
+                  schedule: "*/5 * * * *"
+                  jobTemplate:
+                    spec:
+                      template:
+                        spec:
+                          containers:
+                            - name: my-container
+                              image: busybox
+                              command: ["echo", "hello"]
+                          restartPolicy: Never
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::CronJob(e) if e.metadata.name.as_deref() == Some("my-cron-job")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: batch/v1
+                kind: CronJob
+                metadata:
+                  name: my-cron-job
+                spec:
+                  schedule: "*/5 * * * *"
+                  jobTemplate:
+                    spec:
+                      template:
+                        spec:
+                          containers:
+                            - name: my-container
+                              image: busybox
+                              command: ["echo", "hello"]
+                          restartPolicy: Never
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::CronJob(e) if e.metadata.name.as_deref() == Some("my-cron-job")
+            ));
+        }
+    }
+
+    mod deserialize_service_account {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: v1
+                kind: ServiceAccount
+                metadata:
+                  name: my-sa
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::ServiceAccount(e) if e.metadata.name.as_deref() == Some("my-sa")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: v1
+                kind: ServiceAccount
+                metadata:
+                  name: my-sa
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::ServiceAccount(e) if e.metadata.name.as_deref() == Some("my-sa")
+            ));
+        }
+    }
+
+    mod deserialize_ingress {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: networking.k8s.io/v1
+                kind: Ingress
+                metadata:
+                  name: my-ingress
+                spec:
+                  rules:
+                    - host: example.com
+                      http:
+                        paths:
+                          - path: /
+                            pathType: Prefix
+                            backend:
+                              service:
+                                name: my-service
+                                port:
+                                  number: 80
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::Ingress(e) if e.metadata.name.as_deref() == Some("my-ingress")
+            ));
+        }
+    }
+
+    mod deserialize_network_policy {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: networking.k8s.io/v1
+                kind: NetworkPolicy
+                metadata:
+                  name: my-network-policy
+                spec:
+                  podSelector:
+                    matchLabels:
+                      app: my-app
+                  ingress:
+                    - from:
+                        - podSelector: {}
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::NetworkPolicy(e) if e.metadata.name.as_deref() == Some("my-network-policy")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: networking.k8s.io/v1
+                kind: NetworkPolicy
+                metadata:
+                  name: my-network-policy
+                spec:
+                  podSelector:
+                    matchLabels:
+                      app: my-app
+                  ingress:
+                    - from:
+                        - podSelector: {}
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::NetworkPolicy(e) if e.metadata.name.as_deref() == Some("my-network-policy")
+            ))
+        }
+    }
+
+    mod deserialize_traefik_ingress {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: traefik.io/v1alpha1
+                kind: IngressRoute
+                metadata:
+                  name: prevant-ingress-route
+                spec:
+                  entryPoints:
+                    - web
+                  routes:
+                    - kind: Rule
+                      match: PathPrefix(`/`)
+                      priority: -100
+                      services:
+                        - name: prevant
+                          port: 80
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::TraefikIngressRoute(traefik_crds::TraefikIngressRoute::V3(e)) if e.metadata.name.as_deref() == Some("prevant-ingress-route")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: traefik.io/v1alpha1
+                kind: IngressRoute
+                metadata:
+                  name: prevant-ingress-route
+                spec:
+                  entryPoints:
+                    - web
+                  routes:
+                    - kind: Rule
+                      match: PathPrefix(`/`)
+                      priority: -100
+                      services:
+                        - name: prevant
+                          port: 80
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::TraefikIngressRoute(traefik_crds::TraefikIngressRoute::V3(e)) if e.metadata.name.as_deref() == Some("prevant-ingress-route")
+            ));
+        }
+    }
+
+    mod deserialize_traefik_middleware {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: traefik.io/v1alpha1
+                kind: Middleware
+                metadata:
+                  name: stripprefix
+                  namespace: foo
+
+                spec:
+                  stripPrefix:
+                    prefixes:
+                      - /stripit
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::TraefikMiddleware(traefik_crds::TraefikMiddleware::V3(e)) if e.metadata.name.as_deref() == Some("stripprefix")
+            ));
+        }
+
+        #[test]
+        fn backup_element() {
+            let yaml = r#"
+                apiVersion: traefik.io/v1alpha1
+                kind: Middleware
+                metadata:
+                  name: stripprefix
+                  namespace: foo
+
+                spec:
+                  stripPrefix:
+                    prefixes:
+                      - /stripit
+                "#;
+
+            let element = noyalib::from_str::<K8sBackupElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sBackupElement::TraefikMiddleware(traefik_crds::TraefikMiddleware::V3(e)) if e.metadata.name.as_deref() == Some("stripprefix")
+            ));
         }
     }
 }

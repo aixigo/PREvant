@@ -84,7 +84,20 @@ jobs:
          # Prevent GitHub from canceling all in-progress jobs when a matrix job fails.
          fail-fast: false
          matrix:
-            k8s: [v1.32, latest]
+            k8s:
+               - v1.32
+               - latest
+               # This specific version of K3s is the last release of K3s with
+               # built-in Traefik v2. We keep this here arround to test with
+               # version v3 and v2.
+               #
+               # see: https://github.com/k3s-io/k3s/releases/tag/v1.31.14%2Bk3s1
+               - v1.31.14+k3s1
+            include:
+               - traefik_version: v3
+               - k8s: v1.31.14+k3s1
+                 traefik_version: v2
+
       steps:
          - name: Download PREvant image
            uses: actions/download-artifact@v4
@@ -108,9 +121,7 @@ jobs:
            with:
                version: ${{matrix.k8s}}
                k3d-name: kube
-               # TODD: currently PREvant supports only Traefik v2, thus the k3s version is pinned to
-               # a version that brings Traefik v2.
-               k3d-args: "-p 8080:80@loadbalancer --no-rollback --k3s-arg --disable=metrics-server@server:* --image rancher/k3s:v1.31.7-k3s1"
+               k3d-args: "-p 8080:80@loadbalancer --no-rollback --k3s-arg --disable=metrics-server@server:*"
 
          - name: Import PREvant image into K3s
            run: k3d image import aixigo/prevant -c kube
@@ -124,6 +135,7 @@ jobs:
            run: |
               kubectl apply -f examples/Kubernetes/RBAC-authorization.yml
               kubectl apply -f examples/Kubernetes/PREvant.yml
+              kubectl apply -f examples/Kubernetes/ingress-traefik-${{matrix.traefik_version}}.yaml
               kubectl wait --for=condition=Ready $(kubectl get pods --selector "app=prevant" --output name)
 
          - name: Install latest stable
