@@ -14,7 +14,7 @@ use k8s_openapi::{
 };
 use kube::{
     Resource, ResourceExt as _,
-    api::{ApiResource, DynamicObject, ObjectMeta},
+    api::{ApiResource, DynamicObject, GroupVersionKind, ObjectMeta},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
@@ -295,18 +295,14 @@ impl<'de> Deserialize<'de> for K8sElement {
     {
         let mut dy = DynamicObject::deserialize(deserializer)?;
 
-        let api_version = dy
-            .types
-            .as_ref()
-            .map(|t| t.api_version.as_str())
-            .unwrap_or_default();
-        let kind = dy
-            .types
-            .as_ref()
-            .map(|t| t.kind.as_str())
-            .unwrap_or_default();
+        let Some(types) = dy.types.clone() else {
+            return Err(serde::de::Error::custom(format!(
+                "Missing apiVersion or kind for {}",
+                dy.metadata.name.as_deref().unwrap_or_default(),
+            )));
+        };
 
-        match (api_version, kind) {
+        match (types.api_version.as_str(), types.kind.as_str()) {
             (Role::API_VERSION, Role::KIND) => Ok(Self::Role(
                 dy.try_parse::<Role>().map_err(serde::de::Error::custom)?,
             )),
@@ -411,45 +407,17 @@ impl<'de> Deserialize<'de> for K8sElement {
                         .map_err(serde::de::Error::custom)?,
                 ))
             }
-            (api_version, kind) => Err(serde::de::Error::custom(format!(
-                "Unknown variant for Kubernetes API object: {api_version}/{kind}, supported are: {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, {}/{}, or {}/{}",
-                Role::API_VERSION,
-                Role::KIND,
-                RoleBinding::API_VERSION,
-                RoleBinding::KIND,
-                StatefulSet::API_VERSION,
-                StatefulSet::KIND,
-                ConfigMap::API_VERSION,
-                ConfigMap::KIND,
-                Secret::API_VERSION,
-                Secret::KIND,
-                PersistentVolumeClaim::API_VERSION,
-                PersistentVolumeClaim::KIND,
-                Service::API_VERSION,
-                Service::KIND,
-                Deployment::API_VERSION,
-                Deployment::KIND,
-                Pod::API_VERSION,
-                Pod::KIND,
-                Job::API_VERSION,
-                Job::KIND,
-                CronJob::API_VERSION,
-                CronJob::KIND,
-                ServiceAccount::API_VERSION,
-                ServiceAccount::KIND,
-                Ingress::API_VERSION,
-                Ingress::KIND,
-                NetworkPolicy::API_VERSION,
-                NetworkPolicy::KIND,
-                traefik_crds::v2::IngressRoute::api_version(&()),
-                traefik_crds::v2::IngressRoute::kind(&()),
-                traefik_crds::v3::IngressRoute::api_version(&()),
-                traefik_crds::v3::IngressRoute::kind(&()),
-                traefik_crds::v2::Middleware::api_version(&()),
-                traefik_crds::v2::Middleware::kind(&()),
-                traefik_crds::v3::Middleware::api_version(&()),
-                traefik_crds::v3::Middleware::kind(&()),
-            ))),
+            (api_version, kind) => {
+                let (group, version) = api_version
+                    .split_once('/')
+                    .map_or((String::new(), api_version.to_string()), |(g, v)| {
+                        (g.to_string(), v.to_string())
+                    });
+                Ok(Self::Other((
+                    dy,
+                    ApiResource::from_gvk(&GroupVersionKind::gvk(&group, &version, kind)),
+                )))
+            }
         }
     }
 }
@@ -694,6 +662,8 @@ impl From<K8sBackupElement> for K8sElement {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     mod deserialize_role {
         use super::super::*;
 
@@ -1405,5 +1375,103 @@ mod tests {
                 K8sBackupElement::TraefikMiddleware(traefik_crds::TraefikMiddleware::V3(e)) if e.metadata.name.as_deref() == Some("stripprefix")
             ));
         }
+    }
+
+    mod deserialize_other_cert_manager {
+        use super::super::*;
+
+        #[test]
+        fn element() {
+            let yaml = r#"
+                apiVersion: cert-manager.io/v1
+                kind: Certificate
+                metadata:
+                  name: api-example-com
+                  namespace: production
+                spec:
+                  secretName: api-example-com-tls
+                  duration: 2160h
+                  renewBefore: 360h
+                  privateKey:
+                    algorithm: ECDSA
+                    size: 256
+                  dnsNames:
+                    - api.example.com
+                    - www.api.example.com
+                  issuerRef:
+                    name: letsencrypt-prod
+                    kind: ClusterIssuer
+                    group: cert-manager.io
+                "#;
+
+            let element = noyalib::from_str::<K8sElement>(yaml).unwrap();
+
+            assert!(matches!(
+                element,
+                K8sElement::Other((e, ar)) if e.metadata.name.as_deref() == Some("api-example-com") && ar.api_version == "cert-manager.io/v1"
+            ));
+        }
+    }
+
+    #[test]
+    fn fail_due_to_missing_api_version() {
+        let yaml = r#"
+            kind: Certificate
+            metadata:
+              name: api-example-com
+              namespace: production
+            spec:
+              secretName: api-example-com-tls
+              duration: 2160h
+              renewBefore: 360h
+              privateKey:
+                algorithm: ECDSA
+                size: 256
+              dnsNames:
+                - api.example.com
+                - www.api.example.com
+              issuerRef:
+                name: letsencrypt-prod
+                kind: ClusterIssuer
+                group: cert-manager.io
+            "#;
+
+        let err = noyalib::from_str::<K8sElement>(yaml).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            String::from("Missing apiVersion or kind for api-example-com")
+        )
+    }
+
+    #[test]
+    fn fail_due_to_missing_kind() {
+        let yaml = r#"
+            apiVersion: cert-manager.io/v1
+            metadata:
+              name: api-example-com
+              namespace: production
+            spec:
+              secretName: api-example-com-tls
+              duration: 2160h
+              renewBefore: 360h
+              privateKey:
+                algorithm: ECDSA
+                size: 256
+              dnsNames:
+                - api.example.com
+                - www.api.example.com
+              issuerRef:
+                name: letsencrypt-prod
+                kind: ClusterIssuer
+                group: cert-manager.io
+            "#;
+
+        let err = noyalib::from_str::<K8sElement>(yaml).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            String::from("Missing apiVersion or kind for api-example-com")
+        )
     }
 }

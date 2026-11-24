@@ -1324,6 +1324,7 @@ mod tests {
         app_instance::ContainerType,
         blueprint_service,
     };
+    use futures::AsyncWriteExt;
     use std::convert::Infallible;
     use tempfile::TempDir;
     use testcontainers::ContainerAsync;
@@ -1485,6 +1486,8 @@ mod tests {
             traefik_version: infra.traefik_version,
             ..Default::default()
         }
+        .with_whoami_deployment_example()
+        .await
         .bootstrap(&infra)
         .await?;
 
@@ -1588,7 +1591,6 @@ mod tests {
 
         let app_name = AppName::master();
         let (unit, _) = StaticBootstrapCompanion {
-            generate_whoami_deployment: false,
             app_name: app_name.clone(),
             traefik_version: infra.traefik_version,
             ..Default::default()
@@ -1676,6 +1678,8 @@ mod tests {
             traefik_version: infra.traefik_version,
             ..Default::default()
         }
+        .with_whoami_deployment_example()
+        .await
         .bootstrap(&infra)
         .await?;
 
@@ -1707,6 +1711,8 @@ mod tests {
             traefik_version: infra.traefik_version,
             ..Default::default()
         }
+        .with_whoami_deployment_example()
+        .await
         .bootstrap(&infra)
         .await?;
 
@@ -1894,28 +1900,138 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn bootstrap_application_with_custom_crd() -> Result<()> {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        let (_k3s, infra, _tempdir) = create_cluster_and_infra().await;
+
+        let app_name = AppName::master();
+
+        let (_unit, _app) = StaticBootstrapCompanion {
+            app_name: app_name.clone(),
+            traefik_version: infra.traefik_version,
+            ..Default::default()
+        }
+        .with_additional_k8s_manifest([r#"
+            apiVersion: helm.cattle.io/v1
+            kind: HelmChartConfig
+            metadata:
+              name: my-helm-config
+              namespace: master
+            spec:
+              failurePolicy: reinstall
+            "#])
+        .await
+        .bootstrap(&infra)
+        .await?;
+
+        let payload =
+            K8sDeploymentUnit::fetch(infra.client().await?, &app_name, infra.traefik_version)
+                .await?
+                .without_managed_data();
+
+        assert_json_diff::assert_json_include!(
+            actual: payload,
+            expected: serde_json::json!([
+                {
+                    "kind": "HelmChartConfig",
+                    "metadata": {
+                        "name": "my-helm-config",
+                        "namespace": "master",
+                    },
+                    "spec": {
+                        "failurePolicy": "reinstall",
+                    },
+                }
+            ])
+        );
+
+        Ok(())
+    }
+
     /// A fake bootstrapping implementation for testing purposes
     struct StaticBootstrapCompanion {
-        generate_whoami_deployment: bool,
         app_name: AppName,
         service_configs: Vec<domain::app_blueprints::ServiceConfig>,
         app_to_replicate_from: Option<(AppName, App)>,
         traefik_version: TraefikVersion,
+        additional_k8s_manifests: futures::io::Cursor<Vec<u8>>,
     }
 
     impl Default for StaticBootstrapCompanion {
         fn default() -> Self {
             Self {
-                generate_whoami_deployment: true,
                 app_name: AppName::master(),
                 service_configs: Vec::new(),
                 app_to_replicate_from: None,
                 traefik_version: TraefikVersion::V2,
+                additional_k8s_manifests: futures::io::Cursor::default(),
             }
         }
     }
 
     impl StaticBootstrapCompanion {
+        async fn with_additional_k8s_manifest<'a, I>(mut self, manifests: I) -> Self
+        where
+            I: IntoIterator<Item = &'a str>,
+        {
+            use futures::io::AsyncWriteExt;
+            for manifest in manifests {
+                self.additional_k8s_manifests
+                    .write_all("\n---\n".as_bytes())
+                    .await
+                    .unwrap();
+                self.additional_k8s_manifests
+                    .write_all(manifest.as_bytes())
+                    .await
+                    .unwrap();
+            }
+
+            self
+        }
+
+        async fn with_whoami_deployment_example(self) -> Self {
+            self.with_additional_k8s_manifest([
+                r#"
+                apiVersion: apps/v1
+                kind: Deployment
+                metadata:
+                  name: whoami
+                spec:
+                  selector:
+                    matchLabels:
+                      app: whoami
+                  template:
+                    metadata:
+                      labels:
+                        app: whoami
+                    spec:
+                      containers:
+                      - name: whoami
+                        image: traefik/whoami
+                        args:
+                        - --port=2001
+                        - --name=iamfoo
+                        ports:
+                        - containerPort: 2001
+                "#,
+                r#"
+                apiVersion: v1
+                kind: Service
+                metadata:
+                  name: whoami
+                spec:
+                  selector:
+                    app: whoami
+                  ports:
+                  - port: 2001
+                    targetPort: 2001
+                "#,
+            ])
+            .await
+        }
+
         async fn bootstrap(self, infra: &Kubernetes) -> Result<(DeploymentUnit<K8sElement>, App)> {
             let unit = AppDeploymentBuilder::init(
                 self.app_name.clone(),
@@ -1964,72 +2080,9 @@ mod tests {
             context: BootstrapCompanionsContext<'_>,
             _template_data: &TemplateData,
         ) -> Result<BootstrappedCompanions<Self::BootstrappedElement>, Self::Error> {
-            let outputs = [
-                (
-                    BootstrappingContainer {
-                        image: Image::from_str("bash").unwrap(),
-                        image_pull_policy: Default::default(),
-                        args: Vec::new(),
-                    },
-                    if self.generate_whoami_deployment {
-                        r#"
-                        apiVersion: apps/v1
-                        kind: Deployment
-                        metadata:
-                          name: whoami
-                        spec:
-                          selector:
-                            matchLabels:
-                              app: whoami
-                          template:
-                            metadata:
-                              labels:
-                                app: whoami
-                            spec:
-                              containers:
-                              - name: whoami
-                                image: traefik/whoami
-                                args:
-                                - --port=2001
-                                - --name=iamfoo
-                                ports:
-                                - containerPort: 2001
-                        "#
-                    } else {
-                        ""
-                    }
-                    .as_bytes(),
-                ),
-                (
-                    BootstrappingContainer {
-                        image: Image::from_str("ksh").unwrap(),
-                        image_pull_policy: Default::default(),
-                        args: Vec::new(),
-                    },
-                    if self.generate_whoami_deployment {
-                        r#"
-                        apiVersion: v1
-                        kind: Service
-                        metadata:
-                          name: whoami
-                        spec:
-                          selector:
-                            app: whoami
-                          ports:
-                          - port: 2001
-                            targetPort: 2001
-                        "#
-                    } else {
-                        ""
-                    }
-                    .as_bytes(),
-                ),
-                (
-                    BootstrappingContainer {
-                        image: Image::from_str("busybox").unwrap(),
-                        image_pull_policy: Default::default(),
-                        args: Vec::new(),
-                    },
+            let mut ingress_manifest = futures::io::Cursor::<Vec<u8>>::default();
+            ingress_manifest
+                .write_all(
                     r#"
                     apiVersion: networking.k8s.io/v1
                     kind: Ingress
@@ -2052,13 +2105,35 @@ mod tests {
                                   number: 2001
                     "#
                     .as_bytes(),
+                )
+                .await?;
+            ingress_manifest.set_position(0);
+
+            let mut additional_k8s_manifests = self.additional_k8s_manifests.clone();
+            additional_k8s_manifests.set_position(0);
+            let outputs = [
+                (
+                    BootstrappingContainer {
+                        image: Image::from_str("bash").unwrap(),
+                        image_pull_policy: Default::default(),
+                        args: Vec::new(),
+                    },
+                    additional_k8s_manifests,
+                ),
+                (
+                    BootstrappingContainer {
+                        image: Image::from_str("busybox").unwrap(),
+                        image_pull_policy: Default::default(),
+                        args: Vec::new(),
+                    },
+                    ingress_manifest,
                 ),
             ];
 
             let log_streams = outputs
                 .iter()
                 .map(|(bootstrapping_container, output)| BootstrappingLogStream {
-                    log_stream: Box::new(*output),
+                    log_stream: Box::new(output.clone()),
                     bootstrapping_container,
                 })
                 .collect::<Vec<_>>();
